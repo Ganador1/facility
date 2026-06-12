@@ -1,0 +1,11 @@
+{
+  "name": "database",
+  "title": "Database",
+  "description": "Migrations are immutable and append-only; access control by default; privileged credentials stay out of user-facing paths.",
+  "standardSection": "standard-section.md",
+  "files": [
+    { "from": "agents/data-security-reviewer.md", "to": ".claude/agents/data-security-reviewer.md" },
+    { "from": "guards/migrations-immutable.mjs", "to": "guards/migrations-immutable.mjs" }
+  ],
+  "hookRules": "hooks/protect-migrations.fragment.mjs"
+}
