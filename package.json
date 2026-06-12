@@ -1,0 +1,41 @@
+{
+  "name": "@theam/capataz",
+  "version": "0.1.0",
+  "description": "Run an AI crew on your GitHub repo: agents that plan before building, build to your standard, verify on a provisioned environment, and never merge their own work.",
+  "keywords": [
+    "ai",
+    "agents",
+    "sdlc",
+    "claude-code",
+    "github-actions",
+    "code-review",
+    "automation"
+  ],
+  "homepage": "https://github.com/theam/capataz#readme",
+  "bugs": "https://github.com/theam/capataz/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/theam/capataz.git"
+  },
+  "license": "MIT",
+  "author": "The Agile Monkeys (https://theagilemonkeys.com)",
+  "type": "module",
+  "bin": {
+    "capataz": "bin/capataz.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "templates",
+    "modules",
+    "docs",
+    "assets"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "guards": "node guards/run.mjs"
+  }
+}
