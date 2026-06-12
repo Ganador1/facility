@@ -16,6 +16,10 @@ AI agents do real work in CI, humans own every decision that matters.
   signs off.
 - Verify before done: {{CHECKS_INLINE}}. Deterministic repo invariants live in
   `guards/` (`node guards/run.mjs`).
+- The craft lives in `.claude/skills/` (`working-to-standard`,
+  `reviewing-to-standard`, `maintainable-software`; non-Claude agents: same
+  content via `.agents/skills`). Apply them when implementing or reviewing.
+  Slash commands `/verify` and `/open-pr` encode the standard's workflows.
 - Issues move forward only on explicit human action. Don't start work on a
   task that isn't assigned and planned.
 <!-- capataz:end -->

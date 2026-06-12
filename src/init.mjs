@@ -3,7 +3,7 @@
 // Detect the stack, ask six short questions, write the files, print the
 // manual steps that only a human can do. Every generated file belongs to the
 // target repo afterwards; capataz is the installer, not a runtime dependency.
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { detect } from "./detect.mjs";
 import { render, hasManagedBlock, appendManagedBlock } from "./render.mjs";
@@ -172,6 +172,11 @@ export async function init(flags, pkgRoot, version) {
     { to: ".claude/hooks/protect-files.mjs", content: template("claude/hooks/protect-files.mjs") },
     { to: ".claude/agents/standards-reviewer.md", content: template("claude/agents/standards-reviewer.md") },
     { to: ".claude/agents/security-reviewer.md", content: template("claude/agents/security-reviewer.md") },
+    { to: ".claude/skills/working-to-standard/SKILL.md", content: template("claude/skills/working-to-standard/SKILL.md") },
+    { to: ".claude/skills/reviewing-to-standard/SKILL.md", content: template("claude/skills/reviewing-to-standard/SKILL.md") },
+    { to: ".claude/skills/maintainable-software/SKILL.md", content: template("claude/skills/maintainable-software/SKILL.md") },
+    { to: ".claude/commands/verify.md", content: render(template("claude/commands/verify.md"), vars) },
+    { to: ".claude/commands/open-pr.md", content: render(template("claude/commands/open-pr.md"), vars) },
     { to: "guards/run.mjs", content: template("guards/run.mjs") },
     { to: "guards/_kit.mjs", content: template("guards/_kit.mjs") },
     { to: "guards/actions-pinned.mjs", content: template("guards/actions-pinned.mjs") },
@@ -207,6 +212,21 @@ export async function init(flags, pkgRoot, version) {
       written += 1;
     } else {
       skip(`${entry} already has a capataz block`);
+    }
+  }
+
+  // Cross-tool: non-Claude agents discover the same skills via .agents/skills.
+  const agentsSkillsLink = join(dir, ".agents/skills");
+  try {
+    lstatSync(agentsSkillsLink);
+    skip(".agents/skills exists — left untouched");
+  } catch {
+    try {
+      mkdirSync(join(dir, ".agents"), { recursive: true });
+      symlinkSync("../.claude/skills", agentsSkillsLink, "dir");
+      ok(".agents/skills → .claude/skills");
+    } catch {
+      warn(".agents/skills symlink could not be created (filesystem without symlink support) — skipped.");
     }
   }
 

@@ -16,6 +16,10 @@ const REQUIRED = [
   "AGENTS.md",
   ".claude/hooks/protect-branch.mjs",
   ".claude/hooks/protect-files.mjs",
+  ".claude/skills/working-to-standard/SKILL.md",
+  ".claude/skills/reviewing-to-standard/SKILL.md",
+  ".claude/skills/maintainable-software/SKILL.md",
+  ".claude/commands/verify.md",
   "guards/run.mjs",
 ];
 

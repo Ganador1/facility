@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,6 +65,11 @@ test("init installs the method end to end", async (t) => {
     ".claude/hooks/protect-files.mjs",
     ".claude/agents/standards-reviewer.md",
     ".claude/agents/security-reviewer.md",
+    ".claude/skills/working-to-standard/SKILL.md",
+    ".claude/skills/reviewing-to-standard/SKILL.md",
+    ".claude/skills/maintainable-software/SKILL.md",
+    ".claude/commands/verify.md",
+    ".claude/commands/open-pr.md",
     "guards/run.mjs",
     "guards/_kit.mjs",
     "guards/actions-pinned.mjs",
@@ -91,6 +96,13 @@ test("init installs the method end to end", async (t) => {
   const standard = readFileSync(join(dir, "STANDARD.md"), "utf8");
   assert.ok(standard.includes("`npm run lint`"));
   assert.ok(standard.includes("<!-- capataz:modules:start -->"));
+
+  // Skills are cross-tool: .agents/skills symlinks to .claude/skills, and
+  // the slash commands carry the rendered verification ladder.
+  assert.ok(lstatSync(join(dir, ".agents/skills")).isSymbolicLink(), ".agents/skills must be a symlink");
+  assert.ok(existsSync(join(dir, ".agents/skills/working-to-standard/SKILL.md")), "symlink must resolve to the skills");
+  const verifyCmd = readFileSync(join(dir, ".claude/commands/verify.md"), "utf8");
+  assert.ok(verifyCmd.includes("`npm run lint`"), "verify command must carry the rendered checks");
 
   // Manifest reflects the choices.
   const manifest = JSON.parse(readFileSync(join(dir, ".capataz.json"), "utf8"));
@@ -122,8 +134,9 @@ test("add database module wires the triple", async (t) => {
   const end = standard.indexOf("<!-- capataz:modules:end -->");
   assert.ok(standard.indexOf("### Database") > start && standard.indexOf("### Database") < end);
 
-  // 2. Reviewer subagent copied.
+  // 2. Reviewer subagent and slash command copied.
   assert.ok(existsSync(join(dir, ".claude/agents/data-security-reviewer.md")));
+  assert.ok(existsSync(join(dir, ".claude/commands/new-migration.md")));
 
   // 3. Checks: guard copied and hook rules spliced.
   assert.ok(existsSync(join(dir, "guards/migrations-immutable.mjs")));

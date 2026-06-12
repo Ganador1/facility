@@ -88,6 +88,28 @@ repeatedly missed becomes a deterministic check.** Prose is for judgment;
 `guards/` are for invariants. The day a reviewer points out the same problem
 twice, that problem graduates from prose to a guard, and never comes back.
 
+## Where the knowledge lives
+
+Quality knowledge degrades when it all lives in one place — a standard nobody
+re-reads, or a prompt that grows until nothing in it binds. Capataz splits it
+by *when it acts*:
+
+| carrier | acts | carries |
+|---|---|---|
+| `STANDARD.md` | read before work, cited in review | the contract: what done means here |
+| `.claude/skills/` | triggered **during** work, by relevance | the craft: how to implement, review, and design maintainably |
+| `.claude/agents/` (reviewers) | **after** work, in a fresh context | judgment on gray areas, unbiased by the diff's author |
+| `guards/` + hooks | always, mechanically | invariants that must never depend on judgment |
+| `/verify`, `/open-pr` | on demand | the standard's workflows, executable |
+
+The skills ship generic but real: `working-to-standard` walks the contract
+while the change is happening, `reviewing-to-standard` enforces the review
+order and comment bar, `maintainable-software` is the design judgment most
+review comments are secretly about. They live in your repo (and behind
+`.agents/skills` for non-Claude tooling), so they evolve with your codebase
+the same way the standard does — and the rule of graduation applies to them
+too: craft that turns out to be checkable becomes a guard.
+
 ## The human signature
 
 Three invariants are structural, not stylistic:

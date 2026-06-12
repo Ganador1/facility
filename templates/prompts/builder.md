@@ -27,6 +27,10 @@ environment is unavailable — verify by running the checks.
   cohesive, and aligned with existing patterns. Read only the code you need;
   run independent commands in parallel.
 - Verify by actually running the relevant checks: {{CHECKS_INLINE}}.
+- Apply the repo skills in `.claude/skills/` — `working-to-standard` while
+  implementing, `maintainable-software` for design judgment,
+  `reviewing-to-standard` when you self-review. They are part of this
+  contract, not optional extras.
 - For risky domains, dispatch the matching reviewer subagent from
   `.claude/agents/` when one exists.
 - Follow `STANDARD.md` as the binding development standard.

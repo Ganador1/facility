@@ -52,7 +52,11 @@ into *your* repo, no runtime dependency on us:
 .github/capataz/                               operating contracts + board script
 STANDARD.md                                    your quality contract, binding for all
 AGENTS.md · CLAUDE.md                          wired to the method (appended, never overwritten)
-.claude/  (settings, hooks, reviewer agents)   local guardrails for everyday agent use
+.claude/skills/                                the craft, applied while working: working-to-standard,
+                                               reviewing-to-standard, maintainable-software
+.claude/commands/                              /verify and /open-pr, carrying your check ladder
+.claude/  (settings, hooks, reviewer agents)   guardrails + fresh-context judgment
+.agents/skills → .claude/skills                same skills for non-Claude agents
 guards/   (zero-dep runner + first guard)      deterministic invariants, one CI status
 .capataz.json                                  the choices you made, for doctor/update
 ```
@@ -112,9 +116,11 @@ settings — not aspirational:
 
 ## Modules
 
-Concerns beyond the core ship as modules — each one is the same triple:
-a `STANDARD.md` section (judgment), a reviewer subagent (gray areas), and
-guards/hooks (invariants).
+Concerns beyond the core ship as modules — each one packages a concern in
+every form a rule needs to hold: a `STANDARD.md` section (the rule), a
+reviewer subagent (the gray areas), guards/hooks (the invariants), and slash
+commands for the workflows it prescribes (`/new-migration`,
+`/add-telemetry`).
 
 ```
 npx @theam/capataz add database

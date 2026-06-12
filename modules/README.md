@@ -1,7 +1,7 @@
 # Modules
 
-A capataz module packages one quality concern in the three forms a rule needs
-to actually hold:
+A capataz module packages one quality concern in every form a rule needs to
+actually hold:
 
 1. **Prose** — a section inserted into your `STANDARD.md`, so agents and
    humans know the rule and the reasoning.
@@ -9,6 +9,9 @@ to actually hold:
    prose can't pin down.
 3. **Checks** — deterministic guards and hooks for the part that should never
    depend on judgment.
+4. **Workflows** — slash commands in `.claude/commands/` for the procedures
+   the module prescribes (e.g. `/new-migration`, `/add-telemetry`), so the
+   right way is also the easy way.
 
 Install one with:
 
