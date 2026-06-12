@@ -1,0 +1,21 @@
+<!-- capataz:start (managed by capataz — edits inside this block may be overwritten by `capataz update`) -->
+## How work happens here (Capataz)
+
+This repository runs the [Capataz method](https://github.com/theam/capataz):
+AI agents do real work in CI, humans own every decision that matters.
+
+- **`STANDARD.md` is binding** for every change — human or agent. Read it
+  before editing; reviewers enforce it.
+- **`@architect`** (comment on an issue) plans and validates with real
+  evidence. It never commits. **`@builder`** implements the approved plan end
+  to end, runs the checks, and opens the PR. Invoking `@builder` is acceptance
+  of the plan. Use exactly one mention per comment.
+- Every non-draft PR is **reviewed automatically** against `STANDARD.md`.
+  When a human submits a review on a crew PR, the agent **addresses the
+  actionable feedback** and pushes. Agents never approve or merge — a human
+  signs off.
+- Verify before done: {{CHECKS_INLINE}}. Deterministic repo invariants live in
+  `guards/` (`node guards/run.mjs`).
+- Issues move forward only on explicit human action. Don't start work on a
+  task that isn't assigned and planned.
+<!-- capataz:end -->
