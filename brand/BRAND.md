@@ -13,8 +13,8 @@ behalf of the owner. The metaphor is load-bearing and product-wide:
 
 | construction | capataz |
 |---|---|
-| the architect | `@architect` — plans before anyone builds |
-| the crew | `@builder` and the review/address agents |
+| the architect | `/architect` — plans before anyone builds |
+| the crew | `/builder` and the review/address agents |
 | the building code | `STANDARD.md` |
 | inspections | guards + the PR reviewer |
 | an equipped job site | the provisioned environment |

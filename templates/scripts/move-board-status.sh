@@ -5,8 +5,8 @@
 # Reflect the invoked agent on the org GitHub Project board by setting the
 # triggering issue's "Status" field:
 #
-#   @architect -> Planning      (only advances from empty/Backlog; never backward)
-#   @builder   -> In Progress   (invoking @builder is acceptance of the plan)
+#   /architect -> Planning      (only advances from empty/Backlog; never backward)
+#   /builder   -> In Progress   (invoking /builder is acceptance of the plan)
 #
 # Forward-only: the board is never moved backward (an issue already in
 # "In Review"/"Done" is left alone). The script no-ops cleanly when the
@@ -19,8 +19,8 @@
 # Env: MODE (builder|architect), ISSUE_NODE_ID, ORG, PROJECT_NUMBER.
 # Optional env to adapt to your board's column names:
 #   STATUS_COLUMNS    ordered, comma-separated (default below)
-#   ARCHITECT_STATUS  target column for @architect (default "Planning")
-#   BUILDER_STATUS    target column for @builder (default "In Progress")
+#   ARCHITECT_STATUS  target column for /architect (default "Planning")
+#   BUILDER_STATUS    target column for /builder (default "In Progress")
 set -euo pipefail
 
 : "${MODE:?MODE required}"
@@ -125,10 +125,10 @@ rank() {
 cur_rank=$(rank "$CURRENT")
 tgt_rank=$(rank "$TARGET")
 
-# @architect only kicks off planning; if work has already moved past the first
+# /architect only kicks off planning; if work has already moved past the first
 # column, leave the board as-is (a follow-up question shouldn't drag it back).
 if [ "$MODE" = "architect" ] && [ "$cur_rank" -gt 0 ]; then
-  echo "::notice::Issue already at '${CURRENT}' — @architect leaves the board unchanged."
+  echo "::notice::Issue already at '${CURRENT}' — /architect leaves the board unchanged."
   exit 0
 fi
 # Never move backward or sideways.

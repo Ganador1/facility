@@ -46,7 +46,7 @@ commands, model, optional project board, optional modules) and it writes —
 into *your* repo, no runtime dependency on us:
 
 ```
-.github/workflows/capataz-crew.yml             @architect + @builder
+.github/workflows/capataz-crew.yml             /architect + /builder
 .github/workflows/capataz-review.yml           every PR reviewed against the standard
 .github/workflows/capataz-address-review.yml   human review → agent iterates
 .github/capataz/                               operating contracts + board script
@@ -69,24 +69,24 @@ protect your default branch.
 Now open an issue and comment:
 
 ```
-@architect
+/architect
 ```
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    B[Backlog] -->|"@architect"| P[Planning]
+    B[Backlog] -->|"/architect"| P[Planning]
     P -->|human: plan is good| R[Ready]
-    R -->|"@builder = acceptance"| IP[In Progress]
+    R -->|"/builder = acceptance"| IP[In Progress]
     IP -->|crew opens PR| IR[In Review]
     IR -->|human approves & merges| D[Done]
 ```
 
 | Role | Trigger | Does | Never |
 |---|---|---|---|
-| **@architect** | issue comment | reads code, validates with real commands, plans in-thread | commit, push, open PRs |
-| **@builder** | issue/PR comment | implements end to end, runs your checks, pushes, opens the PR | merge, defer, ship "phase 1" |
+| **/architect** | issue comment | reads code, validates with real commands, plans in-thread | commit, push, open PRs |
+| **/builder** | issue/PR comment | implements end to end, runs your checks, pushes, opens the PR | merge, defer, ship "phase 1" |
 | **reviewer** | every non-draft PR | reviews against `STANDARD.md`, inline comments | approve, merge |
 | **addresser** | human submits a review | fixes actionable feedback, re-verifies, replies point by point | act on praise, resolve threads |
 

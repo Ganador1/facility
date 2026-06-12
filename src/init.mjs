@@ -57,7 +57,7 @@ function boardStep(org, projectNumber) {
   return [
     "",
     "      # Reflect the invoked agent on the org Project board:",
-    "      #   @architect -> Planning, @builder -> In Progress (accepting the plan).",
+    "      #   /architect -> Planning, /builder -> In Progress (accepting the plan).",
     "      # Forward-only; no-ops if PROJECTS_PAT is unset (the default",
     "      # GITHUB_TOKEN cannot write org Projects v2).",
     "      - name: Move Project board status",
@@ -259,7 +259,7 @@ export async function init(flags, pkgRoot, version) {
   steps.push(
     `If your tests need provider keys, put TEST-tier, spend-capped keys in a ${bold("capataz-crew")} Environment — never production keys.`
   );
-  steps.push(`Commit, push, open an issue, and comment ${accent("@architect")} on it. That's the whole onboarding.`);
+  steps.push(`Commit, push, open an issue, and comment ${accent("/architect")} on it. That's the whole onboarding.`);
   steps.forEach((step, index) => item(`${bold(String(index + 1) + ".")} ${step}`));
   console.log("");
   item(dim(`${written} files written. Read STANDARD.md next — it is yours now.`));

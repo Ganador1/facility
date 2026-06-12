@@ -87,6 +87,16 @@ test("init installs the method end to end", async (t) => {
   assert.ok(crew.includes("PROJECT_NUMBER: '7'"), "board step not rendered");
   assert.ok(crew.includes("npm ci"), "toolchain steps not rendered for npm");
 
+  // Agent triggers are slash commands, never @-mentions (real GitHub users),
+  // and bot-authored events can't summon the crew.
+  assert.ok(crew.includes("trigger_phrase=/builder"), "builder trigger must be slash syntax");
+  assert.ok(crew.includes("github.event.sender.type != 'Bot'"), "crew must refuse bot-authored events");
+  const crewCodeLines = crew.split("\n").filter((line) => !line.trim().startsWith("#"));
+  assert.ok(
+    !crewCodeLines.some((line) => /@(builder|architect)\b/.test(line)),
+    "no @-mention handles may remain outside explanatory comments"
+  );
+
   // settings.json must be valid JSON with the checks allowlisted.
   const settings = JSON.parse(readFileSync(join(dir, ".claude/settings.json"), "utf8"));
   assert.ok(settings.permissions.allow.includes("Bash(npm run lint)"));

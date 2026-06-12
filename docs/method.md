@@ -19,14 +19,14 @@ flowchart LR
 
 Agents do real work in exactly two columns:
 
-- **Planning** — `@architect` reads the codebase, validates assumptions with
+- **Planning** — `/architect` reads the codebase, validates assumptions with
   real commands against the provisioned environment, and works the plan out
   with you in the issue thread. It never commits.
-- **In Progress** — `@builder` implements the approved plan end to end in one
+- **In Progress** — `/builder` implements the approved plan end to end in one
   run, executes your checks, pushes a branch, and opens the PR.
 
 Everything else belongs to people. An issue enters **Ready** when a human
-judges the plan good. **Invoking `@builder` is your acceptance of the plan** —
+judges the plan good. **Invoking `/builder` is your acceptance of the plan** —
 that is why the invocation itself moves the board. **In Review → Done** is a
 human approval and a human merge.
 
@@ -38,13 +38,13 @@ just doesn't move itself.
 
 ## The roles
 
-**@architect** exists because the most expensive agent failure is a confident
+**/architect** exists because the most expensive agent failure is a confident
 implementation of the wrong thing. Planning happens in the issue thread where
 it can be challenged cheaply, with evidence — the architect has the same
 provisioned environment as the builder, so "I checked, the index is already
 there" is a real statement, not a guess.
 
-**@builder** delivers complete work in one run: implementation, verification,
+**/builder** delivers complete work in one run: implementation, verification,
 push, PR. One-shot delivery is deliberate. An agent allowed to ship
 "foundation + plan" will ship foundation + plan every time; an agent required
 to finish either finishes or reports the concrete blocker it hit. Both

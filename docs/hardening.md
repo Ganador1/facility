@@ -51,13 +51,21 @@ Codex-style runs), fence it between sentinels derived from the run ID —
 `BEGIN_UNTRUSTED_<run_id>_<attempt>` — so the author of the text cannot forge
 the closing delimiter and break out of the data block.
 
-## 5. Mention parsing must accept prose
+## 5. Your agent handles are someone's username
 
-A naive `contains(body, '@builder')` fires on "ask @architect about the
-@builder pattern" and boots two agents. The generated workflow uses the cheap
-`contains` only as a pre-filter to avoid booting runners, then parses
-*standalone* mentions (`(?:^|\s)@(builder|architect)(?=$|[\s,.:;!?)])`) and
-errors on ambiguous requests: exactly one agent per comment.
+We started with `@architect` and `@builder` — and `@architect` and `@builder`
+are real GitHub accounts owned by strangers. Every invocation @-mentioned
+them: notification spam for two uninvolved people, and a doc set that pointed
+our users at third-party profiles. Agent triggers must not live in GitHub's
+mention namespace at all.
+
+The generated workflows use slash commands (`/builder`, `/architect`) with a
+parsing contract that also solves prose collisions: the cheap `contains` in
+the job `if` is only a pre-filter to avoid booting runners; the resolver then
+accepts a command **only at the start of a line**
+(`(?:^|\n)\s*\/(builder|architect)(?=$|[\s,.:;!?)])`), ignores prose examples
+("ask /architect about it"), and errors on ambiguous requests: exactly one
+agent per comment.
 
 ## 6. Secrets arrive mangled
 
@@ -116,6 +124,17 @@ permission system from an agent with your credentials. The generated
 `.claude/settings.json` is the local counterpart — allowlisted checks, ask on
 push/PR, deny on secrets and force-push — and the hooks (`.claude/hooks/`)
 enforce the non-negotiables in both worlds.
+
+## 13. Your own bots will summon each other
+
+Any helper bot that posts "comment /builder to implement this" has just
+written the trigger phrase into an event your crew workflow listens to — and
+agents echo trigger phrases in their own summaries constantly. The first
+uncontrolled version of this is a surprise run; the worst version is a loop.
+The generated crew workflow refuses bot-authored events at the job level
+(`github.event.sender.type != 'Bot'`): only humans summon the crew. If you
+ever want one specific bot to do it, allowlist that bot explicitly — never
+drop the guard.
 
 ---
 

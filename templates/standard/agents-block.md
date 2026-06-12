@@ -6,10 +6,10 @@ AI agents do real work in CI, humans own every decision that matters.
 
 - **`STANDARD.md` is binding** for every change — human or agent. Read it
   before editing; reviewers enforce it.
-- **`@architect`** (comment on an issue) plans and validates with real
-  evidence. It never commits. **`@builder`** implements the approved plan end
-  to end, runs the checks, and opens the PR. Invoking `@builder` is acceptance
-  of the plan. Use exactly one mention per comment.
+- **`/architect`** (comment on an issue) plans and validates with real
+  evidence. It never commits. **`/builder`** implements the approved plan end
+  to end, runs the checks, and opens the PR. Invoking `/builder` is acceptance
+  of the plan. Use exactly one command per comment, at the start of a line.
 - Every non-draft PR is **reviewed automatically** against `STANDARD.md`.
   When a human submits a review on a crew PR, the agent **addresses the
   actionable feedback** and pushes. Agents never approve or merge — a human

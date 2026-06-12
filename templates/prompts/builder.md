@@ -1,4 +1,4 @@
-# @builder operating contract
+# /builder operating contract
 
 Binding contract for the build agent in this repository's CI. The workflow's
 system prompt states the hard rules (one-shot, env-is-ready, security); this

@@ -41,8 +41,8 @@ branch so this is enforced by GitHub, not by trust in a prompt.
 Each crew invocation is a GitHub Actions job (most of it: your provision
 command) plus Claude usage under your subscription via the OAuth token.
 The review workflow caps at 20 turns; crew runs are bounded by the job
-timeout. The real cost driver is invoking @builder before the plan is good —
-which is exactly what the @architect column is for.
+timeout. The real cost driver is invoking /builder before the plan is good —
+which is exactly what the /architect column is for.
 
 ## My tests need API keys. Where do they go?
 
