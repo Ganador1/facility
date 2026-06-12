@@ -1,0 +1,12 @@
+<svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Capataz mark: a spirit level with the bubble centered">
+  <!-- capataz mark — a spirit level, bubble centered: built to code. -->
+  <!-- palette roles: ink #1A1714 · surface #FAF7F2 · accent #E8590C -->
+  <rect width="96" height="96" rx="4" fill="#1A1714"/>
+  <!-- vial -->
+  <rect x="14" y="38" width="68" height="20" rx="4" fill="none" stroke="#FAF7F2" stroke-width="3"/>
+  <!-- center marks -->
+  <line x1="40" y1="34" x2="40" y2="42" stroke="#FAF7F2" stroke-width="3"/>
+  <line x1="56" y1="34" x2="56" y2="42" stroke="#FAF7F2" stroke-width="3"/>
+  <!-- bubble, dead center -->
+  <circle cx="48" cy="48" r="6" fill="#E8590C"/>
+</svg>

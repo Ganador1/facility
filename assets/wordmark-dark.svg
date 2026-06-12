@@ -1,0 +1,10 @@
+<svg width="380" height="72" viewBox="0 0 380 72" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="capataz">
+  <!-- capataz wordmark (for dark backgrounds) -->
+  <rect x="4" y="8" width="56" height="56" rx="4" fill="#FAF7F2"/>
+  <rect x="12" y="30" width="40" height="12" rx="3" fill="none" stroke="#1A1714" stroke-width="2"/>
+  <line x1="27" y1="27" x2="27" y2="33" stroke="#1A1714" stroke-width="2"/>
+  <line x1="37" y1="27" x2="37" y2="33" stroke="#1A1714" stroke-width="2"/>
+  <circle cx="32" cy="36" r="3.6" fill="#E8590C"/>
+  <text x="76" y="50" font-family="'IBM Plex Mono', ui-monospace, Menlo, Consolas, monospace" font-size="34" font-weight="600" letter-spacing="2" fill="#FAF7F2">capataz</text>
+  <circle cx="248" cy="46" r="4" fill="#E8590C"/>
+</svg>
