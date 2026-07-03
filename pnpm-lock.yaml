@@ -126,7 +126,7 @@ importers:
         version: 4.22.5
       vitest:
         specifier: ^4.0.15
-        version: 4.1.9(@types/node@24.13.2)(vite@8.1.3(@types/node@24.13.2)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.5)(yaml@2.9.0))
+        version: 4.1.9(@types/node@24.13.2)(vite@8.1.3(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.5)(yaml@2.9.0))
 
   packages/db:
     dependencies:
@@ -294,6 +294,9 @@ importers:
       '@octokit/webhooks':
         specifier: ^14.2.0
         version: 14.2.0
+      '@workos-inc/node':
+        specifier: ^10.7.0
+        version: 10.7.0
       dockerode:
         specifier: ^5.0.1
         version: 5.0.1
@@ -342,7 +345,7 @@ importers:
         version: 4.22.5
       vitest:
         specifier: ^4.0.15
-        version: 4.1.9(@types/node@24.13.2)(vite@8.1.3(@types/node@24.13.2)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.5)(yaml@2.9.0))
+        version: 4.1.9(@types/node@24.13.2)(vite@8.1.3(@types/node@24.13.2)(esbuild@0.27.7)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.5)(yaml@2.9.0))
 
   services/gateway:
     dependencies:
@@ -3329,6 +3332,10 @@ packages:
 
   '@webassemblyjs/wast-printer@1.14.1':
     resolution: {integrity: sha512-kPSSXE6De1XOR820C90RIo2ogvZG+c3KiHzqUoO/F34Y2shGzesfqv7o57xrxovZJH/MetF5UjroJ/R/3isoiw==}
+
+  '@workos-inc/node@10.7.0':
+    resolution: {integrity: sha512-rffa9znZuIv4yo+9JRxGOLTTSxh0XhOT6jlsktgqEi9MuB9V0VFHRzLd3bTpkq+J9sgrPZNGpvX4aWNfMqt5cQ==}
+    engines: {node: '>=22.11.0'}
 
   '@xtuc/ieee754@1.2.0':
     resolution: {integrity: sha512-DX8nKgqcGwsc0eJSqYt5lwP4DH5FlHnmuWWBRy7X0NcaGR0ZtuyeESgMwTYVEtxmsNGY+qit4QYT/MIYTOTPeA==}
@@ -11623,6 +11630,8 @@ snapshots:
     dependencies:
       '@webassemblyjs/ast': 1.14.1
       '@xtuc/long': 4.2.2
+
+  '@workos-inc/node@10.7.0': {}
 
   '@xtuc/ieee754@1.2.0': {}
 

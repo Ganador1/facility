@@ -1,5 +1,8 @@
-import { orgs } from "@facility/db";
-import { eq } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
+import { newId } from "@facility/core";
+import { orgMembers, orgs, roles as rolesTable, users } from "@facility/db";
+import { WorkOS } from "@workos-inc/node";
+import { and, asc, eq, isNull, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ensureDevUser, mintSessionCookie } from "../app.js";
@@ -7,8 +10,13 @@ import { ApiError } from "../errors.js";
 import type { AppConfig } from "../types.js";
 
 const EmptyResponse = z.object({ ok: z.boolean() });
+const STATE_COOKIE = "facility_oauth_state";
 
 export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig) {
+  const workos =
+    config.workosApiKey && config.workosClientId ? new WorkOS(config.workosApiKey) : null;
+  const redirectUri = config.workosRedirectUri ?? `${config.publicUrl}/auth/callback`;
+
   app.get(
     "/auth/login",
     {
@@ -16,15 +24,25 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
       schema: { response: { 302: z.unknown(), 501: z.object({ error: z.unknown() }) } },
     },
     async (_request, reply) => {
-      if (!config.workosClientId) {
+      if (!workos || !config.workosClientId) {
         throw new ApiError(501, "workos_unconfigured", "WorkOS login is not configured");
       }
-      const redirectUri = `${config.publicUrl}/auth/callback`;
-      const url = new URL("https://api.workos.com/user_management/authorize");
-      url.searchParams.set("client_id", config.workosClientId);
-      url.searchParams.set("redirect_uri", redirectUri);
-      url.searchParams.set("response_type", "code");
-      return reply.redirect(url.toString());
+      // CSRF: bind the OAuth round-trip to a cookie-held nonce.
+      const state = randomBytes(16).toString("hex");
+      reply.setCookie(STATE_COOKIE, state, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: redirectUri.startsWith("https://"),
+        maxAge: 600,
+      });
+      const url = workos.userManagement.getAuthorizationUrl({
+        provider: "authkit",
+        clientId: config.workosClientId,
+        redirectUri,
+        state,
+      });
+      return reply.redirect(url);
     },
   );
 
@@ -33,16 +51,49 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
     {
       config: { public: true },
       schema: {
-        querystring: z.object({ code: z.string().optional() }),
-        response: { 302: z.unknown(), 501: z.object({ error: z.unknown() }) },
+        querystring: z.object({ code: z.string().optional(), state: z.string().optional() }),
+        response: { 302: z.unknown(), 401: z.unknown(), 403: z.unknown(), 501: z.unknown() },
       },
     },
-    async () => {
-      throw new ApiError(
-        501,
-        "workos_unconfigured",
-        "WorkOS callback exchange is not configured in this build",
-      );
+    async (request, reply) => {
+      if (!workos || !config.workosClientId) {
+        throw new ApiError(501, "workos_unconfigured", "WorkOS is not configured");
+      }
+      const { code, state } = request.query as { code?: string; state?: string };
+      if (!code) throw new ApiError(401, "missing_code", "Authorization code is required");
+      const expectedState = request.cookies[STATE_COOKIE];
+      if (!expectedState || expectedState !== state) {
+        throw new ApiError(401, "bad_state", "OAuth state mismatch");
+      }
+      reply.clearCookie(STATE_COOKIE, { path: "/" });
+
+      let workosUser: { id: string; email: string; firstName?: string | null; lastName?: string | null };
+      try {
+        const result = await workos.userManagement.authenticateWithCode({
+          clientId: config.workosClientId,
+          code,
+        });
+        workosUser = result.user;
+      } catch (error) {
+        request.log.warn({ err: error }, "workos code exchange failed");
+        throw new ApiError(401, "auth_failed", "WorkOS authentication failed");
+      }
+
+      const session = await ensureWorkosUser(app.facilityDb, {
+        workosUserId: workosUser.id,
+        email: workosUser.email,
+        name:
+          [workosUser.firstName, workosUser.lastName].filter(Boolean).join(" ").trim() || undefined,
+      });
+      const sealed = await mintSessionCookie(config, session.userId, session.orgId);
+      reply.setCookie("facility_session", sealed, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: redirectUri.startsWith("https://"),
+      });
+      await request.audit("auth.login", { type: "user", id: session.userId }, { via: "workos" });
+      return reply.redirect(config.webUrl ?? "/");
     },
   );
 
@@ -111,4 +162,59 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
       return { id: org.id, slug: org.slug };
     },
   );
+}
+
+/**
+ * Upsert a WorkOS-authenticated user and resolve their org. An existing member
+ * keeps their org; a new user is admitted only into a single-org deployment
+ * (self-host) — with multiple orgs, membership must be provisioned first
+ * (invite), so we never silently place someone in an arbitrary tenant.
+ */
+async function ensureWorkosUser(
+  db: FastifyInstance["facilityDb"],
+  input: { workosUserId: string; email: string; name?: string },
+): Promise<{ userId: string; orgId: string }> {
+  const existing =
+    (await db.select().from(users).where(eq(users.workosUserId, input.workosUserId)).limit(1))[0] ??
+    (await db.select().from(users).where(eq(users.email, input.email)).limit(1))[0];
+
+  const userId = existing?.id ?? newId("user");
+  if (existing) {
+    await db
+      .update(users)
+      .set({ workosUserId: input.workosUserId, name: input.name ?? existing.name, updatedAt: new Date() })
+      .where(eq(users.id, existing.id));
+  } else {
+    await db.insert(users).values({
+      id: userId,
+      workosUserId: input.workosUserId,
+      email: input.email,
+      name: input.name,
+      status: "active",
+    });
+  }
+
+  const membership = (
+    await db.select().from(orgMembers).where(eq(orgMembers.userId, userId)).limit(1)
+  )[0];
+  if (membership) return { userId, orgId: membership.orgId };
+
+  const orgRows = await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(2);
+  if (orgRows.length !== 1 || !orgRows[0]) {
+    throw new ApiError(403, "not_invited", "No membership for this user; ask an admin to invite you");
+  }
+  const org = orgRows[0];
+  const viewer = (
+    await db
+      .select()
+      .from(rolesTable)
+      .where(and(eq(rolesTable.name, "viewer"), or(isNull(rolesTable.orgId), eq(rolesTable.orgId, org.id))))
+      .limit(1)
+  )[0];
+  if (!viewer) throw new ApiError(500, "seed_required", "Bundled viewer role is not seeded");
+  await db
+    .insert(orgMembers)
+    .values({ id: newId("user"), orgId: org.id, userId, roleId: viewer.id })
+    .onConflictDoNothing();
+  return { userId, orgId: org.id };
 }
