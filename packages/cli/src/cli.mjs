@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { init } from "./init.mjs";
 import { addModule } from "./add.mjs";
 import { doctor } from "./doctor.mjs";
+import { runPlatformCommand } from "./platform.mjs";
 import { banner, bold, dim, item } from "./ui.mjs";
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,12 +14,21 @@ const version = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8")).
 function parseFlags(args) {
   const flags = {};
   const positional = [];
-  for (const arg of args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
     if (arg === "--yes" || arg === "-y") flags.yes = true;
+    else if (arg === "--json") flags.json = true;
     else if (arg === "--force") flags.force = true;
     else if (arg.startsWith("--") && arg.includes("=")) {
       const [key, ...rest] = arg.slice(2).split("=");
       flags[key] = rest.join("=");
+    } else if (arg.startsWith("--")) {
+      const key = arg.slice(2);
+      const next = args[index + 1];
+      if (next && !next.startsWith("-")) {
+        flags[key] = next;
+        index += 1;
+      } else flags[key] = true;
     } else if (!arg.startsWith("-")) positional.push(arg);
   }
   return { flags, positional };
@@ -29,6 +39,8 @@ function help() {
   item(`${bold("npx @theam/facility init")}            install the method into this repo`);
   item(`${bold("npx @theam/facility add <module>")}    add a quality module (analytics, database, ai-queryability, design-system)`);
   item(`${bold("npx @theam/facility doctor")}          check the install and list what's left`);
+  item(`${bold("npx @theam/facility login")}           connect to the Facility platform API`);
+  item(`${bold("npx @theam/facility status")}          show platform runs, inbox, spend, and issues`);
   console.log("");
   item(dim("init flags: --yes --force --dir=<path> --branch=<name> --provision=<cmd>"));
   item(dim('            --checks="cmd1, cmd2" --model=<id> --org=<org> --project=<n> --modules="a, b"'));
@@ -54,6 +66,15 @@ export async function main(argv) {
     }
     case "doctor":
       return doctor(flags, version);
+    case "login":
+    case "status":
+    case "projects":
+    case "runs":
+    case "inbox":
+    case "kickstart":
+    case "upgrade":
+    case "keys":
+      return runPlatformCommand(command, rest);
     case "--version":
     case "-v":
       console.log(version);
