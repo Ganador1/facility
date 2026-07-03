@@ -1,0 +1,41 @@
+---
+title: Quickstart
+---
+
+# Self-host quickstart
+
+Facility is containers + Postgres + S3-compatible storage. Nothing else.
+
+## Development / evaluation
+
+```bash
+git clone https://github.com/theam/facility && cd facility
+cp .env.example .env          # set SECRET_MASTER_KEY: openssl rand -base64 32
+docker compose -f docker-compose.dev.yml up -d    # postgres + minio
+pnpm install
+pnpm --filter @facility/db migrate && pnpm --filter @facility/db seed
+pnpm dev                       # api :4400 · gateway :4410 · web :3400
+```
+
+Open `http://localhost:3400`, sign in with **dev sign in** (enabled by
+`FACILITY_INSECURE_DEV=1` — refused in production builds), and you're in the
+seeded organization.
+
+## What's running
+
+| service | port | role |
+|---|---|---|
+| `web` | 3400 | the app |
+| `api` | 4400 | control plane (REST + OpenAPI at `/docs` in dev) |
+| `gateway` | 4410 | LLM proxy — point `ANTHROPIC_BASE_URL` / `OPENAI_BASE_URL` here |
+| worker | — | queues + crons (same image as api) |
+| postgres | 5461 | the database |
+| minio | 9000 | envelope/transcript storage |
+
+## First real steps
+
+1. **Providers** — add your Anthropic/OpenAI keys (sealed at rest) in
+   Settings → Providers.
+2. **GitHub App** — create your own App installation (see
+   [Production](production)) so kickstart and triggers work against your org.
+3. **Kickstart** — connect a repo and open the kickstart PR.

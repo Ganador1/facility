@@ -1,0 +1,26 @@
+{
+  "id": "reference/mcp",
+  "title": "MCP",
+  "description": "Manage Facility from Claude Code, Cowork, Codex, or any MCP client — with",
+  "source": "@site/docs/reference/mcp.md",
+  "sourceDirName": "reference",
+  "slug": "/reference/mcp",
+  "permalink": "/reference/mcp",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/reference/mcp.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "MCP"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "CLI",
+    "permalink": "/reference/cli"
+  },
+  "next": {
+    "title": "Security model",
+    "permalink": "/reference/security"
+  }
+}

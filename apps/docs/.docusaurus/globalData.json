@@ -1,0 +1,123 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "default": {
+      "path": "/",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/",
+          "mainDocId": "index",
+          "docs": [
+            {
+              "id": "concepts/gateway-and-cost",
+              "path": "/concepts/gateway-and-cost",
+              "sidebar": "docs"
+            },
+            {
+              "id": "concepts/inbox",
+              "path": "/concepts/inbox",
+              "sidebar": "docs"
+            },
+            {
+              "id": "concepts/knowledge",
+              "path": "/concepts/knowledge",
+              "sidebar": "docs"
+            },
+            {
+              "id": "concepts/projects-and-governance",
+              "path": "/concepts/projects-and-governance",
+              "sidebar": "docs"
+            },
+            {
+              "id": "concepts/registry",
+              "path": "/concepts/registry",
+              "sidebar": "docs"
+            },
+            {
+              "id": "concepts/sandboxes",
+              "path": "/concepts/sandboxes",
+              "sidebar": "docs"
+            },
+            {
+              "id": "concepts/the-loop",
+              "path": "/concepts/the-loop",
+              "sidebar": "docs"
+            },
+            {
+              "id": "concepts/watchtower",
+              "path": "/concepts/watchtower",
+              "sidebar": "docs"
+            },
+            {
+              "id": "guides/existing-repo",
+              "path": "/guides/existing-repo",
+              "sidebar": "docs"
+            },
+            {
+              "id": "guides/kickstart",
+              "path": "/guides/kickstart",
+              "sidebar": "docs"
+            },
+            {
+              "id": "guides/tam-os",
+              "path": "/guides/tam-os",
+              "sidebar": "docs"
+            },
+            {
+              "id": "index",
+              "path": "/",
+              "sidebar": "docs"
+            },
+            {
+              "id": "reference/api",
+              "path": "/reference/api",
+              "sidebar": "docs"
+            },
+            {
+              "id": "reference/cli",
+              "path": "/reference/cli",
+              "sidebar": "docs"
+            },
+            {
+              "id": "reference/mcp",
+              "path": "/reference/mcp",
+              "sidebar": "docs"
+            },
+            {
+              "id": "reference/security",
+              "path": "/reference/security",
+              "sidebar": "docs"
+            },
+            {
+              "id": "self-host/aws",
+              "path": "/self-host/aws",
+              "sidebar": "docs"
+            },
+            {
+              "id": "self-host/production",
+              "path": "/self-host/production",
+              "sidebar": "docs"
+            },
+            {
+              "id": "self-host/quickstart",
+              "path": "/self-host/quickstart",
+              "sidebar": "docs"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "docs": {
+              "link": {
+                "path": "/",
+                "label": "index"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

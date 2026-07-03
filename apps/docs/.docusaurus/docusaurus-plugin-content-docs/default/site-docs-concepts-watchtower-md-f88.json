@@ -1,0 +1,26 @@
+{
+  "id": "concepts/watchtower",
+  "title": "Watchtower",
+  "description": "An agent pipeline fails politely: a dead trigger stops summoning agents, a",
+  "source": "@site/docs/concepts/watchtower.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/watchtower",
+  "permalink": "/concepts/watchtower",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/concepts/watchtower.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Watchtower"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Registry",
+    "permalink": "/concepts/registry"
+  },
+  "next": {
+    "title": "The inbox",
+    "permalink": "/concepts/inbox"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "id": "concepts/knowledge",
+  "title": "Knowledge & the Project Owner",
+  "description": "Every project can run a Project Owner agent: a scheduled, sandboxed agent",
+  "source": "@site/docs/concepts/knowledge.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/knowledge",
+  "permalink": "/concepts/knowledge",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/concepts/knowledge.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Knowledge & the Project Owner"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "The inbox",
+    "permalink": "/concepts/inbox"
+  },
+  "next": {
+    "title": "Quickstart",
+    "permalink": "/self-host/quickstart"
+  }
+}
