@@ -69,7 +69,9 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
       await appendRunEvents(db, run.orgId, run.id, [{ type: "hello", data: {} }]);
       const token = signedBundleToken(run.id, config.secretMasterKey);
       return {
-        bundleUrl: `${config.publicUrl.replace(/\/$/, "")}/internal/runs/${run.id}/bundle?token=${token}`,
+        // Sandbox-facing URL — the container reaches the API via this host, not
+        // the operator's public URL (which may be localhost).
+        bundleUrl: `${config.sandboxApiUrl.replace(/\/$/, "")}/internal/runs/${run.id}/bundle?token=${token}`,
         virtualKey: await open(sandbox.sealedVirtualKey, config.secretMasterKey),
         repoToken: null,
         gatewayUrls: sandbox.bundle.gatewayUrls,
