@@ -25,6 +25,10 @@ export type AppConfig = {
   s3AccessKey?: string;
   s3SecretKey?: string;
   s3Bucket?: string;
+  githubAppId?: string;
+  githubAppPrivateKey?: string;
+  githubAppWebhookSecret?: string;
+  githubAppSlug?: string;
   logLevel: string;
 };
 
