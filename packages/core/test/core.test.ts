@@ -39,6 +39,16 @@ describe("pricing", () => {
     ).toBe(225);
     expect(costCents({ model: "missing", inputTokens: 1, outputTokens: 1 })).toBeNull();
   });
+
+  it("resolves dated provider model ids to a price", () => {
+    // What Anthropic actually returns in usage — must still cost out.
+    expect(
+      costCents({ model: "claude-haiku-4-5-20251001", inputTokens: 1_000_000, outputTokens: 0 }),
+    ).toBe(80);
+    expect(
+      costCents({ model: "gpt-5.5-2025-11-01", inputTokens: 1_000_000, outputTokens: 0 }),
+    ).toBe(1000);
+  });
 });
 
 describe("crypto", () => {

@@ -23,8 +23,31 @@ export type CostInput = {
   cacheWriteTokens?: number;
 };
 
+// Common aliases and dated model IDs providers return (e.g.
+// "claude-haiku-4-5-20251001", "gpt-5.5-2025-xx") map to our price keys.
+const MODEL_ALIASES: Record<string, keyof typeof MODEL_PRICES_USD_PER_1M> = {
+  "claude-3-5-haiku": "claude-haiku-4-5",
+};
+
+/** Resolve a provider model id to a known price key, tolerating date suffixes. */
+export function normalizeModel(model: string): keyof typeof MODEL_PRICES_USD_PER_1M | null {
+  if (model in MODEL_PRICES_USD_PER_1M) {
+    return model as keyof typeof MODEL_PRICES_USD_PER_1M;
+  }
+  if (model in MODEL_ALIASES) {
+    return MODEL_ALIASES[model] ?? null;
+  }
+  // Strip a trailing -YYYYMMDD or -YYYY-MM-DD date the provider appends.
+  const undated = model.replace(/-\d{8}$/, "").replace(/-\d{4}-\d{2}-\d{2}$/, "");
+  if (undated in MODEL_PRICES_USD_PER_1M) {
+    return undated as keyof typeof MODEL_PRICES_USD_PER_1M;
+  }
+  return null;
+}
+
 export function costCents(input: CostInput): number | null {
-  const price = MODEL_PRICES_USD_PER_1M[input.model as keyof typeof MODEL_PRICES_USD_PER_1M];
+  const key = normalizeModel(input.model);
+  const price = key ? MODEL_PRICES_USD_PER_1M[key] : undefined;
   if (!price) {
     return null;
   }

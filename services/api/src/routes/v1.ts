@@ -1059,7 +1059,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
             orgId: p.orgId,
             projectId,
             name: body.name,
-            prefix: "fvk",
+            prefix: key.lookup,
             last4: key.last4,
             hash: key.hash,
             allowedModels: body.allowedModels,
