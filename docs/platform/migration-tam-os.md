@@ -146,3 +146,22 @@ What remains human-gated (must NOT be automated):
   tam-os team. The platform prepares them; **people decide** (and the merge is
   gate 2). Validate the full Phase 0–4 loop against a private
   `tam-os-facility-mirror` first, per the phases above.
+
+## Live proof (2026-07-03, extended)
+
+Beyond the render/capability validation, the platform's execution path is now
+proven end to end on a running stack:
+- A **real Claude Code agent** ran in an isolated sandbox, used its Edit tool to
+  create a file, and finished — its 3 model calls all metered through the
+  gateway and attributed to the run.
+- An agent **cloned a real GitHub repository** into the sandbox and operated on
+  the checkout (files + README read from the live repo), proving the
+  clone→provision→work→result path a tam-os run takes.
+- An agent **maintained the knowledge base** through the /v1 API using a
+  run-scoped, least-privilege platform key (revoked at run end) — the Project
+  Owner loop, live.
+
+The only steps NOT executed remain the human-gated ones: installing the GitHub
+App on theam/tam-os (needed to clone its PRIVATE repo and push via App
+identity) and the production cutover PRs. Those touch a live production system
+and belong to the tam-os team; validate against a mirror first.
