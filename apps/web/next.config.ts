@@ -1,10 +1,15 @@
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 
 const API_URL = process.env.FACILITY_API_URL ?? "http://localhost:4400";
+const monorepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  outputFileTracingRoot: `${import.meta.dirname}/../..`,
+  // Monorepo: tell Turbopack and the standalone tracer where the root is.
+  turbopack: { root: monorepoRoot },
+  outputFileTracingRoot: monorepoRoot,
   transpilePackages: ["@facility/ui"],
   async rewrites() {
     // Same-origin proxy to the control plane: session cookies flow without

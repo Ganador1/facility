@@ -13,3 +13,7 @@ allowBuilds:
   libsodium-wrappers-sumo: true
   better-sqlite3: false
   core-js: false
+  # dockerode optional SSH-transport native deps — unused (we use the socket).
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
