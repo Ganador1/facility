@@ -27,6 +27,7 @@ import { z } from "zod";
 import { readConfig } from "./config.js";
 import { ApiError, sendError } from "./errors.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerInternalRoutes } from "./routes/internal.js";
 import { registerV1Routes } from "./routes/v1.js";
 import type { AppConfig, Principal } from "./types.js";
 
@@ -191,6 +192,7 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
   );
 
   await registerAuthRoutes(app, config);
+  await registerInternalRoutes(app, config);
   await registerV1Routes(app, config);
 
   await app.register(swaggerUi, { routePrefix: "/docs" });

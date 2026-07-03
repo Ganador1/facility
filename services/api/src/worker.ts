@@ -1,6 +1,7 @@
 import PgBoss from "pg-boss";
 import pino from "pino";
 import { readConfig } from "./config.js";
+import { dispatchRun, reconcileSandboxes } from "./sandbox/orchestrator.js";
 
 export async function startWorker() {
   const config = readConfig();
@@ -15,6 +16,7 @@ export async function startWorker() {
     "learning.nightly",
     "fingerprints.verify",
     "hitl.expire",
+    "sandbox.reconcile",
   ];
   for (const queue of queues) {
     await boss.createQueue(queue);
@@ -22,9 +24,16 @@ export async function startWorker() {
   for (const queue of queues) {
     await boss.work(queue, async (job: PgBoss.Job<unknown> | PgBoss.Job<unknown>[]) => {
       const jobId = Array.isArray(job) ? job[0]?.id : job.id;
-      logger.info({ queue, jobId }, "no-op worker completed job");
+      const data = Array.isArray(job) ? job[0]?.data : job.data;
+      if (queue === "runs.dispatch") {
+        await dispatchRun(config, data as { runId?: string; orgId?: string });
+      } else if (queue === "sandbox.reconcile") {
+        await reconcileSandboxes(config);
+      }
+      logger.info({ queue, jobId }, "worker completed job");
     });
   }
+  await boss.schedule("sandbox.reconcile", "*/2 * * * *", {});
   await boss.schedule("hitl.expire", "0 * * * *", {});
   await boss.schedule("watchtower.outcomes", "0 2 * * *", {});
   await boss.schedule("watchtower.health", "0 3 * * *", {});

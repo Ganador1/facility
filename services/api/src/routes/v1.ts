@@ -31,8 +31,11 @@ import {
 } from "@facility/db";
 import { and, asc, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
+import postgres from "postgres";
 import { z } from "zod";
 import { ApiError, notFound } from "../errors.js";
+import { cancelRun } from "../sandbox/orchestrator.js";
+import { notifyRunEvent } from "../sandbox/state.js";
 import type { AppConfig, Principal } from "../types.js";
 
 const AnyObject = z.record(z.string(), z.unknown());
@@ -863,6 +866,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           .returning()
       )[0];
       if (!row) throw notFound("Run not found");
+      await cancelRun(config, row);
       return row;
     },
   );
@@ -892,16 +896,22 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "runs:read" },
       schema: {
         params: IdParams,
-        querystring: z.object({ afterSeq: z.coerce.number().optional() }),
+        querystring: z.object({
+          afterSeq: z.coerce.number().optional(),
+          idleMs: z.coerce.number().int().min(50).max(25_000).optional(),
+        }),
       },
     },
     async (request, reply) => {
       const p = principal(request);
       const { runId } = request.params as { runId: string };
-      const { afterSeq = 0 } = request.query as { afterSeq?: number };
+      const { afterSeq = 0, idleMs = 25_000 } = request.query as {
+        afterSeq?: number;
+        idleMs?: number;
+      };
       await loadRun(p, runId);
-      await streamRunEvents(reply, async () =>
-        withOrg(db, p.orgId).runEvents.listAfter(runId, afterSeq, 10),
+      await streamRunEvents(config, reply, runId, afterSeq, idleMs, async (seq) =>
+        withOrg(db, p.orgId).runEvents.listAfter(runId, seq, 10),
       );
     },
   );
@@ -935,13 +945,19 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           })
           .returning()
       )[0];
-      await db.insert(runEvents).values({
-        orgId: p.orgId,
-        runId,
-        seq: await nextRunEventSeq(db, runId),
-        type: "steer",
-        data: { text: (request.body as { body: string }).body, author: p.id },
-      });
+      const steerEvent = (
+        await db
+          .insert(runEvents)
+          .values({
+            orgId: p.orgId,
+            runId,
+            seq: await nextRunEventSeq(db, runId),
+            type: "steer",
+            data: { text: (request.body as { body: string }).body, author: p.id },
+          })
+          .returning()
+      )[0];
+      if (steerEvent) await notifyRunEvent(db, runId, steerEvent);
       return message;
     },
   );
@@ -1842,7 +1858,14 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
   registerCrud(app, "/v1/sandbox-profiles", "sandboxes", sandboxProfiles, "sbx");
 }
 
-async function streamRunEvents(reply: FastifyReply, load: () => Promise<unknown[]>) {
+async function streamRunEvents(
+  config: AppConfig,
+  reply: FastifyReply,
+  runId: string,
+  afterSeq: number,
+  idleMs: number,
+  load: (afterSeq: number) => Promise<unknown[]>,
+) {
   reply.raw.writeHead(200, {
     "content-type": "text/event-stream",
     "cache-control": "no-cache",
@@ -1851,15 +1874,71 @@ async function streamRunEvents(reply: FastifyReply, load: () => Promise<unknown[
   const write = (event: string, data: unknown) =>
     reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   write("heartbeat", { ts: new Date().toISOString() });
-  const events = await load();
-  for (const event of events) write("run_event", event);
-  reply.raw.end();
+  let cursor = afterSeq;
+  const writeEvents = async (events: unknown[]) => {
+    for (const event of events) {
+      write("run_event", event);
+      const seq =
+        typeof event === "object" && event !== null ? (event as { seq?: unknown }).seq : undefined;
+      if (typeof seq === "number" && seq > cursor) cursor = seq;
+    }
+  };
+  await writeEvents(await load(cursor));
+  if (idleMs <= 1_000) {
+    const poll = setInterval(() => {
+      void (async () => {
+        await writeEvents(await load(cursor));
+      })();
+    }, 100);
+    await new Promise((resolve) => setTimeout(resolve, idleMs));
+    clearInterval(poll);
+    reply.raw.end();
+    return;
+  }
+  const sqlClient = postgres(config.databaseUrl, { max: 1 });
+  let done = false;
+  const close = () => {
+    done = true;
+  };
+  reply.raw.on("close", close);
+  let unlisten: { unlisten: () => Promise<void> } | undefined;
+  try {
+    void sqlClient
+      .listen(`run_events:${runId}`, async () => {
+        await writeEvents(await load(cursor));
+      })
+      .then((listener) => {
+        unlisten = listener;
+      })
+      .catch(async () => {
+        await writeEvents(await load(cursor));
+      });
+    const poll = setInterval(() => {
+      void (async () => {
+        await writeEvents(await load(cursor));
+      })();
+    }, 250);
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, idleMs);
+      reply.raw.on("close", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    clearInterval(poll);
+    if (!done) reply.raw.end();
+    void unlisten?.unlisten().catch(() => undefined);
+  } finally {
+    reply.raw.off("close", close);
+    void sqlClient.end().catch(() => undefined);
+  }
 }
 
 function registerCrud(
   app: FastifyInstance,
   base: string,
   permissionResource: string,
+  // biome-ignore lint/suspicious/noExplicitAny: this CRUD helper is intentionally table-generic.
   table: any,
   prefix: "agent" | "sbx",
 ) {

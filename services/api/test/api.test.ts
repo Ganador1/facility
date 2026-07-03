@@ -204,7 +204,7 @@ describe("api", async () => {
     expect(events.json()[0].type).toBe("queued");
     const stream = await app.inject({
       method: "GET",
-      url: `/v1/runs/${run.json().id}/stream`,
+      url: `/v1/runs/${run.json().id}/stream?idleMs=50`,
       headers: { cookie },
     });
     expect(stream.body).toContain("event: heartbeat");
