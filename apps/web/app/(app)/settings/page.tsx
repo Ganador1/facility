@@ -1,12 +1,43 @@
-import { Eyebrow, PillTag } from "@facility/ui";
+import { Divider, Eyebrow } from "@facility/ui";
 import { Offline } from "@/components/offline";
-import { api } from "@/lib/api";
+import { BudgetsManager } from "@/components/settings/budgets-manager";
+import { KeysManager } from "@/components/settings/keys-manager";
+import { MembersList } from "@/components/settings/members-list";
+import { api, type Member } from "@/lib/api";
 
 export const metadata = { title: "settings" };
 
+// The members endpoint returns a {member,user,role} join — flatten it.
+type MemberRow = {
+  member: { userId: string; roleId: string };
+  user: { email: string; name?: string | null };
+  role: { name: string };
+};
+function flattenMembers(rows: unknown): Member[] {
+  if (!Array.isArray(rows)) return [];
+  return (rows as MemberRow[]).map((r) => ({
+    userId: r.member.userId,
+    email: r.user.email,
+    name: r.user.name,
+    roleId: r.member.roleId,
+    roleName: r.role?.name,
+  }));
+}
+
 export default async function SettingsPage() {
-  const me = await api.me();
+  const [me, keys, roles, budgets, membersRaw] = await Promise.all([
+    api.me(),
+    api.keys(),
+    api.roles(),
+    api.budgets(),
+    api.members(),
+  ]);
   if (!me.ok) return <Offline detail={me.message} />;
+
+  const canManageKeys = me.data.permissions.some((p) => p === "*" || p === "keys:issue");
+  const canManageBudgets = me.data.permissions.some(
+    (p) => p === "*" || p === "budgets:write" || p === "budgets:*",
+  );
 
   return (
     <div className="flex flex-col gap-10">
@@ -26,7 +57,7 @@ export default async function SettingsPage() {
           </div>
           <div className="flex items-start justify-between gap-6">
             <span className="text-sm text-(--mut)">permissions</span>
-            <div className="flex max-w-md flex-wrap justify-end gap-1.5">
+            <div className="flex max-w-md flex-wrap justify-end gap-x-3 gap-y-1">
               {me.data.permissions.map((p) => (
                 <span key={p} className="font-mono text-[10.5px] text-(--dim)">
                   {p}
@@ -37,20 +68,37 @@ export default async function SettingsPage() {
         </div>
       </section>
 
+      <Divider />
+
       <section className="flex max-w-2xl flex-col gap-4">
-        <Eyebrow>coming online in this build</Eyebrow>
-        <div className="flex flex-wrap gap-2">
-          {["members & roles", "api keys", "provider credentials", "budgets", "integrations"].map(
-            (s) => (
-              <PillTag key={s}>{s}</PillTag>
-            ),
-          )}
-        </div>
-        <p className="text-sm leading-relaxed text-(--dim)">
-          These surfaces ship with the control-plane management pass; the API endpoints already
-          exist and are governed by RBAC.
-        </p>
+        <Eyebrow>members</Eyebrow>
+        {membersRaw.ok ? (
+          <MembersList members={flattenMembers(membersRaw.data)} />
+        ) : (
+          <p className="text-sm text-(--dim)">Members are visible to admins.</p>
+        )}
       </section>
+
+      {canManageKeys ? (
+        <section className="flex max-w-2xl flex-col gap-4">
+          <Eyebrow>api keys</Eyebrow>
+          <p className="text-sm leading-relaxed text-(--mut)">
+            Machine access for the CLI, MCP, and integrations. Each key carries a role — RBAC is
+            identical to a human session.
+          </p>
+          <KeysManager keys={keys.ok ? keys.data : []} roles={roles.ok ? roles.data : []} />
+        </section>
+      ) : null}
+
+      {canManageBudgets ? (
+        <section className="flex max-w-2xl flex-col gap-4">
+          <Eyebrow>budgets</Eyebrow>
+          <p className="text-sm leading-relaxed text-(--mut)">
+            Enforced at the gateway on every model call. Soft warns; hard stops.
+          </p>
+          <BudgetsManager budgets={budgets.ok ? budgets.data : []} />
+        </section>
+      ) : null}
     </div>
   );
 }

@@ -5,6 +5,8 @@ export type Principal = {
   id: string;
   orgId: string;
   userId?: string;
+  email?: string;
+  name?: string;
   projectId?: string | null;
   permissions: string[];
 };

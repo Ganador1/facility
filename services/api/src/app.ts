@@ -265,9 +265,10 @@ async function resolvePrincipal(
     }
     const member = (
       await db
-        .select({ role: rolesTable })
+        .select({ role: rolesTable, user: users })
         .from(orgMembers)
         .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
+        .innerJoin(users, eq(orgMembers.userId, users.id))
         .where(and(eq(orgMembers.userId, session.userId), eq(orgMembers.orgId, session.orgId)))
         .limit(1)
     )[0];
@@ -277,6 +278,8 @@ async function resolvePrincipal(
       id: session.userId,
       userId: session.userId,
       orgId: session.orgId,
+      email: member.user.email,
+      name: member.user.name ?? undefined,
       permissions: member.role.permissions,
     };
   } catch {
