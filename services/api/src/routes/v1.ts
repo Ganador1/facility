@@ -37,6 +37,8 @@ import { ApiError, notFound } from "../errors.js";
 import { cancelRun } from "../sandbox/orchestrator.js";
 import { notifyRunEvent } from "../sandbox/state.js";
 import type { AppConfig, Principal } from "../types.js";
+import { analyticsOverview, queryAnalytics } from "../watchtower/analytics.js";
+import { projectHealth } from "../watchtower/health.js";
 
 const AnyObject = z.record(z.string(), z.unknown());
 const Ok = z.object({ ok: z.boolean() });
@@ -426,6 +428,27 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const row = await withOrg(db, p.orgId).projects.byId(projectId);
       if (!row) throw notFound("Project not found");
       return row;
+    },
+  );
+
+  app.get(
+    "/v1/projects/:projectId/health",
+    {
+      config: { permission: "projects:read" },
+      schema: {
+        params: IdParams,
+        response: {
+          200: z.object({
+            status: z.enum(["ok", "warn", "red"]),
+            signals: z.array(AnyObject),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      return projectHealth(db, p.orgId, projectId);
     },
   );
 
@@ -1254,18 +1277,59 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
   );
 
   app.get(
-    "/v1/inbox",
+    "/v1/analytics",
     {
-      config: { permission: "hitl:read" },
+      config: { permission: "analytics:read" },
       schema: {
-        querystring: z.object({ state: z.string().optional() }),
+        querystring: z.object({
+          projectId: z.string().optional(),
+          from: z.string().optional(),
+          to: z.string().optional(),
+          groupBy: z.enum(["day", "agent", "model"]).default("day"),
+        }),
         response: { 200: z.array(AnyObject) },
       },
     },
     async (request) => {
       const p = principal(request);
+      const q = request.query as {
+        projectId?: string;
+        from?: string;
+        to?: string;
+        groupBy: "day" | "agent" | "model";
+      };
+      return queryAnalytics(db, p.orgId, q);
+    },
+  );
+
+  app.get(
+    "/v1/analytics/overview",
+    {
+      config: { permission: "analytics:read" },
+      schema: { response: { 200: AnyObject } },
+    },
+    async (request) => analyticsOverview(db, principal(request).orgId),
+  );
+
+  app.get(
+    "/v1/inbox",
+    {
+      config: { permission: "hitl:read" },
+      schema: {
+        querystring: z.object({ state: z.string().optional() }),
+        response: {
+          200: z.object({
+            items: z.array(AnyObject),
+            proposals: z.array(AnyObject),
+            issues: z.array(AnyObject),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
       const state = (request.query as { state?: string }).state;
-      return db
+      const proposalRows = await db
         .select()
         .from(proposals)
         .where(
@@ -1273,6 +1337,19 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
             ? and(eq(proposals.orgId, p.orgId), eq(proposals.state, state))
             : eq(proposals.orgId, p.orgId),
         );
+      const issueRows = await db
+        .select()
+        .from(platformIssues)
+        .where(
+          and(
+            eq(platformIssues.orgId, p.orgId),
+            eq(platformIssues.severity, "error"),
+            state
+              ? eq(platformIssues.state, state)
+              : or(eq(platformIssues.state, "open"), eq(platformIssues.state, "acked")),
+          ),
+        );
+      return { items: proposalRows, proposals: proposalRows, issues: issueRows };
     },
   );
 

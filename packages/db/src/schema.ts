@@ -689,6 +689,44 @@ export const outcomes = pgTable(
   (table) => [unique("outcomes_org_repo_pr_uidx").on(table.orgId, table.repo, table.prNumber)],
 );
 
+export const analyticsDaily = pgTable(
+  "analytics_daily",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    day: date("day").notNull(),
+    agentDefId: text("agent_def_id").references(() => agentDefs.id),
+    model: text("model").notNull().default("none"),
+    runsStarted: integer("runs_started").notNull().default(0),
+    runsSucceeded: integer("runs_succeeded").notNull().default(0),
+    runsFailed: integer("runs_failed").notNull().default(0),
+    inputTokens: bigint("input_tokens", { mode: "number" }).notNull().default(0),
+    outputTokens: bigint("output_tokens", { mode: "number" }).notNull().default(0),
+    cacheRead: bigint("cache_read", { mode: "number" }).notNull().default(0),
+    cacheWrite: bigint("cache_write", { mode: "number" }).notNull().default(0),
+    costCents: bigint("cost_cents", { mode: "number" }).notNull().default(0),
+    outcomesTotal: integer("outcomes_total").notNull().default(0),
+    outcomesMerged: integer("outcomes_merged").notNull().default(0),
+    outcomesOneShot: integer("outcomes_one_shot").notNull().default(0),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex("analytics_daily_scope_uidx").on(
+      table.orgId,
+      table.projectId,
+      table.day,
+      sql`coalesce(${table.agentDefId}, '__none__')`,
+      table.model,
+    ),
+    index("analytics_daily_org_day_idx").on(table.orgId, table.day),
+  ],
+);
+
 export const integrations = pgTable(
   "integrations",
   {
