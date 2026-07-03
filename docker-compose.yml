@@ -1,0 +1,94 @@
+# Facility platform — self-host stack. Production-shaped, single host.
+#   SECRET_MASTER_KEY=$(openssl rand -base64 32) docker compose up -d
+# For a real deployment, front web+api with TLS and use managed Postgres + S3.
+name: facility
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: facility
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-facility}
+      POSTGRES_DB: facility
+    volumes:
+      - pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U facility"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-facility}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-facility-dev-secret}
+    volumes:
+      - minio:/data
+
+  migrate:
+    build: { context: ., target: api }
+    command: ["node", "packages/db/dist/migrate.js"]
+    environment:
+      DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: { context: ., target: api }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility
+      SECRET_MASTER_KEY: ${SECRET_MASTER_KEY:?set SECRET_MASTER_KEY}
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:4400}
+      WEB_URL: ${WEB_URL:-http://localhost:3400}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-facility}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-facility-dev-secret}
+      S3_BUCKET: ${S3_BUCKET:-facility}
+      WORKOS_API_KEY: ${WORKOS_API_KEY:-}
+      WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID:-}
+      WORKOS_COOKIE_PASSWORD: ${WORKOS_COOKIE_PASSWORD:-}
+    ports: ["4400:4400"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  worker:
+    build: { context: ., target: api }
+    command: ["node", "services/api/dist/worker.js"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility
+      SECRET_MASTER_KEY: ${SECRET_MASTER_KEY:?set SECRET_MASTER_KEY}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  gateway:
+    build: { context: ., target: gateway }
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility
+      SECRET_MASTER_KEY: ${SECRET_MASTER_KEY:?set SECRET_MASTER_KEY}
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-facility}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-facility-dev-secret}
+      S3_BUCKET: ${S3_BUCKET:-facility}
+    ports: ["4410:4410"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  web:
+    build: { context: ., dockerfile: apps/web/Dockerfile, target: web }
+    restart: unless-stopped
+    environment:
+      FACILITY_API_URL: http://api:4400
+    ports: ["3400:3400"]
+    depends_on: [api]
+
+volumes:
+  pg:
+  minio:

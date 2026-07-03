@@ -1,0 +1,21 @@
+# Facility web (Next.js standalone). Built from the repo root:
+#   docker build -f apps/web/Dockerfile -t facility/web .
+FROM node:22-bookworm-slim AS base
+ENV PNPM_HOME=/pnpm PATH=$PNPM_HOME:$PATH
+RUN corepack enable
+WORKDIR /app
+
+FROM base AS build
+COPY . .
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile --filter '@facility/web...'
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN pnpm --filter '@facility/web' build
+
+FROM base AS web
+ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+COPY --from=build /app/apps/web/.next/standalone ./
+COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=build /app/apps/web/public ./apps/web/public
+EXPOSE 3400
+CMD ["node", "apps/web/server.js"]

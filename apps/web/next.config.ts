@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const API_URL = process.env.FACILITY_API_URL ?? "http://localhost:4400";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
+  outputFileTracingRoot: `${import.meta.dirname}/../..`,
   transpilePackages: ["@facility/ui"],
   async rewrites() {
     // Same-origin proxy to the control plane: session cookies flow without
