@@ -12,5 +12,11 @@ COPY package.json tsconfig.json ./
 COPY src ./src
 RUN npm install && npm run build && npm prune --omit=dev
 
+# Run non-root: agent CLIs (Claude Code) refuse bypass-permissions as root, and
+# a rogue agent process should never hold uid 0. The base image ships a `node`
+# user (uid 1000); /work is the agent's writable home + workspace.
+RUN mkdir -p /work && chown -R node:node /work /app
+USER node
+ENV HOME=/work
 WORKDIR /work
 ENTRYPOINT ["node", "/app/dist/index.js"]

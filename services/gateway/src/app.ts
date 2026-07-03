@@ -276,8 +276,15 @@ function providerHeaders(
     headers.set("x-api-key", apiKey);
     const version = incoming["anthropic-version"];
     if (typeof version === "string") headers.set("anthropic-version", version);
+    // Pass provider feature headers through — a transparent proxy must not
+    // strip beta flags the client set (e.g. Claude Code's context_management),
+    // or the upstream rejects the body fields those flags enable.
+    const beta = incoming["anthropic-beta"];
+    if (typeof beta === "string") headers.set("anthropic-beta", beta);
   } else {
     headers.set("authorization", `Bearer ${apiKey}`);
+    const openaiBeta = incoming["openai-beta"];
+    if (typeof openaiBeta === "string") headers.set("openai-beta", openaiBeta);
   }
   return headers;
 }
