@@ -1,0 +1,324 @@
+import { can, keyLookup, newId, open, seal, verifyKey } from "@facility/core";
+import {
+  apiKeys,
+  createDb,
+  insertAuditEvent,
+  orgMembers,
+  orgs,
+  projects,
+  roles as rolesTable,
+  users,
+} from "@facility/db";
+import cookie from "@fastify/cookie";
+import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
+import swagger from "@fastify/swagger";
+import swaggerUi from "@fastify/swagger-ui";
+import { and, eq, isNull, or } from "drizzle-orm";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import {
+  jsonSchemaTransform,
+  serializerCompiler,
+  validatorCompiler,
+} from "fastify-type-provider-zod";
+import PgBoss from "pg-boss";
+import { uuidv7 } from "uuidv7";
+import { z } from "zod";
+import { readConfig } from "./config.js";
+import { ApiError, sendError } from "./errors.js";
+import { registerAuthRoutes } from "./routes/auth.js";
+import { registerV1Routes } from "./routes/v1.js";
+import type { AppConfig, Principal } from "./types.js";
+
+const publicRoutes = new Set([
+  "GET /health",
+  "POST /auth/dev-login",
+  "GET /auth/login",
+  "GET /auth/callback",
+  "POST /auth/logout",
+]);
+const publicPrefixes = ["/docs"];
+
+type RouteRecord = { method: string; url: string; permission?: string; public?: boolean };
+
+export async function buildApp(config: AppConfig = readConfig()): Promise<FastifyInstance> {
+  const app = Fastify({
+    logger: { level: config.logLevel },
+    genReqId: () => uuidv7(),
+  });
+  const routeRecords: RouteRecord[] = [];
+  const { db, client } = createDb(config.databaseUrl);
+  app.decorate("facilityDb", db);
+
+  // Producer-only pg-boss handle: routes enqueue, the worker consumes.
+  const boss = new PgBoss({ connectionString: config.databaseUrl });
+  boss.on("error", (error) => app.log.error({ err: error }, "pg-boss producer error"));
+  let bossStarted = false;
+  app.decorate("enqueue", async (queue: string, data: Record<string, unknown>) => {
+    if (!bossStarted) {
+      await boss.start();
+      await boss.createQueue(queue);
+      bossStarted = true;
+    }
+    return boss.send(queue, data);
+  });
+  app.setValidatorCompiler(validatorCompiler);
+  app.setSerializerCompiler(serializerCompiler);
+
+  app.addHook("onRoute", (route) => {
+    const methods = Array.isArray(route.method) ? route.method : [route.method];
+    for (const method of methods) {
+      routeRecords.push({
+        method,
+        url: route.url,
+        permission: route.config?.permission as string | undefined,
+        public: route.config?.public as boolean | undefined,
+      });
+    }
+  });
+
+  app.setErrorHandler((error, _request, reply) => {
+    const err = error as Error & { statusCode?: number };
+    if (error instanceof ApiError) {
+      return sendError(reply, error);
+    }
+    const status = typeof err.statusCode === "number" ? err.statusCode : 500;
+    return reply.status(status).send({
+      error: { code: status === 400 ? "bad_request" : "internal_error", message: err.message },
+    });
+  });
+
+  await app.register(cookie, { secret: config.workosCookiePassword ?? config.secretMasterKey });
+  await app.register(cors, {
+    origin: [config.publicUrl, config.webUrl].filter((value): value is string => Boolean(value)),
+    credentials: true,
+  });
+  await app.register(rateLimit, { max: 200, timeWindow: "1 minute" });
+  await app.register(swagger, {
+    openapi: {
+      info: { title: "Facility API", version: "0.3.0" },
+    },
+    transform: jsonSchemaTransform,
+  });
+
+  app.decorateRequest("principal", undefined);
+  app.decorateRequest(
+    "audit",
+    async function audit(this: FastifyRequest, action: string, target, payload = {}) {
+      const principal = this.principal;
+      if (!principal) return;
+      await insertAuditEvent(db, {
+        orgId: principal.orgId,
+        actor: { type: principal.type, id: principal.id },
+        action,
+        target,
+        payload,
+        ip: this.ip,
+        userAgent: this.headers["user-agent"],
+      });
+    },
+  );
+
+  app.addHook("preHandler", async (request) => {
+    request.principal = await resolvePrincipal(request, db, config);
+    const permission = request.routeOptions.config?.permission as string | undefined;
+    const isPublic = request.routeOptions.config?.public === true;
+    if (!permission && isPublic) return;
+    if (!permission) return;
+    if (!request.principal) {
+      throw new ApiError(401, "unauthorized", "Authentication required");
+    }
+    const projectId = (request.params as Record<string, string | undefined>)?.projectId;
+    if (projectId) {
+      // A project-scoped key is pinned to its project: anything else is 404,
+      // not 403, so key holders cannot enumerate other projects.
+      if (request.principal.projectId && request.principal.projectId !== projectId) {
+        throw new ApiError(404, "not_found", "Project not found");
+      }
+      const project = (
+        await db
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(eq(projects.id, projectId), eq(projects.orgId, request.principal.orgId)))
+          .limit(1)
+      )[0];
+      if (!project) {
+        throw new ApiError(404, "not_found", "Project not found");
+      }
+    }
+    if (!can(request.principal.permissions, permission)) {
+      throw new ApiError(403, "forbidden", "Permission denied", { needed: permission });
+    }
+  });
+
+  app.addHook("onResponse", async (request, reply) => {
+    const permission = request.routeOptions.config?.permission;
+    const action = request.routeOptions.config?.auditAction as string | undefined;
+    if (
+      !permission ||
+      request.method === "GET" ||
+      reply.statusCode < 200 ||
+      reply.statusCode >= 300 ||
+      !action
+    ) {
+      return;
+    }
+    const params = request.params as Record<string, string | undefined>;
+    await request.audit(action, {
+      type: params.projectId ? "project" : "route",
+      id: params.projectId ?? request.url,
+    });
+  });
+
+  app.get(
+    "/health",
+    {
+      config: { public: true },
+      schema: {
+        response: {
+          200: z.object({ ok: z.boolean(), version: z.string(), db: z.enum(["ok", "down"]) }),
+        },
+      },
+    },
+    async () => {
+      try {
+        await db.execute("select 1" as never);
+        return { ok: true, version: "0.3.0", db: "ok" as const };
+      } catch {
+        return { ok: false, version: "0.3.0", db: "down" as const };
+      }
+    },
+  );
+
+  await registerAuthRoutes(app, config);
+  await registerV1Routes(app, config);
+
+  await app.register(swaggerUi, { routePrefix: "/docs" });
+
+  app.addHook("onReady", async () => {
+    for (const route of routeRecords) {
+      if (route.method === "OPTIONS" && route.url === "*") continue;
+      if (publicPrefixes.some((prefix) => route.url.startsWith(prefix))) continue;
+      if (route.public || publicRoutes.has(`${route.method} ${route.url}`)) continue;
+      if (!route.permission) {
+        throw new Error(
+          `Protected route missing permission declaration: ${route.method} ${route.url}`,
+        );
+      }
+    }
+  });
+
+  app.addHook("onClose", async () => {
+    if (bossStarted) await boss.stop({ close: true });
+    await client.end();
+  });
+
+  return app;
+}
+
+async function resolvePrincipal(
+  request: FastifyRequest,
+  db: ReturnType<typeof createDb>["db"],
+  config: AppConfig,
+): Promise<Principal | undefined> {
+  const auth = request.headers.authorization;
+  if (auth?.startsWith("Bearer fak_")) {
+    const secret = auth.slice("Bearer ".length);
+    // One indexed lookup by the key's unique prefix, then one argon2 verify —
+    // authentication cost must not grow with the number of keys in the org.
+    const rows = await db
+      .select({
+        key: apiKeys,
+        role: rolesTable,
+      })
+      .from(apiKeys)
+      .innerJoin(rolesTable, eq(apiKeys.roleId, rolesTable.id))
+      .where(and(eq(apiKeys.prefix, keyLookup(secret)), isNull(apiKeys.revokedAt)))
+      .limit(2);
+    for (const row of rows) {
+      if (await verifyKey(secret, row.key.hash)) {
+        await db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.key.id));
+        return {
+          type: "key",
+          id: row.key.id,
+          orgId: row.key.orgId,
+          projectId: row.key.projectId,
+          permissions: row.role.permissions,
+        };
+      }
+    }
+    throw new ApiError(401, "unauthorized", "Invalid API key");
+  }
+
+  const rawCookie = request.cookies.facility_session;
+  if (!rawCookie) {
+    return undefined;
+  }
+  const unsigned = request.unsignCookie(rawCookie);
+  const sealedSession = unsigned.valid ? unsigned.value : rawCookie;
+  if (!sealedSession) return undefined;
+  try {
+    const session = z
+      .object({ userId: z.string(), orgId: z.string(), exp: z.number() })
+      .parse(JSON.parse(await open(sealedSession, config.secretMasterKey)));
+    if (session.exp < Date.now()) {
+      throw new ApiError(401, "unauthorized", "Session expired");
+    }
+    const member = (
+      await db
+        .select({ role: rolesTable })
+        .from(orgMembers)
+        .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
+        .where(and(eq(orgMembers.userId, session.userId), eq(orgMembers.orgId, session.orgId)))
+        .limit(1)
+    )[0];
+    if (!member) return undefined;
+    return {
+      type: "user",
+      id: session.userId,
+      userId: session.userId,
+      orgId: session.orgId,
+      permissions: member.role.permissions,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export async function mintSessionCookie(config: AppConfig, userId: string, orgId: string) {
+  return seal(
+    JSON.stringify({ userId, orgId, exp: Date.now() + 7 * 24 * 60 * 60 * 1000 }),
+    config.secretMasterKey,
+  );
+}
+
+export async function ensureDevUser(db: ReturnType<typeof createDb>["db"], email: string) {
+  const org = (await db.select().from(orgs).where(eq(orgs.slug, "the-agile-monkeys")).limit(1))[0];
+  if (!org) throw new ApiError(500, "seed_required", "Dev org is not seeded");
+  const role = (
+    await db
+      .select()
+      .from(rolesTable)
+      .where(
+        and(
+          eq(rolesTable.name, "owner"),
+          or(isNull(rolesTable.orgId), eq(rolesTable.orgId, org.id)),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!role) throw new ApiError(500, "seed_required", "Bundled owner role is not seeded");
+  const existing = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
+  const userId = existing?.id ?? newId("user");
+  if (!existing) {
+    await db.insert(users).values({ id: userId, email, name: email, status: "active" });
+  }
+  await db
+    .insert(orgMembers)
+    .values({ id: newId("user"), orgId: org.id, userId, roleId: role.id })
+    .onConflictDoUpdate({
+      target: [orgMembers.orgId, orgMembers.userId],
+      set: { roleId: role.id, updatedAt: new Date() },
+    });
+  return { userId, orgId: org.id };
+}

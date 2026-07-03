@@ -1,0 +1,118 @@
+// src/receipts.ts
+import { createHash } from "crypto";
+import { z } from "zod";
+var FacilityReceiptSchema = z.object({
+  schema: z.literal("facility.run.v1"),
+  provider: z.enum(["claude_code", "codex_cli", "byo"]),
+  mode: z.enum([
+    "architect",
+    "builder",
+    "review",
+    "address_review",
+    "ci_doctor",
+    "security_sweep",
+    "po",
+    "learning",
+    "custom"
+  ]),
+  result: z.string(),
+  usage: z.object({
+    input_tokens: z.number().int().nonnegative(),
+    output_tokens: z.number().int().nonnegative(),
+    cache_read: z.number().int().nonnegative().optional(),
+    cache_write: z.number().int().nonnegative().optional(),
+    cost_cents: z.number().int().nonnegative().nullable(),
+    cost_source: z.string()
+  }),
+  activity: z.object({
+    turns: z.number().int().nonnegative(),
+    shell_commands: z.number().int().nonnegative(),
+    file_changes: z.number().int().nonnegative(),
+    mcp_tool_calls: z.number().int().nonnegative(),
+    web_searches: z.number().int().nonnegative(),
+    tool_calls: z.number().int().nonnegative(),
+    errors: z.number().int().nonnegative()
+  }),
+  github: z.object({
+    owner: z.string().optional(),
+    repo: z.string().optional(),
+    issue: z.number().int().optional(),
+    pr: z.number().int().optional(),
+    actor_sha256: z.string().optional()
+  }).optional(),
+  timing: z.object({
+    started_at: z.string(),
+    ended_at: z.string().optional(),
+    duration_ms: z.number().int().nonnegative().optional()
+  })
+});
+var TamOsReceiptSchema = z.object({
+  schema: z.literal("tam-os.agent_sdlc.run.v1"),
+  provider: z.enum(["claude_code", "codex_cli"]),
+  mode: z.enum(["architect", "builder", "review", "address_review", "ci_doctor", "security_sweep"]),
+  result: z.string(),
+  usage: z.object({
+    input_tokens: z.number().int().nonnegative(),
+    output_tokens: z.number().int().nonnegative(),
+    cache_read: z.number().int().nonnegative().optional(),
+    cache_write: z.number().int().nonnegative().optional(),
+    cost_usd: z.number().nonnegative().optional(),
+    cost_source: z.string()
+  }),
+  activity: z.object({
+    turns: z.number().int().nonnegative().default(0),
+    shell_commands: z.number().int().nonnegative().default(0),
+    file_changes: z.number().int().nonnegative().default(0),
+    mcp_tool_calls: z.number().int().nonnegative().default(0),
+    web_searches: z.number().int().nonnegative().default(0),
+    tool_calls: z.number().int().nonnegative().default(0),
+    errors: z.number().int().nonnegative().default(0)
+  }),
+  github: z.object({
+    owner: z.string().optional(),
+    repo: z.string().optional(),
+    issue: z.number().int().optional(),
+    pr: z.number().int().optional(),
+    actor: z.string().optional(),
+    actor_sha256: z.string().optional()
+  }).optional(),
+  timing: z.object({
+    started_at: z.string(),
+    ended_at: z.string().optional(),
+    duration_ms: z.number().int().nonnegative().optional()
+  })
+});
+function hashActor(actor) {
+  return createHash("sha256").update(actor).digest("hex");
+}
+function parseTamOsReceipt(json) {
+  const receipt = TamOsReceiptSchema.parse(json);
+  return FacilityReceiptSchema.parse({
+    schema: "facility.run.v1",
+    provider: receipt.provider,
+    mode: receipt.mode,
+    result: receipt.result,
+    usage: {
+      input_tokens: receipt.usage.input_tokens,
+      output_tokens: receipt.usage.output_tokens,
+      cache_read: receipt.usage.cache_read,
+      cache_write: receipt.usage.cache_write,
+      cost_cents: receipt.usage.cost_usd == null ? null : Math.floor(receipt.usage.cost_usd * 100 + 0.5),
+      cost_source: receipt.usage.cost_source
+    },
+    activity: receipt.activity,
+    github: receipt.github ? {
+      owner: receipt.github.owner,
+      repo: receipt.github.repo,
+      issue: receipt.github.issue,
+      pr: receipt.github.pr,
+      actor_sha256: receipt.github.actor_sha256 ?? (receipt.github.actor ? hashActor(receipt.github.actor) : void 0)
+    } : void 0,
+    timing: receipt.timing
+  });
+}
+
+export {
+  FacilityReceiptSchema,
+  parseTamOsReceipt
+};

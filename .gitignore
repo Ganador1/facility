@@ -5,3 +5,6 @@ node_modules/
 .env
 .env.*
 !.env.example
+.claude/worktrees/
+.claude/launch.json
+.turbo/

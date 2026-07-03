@@ -1,0 +1,132 @@
+import { hashChain, newId } from "@facility/core";
+import { count, eq } from "drizzle-orm";
+import postgres from "postgres";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { createDb, insertAuditEvent, migrate, seed, withOrg } from "../src/index.js";
+import * as schema from "../src/schema.js";
+
+const databaseUrl =
+  process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility";
+
+async function canConnect() {
+  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  try {
+    await sql`select 1`;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await sql.end().catch(() => undefined);
+  }
+}
+
+describe("db", async () => {
+  const reachable = await canConnect();
+  if (!reachable) {
+    it.skip("Postgres is unreachable at DATABASE_URL; DB integration tests skipped", () =>
+      undefined);
+    return;
+  }
+
+  const { db, client } = createDb(databaseUrl);
+
+  beforeAll(async () => {
+    await migrate(databaseUrl);
+  });
+
+  afterAll(async () => {
+    await client.end();
+  });
+
+  it("round-trips typed rows across core tables", async () => {
+    const orgId = newId("org");
+    const userId = newId("user");
+    const projectId = newId("proj");
+    const roleId = `role_test_${orgId}`;
+    await db
+      .insert(schema.orgs)
+      .values({ id: orgId, name: "Test Org", slug: `org-${orgId}`, settings: {} });
+    await db
+      .insert(schema.users)
+      .values({ id: userId, email: `${userId}@example.com`, status: "active" });
+    await db
+      .insert(schema.roles)
+      .values({ id: roleId, orgId, name: "custom", permissions: ["projects:read"] });
+    await db.insert(schema.orgMembers).values({ id: newId("user"), orgId, userId, roleId });
+    await db
+      .insert(schema.projects)
+      .values({ id: projectId, orgId, name: "Project", slug: "project", settings: {} });
+    await db.insert(schema.repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId,
+      owner: `owner-${orgId}`,
+      name: "repo",
+      defaultBranch: "main",
+    });
+    await db.insert(schema.runs).values({
+      id: newId("run"),
+      orgId,
+      projectId,
+      mode: "builder",
+      engine: "codex",
+      createdBy: { type: "user", id: userId },
+    });
+
+    const rows = await db.select().from(schema.projects).where(eq(schema.projects.id, projectId));
+    expect(rows[0]?.orgId).toBe(orgId);
+  });
+
+  it("scoped helpers refuse cross-org reads", async () => {
+    const orgA = newId("org");
+    const orgB = newId("org");
+    const projectId = newId("proj");
+    await db.insert(schema.orgs).values([
+      { id: orgA, name: "A", slug: `a-${orgA}`, settings: {} },
+      { id: orgB, name: "B", slug: `b-${orgB}`, settings: {} },
+    ]);
+    await db
+      .insert(schema.projects)
+      .values({ id: projectId, orgId: orgA, name: "Secret", slug: "secret", settings: {} });
+    expect(await withOrg(db, orgA).projects.byId(projectId)).not.toBeNull();
+    expect(await withOrg(db, orgB).projects.byId(projectId)).toBeNull();
+  });
+
+  it("inserts audit events with a core-compatible hash chain", async () => {
+    const orgId = newId("org");
+    await db
+      .insert(schema.orgs)
+      .values({ id: orgId, name: "Audit", slug: `audit-${orgId}`, settings: {} });
+    const first = await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "system", id: "test" },
+      action: "org.created",
+      target: { type: "org", id: orgId },
+      payload: { ok: true },
+    });
+    const second = await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "system", id: "test" },
+      action: "project.created",
+      target: { type: "project", id: "p" },
+      payload: {},
+    });
+    expect(first?.hash).toBe(
+      hashChain(null, {
+        actor: first?.actor,
+        action: first?.action,
+        target: first?.target,
+        payload: first?.payload,
+      }),
+    );
+    expect(second?.prevHash).toBe(first?.hash);
+  });
+
+  it("seeds idempotently", async () => {
+    await seed(databaseUrl);
+    const before = (await db.select({ value: count() }).from(schema.registryItems))[0]?.value ?? 0;
+    await seed(databaseUrl);
+    const after = (await db.select({ value: count() }).from(schema.registryItems))[0]?.value ?? 0;
+    expect(after).toBe(before);
+  });
+});
