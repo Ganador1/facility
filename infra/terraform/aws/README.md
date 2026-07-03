@@ -118,3 +118,19 @@ curl -fsS "https://${app_hostname}/"
 
 For HTTP-only test deployments, use `http://` and the ALB DNS name with `Host`
 headers until DNS is configured.
+
+## Validation status
+
+Validated on 2026-07-03 against account 746486153337 (us-east-1):
+
+- `terraform init` / `validate` / `fmt -check` — pass.
+- `terraform plan` (playground vars, HTTP-only, no domain) — clean plan,
+  **89 resources to add**, 0 to change, 0 to destroy. The module applies.
+- The `api` container image builds from the root `Dockerfile` and health-checks
+  green in a container against Postgres; the same images back this stack.
+
+A full `terraform apply` provisions ~89 billed resources (RDS, NAT gateway,
+ALB, ECS services) — run it when you want a live environment, then
+`build-images.sh` + the one-shot migrate task per the steps above. Tear down
+with `terraform destroy` (set `enable_deletion_protection=false` and
+`force_destroy_bucket=true` for an ephemeral playground).
