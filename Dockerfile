@@ -15,10 +15,12 @@ COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/sdk/package.json packages/sdk/
+COPY packages/harness/package.json packages/harness/
 COPY services/api/package.json services/api/
 COPY services/gateway/package.json services/gateway/
 RUN pnpm install --frozen-lockfile --filter '@facility/core...' \
       --filter '@facility/db...' --filter '@facility/sdk...' \
+      --filter '@facility/harness...' \
       --filter '@facility/api...' --filter '@facility/gateway...'
 
 # --- build TS to dist ---
@@ -26,7 +28,10 @@ FROM deps AS build
 COPY packages ./packages
 COPY services ./services
 COPY tsconfig.base.json ./
+# @facility/harness is a runtime dependency of the API (KB validation, the
+# Project Owner / learning harness) — it must be built into the image.
 RUN pnpm --filter '@facility/core' --filter '@facility/db' --filter '@facility/sdk' \
+      --filter '@facility/harness' \
       --filter '@facility/api' --filter '@facility/gateway' run build
 
 # --- api (also serves the worker via `node dist/worker.js`) ---
