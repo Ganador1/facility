@@ -3,6 +3,7 @@ import {
   agentDefs,
   createDb,
   insertAuditEvent,
+  kbSpaces,
   llmRequests,
   platformIssues,
   registryItems,
@@ -13,6 +14,7 @@ import {
   virtualKeys,
 } from "@facility/db";
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
 import type { AppConfig } from "../types.js";
 import { DockerSandboxDriver } from "./docker.js";
 import type { LaunchSpec, SandboxDriverName } from "./driver.js";
@@ -111,6 +113,14 @@ export async function finishRun(
   },
 ) {
   if (terminalStatus(run.status)) return run;
+  if (input.status === "succeeded" && (await runUsesHarness(db, run))) {
+    const checkpoint = await validateProjectKb(db, run.orgId, run.projectId);
+    if (!checkpoint.ok) {
+      throw new Error(
+        `kb_checkpoint_failed:${checkpoint.errors.map((error) => error.code).join(",")}`,
+      );
+    }
+  }
   const sandbox = readSandbox(run.sandbox);
   const aggregate = await gatewayAggregate(db, run.id);
   const receipt = {
@@ -247,6 +257,13 @@ async function buildRunBundle(
   )[0];
   const contract = await activeRegistryContent(db, run.orgId, agent.contractItemId);
   const skills = await activeSkills(db, run.orgId);
+  const space = (
+    await db
+      .select()
+      .from(kbSpaces)
+      .where(and(eq(kbSpaces.orgId, run.orgId), eq(kbSpaces.projectId, run.projectId)))
+      .limit(1)
+  )[0];
   const timeoutMin = resourceNumber(profile.resources, "timeout_min", 60);
   const gatewayBase = config.publicUrl.replace(/\/$/, "");
   const bundle: RunBundle = {
@@ -272,8 +289,17 @@ async function buildRunBundle(
     },
     scope: objectOrEmpty(run.trigger),
     timeoutMin,
+    harness: harnessFragmentForBundle({ space, config, runId: run.id }),
   };
   return { bundle, profile };
+}
+
+async function runUsesHarness(db: ReturnType<typeof createDb>["db"], run: RunRow) {
+  if (!run.agentDefId) return false;
+  const agent = (
+    await db.select().from(agentDefs).where(eq(agentDefs.id, run.agentDefId)).limit(1)
+  )[0];
+  return Boolean(agent?.harnessItemId);
 }
 
 async function activeRegistryContent(

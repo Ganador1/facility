@@ -1,6 +1,7 @@
 import PgBoss from "pg-boss";
 import pino from "pino";
 import { readConfig } from "./config.js";
+import { runLearningNightly } from "./learning.js";
 import { dispatchRun, reconcileSandboxes } from "./sandbox/orchestrator.js";
 import { runAnalyticsRollup } from "./watchtower/analytics.js";
 import { runWatchtowerCanary } from "./watchtower/canary.js";
@@ -46,6 +47,10 @@ export async function startWorker() {
         await runAnalyticsRollup(config);
       } else if (queue === "hitl.expire") {
         await runHitlExpire(config);
+      } else if (queue === "learning.nightly") {
+        await runLearningNightly(config, (targetQueue, targetData) =>
+          boss.send(targetQueue, targetData),
+        );
       }
       logger.info({ queue, jobId }, "worker completed job");
     });
@@ -56,7 +61,7 @@ export async function startWorker() {
   await boss.schedule("watchtower.health", "0 3 * * *", {});
   await boss.schedule("watchtower.canary", "0 4 * * 2", {});
   await boss.schedule("analytics.rollup", "5 * * * *", {});
-  await boss.schedule("learning.nightly", "0 4 * * *", {});
+  await boss.schedule("learning.nightly", "0 3 * * *", {});
   logger.info({ queues }, "facility worker started");
   return boss;
 }
