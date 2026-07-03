@@ -26,9 +26,7 @@ export function PillTag({
     <span
       className={cx(
         "inline-flex h-8 items-center rounded-full border px-3.5 font-mono text-[11px] uppercase tracking-[0.14em]",
-        active
-          ? "border-(--line-strong) text-(--ink)"
-          : "border-(--line) text-(--mut)",
+        active ? "border-(--line-strong) text-(--ink)" : "border-(--line) text-(--mut)",
         className,
       )}
       {...props}

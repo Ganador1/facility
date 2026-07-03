@@ -1,5 +1,9 @@
-export { cx } from "./cx";
 export { Button, ButtonLink } from "./button";
+export { cx } from "./cx";
+export { Field, Select, TextArea, TextInput } from "./field";
+export { Cell, CellAccent, HairlineGrid } from "./grid";
+export { Metric } from "./metric";
+export type { Semantic } from "./primitives";
 export {
   Callout,
   Divider,
@@ -10,9 +14,5 @@ export {
   StatusDot,
   toneFor,
 } from "./primitives";
-export type { Semantic } from "./primitives";
-export { Cell, CellAccent, HairlineGrid } from "./grid";
-export { Terminal } from "./terminal";
 export type { TerminalLine } from "./terminal";
-export { Metric } from "./metric";
-export { Field, Select, TextArea, TextInput } from "./field";
+export { Terminal } from "./terminal";

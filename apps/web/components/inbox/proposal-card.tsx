@@ -1,9 +1,9 @@
 "use client";
 
-import type { Proposal } from "@/lib/api";
-import { Button, Eyebrow, cx } from "@facility/ui";
+import { Button, cx, Eyebrow } from "@facility/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import type { Proposal } from "@/lib/api";
 
 /**
  * A gate in card form: the evidence inline, the decision one tap.
@@ -78,7 +78,12 @@ export function ProposalCard({ proposal, focused }: { proposal: Proposal; focuse
         >
           {busy === "approve" ? "approving…" : "approve"}
         </Button>
-        <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => decide("reject")}>
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={busy !== null}
+          onClick={() => decide("reject")}
+        >
           {busy === "reject" ? "rejecting…" : "reject"}
         </Button>
         <input

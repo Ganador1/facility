@@ -1,8 +1,8 @@
 "use client";
 
-import type { RunEvent } from "@/lib/api";
 import { Button, Terminal, type TerminalLine, TextInput } from "@facility/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { RunEvent } from "@/lib/api";
 
 function toLine(event: RunEvent): TerminalLine {
   const ts = new Date(event.ts).toLocaleTimeString("en-GB", { hour12: false });

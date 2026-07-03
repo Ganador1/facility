@@ -14,14 +14,15 @@ function classesFor(variant: Variant, size: Size, className?: string) {
   const base =
     "group relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap font-mono uppercase tracking-[0.22em] transition-colors disabled:pointer-events-none disabled:opacity-50";
   if (variant === "textual") {
-    return cx(
-      base,
-      "h-auto px-0 tracking-[0.18em] text-(--mut) hover:text-(--ink)",
-      className,
-    );
+    return cx(base, "h-auto px-0 tracking-[0.18em] text-(--mut) hover:text-(--ink)", className);
   }
   if (variant === "danger") {
-    return cx(base, sizes[size], "border border-(--bad) text-(--bad) hover:bg-(--bad) hover:text-black", className);
+    return cx(
+      base,
+      sizes[size],
+      "border border-(--bad) text-(--bad) hover:bg-(--bad) hover:text-black",
+      className,
+    );
   }
   if (variant === "primary") {
     return cx(base, sizes[size], "border border-(--accent) text-(--accent)", className);

@@ -1,8 +1,8 @@
+import { Cell, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { RunTranscript } from "@/components/run/transcript";
 import { api } from "@/lib/api";
 import { fmtCost, fmtDuration } from "@/lib/runs";
-import { Cell, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
 
 export const metadata = { title: "run" };
 

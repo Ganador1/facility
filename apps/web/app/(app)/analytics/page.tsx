@@ -1,7 +1,7 @@
+import { Cell, Eyebrow, HairlineGrid, Metric } from "@facility/ui";
 import { Offline } from "@/components/offline";
 import { api, summarizeSpend } from "@/lib/api";
 import { fetchAllRuns, fmtCost } from "@/lib/runs";
-import { Cell, Eyebrow, HairlineGrid, Metric } from "@facility/ui";
 
 export const metadata = { title: "analytics" };
 
@@ -40,7 +40,11 @@ export default async function AnalyticsPage() {
             label="run success"
             value={successRate == null ? "—" : `${successRate}%`}
             tone={successRate != null && successRate >= 80 ? "ok" : undefined}
-            hint={terminal.length ? `${succeeded}/${terminal.length} terminal runs` : "no terminal runs yet"}
+            hint={
+              terminal.length
+                ? `${succeeded}/${terminal.length} terminal runs`
+                : "no terminal runs yet"
+            }
           />
         </Cell>
         <Cell>
@@ -60,33 +64,33 @@ export default async function AnalyticsPage() {
         ).map(([label, spend]) => {
           const summary = spend.ok ? summarizeSpend(spend.data) : { totalCents: 0, groups: [] };
           return (
-          <section key={label} className="flex flex-col gap-4">
-            <Eyebrow>cost {label}</Eyebrow>
-            {!spend.ok || summary.groups.length === 0 ? (
-              <p className="text-sm text-(--dim)">No gateway traffic yet.</p>
-            ) : (
-              <div className="flex flex-col gap-3">
-                {summary.groups.map((group) => {
-                  const pct = summary.totalCents
-                    ? Math.round((group.cents / summary.totalCents) * 100)
-                    : 0;
-                  return (
-                    <div key={group.key} className="flex flex-col gap-1.5">
-                      <div className="flex items-baseline justify-between font-mono text-[12px]">
-                        <span className="text-(--ink)">{group.key}</span>
-                        <span className="tabular text-(--mut)">
-                          {fmtCost(group.cents)} · {pct}%
-                        </span>
+            <section key={label} className="flex flex-col gap-4">
+              <Eyebrow>cost {label}</Eyebrow>
+              {!spend.ok || summary.groups.length === 0 ? (
+                <p className="text-sm text-(--dim)">No gateway traffic yet.</p>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {summary.groups.map((group) => {
+                    const pct = summary.totalCents
+                      ? Math.round((group.cents / summary.totalCents) * 100)
+                      : 0;
+                    return (
+                      <div key={group.key} className="flex flex-col gap-1.5">
+                        <div className="flex items-baseline justify-between font-mono text-[12px]">
+                          <span className="text-(--ink)">{group.key}</span>
+                          <span className="tabular text-(--mut)">
+                            {fmtCost(group.cents)} · {pct}%
+                          </span>
+                        </div>
+                        <div className="h-1 w-full bg-(--card)">
+                          <div className="h-full bg-(--machine)" style={{ width: `${pct}%` }} />
+                        </div>
                       </div>
-                      <div className="h-1 w-full bg-(--card)">
-                        <div className="h-full bg-(--machine)" style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
           );
         })}
       </div>

@@ -1,6 +1,6 @@
+import { Eyebrow } from "@facility/ui";
 import { Offline } from "@/components/offline";
 import { api } from "@/lib/api";
-import { Eyebrow } from "@facility/ui";
 
 export const metadata = { title: "audit" };
 
@@ -18,8 +18,8 @@ export default async function AuditPage() {
           Everything, attributable.
         </h1>
         <p className="max-w-xl text-sm leading-relaxed text-(--mut)">
-          Append-only and hash-chained. Every platform action — human, agent, or system — lands
-          here and can be verified for tamper evidence.
+          Append-only and hash-chained. Every platform action — human, agent, or system — lands here
+          and can be verified for tamper evidence.
         </p>
       </div>
 
@@ -31,7 +31,10 @@ export default async function AuditPage() {
             <thead>
               <tr className="border-b border-(--line)">
                 {["seq", "actor", "action", "target", "when"].map((h) => (
-                  <th key={h} className="px-5 py-3 font-mono text-[10px] font-medium uppercase tracking-[0.2em] text-(--dim)">
+                  <th
+                    key={h}
+                    className="px-5 py-3 font-mono text-[10px] font-medium uppercase tracking-[0.2em] text-(--dim)"
+                  >
                     {h}
                   </th>
                 ))}

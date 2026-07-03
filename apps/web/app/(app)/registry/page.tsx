@@ -1,6 +1,6 @@
+import { Eyebrow, PillTag } from "@facility/ui";
 import { Offline } from "@/components/offline";
 import { api } from "@/lib/api";
-import { Eyebrow, PillTag } from "@facility/ui";
 
 export const metadata = { title: "registry" };
 

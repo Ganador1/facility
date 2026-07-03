@@ -22,9 +22,7 @@ export async function fetchAllRuns(params = ""): Promise<{
     }),
   );
 
-  const runs = perProject
-    .flat()
-    .sort((a, b) => (b.queuedAt ?? "").localeCompare(a.queuedAt ?? ""));
+  const runs = perProject.flat().sort((a, b) => (b.queuedAt ?? "").localeCompare(a.queuedAt ?? ""));
   return { offline: false, projects: projects.data, runs };
 }
 

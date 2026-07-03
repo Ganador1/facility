@@ -1,16 +1,8 @@
+import { Cell, Divider, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
+import Link from "next/link";
 import { Offline } from "@/components/offline";
 import { api, summarizeSpend } from "@/lib/api";
 import { fetchAllRuns, fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
-import {
-  Cell,
-  Divider,
-  Eyebrow,
-  HairlineGrid,
-  Metric,
-  StatusDot,
-  toneFor,
-} from "@facility/ui";
-import Link from "next/link";
 
 export const metadata = { title: "overview" };
 
@@ -39,7 +31,11 @@ export default async function OverviewPage() {
 
       <HairlineGrid cols="grid-cols-2 lg:grid-cols-4">
         <Cell>
-          <Metric label="agents live" value={live.length} tone={live.length ? "agent" : undefined} />
+          <Metric
+            label="agents live"
+            value={live.length}
+            tone={live.length ? "agent" : undefined}
+          />
         </Cell>
         <Cell>
           <Metric

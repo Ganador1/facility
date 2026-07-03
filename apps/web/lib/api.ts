@@ -54,7 +54,13 @@ export type Run = {
   endedAt?: string | null;
 };
 
-export type RunEvent = { runId: string; seq: number; ts: string; type: string; data: Record<string, unknown> };
+export type RunEvent = {
+  runId: string;
+  seq: number;
+  ts: string;
+  type: string;
+  data: Record<string, unknown>;
+};
 
 export type Proposal = {
   id: string;

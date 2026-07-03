@@ -1,7 +1,7 @@
-import { Offline } from "@/components/offline";
-import { api } from "@/lib/api";
 import { Cell, Eyebrow, HairlineGrid, PillTag } from "@facility/ui";
 import Link from "next/link";
+import { Offline } from "@/components/offline";
+import { api } from "@/lib/api";
 
 export const metadata = { title: "projects" };
 
@@ -38,7 +38,10 @@ export default async function ProjectsPage() {
         <HairlineGrid cols="sm:grid-cols-2 lg:grid-cols-3">
           {items.map((project) => (
             <Cell key={project.id} interactive className="p-0">
-              <Link href={`/projects/${project.id}`} className="flex h-full flex-col gap-4 p-6 sm:p-8">
+              <Link
+                href={`/projects/${project.id}`}
+                className="flex h-full flex-col gap-4 p-6 sm:p-8"
+              >
                 <div className="flex items-center justify-between gap-3">
                   <span className="font-mono text-[14px] font-medium text-(--ink)">
                     {project.slug}

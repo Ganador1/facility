@@ -9,10 +9,13 @@
       "runner/**",
       "infra/**",
       "*.json",
-      "!packages/cli/**",
-      "!**/dist/**",
-      "!**/.next/**",
-      "!**/node_modules/**"
+      "!packages/cli",
+      "!**/dist",
+      "!**/.next",
+      "!**/.docusaurus",
+      "!**/build",
+      "!**/node_modules",
+      "!**/*.css"
     ]
   },
   "formatter": {

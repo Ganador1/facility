@@ -1,7 +1,7 @@
-import { Offline } from "@/components/offline";
-import { fetchAllRuns, fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
 import { Eyebrow, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
+import { Offline } from "@/components/offline";
+import { fetchAllRuns, fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
 
 export const metadata = { title: "runs" };
 
@@ -26,7 +26,10 @@ export default async function RunsPage() {
             <thead>
               <tr className="border-b border-(--line)">
                 {["run", "status", "engine", "duration", "cost", "when"].map((h) => (
-                  <th key={h} className="px-5 py-3 font-mono text-[10px] font-medium uppercase tracking-[0.2em] text-(--dim)">
+                  <th
+                    key={h}
+                    className="px-5 py-3 font-mono text-[10px] font-medium uppercase tracking-[0.2em] text-(--dim)"
+                  >
                     {h}
                   </th>
                 ))}

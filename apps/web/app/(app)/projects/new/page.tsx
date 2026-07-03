@@ -20,11 +20,16 @@ export default function NewProjectPage() {
       const res = await fetch("/api/v1/projects", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, slug: slug || undefined, description: description || undefined }),
+        body: JSON.stringify({
+          name,
+          slug: slug || undefined,
+          description: description || undefined,
+        }),
       });
-      const body = (await res.json().catch(() => null)) as
-        | { id?: string; error?: { message?: string } }
-        | null;
+      const body = (await res.json().catch(() => null)) as {
+        id?: string;
+        error?: { message?: string };
+      } | null;
       if (!res.ok || !body?.id) {
         throw new Error(body?.error?.message ?? `create failed (${res.status})`);
       }
@@ -45,9 +50,9 @@ export default function NewProjectPage() {
           A new project.
         </h1>
         <p className="text-sm leading-relaxed text-(--mut)">
-          This registers the project for governance. Connecting a repository and writing the
-          factory assets (workflows, guards, skills, the standard) happens next, once the GitHub
-          App is installed — you'll be walked through it from the project page.
+          This registers the project for governance. Connecting a repository and writing the factory
+          assets (workflows, guards, skills, the standard) happens next, once the GitHub App is
+          installed — you'll be walked through it from the project page.
         </p>
       </div>
 

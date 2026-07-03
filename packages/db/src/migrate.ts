@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
@@ -19,18 +19,22 @@ export async function migrate(connectionString = process.env.DATABASE_URL): Prom
       applied_at timestamptz NOT NULL DEFAULT now()
     )`;
     const migrationsDir = join(here, "..", "migrations");
-    const sql = await readFile(join(migrationsDir, "0001_control_plane.sql"), "utf8");
-    const existing = await client<
-      { name: string }[]
-    >`SELECT name FROM _facility_migrations WHERE name = ${"0001_control_plane.sql"}`;
-    if (existing.length === 0) {
+    // Apply every *.sql file in lexical order, each once, in its own tx.
+    const files = (await readdir(migrationsDir)).filter((f) => f.endsWith(".sql")).sort();
+    for (const file of files) {
+      const existing = await client<
+        { name: string }[]
+      >`SELECT name FROM _facility_migrations WHERE name = ${file}`;
+      if (existing.length > 0) {
+        console.log(`${file} already applied`);
+        continue;
+      }
+      const sql = await readFile(join(migrationsDir, file), "utf8");
       await client.begin(async (tx) => {
         await tx.unsafe(sql);
-        await tx`INSERT INTO _facility_migrations (name) VALUES (${"0001_control_plane.sql"})`;
+        await tx`INSERT INTO _facility_migrations (name) VALUES (${file})`;
       });
-      console.log("applied 0001_control_plane.sql");
-    } else {
-      console.log("0001_control_plane.sql already applied");
+      console.log(`applied ${file}`);
     }
   } finally {
     await client.end();

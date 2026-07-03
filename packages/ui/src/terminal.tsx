@@ -52,7 +52,9 @@ export function Terminal({
                 {line.tag ? (
                   <span className="shrink-0 select-none text-(--dim)">{line.tag}</span>
                 ) : null}
-                <span className={cx("whitespace-pre-wrap break-words", lineColor[line.tone ?? "plain"])}>
+                <span
+                  className={cx("whitespace-pre-wrap break-words", lineColor[line.tone ?? "plain"])}
+                >
                   {line.text}
                 </span>
               </div>

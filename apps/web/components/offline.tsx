@@ -8,7 +8,9 @@ export function Offline({ detail }: { detail?: string }) {
       <p className="max-w-md text-sm leading-relaxed text-(--mut)">
         The web app is up, but the Facility API did not answer
         {detail ? <> ({detail})</> : null}. Start it with{" "}
-        <code className="font-mono text-[12.5px] text-(--code)">pnpm --filter @facility/api dev</code>{" "}
+        <code className="font-mono text-[12.5px] text-(--code)">
+          pnpm --filter @facility/api dev
+        </code>{" "}
         and reload.
       </p>
     </div>

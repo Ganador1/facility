@@ -1,16 +1,12 @@
+import { Cell, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
+import Link from "next/link";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { api, summarizeSpend } from "@/lib/api";
 import { fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
-import { Cell, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
-import Link from "next/link";
 
 export const metadata = { title: "project" };
 
-export default async function ProjectPage({
-  params,
-}: {
-  params: Promise<{ projectId: string }>;
-}) {
+export default async function ProjectPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
   const [project, runs, spend] = await Promise.all([
     api.project(projectId),
@@ -49,13 +45,20 @@ export default async function ProjectPage({
 
       <HairlineGrid cols="grid-cols-2 lg:grid-cols-4">
         <Cell className="p-5">
-          <Metric label="agents live" value={live.length} tone={live.length ? "agent" : undefined} />
+          <Metric
+            label="agents live"
+            value={live.length}
+            tone={live.length ? "agent" : undefined}
+          />
         </Cell>
         <Cell className="p-5">
           <Metric label="runs" value={items.length} />
         </Cell>
         <Cell className="p-5">
-          <Metric label="spend" value={spend.ok ? fmtCost(summarizeSpend(spend.data).totalCents) : "—"} />
+          <Metric
+            label="spend"
+            value={spend.ok ? fmtCost(summarizeSpend(spend.data).totalCents) : "—"}
+          />
         </Cell>
         <Cell className="p-5">
           <Metric label="system" value={p.systemVersion ?? "unpinned"} />
@@ -96,12 +99,12 @@ export default async function ProjectPage({
           </div>
           <div className="flex justify-between gap-6">
             <span className="text-(--dim)">provision</span>
-            <span className="truncate text-(--code)">{settings.provision_cmd ?? "â"}</span>
+            <span className="truncate text-(--code)">{settings.provision_cmd ?? "—"}</span>
           </div>
           <div className="flex justify-between gap-6">
             <span className="shrink-0 text-(--dim)">checks</span>
             <span className="text-right text-(--code)">
-              {settings.check_cmds?.length ? settings.check_cmds.join(" Â· ") : "â"}
+              {settings.check_cmds?.length ? settings.check_cmds.join(" · ") : "—"}
             </span>
           </div>
         </div>

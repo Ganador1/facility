@@ -16,6 +16,7 @@ export function Field({
   children: React.ReactNode;
 }) {
   return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: the control is passed as children and wrapped by this label (valid implicit association).
     <label className={cx("flex flex-col gap-2", className)}>
       <span className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--mut)">
         {label}

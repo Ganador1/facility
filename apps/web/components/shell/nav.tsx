@@ -76,6 +76,9 @@ export function MobileNav() {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
+  // Close the drawer whenever the route changes. pathname is the trigger, not
+  // a value the body reads — that's exactly the dependency we want here.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is the intended change-trigger.
   useEffect(() => {
     setOpen(false);
   }, [pathname]);

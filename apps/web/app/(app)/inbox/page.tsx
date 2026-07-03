@@ -1,7 +1,7 @@
+import { Eyebrow } from "@facility/ui";
 import { ProposalCard } from "@/components/inbox/proposal-card";
 import { Offline } from "@/components/offline";
 import { api } from "@/lib/api";
-import { Eyebrow } from "@facility/ui";
 
 export const metadata = { title: "inbox" };
 

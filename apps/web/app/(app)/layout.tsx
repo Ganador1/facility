@@ -1,8 +1,8 @@
+import { redirect } from "next/navigation";
 import { Offline } from "@/components/offline";
 import { MobileNav, Sidebar } from "@/components/shell/nav";
 import { Topbar } from "@/components/shell/topbar";
 import { api } from "@/lib/api";
-import { redirect } from "next/navigation";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const me = await api.me();

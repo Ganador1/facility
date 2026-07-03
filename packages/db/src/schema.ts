@@ -397,7 +397,11 @@ export const virtualKeys = pgTable(
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     ...timestamps,
   },
-  (table) => [index("virtual_keys_org_project_idx").on(table.orgId, table.projectId)],
+  (table) => [
+    index("virtual_keys_org_project_idx").on(table.orgId, table.projectId),
+    // The gateway looks up by prefix on every model call — must be indexed.
+    index("virtual_keys_prefix_idx").on(table.prefix),
+  ],
 );
 
 export const llmRequests = pgTable(

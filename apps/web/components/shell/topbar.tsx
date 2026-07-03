@@ -1,5 +1,5 @@
-import type { Principal } from "@/lib/api";
 import { PillTag } from "@facility/ui";
+import type { Principal } from "@/lib/api";
 
 export function Topbar({ principal }: { principal: Principal }) {
   return (
