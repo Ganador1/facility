@@ -11,7 +11,7 @@ is happening, not checked after the fact.
 ## Before editing
 
 1. Read `STANDARD.md`, including the module sections between the
-   `capataz:modules` markers — they carry domain rules (data, analytics,
+   `facility:modules` markers — they carry domain rules (data, analytics,
    design, AI exposure) that change what "done" means.
 2. Name the user-facing outcome, the affected boundaries, the invariants that
    must hold, and the rollback surface. If you can't, the task isn't clear

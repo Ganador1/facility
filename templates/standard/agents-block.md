@@ -1,7 +1,7 @@
-<!-- capataz:start (managed by capataz — edits inside this block may be overwritten by `capataz update`) -->
-## How work happens here (Capataz)
+<!-- facility:start (managed by facility — edits inside this block may be overwritten by `facility update`) -->
+## How work happens here (Facility)
 
-This repository runs the [Capataz method](https://github.com/theam/capataz):
+This repository runs the [Facility method](https://github.com/theam/facility):
 AI agents do real work in CI, humans own every decision that matters.
 
 - **`STANDARD.md` is binding** for every change — human or agent. Read it
@@ -22,4 +22,4 @@ AI agents do real work in CI, humans own every decision that matters.
   Slash commands `/verify` and `/open-pr` encode the standard's workflows.
 - Issues move forward only on explicit human action. Don't start work on a
   task that isn't assigned and planned.
-<!-- capataz:end -->
+<!-- facility:end -->

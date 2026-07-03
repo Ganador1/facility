@@ -22,9 +22,9 @@ export function render(template, vars) {
   return withBlocks.replace(/\{\{([A-Z0-9_]+)\}\}/g, (match, name) => vars[name] ?? match);
 }
 
-/** True when `content` already contains the capataz managed-block marker. */
+/** True when `content` already contains the facility managed-block marker. */
 export function hasManagedBlock(content) {
-  return content.includes("<!-- capataz:start");
+  return content.includes("<!-- facility:start");
 }
 
 /** Append a managed block to existing file content (with a blank line). */
@@ -33,12 +33,12 @@ export function appendManagedBlock(content, block) {
   return base ? `${base}\n\n${block}` : block;
 }
 
-const MODULES_START = "<!-- capataz:modules:start -->";
-const MODULES_END = "<!-- capataz:modules:end -->";
+const MODULES_START = "<!-- facility:modules:start -->";
+const MODULES_END = "<!-- facility:modules:end -->";
 
 /** Insert a module's standard section between the modules markers. */
 export function insertModuleSection(standard, section, moduleTitle) {
-  if (standard.includes(`(capataz module)`) && standard.includes(`### ${moduleTitle} (capataz module)`)) {
+  if (standard.includes(`(facility module)`) && standard.includes(`### ${moduleTitle} (facility module)`)) {
     return { content: standard, inserted: false };
   }
   const end = standard.indexOf(MODULES_END);
@@ -52,11 +52,11 @@ export function insertModuleSection(standard, section, moduleTitle) {
   return { content: `${before}${section.trim()}\n\n${after}`, inserted: true };
 }
 
-const HOOK_MARKER = "/* capataz:module-rules */";
+const HOOK_MARKER = "/* facility:module-rules */";
 
 /** Splice a module's hook rules at the marker in protect-files.mjs. */
 export function insertHookRules(hookSource, fragment, moduleName) {
-  const sentinel = `capataz module: ${moduleName}`;
+  const sentinel = `facility module: ${moduleName}`;
   if (hookSource.includes(sentinel)) return { content: hookSource, inserted: false };
   if (!hookSource.includes(HOOK_MARKER)) return { content: hookSource, inserted: false };
   return {

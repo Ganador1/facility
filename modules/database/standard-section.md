@@ -1,4 +1,4 @@
-### Database (capataz module)
+### Database (facility module)
 
 Migrations are the durable state of the database. They are **append-only**:
 a change is a NEW migration, never an edit to one that may have been applied

@@ -1,4 +1,4 @@
-// capataz module: database
+// facility module: database
 //
 // Applied migrations are immutable. This guard fails when a commit range
 // modifies or deletes an existing migration file instead of adding a new one.

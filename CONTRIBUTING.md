@@ -1,6 +1,6 @@
 # Contributing
 
-Capataz eats its own cooking: this repo follows the method it ships.
+Facility eats its own cooking: this repo follows the method it ships.
 
 ## Ground rules
 
@@ -20,9 +20,9 @@ Capataz eats its own cooking: this repo follows the method it ships.
 ## Working on it
 
 ```
-git clone https://github.com/theam/capataz && cd capataz
+git clone https://github.com/theam/facility && cd facility
 npm test                      # node --test — no install step needed
-node bin/capataz.mjs init --yes --dir=/tmp/somewhere ...   # try it on a scratch repo
+node bin/facility.mjs init --yes --dir=/tmp/somewhere ...   # try it on a scratch repo
 node guards/run.mjs           # this repo's own guards
 ```
 

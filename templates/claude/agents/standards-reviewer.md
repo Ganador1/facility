@@ -16,7 +16,7 @@ nits or impossible-case concerns.
    domains, and risk level.
 2. Walk the **Pull request review standard** and **Completion checklist** from
    `STANDARD.md`, including any module sections between the
-   `capataz:modules` markers.
+   `facility:modules` markers.
 3. For any domain that carries real risk, recommend (or dispatch, when doing a
    deep review) the matching specialist subagent from `.claude/agents/`.
 4. Run the lightest useful verification yourself and escalate based on risk.

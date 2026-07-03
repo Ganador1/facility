@@ -2,15 +2,17 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { lstatSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const pkgRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const cli = join(pkgRoot, "bin", "capataz.mjs");
+const cli = join(pkgRoot, "bin", "facility.mjs");
 
 function makeTargetRepo() {
-  const dir = mkdtempSync(join(tmpdir(), "capataz-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "facility-test-"));
   execFileSync("git", ["init", "-b", "main"], { cwd: dir });
   writeFileSync(
     join(dir, "package.json"),
@@ -51,12 +53,23 @@ test("init installs the method end to end", async (t) => {
   assert.equal(result.status, 0, result.stdout + result.stderr);
 
   const expected = [
-    ".github/workflows/capataz-crew.yml",
-    ".github/workflows/capataz-review.yml",
-    ".github/workflows/capataz-address-review.yml",
-    ".github/capataz/architect.md",
-    ".github/capataz/builder.md",
-    ".github/capataz/move-board-status.sh",
+    ".github/workflows/facility-crew.yml",
+    ".github/workflows/facility-review.yml",
+    ".github/workflows/facility-address-review.yml",
+    ".github/workflows/facility-doctor.yml",
+    ".github/workflows/facility-security-sweep.yml",
+    ".github/workflows/facility-watchtower.yml",
+    ".github/workflows/facility-canary.yml",
+    ".github/facility/architect.md",
+    ".github/facility/builder.md",
+    ".github/facility/doctor.md",
+    ".github/facility/sweep.md",
+    ".github/facility/doctor/resolve.mjs",
+    ".github/facility/watchtower/outcomes.mjs",
+    ".github/facility/watchtower/health.mjs",
+    ".github/facility/watchtower/canary.mjs",
+    ".github/facility/watchtower/budgets.json",
+    ".github/facility/move-board-status.sh",
     "STANDARD.md",
     "AGENTS.md",
     "CLAUDE.md",
@@ -73,15 +86,16 @@ test("init installs the method end to end", async (t) => {
     "guards/run.mjs",
     "guards/_kit.mjs",
     "guards/actions-pinned.mjs",
-    ".capataz.json",
+    "guards/watchtower-locked.mjs",
+    ".facility.json",
   ];
   for (const file of expected) {
     assert.ok(existsSync(join(dir, file)), `missing ${file}`);
   }
 
   // Our placeholders are gone; GitHub Actions expressions survive.
-  const crew = readFileSync(join(dir, ".github/workflows/capataz-crew.yml"), "utf8");
-  assert.ok(!/\{\{[A-Z0-9_]+\}\}/.test(crew), "unrendered capataz placeholder in crew workflow");
+  const crew = readFileSync(join(dir, ".github/workflows/facility-crew.yml"), "utf8");
+  assert.ok(!/\{\{[A-Z0-9_]+\}\}/.test(crew), "unrendered facility placeholder in crew workflow");
   assert.ok(crew.includes("${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}"), "GitHub expression was mangled");
   assert.ok(crew.includes("npm run setup"), "provision command not rendered");
   assert.ok(crew.includes("PROJECT_NUMBER: '7'"), "board step not rendered");
@@ -105,7 +119,7 @@ test("init installs the method end to end", async (t) => {
   // STANDARD.md carries the verification ladder and the module markers.
   const standard = readFileSync(join(dir, "STANDARD.md"), "utf8");
   assert.ok(standard.includes("`npm run lint`"));
-  assert.ok(standard.includes("<!-- capataz:modules:start -->"));
+  assert.ok(standard.includes("<!-- facility:modules:start -->"));
 
   // Skills are cross-tool: .agents/skills symlinks to .claude/skills, and
   // the slash commands carry the rendered verification ladder.
@@ -114,10 +128,31 @@ test("init installs the method end to end", async (t) => {
   const verifyCmd = readFileSync(join(dir, ".claude/commands/verify.md"), "utf8");
   assert.ok(verifyCmd.includes("`npm run lint`"), "verify command must carry the rendered checks");
 
+  // Model tiering: opusplan builds, Sonnet reviews, Opus plans/repairs/sweeps.
+  assert.ok(crew.includes("--model opusplan"), "builder must run on the build tier");
+  assert.ok(crew.includes("--model claude-opus-4-8"), "architect must run on the plan tier");
+  const review = readFileSync(join(dir, ".github/workflows/facility-review.yml"), "utf8");
+  assert.ok(review.includes("--model claude-sonnet-4-6"), "review must run on the review tier");
+
+  // The canary hash pinned in the crew workflow is derived from the canonical
+  // probe body — the three artifacts can never drift at generation time.
+  const { CANARY_PROBE_BODY } = await import(
+    pathToFileURL(join(dir, ".github/facility/watchtower/canary.mjs")).href
+  );
+  const expectedSha = createHash("sha256").update(CANARY_PROBE_BODY.replace(/\r/g, ""), "utf8").digest("hex");
+  assert.ok(crew.includes(expectedSha), "crew must pin the sha256 of the canary probe body");
+  assert.ok(crew.includes("facility-canary[bot]"), "default canary bot login must be rendered");
+
+  // Doctor watches facility-review (no other workflows exist in the fixture).
+  const doctorWf = readFileSync(join(dir, ".github/workflows/facility-doctor.yml"), "utf8");
+  assert.ok(doctorWf.includes("- facility-review"), "doctor watch list must include facility-review");
+  assert.ok(!/\{\{[A-Z0-9_]+\}\}/.test(doctorWf), "unrendered placeholder in doctor workflow");
+
   // Manifest reflects the choices.
-  const manifest = JSON.parse(readFileSync(join(dir, ".capataz.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(join(dir, ".facility.json"), "utf8"));
   assert.equal(manifest.board.project, 7);
   assert.deepEqual(manifest.checks, ["npm run lint", "npm test"]);
+  assert.equal(manifest.models.build, "opusplan");
 
   // Generated guards pass on the generated workflows (all actions pinned).
   const guards = spawnSync(process.execPath, ["guards/run.mjs"], { cwd: dir, encoding: "utf8" });
@@ -139,27 +174,28 @@ test("add database module wires the triple", async (t) => {
 
   // 1. Prose: STANDARD.md section inside the markers.
   const standard = readFileSync(join(dir, "STANDARD.md"), "utf8");
-  assert.ok(standard.includes("### Database (capataz module)"));
-  const start = standard.indexOf("<!-- capataz:modules:start -->");
-  const end = standard.indexOf("<!-- capataz:modules:end -->");
+  assert.ok(standard.includes("### Database (facility module)"));
+  const start = standard.indexOf("<!-- facility:modules:start -->");
+  const end = standard.indexOf("<!-- facility:modules:end -->");
   assert.ok(standard.indexOf("### Database") > start && standard.indexOf("### Database") < end);
 
   // 2. Reviewer subagent and slash command copied.
   assert.ok(existsSync(join(dir, ".claude/agents/data-security-reviewer.md")));
   assert.ok(existsSync(join(dir, ".claude/commands/new-migration.md")));
 
-  // 3. Checks: guard copied and hook rules spliced.
+  // 3. Checks: guards copied and hook rules spliced.
   assert.ok(existsSync(join(dir, "guards/migrations-immutable.mjs")));
+  assert.ok(existsSync(join(dir, "guards/migration-versions.mjs")));
   const hook = readFileSync(join(dir, ".claude/hooks/protect-files.mjs"), "utf8");
-  assert.ok(hook.includes("capataz module: database"));
-  assert.ok(hook.includes("/* capataz:module-rules */"), "marker must survive for the next module");
+  assert.ok(hook.includes("facility module: database"));
+  assert.ok(hook.includes("/* facility:module-rules */"), "marker must survive for the next module");
 
   // Manifest records it; adding twice is a no-op.
-  const manifest = JSON.parse(readFileSync(join(dir, ".capataz.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(join(dir, ".facility.json"), "utf8"));
   assert.deepEqual(manifest.modules, ["database"]);
   const again = runCli(["add", "database", `--dir=${dir}`], dir);
   assert.equal(again.status, 0);
-  const manifestAgain = JSON.parse(readFileSync(join(dir, ".capataz.json"), "utf8"));
+  const manifestAgain = JSON.parse(readFileSync(join(dir, ".facility.json"), "utf8"));
   assert.deepEqual(manifestAgain.modules, ["database"]);
 
   // The spliced hook still parses.

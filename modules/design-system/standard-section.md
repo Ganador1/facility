@@ -1,4 +1,4 @@
-### Design system (capataz module)
+### Design system (facility module)
 
 A UI that conflicts with the design system is a product-quality issue, not a
 matter of taste. Declare your source of truth here (a spec doc, a tokens

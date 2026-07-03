@@ -1,4 +1,4 @@
-### Analytics (capataz module)
+### Analytics (facility module)
 
 New features must ship with analytics unless the feature has no runtime
 behavior. **Missing analytics on a new feature is a correctness issue, not

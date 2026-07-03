@@ -1,6 +1,6 @@
 # The method
 
-Capataz is a small set of decisions about how AI agents and humans share a
+Facility is a small set of decisions about how AI agents and humans share a
 repository. The tooling exists to make these decisions structural instead of
 aspirational.
 
@@ -58,6 +58,25 @@ the actionable feedback, re-verifies, pushes, and replies point by point.
 Bare approvals and praise produce no action. Each new review re-triggers it,
 so iteration converges in the PR where it's visible.
 
+**The doctor** watches your check workflows. When one fails on a PR, a
+deterministic resolver — rules, not judgment — decides: human-authored PRs
+and anything touching a sensitive surface get one concise triage comment;
+crew-authored PRs with a boring failure get a bounded repair that stops cold
+at workflows, secrets, auth, migrations, lockfiles, and guards. Fingerprints
+are deduped, so the doctor speaks once per failure, not once per push.
+
+**The sweep** runs weekly: a deterministic job collects the repo's security
+context (code-scanning and Dependabot alerts, the guard report), then a
+read-only auditor correlates it with the actual code and the week's diff, and
+files a handful of high-confidence, deduped `facility-security` issues.
+Scanners find patterns; the sweep finds the ones that are reachable in *your*
+code. It never edits anything.
+
+One agent per stage of the lifecycle: plan, build, review, address, repair,
+sweep. Each has its own contract, its own model tier (deep reasoning to plan
+and repair, volume to review, `opusplan` to build), and the same three
+prohibitions — never approve, never merge, never touch protected branches.
+
 ## The provisioned site
 
 Agents under-deliver in CI for one dominant reason: the environment can't
@@ -71,9 +90,9 @@ checks need to run for real. The operating contracts then hold the agent to
 it: *the environment is ready; run the checks; a partial deliverable is a
 failure.*
 
-This is the part of Capataz you must supply. A repo whose tests can't run
+This is the part of Facility you must supply. A repo whose tests can't run
 headlessly on a fresh machine won't get good agent work — or good onboarding,
-or reliable CI. Capataz makes that debt visible and worth paying once.
+or reliable CI. Facility makes that debt visible and worth paying once.
 
 ## The standard
 
@@ -88,10 +107,30 @@ repeatedly missed becomes a deterministic check.** Prose is for judgment;
 `guards/` are for invariants. The day a reviewer points out the same problem
 twice, that problem graduates from prose to a guard, and never comes back.
 
+## The watchtower
+
+Everything above can break politely: a dead trigger stops summoning agents, a
+mis-permissioned review lane approves silence, and no human notices because
+nothing turns red. So the facility watches itself — nightly agent-PR
+**outcomes** (acceptance, one-shot rate, human fixups) on a dashboard issue,
+a daily **health monitor** with per-workflow budgets that goes red on breach
+and manages its own incident issue, and a weekly **canary** that flies a
+synthetic `/architect` probe through the real pipeline, authorized by message
+hash rather than by sender. The whole layer reads only the GitHub API — never
+telemetry the facility writes — and is pinned in place by the
+`watchtower-locked` guard so it cannot quietly rot. The reasoning, the
+canary's authorization design, and what's deliberately not built yet are in
+[watchtower.md](watchtower.md).
+
+"Everything gets measured" is the second half of the method: the crew makes
+work cheap, the gates keep judgment human, and the watchtower is how you know
+— with numbers nobody curated — whether to grant the crew more autonomy or
+less.
+
 ## Where the knowledge lives
 
 Quality knowledge degrades when it all lives in one place — a standard nobody
-re-reads, or a prompt that grows until nothing in it binds. Capataz splits it
+re-reads, or a prompt that grows until nothing in it binds. Facility splits it
 by *when it acts*:
 
 | carrier | acts | carries |
@@ -123,4 +162,4 @@ Three invariants are structural, not stylistic:
 3. Every merge carries a human decision. The crew makes the work cheap; it
    does not make the judgment optional.
 
-You are the owner. Capataz keeps the crew honest.
+You are the owner. Facility keeps the crew honest.

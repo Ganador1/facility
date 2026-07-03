@@ -1,6 +1,6 @@
 // Stack detection: read the target repo and propose sensible defaults so
 // `init` asks six short questions instead of twenty.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -62,6 +62,17 @@ export function detect(dir) {
     existsSync(join(dir, d))
   );
 
+  // Existing check workflows (by their `name:`), so the doctor knows what to
+  // watch. Facility's own workflows are excluded — the watchtower covers them.
+  const workflowNames = [];
+  try {
+    for (const file of readdirSync(join(dir, ".github/workflows"))) {
+      if (!/\.ya?ml$/.test(file) || file.startsWith("facility-")) continue;
+      const nameMatch = readFileSync(join(dir, ".github/workflows", file), "utf8").match(/^name:\s*["']?([^"'\n]+)["']?\s*$/m);
+      if (nameMatch) workflowNames.push(nameMatch[1].trim());
+    }
+  } catch {}
+
   return {
     isGitRepo,
     defaultBranch,
@@ -69,6 +80,7 @@ export function detect(dir) {
     checks,
     provision,
     org,
+    workflowNames,
     suggestedModules: migrationDirs.length ? ["database"] : [],
     existing: {
       agentsMd: existsSync(join(dir, "AGENTS.md")),

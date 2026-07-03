@@ -1,9 +1,11 @@
-// `capataz init` — install the method into a repository.
+// `facility init` — install the method into a repository.
 //
 // Detect the stack, ask six short questions, write the files, print the
 // manual steps that only a human can do. Every generated file belongs to the
-// target repo afterwards; capataz is the installer, not a runtime dependency.
+// target repo afterwards; facility is the installer, not a runtime dependency.
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { detect } from "./detect.mjs";
 import { render, hasManagedBlock, appendManagedBlock } from "./render.mjs";
@@ -46,7 +48,7 @@ function toolchainSteps(packageManager, { conditional = false } = {}) {
   }
   return [
     "",
-    "      # capataz: no Node toolchain detected. Add your language setup steps",
+    "      # facility: no Node toolchain detected. Add your language setup steps",
     "      # here (compilers, package managers) so the crew can build and test.",
     "",
   ].join("\n");
@@ -62,17 +64,28 @@ function boardStep(org, projectNumber) {
     "      # GITHUB_TOKEN cannot write org Projects v2).",
     "      - name: Move Project board status",
     "        if: >",
-    "          github.event_name == 'issues' ||",
-    "          (github.event_name == 'issue_comment' && github.event.issue.pull_request == null)",
+    "          steps.requested-agent.outputs.run == 'true' &&",
+    "          (github.event_name == 'issues' ||",
+    "          (github.event_name == 'issue_comment' && github.event.issue.pull_request == null))",
     "        env:",
     "          GH_TOKEN: ${{ secrets.PROJECTS_PAT }}",
     "          MODE: ${{ steps.requested-agent.outputs.mode }}",
     "          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}",
     `          ORG: '${org}'`,
     `          PROJECT_NUMBER: '${projectNumber}'`,
-    "        run: bash .github/capataz/move-board-status.sh",
+    "        run: bash .github/facility/move-board-status.sh",
     "",
   ].join("\n");
+}
+
+function doctorWatch(workflowNames) {
+  const watched = [...new Set([...workflowNames, "facility-review"])];
+  const lines = watched.map((name) => `      - ${name}`);
+  if (workflowNames.length === 0) {
+    lines.unshift("      # facility: no existing check workflows detected at init time —");
+    lines.unshift("      # add your CI workflow names here so the doctor watches them.");
+  }
+  return lines.join("\n");
 }
 
 function checksAllowJson(checks) {
@@ -100,7 +113,7 @@ export async function init(flags, pkgRoot, version) {
 
   const detected = detect(dir);
   if (!detected.isGitRepo) {
-    warn(`${dir} is not a git repository. Run \`git init\` first — capataz installs GitHub workflows.`);
+    warn(`${dir} is not a git repository. Run \`git init\` first — facility installs GitHub workflows.`);
     if (interactive && !(await confirm("Continue anyway?", false))) {
       closePrompts();
       return 1;
@@ -111,6 +124,7 @@ export async function init(flags, pkgRoot, version) {
   item(`package manager   ${bold(detected.packageManager)}`);
   item(`default branch    ${bold(detected.defaultBranch)}`);
   item(`checks            ${detected.checks.length ? bold(detected.checks.join(", ")) : dim("none found")}`);
+  item(`check workflows   ${detected.workflowNames.length ? bold(detected.workflowNames.join(", ")) : dim("none — the doctor watch list starts empty")}`);
   if (detected.suggestedModules.length) item(`suggested modules ${bold(detected.suggestedModules.join(", "))}`);
 
   heading("A few questions");
@@ -126,7 +140,16 @@ export async function init(flags, pkgRoot, version) {
       ? await ask("Check commands, comma-separated?", detected.checks.join(", "))
       : detected.checks.join(", "));
   const checks = checksRaw.split(",").map((c) => c.trim()).filter(Boolean);
-  const model = flags.model || (interactive ? await ask("Claude model for the crew?", "claude-opus-4-8") : "claude-opus-4-8");
+  // Model tiering is an opinionated default, not a question: deep reasoning
+  // where it matters, volume where it doesn't. Override with
+  // --build-model / --review-model / --plan-model.
+  const models = {
+    build: flags["build-model"] || "opusplan",
+    review: flags["review-model"] || "claude-sonnet-4-6",
+    plan: flags["plan-model"] || "claude-opus-4-8",
+  };
+  item(dim(`model tiering: ${models.build} build · ${models.review} review · ${models.plan} plan/repair/sweep`));
+  const canaryBot = flags["canary-bot"] || "facility-canary[bot]";
   const project =
     flags.project ??
     (interactive
@@ -142,13 +165,23 @@ export async function init(flags, pkgRoot, version) {
 
   const provisionCmd =
     provision ||
-    'echo "capataz: no provision command configured — the crew runs on a bare checkout. Set one in this workflow + .capataz.json."';
+    'echo "facility: no provision command configured — the crew runs on a bare checkout. Set one in this workflow + .facility.json."';
   const checksInline = checks.length ? checks.join(" ; ") : "the checks configured in STANDARD.md";
 
+  // The canary hash is derived from the canonical probe body so the crew
+  // workflow, the canary script, and the watchtower-locked guard can never
+  // drift apart at generation time.
+  const { CANARY_PROBE_BODY } = await import(
+    pathToFileURL(join(pkgRoot, "templates/watchtower/canary.mjs")).href
+  );
+  const canarySha256 = createHash("sha256").update(CANARY_PROBE_BODY.replace(/\r/g, ""), "utf8").digest("hex");
+
   const vars = {
-    CAPATAZ_VERSION: version,
+    FACILITY_VERSION: version,
     DEFAULT_BRANCH: defaultBranch,
-    MODEL: model,
+    BUILD_MODEL: models.build,
+    REVIEW_MODEL: models.review,
+    PLAN_MODEL: models.plan,
     PROVISION_CMD: provisionCmd,
     CHECKS_INLINE: checksInline,
     CHECKS_LIST: checksList(checks),
@@ -156,16 +189,30 @@ export async function init(flags, pkgRoot, version) {
     TOOLCHAIN_STEPS: toolchainSteps(detected.packageManager),
     TOOLCHAIN_STEPS_CONDITIONAL: toolchainSteps(detected.packageManager, { conditional: true }),
     BOARD_STEP: boardStep(org, project),
+    CANARY_BOT: canaryBot,
+    CANARY_SHA256: canarySha256,
+    DOCTOR_WATCH: doctorWatch(detected.workflowNames),
   };
 
   const template = (relPath) => readFileSync(join(pkgRoot, "templates", relPath), "utf8");
   const plan = [
-    { to: ".github/workflows/capataz-crew.yml", content: render(template("workflows/capataz-crew.yml"), vars) },
-    { to: ".github/workflows/capataz-review.yml", content: render(template("workflows/capataz-review.yml"), vars) },
-    { to: ".github/workflows/capataz-address-review.yml", content: render(template("workflows/capataz-address-review.yml"), vars) },
-    { to: ".github/capataz/architect.md", content: render(template("prompts/architect.md"), vars) },
-    { to: ".github/capataz/builder.md", content: render(template("prompts/builder.md"), vars) },
-    { to: ".github/capataz/move-board-status.sh", content: template("scripts/move-board-status.sh"), executable: true },
+    { to: ".github/workflows/facility-crew.yml", content: render(template("workflows/facility-crew.yml"), vars) },
+    { to: ".github/workflows/facility-review.yml", content: render(template("workflows/facility-review.yml"), vars) },
+    { to: ".github/workflows/facility-address-review.yml", content: render(template("workflows/facility-address-review.yml"), vars) },
+    { to: ".github/workflows/facility-doctor.yml", content: render(template("workflows/facility-doctor.yml"), vars) },
+    { to: ".github/workflows/facility-security-sweep.yml", content: render(template("workflows/facility-security-sweep.yml"), vars) },
+    { to: ".github/workflows/facility-watchtower.yml", content: render(template("workflows/facility-watchtower.yml"), vars) },
+    { to: ".github/workflows/facility-canary.yml", content: render(template("workflows/facility-canary.yml"), vars) },
+    { to: ".github/facility/architect.md", content: render(template("prompts/architect.md"), vars) },
+    { to: ".github/facility/builder.md", content: render(template("prompts/builder.md"), vars) },
+    { to: ".github/facility/doctor.md", content: render(template("prompts/doctor.md"), vars) },
+    { to: ".github/facility/sweep.md", content: render(template("prompts/sweep.md"), vars) },
+    { to: ".github/facility/doctor/resolve.mjs", content: template("doctor/resolve.mjs") },
+    { to: ".github/facility/watchtower/outcomes.mjs", content: template("watchtower/outcomes.mjs") },
+    { to: ".github/facility/watchtower/health.mjs", content: template("watchtower/health.mjs") },
+    { to: ".github/facility/watchtower/canary.mjs", content: template("watchtower/canary.mjs") },
+    { to: ".github/facility/watchtower/budgets.json", content: template("watchtower/budgets.json") },
+    { to: ".github/facility/move-board-status.sh", content: template("scripts/move-board-status.sh"), executable: true },
     { to: "STANDARD.md", content: render(template("standard/STANDARD.md"), vars) },
     { to: ".claude/settings.json", content: render(template("claude/settings.json"), vars) },
     { to: ".claude/hooks/protect-branch.mjs", content: render(template("claude/hooks/protect-branch.mjs"), vars) },
@@ -180,6 +227,7 @@ export async function init(flags, pkgRoot, version) {
     { to: "guards/run.mjs", content: template("guards/run.mjs") },
     { to: "guards/_kit.mjs", content: template("guards/_kit.mjs") },
     { to: "guards/actions-pinned.mjs", content: template("guards/actions-pinned.mjs") },
+    { to: "guards/watchtower-locked.mjs", content: template("guards/watchtower-locked.mjs") },
     { to: "guards/README.md", content: template("guards/README.md") },
   ];
 
@@ -208,10 +256,10 @@ export async function init(flags, pkgRoot, version) {
       written += 1;
     } else if (!hasManagedBlock(readFileSync(target, "utf8"))) {
       writeFileSync(target, appendManagedBlock(readFileSync(target, "utf8"), agentsBlock));
-      ok(`${entry} (capataz block appended)`);
+      ok(`${entry} (facility block appended)`);
       written += 1;
     } else {
-      skip(`${entry} already has a capataz block`);
+      skip(`${entry} already has a facility block`);
     }
   }
 
@@ -231,17 +279,18 @@ export async function init(flags, pkgRoot, version) {
   }
 
   const manifest = {
-    capataz: version,
+    facility: version,
     engine: "claude",
     defaultBranch,
     provision: provision || null,
     checks,
-    model,
+    models,
+    canaryBot,
     board: project ? { org, project: Number(project) } : null,
     modules: [],
   };
-  writeFileSync(join(dir, ".capataz.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  ok(".capataz.json");
+  writeFileSync(join(dir, ".facility.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  ok(".facility.json");
 
   for (const moduleName of modules) {
     await addModule(moduleName, { dir, pkgRoot, banner: false });
@@ -257,9 +306,15 @@ export async function init(flags, pkgRoot, version) {
     steps.push(`Add a ${bold("PROJECTS_PAT")} secret (org Projects read+write) so the crew moves the board. It no-ops until then.`);
   }
   steps.push(
-    `If your tests need provider keys, put TEST-tier, spend-capped keys in a ${bold("capataz-crew")} Environment — never production keys.`
+    `If your tests need provider keys, put TEST-tier, spend-capped keys in a ${bold("facility-crew")} Environment — never production keys.`
+  );
+  steps.push(
+    `Optional, for the weekly canary: create a small GitHub App, install it on the repo, set ${bold("CANARY_APP_ID")} + ${bold("CANARY_APP_PRIVATE_KEY")} in the facility-crew Environment, and re-run init with --canary-bot=<your-app>[bot] (comments posted with GITHUB_TOKEN trigger nothing). It skips politely until then.`
   );
   steps.push(`Commit, push, open an issue, and comment ${accent("/architect")} on it. That's the whole onboarding.`);
+  steps.push(
+    `The watchtower starts reporting on its own: nightly outcomes on the ${bold("facility-watchtower")} dashboard issue, daily health with budgets from .github/facility/watchtower/budgets.json.`
+  );
   steps.forEach((step, index) => item(`${bold(String(index + 1) + ".")} ${step}`));
   console.log("");
   item(dim(`${written} files written. Read STANDARD.md next — it is yours now.`));

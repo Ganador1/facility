@@ -1,4 +1,4 @@
-// capataz CLI entry: init · add · doctor.
+// facility CLI entry: init · add · doctor.
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,14 +26,14 @@ function parseFlags(args) {
 
 function help() {
   banner(version);
-  item(`${bold("npx @theam/capataz init")}            install the method into this repo`);
-  item(`${bold("npx @theam/capataz add <module>")}    add a quality module (analytics, database, ai-queryability, design-system)`);
-  item(`${bold("npx @theam/capataz doctor")}          check the install and list what's left`);
+  item(`${bold("npx @theam/facility init")}            install the method into this repo`);
+  item(`${bold("npx @theam/facility add <module>")}    add a quality module (analytics, database, ai-queryability, design-system)`);
+  item(`${bold("npx @theam/facility doctor")}          check the install and list what's left`);
   console.log("");
   item(dim("init flags: --yes --force --dir=<path> --branch=<name> --provision=<cmd>"));
   item(dim('            --checks="cmd1, cmd2" --model=<id> --org=<org> --project=<n> --modules="a, b"'));
   console.log("");
-  item(dim("Docs: https://github.com/theam/capataz"));
+  item(dim("Docs: https://github.com/theam/facility"));
   console.log("");
 }
 

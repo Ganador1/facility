@@ -1,4 +1,4 @@
-// capataz module: database — migration immutability (PreToolUse)
+// facility module: database — migration immutability (PreToolUse)
 if (/(^|\/)(supabase\/|db\/|prisma\/)?migrations\/[^/]+\.(sql|js|ts|rb|py)$/.test(filePath)) {
   const tool = payload?.tool_name ?? "";
   const isEdit = tool === "Edit" || tool === "MultiEdit";

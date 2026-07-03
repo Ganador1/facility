@@ -1,4 +1,4 @@
-// `capataz doctor` — check the install and tell the truth about what's left.
+// `facility doctor` — check the install and tell the truth about what's left.
 // Static checks run locally; the GitHub-side items it can't verify are
 // printed as the explicit manual checklist instead of being assumed.
 import { spawnSync } from "node:child_process";
@@ -7,11 +7,22 @@ import { join } from "node:path";
 import { banner, fail, heading, item, ok, warn, dim } from "./ui.mjs";
 
 const REQUIRED = [
-  ".github/workflows/capataz-crew.yml",
-  ".github/workflows/capataz-review.yml",
-  ".github/workflows/capataz-address-review.yml",
-  ".github/capataz/architect.md",
-  ".github/capataz/builder.md",
+  ".github/workflows/facility-crew.yml",
+  ".github/workflows/facility-review.yml",
+  ".github/workflows/facility-address-review.yml",
+  ".github/workflows/facility-doctor.yml",
+  ".github/workflows/facility-security-sweep.yml",
+  ".github/workflows/facility-watchtower.yml",
+  ".github/workflows/facility-canary.yml",
+  ".github/facility/architect.md",
+  ".github/facility/builder.md",
+  ".github/facility/doctor.md",
+  ".github/facility/sweep.md",
+  ".github/facility/doctor/resolve.mjs",
+  ".github/facility/watchtower/outcomes.mjs",
+  ".github/facility/watchtower/health.mjs",
+  ".github/facility/watchtower/canary.mjs",
+  ".github/facility/watchtower/budgets.json",
   "STANDARD.md",
   "AGENTS.md",
   ".claude/hooks/protect-branch.mjs",
@@ -33,15 +44,15 @@ export async function doctor(flags, version) {
   for (const file of REQUIRED) {
     if (existsSync(join(dir, file))) ok(file);
     else {
-      fail(`${file} missing — run \`npx @theam/capataz init\``);
+      fail(`${file} missing — run \`npx @theam/facility init\``);
       problems += 1;
     }
   }
 
   heading("Manifest");
-  const manifestPath = join(dir, ".capataz.json");
+  const manifestPath = join(dir, ".facility.json");
   if (!existsSync(manifestPath)) {
-    fail(".capataz.json missing");
+    fail(".facility.json missing");
     problems += 1;
   } else {
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -86,7 +97,7 @@ export async function doctor(flags, version) {
   }
   item(dim("  · Claude GitHub App installed on the repo"));
   item(dim("  · default branch protected: PR + 1 human review required"));
-  item(dim("  · provider TEST keys (if any) live in the capataz-crew Environment"));
+  item(dim("  · provider TEST keys (if any) live in the facility-crew Environment"));
 
   console.log("");
   if (problems === 0) item(`${dim("Everything checkable checks out.")}`);

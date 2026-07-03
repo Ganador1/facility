@@ -136,7 +136,32 @@ The generated crew workflow refuses bot-authored events at the job level
 ever want one specific bot to do it, allowlist that bot explicitly — never
 drop the guard.
 
+## 14. GITHUB_TOKEN pushes and comments trigger nothing
+
+GitHub suppresses workflow runs for events caused by the workflow token —
+an anti-recursion guard. Two places it bit us: **agent pushes** shipped PRs
+that sat with no build and no review until a human nudged them (the fix is a
+GitHub App push identity, so agent pushes fire CI like anyone's), and **the
+canary**: a probe comment posted with GITHUB_TOKEN triggers no crew run, so a
+naive canary is green forever while testing nothing. Any bot that must cause
+workflows needs its own App (or PAT) identity — and the health monitor should
+flag held runs.
+
+## 15. Nobody watches the watchmen
+
+On the production system this generalizes, a telemetry bug failed successful
+runs for a week and silently under-reported the dashboard, and the repair
+lane had a permissions bug from day one. Nothing caught either — monitors
+tell you a workflow ran, not that the system works, and silence looks exactly
+like health. The fix is the watchtower (docs/watchtower.md): outcome
+collection and health monitoring that read only the GitHub API (never the
+telemetry the system itself writes), a weekly synthetic canary through the
+real pipeline — authorized by message hash, not by sender — and a guard
+(`watchtower-locked`) so the watchtower itself cannot quietly rot. Its first
+production flight caught a real authorization bug; the fix merged the same
+day through the normal PR flow.
+
 ---
 
 If you find a new one the hard way, that's a PR to this file. This page is
-the part of Capataz that compounds.
+the part of Facility that compounds.

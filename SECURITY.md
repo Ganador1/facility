@@ -1,6 +1,6 @@
 # Security policy
 
-Capataz generates CI workflows that run AI agents with elevated permissions
+Facility generates CI workflows that run AI agents with elevated permissions
 on ephemeral runners. We treat weaknesses in what we generate — prompt
 injection paths, secret exposure, privilege escalation through workflow
 configuration — as security vulnerabilities, the same as flaws in the CLI
@@ -8,7 +8,7 @@ itself.
 
 ## Reporting
 
-Report privately via [GitHub Security Advisories](https://github.com/theam/capataz/security/advisories/new).
+Report privately via [GitHub Security Advisories](https://github.com/theam/facility/security/advisories/new).
 Please don't open public issues for suspected vulnerabilities. We'll respond
 within five working days.
 

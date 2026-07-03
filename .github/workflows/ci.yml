@@ -1,4 +1,4 @@
-# CI for capataz itself: the test suite (which runs the real CLI against
+# CI for facility itself: the test suite (which runs the real CLI against
 # temp repos) and this repo's own guards. Actions pinned to full SHAs — the
 # same rule we generate for everyone (guards/actions-pinned.mjs enforces it
 # here too).

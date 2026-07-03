@@ -1,4 +1,4 @@
-// `capataz add <module>` — install a quality module: its STANDARD.md section,
+// `facility add <module>` — install a quality module: its STANDARD.md section,
 // its reviewer subagent, its guards, and its hook rules.
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -33,7 +33,7 @@ export async function addModule(name, { dir, pkgRoot, banner = true }) {
     ok(file.to);
   }
 
-  // 2. STANDARD.md section between the capataz:modules markers.
+  // 2. STANDARD.md section between the facility:modules markers.
   const standardPath = join(dir, "STANDARD.md");
   if (module.standardSection && existsSync(standardPath)) {
     const section = readFileSync(join(moduleDir, module.standardSection), "utf8");
@@ -45,7 +45,7 @@ export async function addModule(name, { dir, pkgRoot, banner = true }) {
       skip(`STANDARD.md already has the "${module.title}" section`);
     }
   } else if (module.standardSection) {
-    warn("STANDARD.md not found — run `capataz init` first.");
+    warn("STANDARD.md not found — run `facility init` first.");
   }
 
   // 3. Hook rules spliced into protect-files.mjs at the module marker.
@@ -64,12 +64,12 @@ export async function addModule(name, { dir, pkgRoot, banner = true }) {
   }
 
   // 4. Record it in the manifest.
-  const capatazManifestPath = join(dir, ".capataz.json");
-  if (existsSync(capatazManifestPath)) {
-    const manifest = JSON.parse(readFileSync(capatazManifestPath, "utf8"));
+  const facilityManifestPath = join(dir, ".facility.json");
+  if (existsSync(facilityManifestPath)) {
+    const manifest = JSON.parse(readFileSync(facilityManifestPath, "utf8"));
     if (!manifest.modules?.includes(module.name)) {
       manifest.modules = [...(manifest.modules ?? []), module.name];
-      writeFileSync(capatazManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+      writeFileSync(facilityManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     }
   }
 

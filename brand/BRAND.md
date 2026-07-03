@@ -1,74 +1,74 @@
-# Capataz brand
+# Facility brand
 
-Capataz is a **TAM-50** product of The Agile Monkeys' brand system: its own
-face on the TAM technical layer, with the TAM relationship named in the
-footer signature. This file is the single reference for anyone producing
-Capataz surfaces (README, docs site, decks, social cards).
+Facility is a **TAM-50** product of The Agile Monkeys' brand system: its own
+face on the TAM technical layer, with the TAM relationship named in the footer
+signature. It is the open-source packaging of the system shown at the
+theam-ai-sdlc site — the two must stay visually and verbally aligned; when in
+doubt, the site wins.
 
 ## Name
 
-**capataz** — always lowercase in the wordmark, sentence case ("Capataz") in
-prose. /ka·pa·TAS/. Spanish for the foreman who runs a construction crew on
-behalf of the owner. The metaphor is load-bearing and product-wide:
+**facility** — always lowercase in the wordmark, sentence case ("Facility") in
+prose. The name comes from the site's own world: *"This is our software
+factory."* A facility is where units of work enter as signals and leave as
+shipped, inspected, signed-off software. The vocabulary is product-wide:
 
-| construction | capataz |
+| the facility | in the product |
 |---|---|
-| the architect | `/architect` — plans before anyone builds |
-| the crew | `/builder` and the review/address agents |
-| the building code | `STANDARD.md` |
-| inspections | guards + the PR reviewer |
-| an equipped job site | the provisioned environment |
-| the owner's signature | the human approval and merge |
+| the loop | issue → `/architect` → gate → `/builder` → review → gate → merge |
+| the two gates | the human decisions: accept the plan, sign the merge |
+| every change gets its own world | the provisioned, ephemeral environment |
+| the gauntlet | STANDARD.md + guards + reviewer subagents + security sweep |
+| the watchtower | outcomes, health monitor, the canary — the SDLC watching itself |
+| the doctor | bounded CI repair, stopped cold at security surfaces |
 
-Tagline: **"An AI crew for your repo, under your command."**
-Supporting line: "Agents do the work. You sign it."
+Tagline: **"The AI software factory for your repo."**
+Method line: **"Agents build. People decide twice. Everything gets measured."**
+Proof line (from the site hero): *"We taught AI to ship like our engineers.
+Then we made it prove it."*
 
-## Palette (roles, per TAM-50)
+## Palette (roles, per TAM-50 — aligned with the site)
 
 | role | value | use |
 |---|---|---|
-| ink (product primary) | `#1A1714` | text, the mark's body, dark surfaces |
-| surface | `#FAF7F2` | backgrounds, vial stroke on ink |
-| accent | `#E8590C` (safety orange) | the bubble, CTAs, status marks, badge color — always with a role, never decoration |
-| line_soft | `#D8D2C8` | soft separators, derived from surface contrast |
+| void (surface) | `#0A0C10` | dark canvas, the mark's body |
+| card | `#161B22` | raised dark surfaces |
+| line | `#8B949E` | the pipeline, soft separators |
+| gate (ink on dark) | `#F0F3F6` | text on dark, the two gate marks |
+| **agent yellow** | `#FFD923` | **reserved for agent work** — the pulse, CLI accent, badges. Never decoration. |
 
-Few colors, clear roles, the accent repeated only where it means the same
-thing (the centered bubble = "passes inspection"). No gradients as
-decoration, no hard black dividers between every section.
+The yellow rule is inherited from the site and is the palette's one law:
+yellow marks something an agent did or is doing. A yellow element with no
+agent behind it is off-brand.
 
 ## Mark
 
-A spirit level with the bubble dead center — *built to code*. Geometry only
-(`assets/mark.svg`), 4px radius per TAM imagery treatment, no strokes around
-it, no drop shadows. The wordmark (`assets/wordmark-{light,dark}.svg`) sets
-the name in the mono technical voice next to the mark, with an orange full
-stop.
+A unit of work traveling the pipeline between **two human gates** — the method
+in one glyph ("people decide twice"). Geometry only (`assets/mark.svg`), 4px
+radius per TAM imagery treatment, no strokes around it, no shadows. The
+wordmark sets the name in IBM Plex Mono with a yellow full stop.
 
 ## Typography
 
-Inherited TAM layer, selected by role (TAM-50):
-
-- **IBM Plex Sans** — commercial body copy, docs prose, explanation.
-- **IBM Plex Mono** — the technical voice: CLI output, code, file trees,
-  labels, the wordmark. Mono is not the voice of every surface.
-- **Neue Galano Light** — display headlines on commercial web surfaces only
-  (a future landing page). Not used in the repo, which is a technical surface.
-
-Do not introduce other typefaces. Font *files* are licensed assets and do not
-live in this repository.
+Inherited TAM layer, selected by role (TAM-50): **IBM Plex Sans** for prose
+and explanation, **IBM Plex Mono** for the technical voice (CLI, code, file
+trees, the wordmark), **Neue Galano Light** only on future commercial web
+surfaces. No other typefaces; font files are licensed assets and do not live
+in this repository.
 
 ## Voice
 
 Sensei, not startup (TAM `foundations/voice.md`): open with the failure mode,
-make the reader feel recognized, be calmly opinionated, zero hype, no
-"revolutionary/seamless/AI-powered", no contrarian one-liner templates, end
-with implication rather than summary. CLI copy follows the same posture:
-restrained, precise, one accent color, no slot-machine output.
+be calmly opinionated, zero hype, no contrarian one-liner templates, end with
+implication. Two site-inherited habits: **numbers must be live, not curated**
+("these update nightly, straight from the pipeline"), and claims about agents
+come with the receipt — measurement language (acceptance, one-shot, fixups,
+time-to-merge) over adjectives.
 
 ## Signature (non-negotiable for tier membership)
 
-Every published Capataz surface closes with the TAM-50 footer signature:
-the product mark plus the live-text line
+Every published Facility surface closes with the TAM-50 footer signature: the
+product mark plus the live-text line
 **"An initiative by [The Agile Monkeys](https://theagilemonkeys.com)"** —
-IBM Plex, WCAG AA contrast on its surface, composed into the footer, never a
-floating badge. The README footer is the canonical instance.
+IBM Plex, WCAG AA contrast, composed into the footer, never a floating badge.
+The README footer is the canonical instance.

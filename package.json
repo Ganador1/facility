@@ -1,6 +1,6 @@
 {
-  "name": "@theam/capataz",
-  "version": "0.1.0",
+  "name": "@theam/facility",
+  "version": "0.2.0",
   "description": "Run an AI crew on your GitHub repo: agents that plan before building, build to your standard, verify on a provisioned environment, and never merge their own work.",
   "keywords": [
     "ai",
@@ -11,17 +11,17 @@
     "code-review",
     "automation"
   ],
-  "homepage": "https://github.com/theam/capataz#readme",
-  "bugs": "https://github.com/theam/capataz/issues",
+  "homepage": "https://github.com/theam/facility#readme",
+  "bugs": "https://github.com/theam/facility/issues",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/theam/capataz.git"
+    "url": "git+https://github.com/theam/facility.git"
   },
   "license": "MIT",
   "author": "The Agile Monkeys (https://theagilemonkeys.com)",
   "type": "module",
   "bin": {
-    "capataz": "bin/capataz.mjs"
+    "facility": "bin/facility.mjs"
   },
   "files": [
     "bin",

@@ -5,7 +5,7 @@ your team agrees on that no off-the-shelf linter knows about. *Migrations are
 append-only. Actions are SHA-pinned. No service-role key in the public API
 surface. Event names come from the catalog.*
 
-Capataz vendors a tiny zero-dependency runner into your repo (`guards/run.mjs`,
+Facility vendors a tiny zero-dependency runner into your repo (`guards/run.mjs`,
 ~100 lines, yours to read and change) plus one starter guard. There is no
 framework to depend on and no version to chase.
 

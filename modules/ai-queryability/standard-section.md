@@ -1,4 +1,4 @@
-### AI queryability (capataz module)
+### AI queryability (facility module)
 
 Every new durable feature is queryable and actionable by AI by default. Data
 trapped behind a human-only UI is invisible to your product's search, chat
