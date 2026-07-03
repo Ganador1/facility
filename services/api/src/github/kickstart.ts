@@ -1,0 +1,357 @@
+import {
+  detectFromFiles,
+  diffManifest,
+  manifestFor,
+  newId,
+  type RenderAnswers,
+  renderFacilityInit,
+  sha256Hex,
+} from "@facility/core";
+import {
+  actionTypes,
+  type FacilityDb,
+  githubInstallations,
+  insertAuditEvent,
+  platformIssues,
+  proposals,
+  repos,
+} from "@facility/db";
+import { and, eq, sql } from "drizzle-orm";
+import type { AppConfig, Principal } from "../types.js";
+import { FacilityGithubClient, type GithubClientFactory, type TreeItem } from "./client.js";
+import { readRepoFiles } from "./repo-files.js";
+
+export type KickstartAnswers = RenderAnswers & {
+  execution_lane?: Record<string, "repo" | "platform">;
+};
+
+export type RepoRow = typeof repos.$inferSelect;
+
+export async function createGithubClientForRepo(
+  db: FacilityDb,
+  factory: GithubClientFactory,
+  repo: RepoRow,
+): Promise<FacilityGithubClient> {
+  if (!repo.installationId) throw new Error("Repository has no GitHub installation");
+  const installation = (
+    await db
+      .select()
+      .from(githubInstallations)
+      .where(eq(githubInstallations.id, repo.installationId))
+      .limit(1)
+  )[0];
+  if (!installation) throw new Error("GitHub installation not found");
+  return new FacilityGithubClient(await factory(installation.installationId), {
+    owner: repo.owner,
+    repo: repo.name,
+    defaultBranch: repo.defaultBranch,
+  });
+}
+
+export async function kickstartPreview(
+  db: FacilityDb,
+  factory: GithubClientFactory,
+  repo: RepoRow,
+  answers: KickstartAnswers,
+) {
+  const client = await createGithubClientForRepo(db, factory, repo);
+  const existing = await readRepoFiles(client, repo.defaultBranch);
+  const detection = detectFromFiles({
+    files: existing,
+    defaultBranch: answers.defaultBranch ?? repo.defaultBranch,
+    org: repo.owner,
+  });
+  const render = await renderFacilityInit(
+    {
+      ...answers,
+      defaultBranch: answers.defaultBranch ?? detection.defaultBranch,
+      checkCmds: answers.checkCmds ?? detection.checks,
+      provisionCmd: answers.provisionCmd ?? detection.provision,
+      modules: answers.modules ?? detection.suggestedModules,
+      packageManager: answers.packageManager ?? detection.packageManager,
+      workflowNames: answers.workflowNames ?? detection.workflowNames,
+    },
+    { existingFiles: existing },
+  );
+  return {
+    detection,
+    files: render.files.map((file) => ({
+      path: file.path,
+      size: Buffer.byteLength(file.content),
+      sha256: sha256Hex(file.content),
+      mode: file.mode,
+      action: existing.has(file.path) ? "update" : "create",
+    })),
+    skipped: render.skipped,
+  };
+}
+
+export async function kickstartRepo(args: {
+  db: FacilityDb;
+  factory: GithubClientFactory;
+  config: AppConfig;
+  principal: Principal;
+  projectId: string;
+  repo: RepoRow;
+  answers: KickstartAnswers;
+}) {
+  const client = await createGithubClientForRepo(args.db, args.factory, args.repo);
+  const existing = await readRepoFiles(client, args.repo.defaultBranch);
+  const detection = detectFromFiles({
+    files: existing,
+    defaultBranch: args.answers.defaultBranch ?? args.repo.defaultBranch,
+    org: args.repo.owner,
+  });
+  const renderAnswers: KickstartAnswers = {
+    ...args.answers,
+    defaultBranch: args.answers.defaultBranch ?? detection.defaultBranch,
+    checkCmds: args.answers.checkCmds ?? detection.checks,
+    provisionCmd: args.answers.provisionCmd ?? detection.provision,
+    modules: args.answers.modules ?? detection.suggestedModules,
+    packageManager: args.answers.packageManager ?? detection.packageManager,
+    workflowNames: args.answers.workflowNames ?? detection.workflowNames,
+    execution_lane: args.answers.execution_lane ?? { architect: "repo", builder: "repo" },
+  };
+  const render = await renderFacilityInit(renderAnswers, { existingFiles: existing });
+  const branch = "facility/kickstart";
+  const baseSha = await client.getDefaultBranchSha();
+  const baseCommit = await client.getCommit(baseSha);
+  const tree = await renderTree(client, render.files);
+  const treeSha = await client.createTree(baseCommit.treeSha, tree);
+  const commitSha = await client.createCommit("facility: kickstart", treeSha, [baseSha]);
+  await client.createBranch(branch, commitSha);
+  const pr = await client.createPullRequest({
+    title: "Install Facility",
+    head: branch,
+    body: kickstartPrBody(render.files.map((file) => file.path)),
+  });
+  await args.db
+    .update(repos)
+    .set({
+      fingerprintStatus: "pending_merge",
+      fingerprint: { ...render.manifest, files: render.manifest.files },
+      renderAnswers,
+      updatedAt: new Date(),
+    })
+    .where(eq(repos.id, args.repo.id));
+  await createKickstartProposal(
+    args.db,
+    args.repo.orgId,
+    args.projectId,
+    pr.url,
+    render.files.map((file) => file.path),
+  );
+  await auditGithub(args.db, args.repo.orgId, "github.pr.created", args.repo, {
+    number: pr.number,
+    url: pr.url,
+    branch,
+  });
+  return { branch, commitSha, pr, files: render.files, manifest: render.manifest };
+}
+
+async function renderTree(
+  client: FacilityGithubClient,
+  files: { path: string; content: string; mode?: string; executable?: boolean }[],
+): Promise<TreeItem[]> {
+  const tree: TreeItem[] = [];
+  for (const file of files) {
+    const mode = (file.mode ?? (file.executable ? "100755" : "100644")) as TreeItem["mode"];
+    if (mode === "120000") {
+      tree.push({ path: file.path, mode, type: "blob", content: file.content });
+    } else {
+      tree.push({
+        path: file.path,
+        mode,
+        type: "blob",
+        sha: await client.createBlob(file.content),
+      });
+    }
+  }
+  return tree;
+}
+
+function kickstartPrBody(paths: string[]): string {
+  return [
+    "Installs the Facility workflow set generated from the bundled template set.",
+    "",
+    "Manual steps after merge:",
+    "1. Create the agent token with `claude setup-token`, then set `CLAUDE_CODE_OAUTH_TOKEN`.",
+    "2. Install the Claude GitHub App on the repo so crew pushes re-trigger CI.",
+    "3. Protect the default branch with PR review.",
+    "4. Put TEST-tier provider keys in the `facility-crew` Environment when needed.",
+    "",
+    "Rendered files:",
+    ...paths.map((path) => `- \`${path}\``),
+  ].join("\n");
+}
+
+async function createKickstartProposal(
+  db: FacilityDb,
+  orgId: string,
+  projectId: string,
+  prUrl: string,
+  paths: string[],
+) {
+  const action = (
+    await db
+      .select()
+      .from(actionTypes)
+      .where(and(eq(actionTypes.orgId, orgId), eq(actionTypes.name, "kickstart_review")))
+      .limit(1)
+  )[0];
+  if (!action) return;
+  await db.insert(proposals).values({
+    id: newId("prop"),
+    orgId,
+    projectId,
+    actionTypeId: action.id,
+    payload: { prUrl, paths },
+    contextMd: [`Kickstart PR: ${prUrl}`, "", ...paths.map((path) => `- \`${path}\``)].join("\n"),
+    expiresAt: new Date(Date.now() + action.defaultTtlHours * 60 * 60 * 1000),
+  });
+}
+
+export async function verifyFingerprints(args: {
+  db: FacilityDb;
+  factory: GithubClientFactory;
+  repo: RepoRow;
+}) {
+  const expected = args.repo.fingerprint as ReturnType<typeof manifestFor> | null;
+  if (!expected) return { status: "unknown" as const };
+  const client = await createGithubClientForRepo(args.db, args.factory, args.repo);
+  const files = await readRepoFiles(
+    client,
+    args.repo.defaultBranch,
+    expected.files.map((file) => file.path),
+  );
+  const actual = manifestFor([...files.entries()].map(([path, content]) => ({ path, content })));
+  const diff = diffManifest(expected, actual);
+  const status =
+    diff.missing.length || diff.modified.length || diff.extra.length ? "drifted" : "ok";
+  await args.db
+    .update(repos)
+    .set({ fingerprintStatus: status, fingerprintVerifiedAt: new Date(), updatedAt: new Date() })
+    .where(eq(repos.id, args.repo.id));
+  if (status !== "ok") {
+    await upsertPlatformIssue(args.db, args.repo, status, diff);
+  }
+  return { status, diff };
+}
+
+export async function adoptFingerprints(args: {
+  db: FacilityDb;
+  factory: GithubClientFactory;
+  repo: RepoRow;
+  principal: Principal;
+}) {
+  const expected = args.repo.fingerprint as ReturnType<typeof manifestFor> | null;
+  const paths = expected?.files.map((file) => file.path) ?? [];
+  const client = await createGithubClientForRepo(args.db, args.factory, args.repo);
+  const files = await readRepoFiles(client, args.repo.defaultBranch, paths);
+  const manifest = manifestFor([...files.entries()].map(([path, content]) => ({ path, content })));
+  await args.db
+    .update(repos)
+    .set({
+      fingerprint: manifest,
+      fingerprintStatus: "ok",
+      fingerprintVerifiedAt: new Date(),
+      updatedAt: new Date(),
+    })
+    .where(eq(repos.id, args.repo.id));
+  await insertAuditEvent(args.db, {
+    orgId: args.repo.orgId,
+    actor: { type: args.principal.type, id: args.principal.id },
+    action: "fingerprints.adopted",
+    target: { type: "repo", id: args.repo.id },
+    payload: { paths },
+  });
+  return manifest;
+}
+
+export async function upgradeRepo(args: {
+  db: FacilityDb;
+  factory: GithubClientFactory;
+  repo: RepoRow;
+  toVersion?: string;
+}) {
+  const answers = args.repo.renderAnswers as KickstartAnswers | null;
+  if (!answers) throw new Error("Repository has no stored render answers");
+  const current = await renderFacilityInit(answers, {});
+  const client = await createGithubClientForRepo(args.db, args.factory, args.repo);
+  const repoFiles = await readRepoFiles(
+    client,
+    args.repo.defaultBranch,
+    current.files.map((file) => file.path),
+  );
+  const branch = `facility/upgrade-${args.toVersion ?? current.manifest.templateSet}`;
+  const baseSha = await client.getDefaultBranchSha();
+  const baseCommit = await client.getCommit(baseSha);
+  const treeFiles = current.files.flatMap((file) => {
+    const ours = repoFiles.get(file.path);
+    if (ours === undefined || ours === file.content) return [file];
+    return [
+      {
+        ...file,
+        path: `.facility/upgrade-conflicts/${file.path}`,
+        content: ["<<<<<<< current", ours, "=======", file.content, ">>>>>>> facility", ""].join(
+          "\n",
+        ),
+      },
+    ];
+  });
+  const treeSha = await client.createTree(baseCommit.treeSha, await renderTree(client, treeFiles));
+  const commitSha = await client.createCommit("facility: upgrade templates", treeSha, [baseSha]);
+  await client.createBranch(branch, commitSha);
+  const pr = await client.createPullRequest({
+    title: "Upgrade Facility templates",
+    head: branch,
+    body: "Upgrades Facility managed files. Conflicts, if any, are copied under `.facility/upgrade-conflicts/` and live files are left untouched.",
+  });
+  await auditGithub(args.db, args.repo.orgId, "github.pr.created", args.repo, {
+    number: pr.number,
+    url: pr.url,
+    branch,
+  });
+  return { branch, commitSha, pr };
+}
+
+async function upsertPlatformIssue(
+  db: FacilityDb,
+  repo: RepoRow,
+  kind: string,
+  diff: { missing: string[]; modified: string[]; extra: string[] },
+) {
+  const fingerprint = sha256Hex(JSON.stringify({ repo: repo.id, kind, diff }));
+  await db
+    .insert(platformIssues)
+    .values({
+      id: newId("iss"),
+      orgId: repo.orgId,
+      projectId: repo.projectId,
+      kind: "fingerprint_drift",
+      severity: kind === "corrupted" ? "high" : "medium",
+      fingerprint,
+      title: `Facility managed files drifted in ${repo.owner}/${repo.name}`,
+      bodyMd: JSON.stringify(diff, null, 2),
+    })
+    .onConflictDoUpdate({
+      target: [platformIssues.orgId, platformIssues.fingerprint],
+      set: { lastSeen: new Date(), count: sql`${platformIssues.count} + 1`, updatedAt: new Date() },
+    });
+}
+
+async function auditGithub(
+  db: FacilityDb,
+  orgId: string,
+  action: string,
+  repo: RepoRow,
+  payload: Record<string, unknown>,
+) {
+  await insertAuditEvent(db, {
+    orgId,
+    actor: { type: "system", name: "github-app" },
+    action,
+    target: { type: "repo", id: repo.id },
+    payload: { repo: `${repo.owner}/${repo.name}`, ...payload },
+  });
+}

@@ -1,3 +1,15 @@
+import { execFileSync } from "node:child_process";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { hashChain } from "../src/audit.js";
 import {
@@ -14,6 +26,7 @@ import { newId } from "../src/ids.js";
 import { can } from "../src/permissions.js";
 import { costCents } from "../src/pricing.js";
 import { parseTamOsReceipt } from "../src/receipts.js";
+import { renderFacilityInit } from "../src/render.js";
 
 const masterKey = Buffer.alloc(32, 7).toString("base64");
 
@@ -103,6 +116,88 @@ describe("fingerprints", () => {
     });
   });
 });
+
+describe("render", () => {
+  it("matches the real CLI init output byte-for-byte", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "facility-core-render-"));
+    writeFileSync(
+      join(dir, "package.json"),
+      `${JSON.stringify(
+        {
+          scripts: {
+            setup: "node setup.mjs",
+            typecheck: "tsc --noEmit",
+            test: "vitest run",
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    mkdirSync(join(dir, "migrations"), { recursive: true });
+    writeFileSync(join(dir, "migrations/001.sql"), "select 1;\n");
+    execFileSync("node", [
+      join(process.cwd(), "../cli/bin/facility.mjs"),
+      "init",
+      "--yes",
+      "--dir",
+      dir,
+      "--branch",
+      "main",
+      "--provision",
+      "pnpm run setup",
+      "--checks",
+      "pnpm run typecheck, pnpm run test",
+      "--modules",
+      "database",
+    ]);
+    const cliFiles = collect(dir);
+    const rendered = await renderFacilityInit({
+      defaultBranch: "main",
+      provisionCmd: "pnpm run setup",
+      checkCmds: ["pnpm run typecheck", "pnpm run test"],
+      modules: ["database"],
+      packageManager: "pnpm",
+      workflowNames: [],
+    });
+    const coreFiles = new Map(
+      rendered.files.map((file) => [
+        file.path,
+        {
+          mode: file.mode ?? (file.executable ? "100755" : "100644"),
+          content: file.content,
+        },
+      ]),
+    );
+    expect([...coreFiles.keys()].sort()).toEqual([...cliFiles.keys()].sort());
+    for (const [path, cliFile] of cliFiles) {
+      expect(coreFiles.get(path), path).toEqual(cliFile);
+    }
+  });
+});
+
+function collect(root: string): Map<string, { mode: string; content: string }> {
+  const out = new Map<string, { mode: string; content: string }>();
+  const visit = (dir: string) => {
+    for (const entry of readdirSync(dir)) {
+      if (entry === "package.json" || entry === "pnpm-lock.yaml" || entry === "migrations")
+        continue;
+      const path = join(dir, entry);
+      const stat = lstatSync(path);
+      const rel = relative(root, path);
+      if (stat.isDirectory()) visit(path);
+      else if (stat.isSymbolicLink()) out.set(rel, { mode: "120000", content: readlinkSync(path) });
+      else
+        out.set(rel, {
+          mode: stat.mode & 0o111 ? "100755" : "100644",
+          content: readFileSync(path, "utf8"),
+        });
+    }
+  };
+  visit(root);
+  return out;
+}
 
 describe("audit", () => {
   it("hashes deterministically", () => {

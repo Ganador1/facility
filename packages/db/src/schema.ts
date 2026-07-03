@@ -152,6 +152,7 @@ export const repos = pgTable(
     fingerprintStatus: text("fingerprint_status").notNull().default("unknown"),
     fingerprint: jsonb("fingerprint"),
     fingerprintVerifiedAt: timestamp("fingerprint_verified_at", { withTimezone: true }),
+    renderAnswers: jsonb("render_answers"),
     ...timestamps,
   },
   (table) => [

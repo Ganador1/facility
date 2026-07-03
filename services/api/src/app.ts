@@ -27,8 +27,10 @@ import { z } from "zod";
 import { readConfig } from "./config.js";
 import { ApiError, sendError } from "./errors.js";
 import { registerAuthRoutes } from "./routes/auth.js";
+import { registerGithubRoutes } from "./routes/github.js";
 import { registerInternalRoutes } from "./routes/internal.js";
 import { registerV1Routes } from "./routes/v1.js";
+import { registerWebhookRoutes } from "./routes/webhooks.js";
 import type { AppConfig, Principal } from "./types.js";
 
 const publicRoutes = new Set([
@@ -193,7 +195,9 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
 
   await registerAuthRoutes(app, config);
   await registerInternalRoutes(app, config);
+  await registerWebhookRoutes(app, config);
   await registerV1Routes(app, config);
+  await registerGithubRoutes(app, config);
 
   await app.register(swaggerUi, { routePrefix: "/docs" });
 

@@ -22,6 +22,10 @@ const EnvSchema = z
     S3_ACCESS_KEY: z.string().optional(),
     S3_SECRET_KEY: z.string().optional(),
     S3_BUCKET: z.string().optional(),
+    GITHUB_APP_ID: z.string().optional(),
+    GITHUB_APP_PRIVATE_KEY: z.string().optional(),
+    GITHUB_APP_WEBHOOK_SECRET: z.string().optional(),
+    GITHUB_APP_SLUG: z.string().optional(),
     LOG_LEVEL: z.string().default("info"),
     NODE_ENV: z.string().optional(),
   })
@@ -51,6 +55,10 @@ export function readConfig(env = process.env): AppConfig {
     s3AccessKey: parsed.S3_ACCESS_KEY,
     s3SecretKey: parsed.S3_SECRET_KEY,
     s3Bucket: parsed.S3_BUCKET,
+    githubAppId: parsed.GITHUB_APP_ID,
+    githubAppPrivateKey: parsed.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+    githubAppWebhookSecret: parsed.GITHUB_APP_WEBHOOK_SECRET,
+    githubAppSlug: parsed.GITHUB_APP_SLUG,
     logLevel: parsed.LOG_LEVEL,
   };
 }

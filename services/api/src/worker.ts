@@ -1,11 +1,14 @@
+import { createDb } from "@facility/db";
 import PgBoss from "pg-boss";
 import pino from "pino";
 import { readConfig } from "./config.js";
+import { enqueueFingerprintVerify, processGithubWebhook } from "./github/processor.js";
 import { dispatchRun, reconcileSandboxes } from "./sandbox/orchestrator.js";
 
 export async function startWorker() {
   const config = readConfig();
   const logger = pino({ level: config.logLevel });
+  const { db, client } = createDb(config.databaseUrl);
   const boss = new PgBoss({ connectionString: config.databaseUrl });
   boss.on("error", (error) => logger.error({ err: error }, "pg-boss error"));
   await boss.start();
@@ -14,6 +17,7 @@ export async function startWorker() {
     "watchtower.outcomes",
     "watchtower.health",
     "learning.nightly",
+    "github.webhook",
     "fingerprints.verify",
     "hitl.expire",
     "sandbox.reconcile",
@@ -29,6 +33,16 @@ export async function startWorker() {
         await dispatchRun(config, data as { runId?: string; orgId?: string });
       } else if (queue === "sandbox.reconcile") {
         await reconcileSandboxes(config);
+      } else if (queue === "github.webhook") {
+        await processGithubWebhook(
+          db,
+          config,
+          data as { inboundEventId?: string },
+          undefined,
+          (name, payload) => boss.send(name, payload),
+        );
+      } else if (queue === "fingerprints.verify") {
+        await enqueueFingerprintVerify(db, config, data as { repoId?: string });
       }
       logger.info({ queue, jobId }, "worker completed job");
     });
@@ -39,6 +53,7 @@ export async function startWorker() {
   await boss.schedule("watchtower.health", "0 3 * * *", {});
   await boss.schedule("learning.nightly", "0 4 * * *", {});
   logger.info({ queues }, "facility worker started");
+  boss.on("stopped", () => void client.end());
   return boss;
 }
 
