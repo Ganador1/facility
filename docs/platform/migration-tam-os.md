@@ -120,3 +120,29 @@ tam-os's architect, builder, reviewer, addresser, doctor, sweep, canary all
 run platform-lane; keys/budgets/receipts/outcomes/KB/PO all platform-native;
 the vendored workflows removed; the dev process (issue → /architect → gate →
 /builder → review → gate → merge) unchanged for the humans using it.
+
+## Validation status (2026-07-03)
+
+What is proven now, locally:
+- **Kickstart render is tam-os-native.** The platform's server-side renderer
+  (`@facility/core` `renderFacilityInit`, a byte-compatible port of the v0.2
+  installer — proven by a byte-for-byte test against the real CLI) produces the
+  full 44-file asset set for tam-os's actual config (pnpm; provision
+  `pnpm run local:setup:ui`; checks typecheck/lint/mcp:test/rls:check; modules
+  database + analytics + design-system): crew/review/doctor/sweep/watchtower
+  workflows, the database module's migration-immutability + version guards
+  (tam-os has 138 migrations), the analytics/design/data-security reviewers
+  (matching tam-os's telemetry-privacy, TAM-100 UI, and RLS conventions),
+  skills, STANDARD.md, `.agents/skills` symlink, `.facility.json`.
+- **The native capabilities exist and are tested**: gateway virtual keys +
+  budgets (money path verified live), watchtower outcomes/health/canary,
+  KB + Project Owner + learning harness, MCP/CLI, receipts ingest
+  (`facility.run.v1` ⊇ `tam-os.agent_sdlc.run.v1`).
+
+What remains human-gated (must NOT be automated):
+- Registering the Facility GitHub App in the theam org and installing it on
+  theam/tam-os — an outward, org-level action the platform owner performs.
+- The production cutover PRs on theam/tam-os — reviewed and merged by the
+  tam-os team. The platform prepares them; **people decide** (and the merge is
+  gate 2). Validate the full Phase 0–4 loop against a private
+  `tam-os-facility-mirror` first, per the phases above.
