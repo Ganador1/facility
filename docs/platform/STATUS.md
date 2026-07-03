@@ -45,6 +45,24 @@ projects.
 - **AWS**: `terraform validate` + a real `terraform plan` (clean, 89 resources)
   against account 746486153337.
 - **tam-os**: kickstart renders its native 44-file asset set for its real config.
+- **The factory actually ran** (the headline proof): a real **Claude Code
+  agent** launched in an isolated platform sandbox, loaded its tools, reasoned,
+  created a file via the Edit tool, and finished — its **3 model calls all
+  routed through the gateway, metered, and attributed to the run**; the session
+  streamed event-by-event. Surfacing this took fixing four real
+  integration bugs (gateway URL path, bundle-URL host, runner-as-root, gateway
+  stripping `anthropic-beta`) that only a true end-to-end run exposes.
+
+## Two adversarial-review passes
+
+A first focused review (auth/gateway/sandbox/github/crypto/harness) found 6
+issues, all fixed. A **second, broader** review of the bulk `v1.ts` routes then
+found a critical privilege-escalation and several high-severity
+cross-project/cross-org authorization holes that the first pass never reached —
+a candid reminder that broad-but-shallow coverage hides depth problems. Those
+are being closed in a dedicated multi-tenancy hardening pass
+([spec](specs/hardening-multitenancy.md)) with regression tests, before the
+platform can be called "secure, multi-tenant, enterprise-grade."
 
 ## The GOAL.md checklist
 
