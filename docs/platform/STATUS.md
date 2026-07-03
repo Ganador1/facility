@@ -70,8 +70,14 @@ stack, not just asserted:
 - **Security** — a deeper review found a critical privilege-escalation and
   several cross-tenant authorization holes the first pass missed; all closed
   with regression tests.
-- **AWS** — all five hardened images built and pushed to **live AWS ECR**
-  (created + torn down via terraform), on top of the clean 89-resource plan.
+- **AWS** — all five hardened images built and pushed to **live AWS ECR**, and
+  the full 89-resource stack (VPC/RDS/ALB/ECS Fargate) applied on real AWS
+  (then destroyed) — a running cloud deployment, not just a plan.
+- **tam-os on a private repo** — a real private `theam/tam-os-facility-mirror`
+  was cloned into a sandbox (token-authenticated, the GitHub-App mechanism) and
+  an agent worked its checkout. The tam-os execution path, on a private repo.
+- **Load** — 60 concurrent gateway calls: all 200, zero errors, all 60 metered
+  correctly (concurrency-safe, validating the budget-race fix).
 
 ## Two adversarial-review passes
 
