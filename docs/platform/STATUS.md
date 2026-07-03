@@ -53,6 +53,26 @@ projects.
   integration bugs (gateway URL path, bundle-URL host, runner-as-root, gateway
   stripping `anthropic-beta`) that only a true end-to-end run exposes.
 
+## Second pass: closing the reflection's gaps
+
+After an honest self-review flagged that the platform was broad but not proven
+in practice, a second push closed the real gaps — each verified on a running
+stack, not just asserted:
+
+- **The factory runs** — a real Claude Code agent did real work in a sandbox
+  (metered through the gateway); an agent **cloned a real GitHub repo** and
+  worked on the checkout; an agent **maintained the KB** through the API with a
+  run-scoped, least-privilege, auto-revoked platform key. Surfaced + fixed 6
+  real integration bugs (gateway URL path, bundle-URL host, runner-as-root,
+  gateway header-stripping, sandbox→gateway seam, web image `public/`).
+- **WorkOS SSO** — the stubbed callback is now the real AuthKit code→token
+  exchange with CSRF state and safe org resolution.
+- **Security** — a deeper review found a critical privilege-escalation and
+  several cross-tenant authorization holes the first pass missed; all closed
+  with regression tests.
+- **AWS** — all five hardened images built and pushed to **live AWS ECR**
+  (created + torn down via terraform), on top of the clean 89-resource plan.
+
 ## Two adversarial-review passes
 
 A first focused review (auth/gateway/sandbox/github/crypto/harness) found 6
