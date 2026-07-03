@@ -12,10 +12,10 @@ export async function fetchAllRuns(params = ""): Promise<{
   if (!projects.ok) return { offline: projects.offline, projects: [], runs: [] };
 
   const perProject = await Promise.all(
-    projects.data.items.map(async (project) => {
+    projects.data.map(async (project) => {
       const runs = await api.runs(project.id, params);
       if (!runs.ok) return [];
-      return runs.data.items.map((run) => ({
+      return runs.data.map((run) => ({
         ...run,
         project: { id: project.id, name: project.name, slug: project.slug },
       }));
@@ -25,7 +25,7 @@ export async function fetchAllRuns(params = ""): Promise<{
   const runs = perProject
     .flat()
     .sort((a, b) => (b.queuedAt ?? "").localeCompare(a.queuedAt ?? ""));
-  return { offline: false, projects: projects.data.items, runs };
+  return { offline: false, projects: projects.data, runs };
 }
 
 export function fmtCost(cents?: number | null): string {

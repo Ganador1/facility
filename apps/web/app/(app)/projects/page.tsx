@@ -9,7 +9,7 @@ export default async function ProjectsPage() {
   const projects = await api.projects();
   if (!projects.ok) return <Offline detail={projects.message} />;
 
-  const items = projects.data.items;
+  const items = projects.data;
 
   return (
     <div className="flex flex-col gap-8">

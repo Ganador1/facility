@@ -1,5 +1,5 @@
 import { Offline } from "@/components/offline";
-import { api } from "@/lib/api";
+import { api, summarizeSpend } from "@/lib/api";
 import { fetchAllRuns, fmtCost } from "@/lib/runs";
 import { Cell, Eyebrow, HairlineGrid, Metric } from "@facility/ui";
 
@@ -16,7 +16,7 @@ export default async function AnalyticsPage() {
   const terminal = runs.filter((r) => ["succeeded", "failed", "canceled"].includes(r.status));
   const succeeded = terminal.filter((r) => r.status === "succeeded").length;
   const successRate = terminal.length ? Math.round((succeeded / terminal.length) * 100) : null;
-  const totalCents = spendByModel.ok ? spendByModel.data.totalCents : null;
+  const totalCents = spendByModel.ok ? summarizeSpend(spendByModel.data).totalCents : null;
 
   return (
     <div className="flex flex-col gap-10">
@@ -57,16 +57,18 @@ export default async function AnalyticsPage() {
             ["by model", spendByModel],
             ["by agent", spendByAgent],
           ] as const
-        ).map(([label, spend]) => (
+        ).map(([label, spend]) => {
+          const summary = spend.ok ? summarizeSpend(spend.data) : { totalCents: 0, groups: [] };
+          return (
           <section key={label} className="flex flex-col gap-4">
             <Eyebrow>cost {label}</Eyebrow>
-            {!spend.ok || spend.data.groups.length === 0 ? (
+            {!spend.ok || summary.groups.length === 0 ? (
               <p className="text-sm text-(--dim)">No gateway traffic yet.</p>
             ) : (
               <div className="flex flex-col gap-3">
-                {spend.data.groups.map((group) => {
-                  const pct = spend.data.totalCents
-                    ? Math.round((group.cents / spend.data.totalCents) * 100)
+                {summary.groups.map((group) => {
+                  const pct = summary.totalCents
+                    ? Math.round((group.cents / summary.totalCents) * 100)
                     : 0;
                   return (
                     <div key={group.key} className="flex flex-col gap-1.5">
@@ -85,7 +87,8 @@ export default async function AnalyticsPage() {
               </div>
             )}
           </section>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

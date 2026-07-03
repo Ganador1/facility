@@ -13,7 +13,7 @@ export default async function InboxPage({
   const [{ focus }, inbox] = await Promise.all([searchParams, api.inbox()]);
   if (!inbox.ok) return inbox.offline ? <Offline /> : <Offline detail={inbox.message} />;
 
-  const items = inbox.data.items;
+  const items = inbox.data;
 
   return (
     <div className="flex flex-col gap-8">

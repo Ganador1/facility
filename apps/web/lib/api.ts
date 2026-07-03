@@ -85,6 +85,53 @@ export type RegistryItem = {
   latestVersion: number;
 };
 
+export type Member = {
+  userId: string;
+  email: string;
+  name?: string | null;
+  roleId: string;
+  roleName?: string;
+};
+
+export type Role = {
+  id: string;
+  orgId?: string | null;
+  name: string;
+  description?: string | null;
+  permissions: string[];
+};
+
+export type ApiKey = {
+  id: string;
+  name: string;
+  prefix: string;
+  last4: string;
+  scopeType: "org" | "project";
+  projectId?: string | null;
+  createdAt: string;
+  lastUsedAt?: string | null;
+  revokedAt?: string | null;
+};
+
+export type Provider = {
+  id: string;
+  provider: "anthropic" | "openai" | "byo";
+  name: string;
+  baseUrl?: string | null;
+  createdAt: string;
+};
+
+export type Budget = {
+  id: string;
+  scope: "org" | "project" | "agent_def";
+  projectId?: string | null;
+  agentDefId?: string | null;
+  period: "daily" | "weekly" | "monthly";
+  limitCents: number;
+  mode: "soft" | "hard";
+  enabled: boolean;
+};
+
 export type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; status: number; offline: boolean; message: string };
@@ -118,21 +165,38 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<
   }
 }
 
+export type SpendRow = { bucket: string; cost_cents: number };
+
+// The control plane returns bare arrays for list endpoints (and {bucket,
+// cost_cents} rows for spend). This client mirrors those shapes exactly.
 export const api = {
   me: () => apiFetch<Principal>("/v1/me"),
-  projects: () => apiFetch<{ items: Project[] }>("/v1/projects"),
+  projects: () => apiFetch<Project[]>("/v1/projects"),
   project: (id: string) => apiFetch<Project>(`/v1/projects/${id}`),
   runs: (projectId: string, params = "") =>
-    apiFetch<{ items: Run[] }>(`/v1/projects/${projectId}/runs${params}`),
+    apiFetch<Run[]>(`/v1/projects/${projectId}/runs${params}`),
   run: (id: string) => apiFetch<Run>(`/v1/runs/${id}`),
   runEvents: (id: string, afterSeq = 0) =>
-    apiFetch<{ items: RunEvent[] }>(`/v1/runs/${id}/events?afterSeq=${afterSeq}`),
-  inbox: () => apiFetch<{ items: Proposal[] }>("/v1/inbox?state=open"),
-  proposal: (id: string) => apiFetch<Proposal>(`/v1/proposals/${id}`),
-  audit: (params = "") => apiFetch<{ items: AuditEvent[] }>(`/v1/audit${params}`),
-  registry: (params = "") => apiFetch<{ items: RegistryItem[] }>(`/v1/registry/items${params}`),
-  spend: (params = "") =>
-    apiFetch<{ totalCents: number; groups: Array<{ key: string; cents: number }> }>(
-      `/v1/spend${params}`,
-    ),
+    apiFetch<RunEvent[]>(`/v1/runs/${id}/events?afterSeq=${afterSeq}`),
+  inbox: () => apiFetch<Proposal[]>("/v1/inbox?state=open"),
+  proposal: (id: string) => apiFetch<Proposal & { events?: unknown[] }>(`/v1/proposals/${id}`),
+  audit: (params = "") => apiFetch<AuditEvent[]>(`/v1/audit${params}`),
+  registry: (params = "") => apiFetch<RegistryItem[]>(`/v1/registry/items${params}`),
+  spend: (params = "") => apiFetch<SpendRow[]>(`/v1/spend${params}`),
+  members: () => apiFetch<Member[]>("/v1/members"),
+  roles: () => apiFetch<Role[]>("/v1/roles"),
+  keys: () => apiFetch<ApiKey[]>("/v1/keys"),
+  providers: () => apiFetch<Provider[]>("/v1/providers"),
+  budgets: () => apiFetch<Budget[]>("/v1/budgets"),
 };
+
+/** Sum + descending groups from the spend endpoint's raw rows. */
+export function summarizeSpend(rows: SpendRow[]): {
+  totalCents: number;
+  groups: Array<{ key: string; cents: number }>;
+} {
+  const groups = rows
+    .map((r) => ({ key: r.bucket, cents: r.cost_cents }))
+    .sort((a, b) => b.cents - a.cents);
+  return { totalCents: groups.reduce((sum, g) => sum + g.cents, 0), groups };
+}

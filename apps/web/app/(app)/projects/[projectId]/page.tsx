@@ -1,5 +1,5 @@
 import { ErrorNotice, Offline } from "@/components/offline";
-import { api } from "@/lib/api";
+import { api, summarizeSpend } from "@/lib/api";
 import { fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
 import { Cell, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
@@ -27,7 +27,7 @@ export default async function ProjectPage({
   }
 
   const p = project.data;
-  const items = runs.ok ? runs.data.items : [];
+  const items = runs.ok ? runs.data : [];
   const live = items.filter((r) => ["queued", "provisioning", "running"].includes(r.status));
   const settings = (p.settings ?? {}) as {
     default_branch?: string;
@@ -55,7 +55,7 @@ export default async function ProjectPage({
           <Metric label="runs" value={items.length} />
         </Cell>
         <Cell className="p-5">
-          <Metric label="spend" value={spend.ok ? fmtCost(spend.data.totalCents) : "—"} />
+          <Metric label="spend" value={spend.ok ? fmtCost(summarizeSpend(spend.data).totalCents) : "—"} />
         </Cell>
         <Cell className="p-5">
           <Metric label="system" value={p.systemVersion ?? "unpinned"} />
@@ -96,12 +96,12 @@ export default async function ProjectPage({
           </div>
           <div className="flex justify-between gap-6">
             <span className="text-(--dim)">provision</span>
-            <span className="truncate text-(--code)">{settings.provision_cmd ?? "—"}</span>
+            <span className="truncate text-(--code)">{settings.provision_cmd ?? "â"}</span>
           </div>
           <div className="flex justify-between gap-6">
             <span className="shrink-0 text-(--dim)">checks</span>
             <span className="text-right text-(--code)">
-              {settings.check_cmds?.length ? settings.check_cmds.join(" · ") : "—"}
+              {settings.check_cmds?.length ? settings.check_cmds.join(" Â· ") : "â"}
             </span>
           </div>
         </div>

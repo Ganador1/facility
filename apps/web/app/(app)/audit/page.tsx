@@ -8,7 +8,7 @@ export default async function AuditPage() {
   const audit = await api.audit("?limit=100");
   if (!audit.ok) return <Offline detail={audit.message} />;
 
-  const items = audit.data.items;
+  const items = audit.data;
 
   return (
     <div className="flex flex-col gap-8">

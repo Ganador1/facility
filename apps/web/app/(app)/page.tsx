@@ -1,5 +1,5 @@
 import { Offline } from "@/components/offline";
-import { api } from "@/lib/api";
+import { api, summarizeSpend } from "@/lib/api";
 import { fetchAllRuns, fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
 import {
   Cell,
@@ -25,8 +25,8 @@ export default async function OverviewPage() {
 
   const live = runs.filter((r) => ["queued", "provisioning", "running"].includes(r.status));
   const needsHuman = runs.filter((r) => r.status === "awaiting_human");
-  const openProposals = inbox.ok ? inbox.data.items : [];
-  const monthCents = spend.ok ? spend.data.totalCents : null;
+  const openProposals = inbox.ok ? inbox.data : [];
+  const monthCents = spend.ok ? summarizeSpend(spend.data).totalCents : null;
 
   return (
     <div className="flex flex-col gap-10">

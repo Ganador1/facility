@@ -8,3 +8,8 @@ node_modules/
 .claude/worktrees/
 .claude/launch.json
 .turbo/
+
+# Next.js build output
+.next/
+.docusaurus/
+build/

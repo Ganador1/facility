@@ -64,12 +64,13 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
       const { email } = request.body as { email: string };
       const session = await ensureDevUser(app.facilityDb, email);
       const sealed = await mintSessionCookie(config, session.userId, session.orgId);
+      // The session value is sealed with authenticated encryption (libsodium
+      // secretbox) — that IS the integrity layer, so no cookie signing on top.
       reply.setCookie("facility_session", sealed, {
         httpOnly: true,
         sameSite: "lax",
         path: "/",
-        signed: true,
-        secure: false,
+        secure: config.publicUrl.startsWith("https://"),
       });
       await request.audit("auth.login", { type: "user", id: session.userId });
       return { ok: true, ...session };

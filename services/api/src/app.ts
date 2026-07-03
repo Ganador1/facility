@@ -250,13 +250,10 @@ async function resolvePrincipal(
     throw new ApiError(401, "unauthorized", "Invalid API key");
   }
 
-  const rawCookie = request.cookies.facility_session;
-  if (!rawCookie) {
+  const sealedSession = request.cookies.facility_session;
+  if (!sealedSession) {
     return undefined;
   }
-  const unsigned = request.unsignCookie(rawCookie);
-  const sealedSession = unsigned.valid ? unsigned.value : rawCookie;
-  if (!sealedSession) return undefined;
   try {
     const session = z
       .object({ userId: z.string(), orgId: z.string(), exp: z.number() })

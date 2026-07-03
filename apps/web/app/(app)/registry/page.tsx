@@ -24,7 +24,7 @@ export default async function RegistryPage({
   const registry = await api.registry(kind ? `?kind=${kind}` : "");
   if (!registry.ok) return <Offline detail={registry.message} />;
 
-  const items = registry.data.items;
+  const items = registry.data;
 
   return (
     <div className="flex flex-col gap-8">
