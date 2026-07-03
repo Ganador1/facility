@@ -81,7 +81,9 @@ export class DockerSandboxDriver implements SandboxDriver {
     try {
       await this.docker.getContainer(ref).remove({ force: true, v: true });
     } catch (error) {
-      if (!isDockerNotFound(error)) throw error;
+      // 404 (gone) and 409 (a concurrent removal already running) both mean the
+      // container is on its way out — destroy is idempotent.
+      if (!isDockerNotFound(error) && !isRemovalInProgress(error)) throw error;
     }
   }
 
@@ -115,6 +117,17 @@ function isDockerNotFound(error: unknown) {
     typeof error === "object" &&
     error !== null &&
     (error as { statusCode?: number }).statusCode === 404
+  );
+}
+
+function isRemovalInProgress(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { statusCode?: number }).statusCode === 409 &&
+    String((error as { reason?: string; message?: string }).message ?? "").includes(
+      "already in progress",
+    )
   );
 }
 
