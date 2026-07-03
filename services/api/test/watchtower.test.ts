@@ -88,6 +88,8 @@ describe("watchtower", async () => {
     secretMasterKey: masterKey,
     port: 4402,
     publicUrl: "http://localhost:4402",
+    sandboxApiUrl: "http://localhost:4402",
+    sandboxGatewayUrl: "http://localhost:4410",
     webUrl: "http://localhost:3000",
     facilityInsecureDev: true,
     logLevel: "silent",

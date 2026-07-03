@@ -64,7 +64,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       runId: run.id,
       image: profile.image,
       env: {
-        FACILITY_API_URL: config.publicUrl,
+        FACILITY_API_URL: config.sandboxApiUrl,
         RUN_ID: run.id,
         RUNNER_TOKEN: runnerToken,
       },
@@ -268,7 +268,10 @@ async function buildRunBundle(
       .limit(1)
   )[0];
   const timeoutMin = resourceNumber(profile.resources, "timeout_min", 60);
-  const gatewayBase = config.publicUrl.replace(/\/$/, "");
+  // Point the agent's SDKs directly at the gateway service. Its routes are
+  // /anthropic/v1/* and /openai/v1/*, so the base URL is {gateway}/anthropic
+  // and the SDK appends /v1/messages (Anthropic) or /v1/chat/completions.
+  const gatewayBase = config.sandboxGatewayUrl.replace(/\/$/, "");
   const bundle: RunBundle = {
     runId: run.id,
     mode: run.mode,
@@ -287,8 +290,8 @@ async function buildRunBundle(
       stringField(profile.setup, "provision_cmd") ?? stringField(profile.setup, "provisionCmd"),
     checkCmds: arrayField(profile.setup, "check_cmds"),
     gatewayUrls: {
-      anthropic: `${gatewayBase}/gateway/anthropic`,
-      openai: `${gatewayBase}/gateway/openai`,
+      anthropic: `${gatewayBase}/anthropic`,
+      openai: `${gatewayBase}/openai`,
     },
     scope: objectOrEmpty(run.trigger),
     timeoutMin,
