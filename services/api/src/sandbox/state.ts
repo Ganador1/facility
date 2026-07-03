@@ -33,6 +33,9 @@ export type RunSandboxState = {
   virtualKeyId?: string;
   sealedVirtualKey?: string;
   virtualKeyRevealedAt?: string;
+  platformKeyId?: string;
+  sealedPlatformKey?: string;
+  projectId?: string;
   bundle?: RunBundle;
   launchedAt?: string;
   finishedAt?: string;

@@ -73,6 +73,13 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         // the operator's public URL (which may be localhost).
         bundleUrl: `${config.sandboxApiUrl.replace(/\/$/, "")}/internal/runs/${run.id}/bundle?token=${token}`,
         virtualKey: await open(sandbox.sealedVirtualKey, config.secretMasterKey),
+        // Least-privilege platform key (KB + tasks, project-scoped) for a
+        // harness agent to maintain the KB via the /v1 API. Revoked at run end.
+        platformKey: sandbox.sealedPlatformKey
+          ? await open(sandbox.sealedPlatformKey, config.secretMasterKey)
+          : null,
+        platformApiUrl: config.sandboxApiUrl.replace(/\/$/, ""),
+        projectId: sandbox.projectId ?? run.projectId,
         repoToken: null,
         gatewayUrls: sandbox.bundle.gatewayUrls,
       };

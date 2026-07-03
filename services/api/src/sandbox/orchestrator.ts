@@ -1,6 +1,7 @@
 import { generateApiKey, hashKey, newId, seal } from "@facility/core";
 import {
   agentDefs,
+  apiKeys,
   createDb,
   insertAuditEvent,
   kbSpaces,
@@ -9,6 +10,7 @@ import {
   registryItems,
   registryVersions,
   repos,
+  roles,
   runs,
   sandboxProfiles,
   virtualKeys,
@@ -57,6 +59,24 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       expiresAt: new Date(Date.now() + bundle.timeoutMin * 60_000),
     });
 
+    // Run-scoped platform key: least-privilege (kb + tasks only), pinned to the
+    // run's project, so a harness agent (Project Owner, learning) can maintain
+    // the KB / propose tasks through the /v1 API. Revoked when the run ends.
+    const harnessRoleId = await ensureHarnessAgentRole(db, run.orgId);
+    const platformKey = await generateApiKey("fak");
+    await db.insert(apiKeys).values({
+      id: platformKey.id,
+      orgId: run.orgId,
+      name: `Run ${run.id} harness`,
+      prefix: platformKey.lookup,
+      last4: platformKey.last4,
+      hash: platformKey.hash,
+      scopeType: "project",
+      projectId: run.projectId,
+      roleId: harnessRoleId,
+      createdBy: `run:${run.id}`,
+    });
+
     const runnerToken = `frt_${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const driverName = normalizeDriver(profile.driver);
     const driver = await sandboxDriver(driverName);
@@ -84,6 +104,9 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
           runnerTokenHash: await hashKey(runnerToken),
           virtualKeyId: virtualKey.id,
           sealedVirtualKey: await seal(virtualKey.secret, config.secretMasterKey),
+          platformKeyId: platformKey.id,
+          sealedPlatformKey: await seal(platformKey.secret, config.secretMasterKey),
+          projectId: run.projectId,
           bundle,
           launchedAt: new Date().toISOString(),
         },
@@ -167,6 +190,12 @@ export async function finishRun(
       .set({ revokedAt: new Date() })
       .where(eq(virtualKeys.id, sandbox.virtualKeyId));
   }
+  if (sandbox.platformKeyId) {
+    await db
+      .update(apiKeys)
+      .set({ revokedAt: new Date() })
+      .where(eq(apiKeys.id, sandbox.platformKeyId));
+  }
   await appendRunEvents(db, run.orgId, run.id, [{ type: "result", data: { status, error } }]);
   await insertAuditEvent(db, {
     orgId: run.orgId,
@@ -193,9 +222,51 @@ export async function cancelRun(config: AppConfig, run: RunRow) {
         .set({ revokedAt: new Date() })
         .where(eq(virtualKeys.id, sandbox.virtualKeyId));
     }
+    if (sandbox.platformKeyId) {
+      await db
+        .update(apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(apiKeys.id, sandbox.platformKeyId));
+    }
   } finally {
     await client.end();
   }
+}
+
+const HARNESS_AGENT_PERMS = ["kb:read", "kb:write", "tasks:read", "tasks:write"];
+
+/** Idempotently ensure the least-privilege role a harness agent's key binds to. */
+async function ensureHarnessAgentRole(
+  db: ReturnType<typeof createDb>["db"],
+  orgId: string,
+): Promise<string> {
+  const existing = (
+    await db
+      .select()
+      .from(roles)
+      .where(and(eq(roles.orgId, orgId), eq(roles.name, "harness-agent")))
+      .limit(1)
+  )[0];
+  if (existing) return existing.id;
+  const id = newId("key");
+  await db
+    .insert(roles)
+    .values({
+      id,
+      orgId,
+      name: "harness-agent",
+      description: "Run-scoped key for Project Owner / learning agents (KB + tasks).",
+      permissions: HARNESS_AGENT_PERMS,
+    })
+    .onConflictDoNothing();
+  const row = (
+    await db
+      .select()
+      .from(roles)
+      .where(and(eq(roles.orgId, orgId), eq(roles.name, "harness-agent")))
+      .limit(1)
+  )[0];
+  return row?.id ?? id;
 }
 
 export async function reconcileSandboxes(config: AppConfig) {

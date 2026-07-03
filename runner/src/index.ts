@@ -24,7 +24,11 @@ async function main() {
       method: "POST",
     });
     bundle = (await fetchJson(String(hello.bundleUrl))) as RunBundle;
-    await prepareWorkspace(bundle, String(hello.virtualKey));
+    await prepareWorkspace(bundle, String(hello.virtualKey), {
+      platformKey: hello.platformKey ? String(hello.platformKey) : null,
+      platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl,
+      projectId: hello.projectId ? String(hello.projectId) : "",
+    });
     steerStop = startSteeringPoll();
     if (bundle.provisionCmd) {
       const provision = await runShell(
@@ -53,7 +57,11 @@ async function main() {
   }
 }
 
-async function prepareWorkspace(bundle: RunBundle, virtualKey: string) {
+async function prepareWorkspace(
+  bundle: RunBundle,
+  virtualKey: string,
+  platform: { platformKey: string | null; platformApiUrl: string; projectId: string },
+) {
   await mkdir(workRoot, { recursive: true });
   await writeFile(join(workRoot, "contract.md"), bundle.contract);
   const cwd = cwdFor(bundle);
@@ -80,12 +88,18 @@ async function prepareWorkspace(bundle: RunBundle, virtualKey: string) {
       `OPENAI_BASE_URL=${bundle.gatewayUrls.openai}`,
       `ANTHROPIC_API_KEY=${virtualKey}`,
       `OPENAI_API_KEY=${virtualKey}`,
+      `FACILITY_API_URL=${platform.platformApiUrl}`,
+      `FACILITY_PROJECT_ID=${platform.projectId}`,
+      ...(platform.platformKey ? [`FACILITY_PLATFORM_KEY=${platform.platformKey}`] : []),
     ].join("\n"),
   );
   process.env.ANTHROPIC_BASE_URL = bundle.gatewayUrls.anthropic;
   process.env.OPENAI_BASE_URL = bundle.gatewayUrls.openai;
   process.env.ANTHROPIC_API_KEY = virtualKey;
   process.env.OPENAI_API_KEY = virtualKey;
+  // Platform key for KB/task writes (Project Owner / learning agents).
+  process.env.FACILITY_PROJECT_ID = platform.projectId;
+  if (platform.platformKey) process.env.FACILITY_PLATFORM_KEY = platform.platformKey;
 }
 
 async function runEngine(bundle: RunBundle, startedAt: number) {
