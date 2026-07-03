@@ -2,6 +2,11 @@ import PgBoss from "pg-boss";
 import pino from "pino";
 import { readConfig } from "./config.js";
 import { dispatchRun, reconcileSandboxes } from "./sandbox/orchestrator.js";
+import { runAnalyticsRollup } from "./watchtower/analytics.js";
+import { runWatchtowerCanary } from "./watchtower/canary.js";
+import { runWatchtowerHealth } from "./watchtower/health.js";
+import { runHitlExpire } from "./watchtower/hitl.js";
+import { runWatchtowerOutcomes } from "./watchtower/outcomes.js";
 
 export async function startWorker() {
   const config = readConfig();
@@ -13,6 +18,8 @@ export async function startWorker() {
     "runs.dispatch",
     "watchtower.outcomes",
     "watchtower.health",
+    "watchtower.canary",
+    "analytics.rollup",
     "learning.nightly",
     "fingerprints.verify",
     "hitl.expire",
@@ -29,6 +36,16 @@ export async function startWorker() {
         await dispatchRun(config, data as { runId?: string; orgId?: string });
       } else if (queue === "sandbox.reconcile") {
         await reconcileSandboxes(config);
+      } else if (queue === "watchtower.outcomes") {
+        await runWatchtowerOutcomes(config);
+      } else if (queue === "watchtower.health") {
+        await runWatchtowerHealth(config);
+      } else if (queue === "watchtower.canary") {
+        await runWatchtowerCanary(config, (name, payload) => boss.send(name, payload));
+      } else if (queue === "analytics.rollup") {
+        await runAnalyticsRollup(config);
+      } else if (queue === "hitl.expire") {
+        await runHitlExpire(config);
       }
       logger.info({ queue, jobId }, "worker completed job");
     });
@@ -37,6 +54,8 @@ export async function startWorker() {
   await boss.schedule("hitl.expire", "0 * * * *", {});
   await boss.schedule("watchtower.outcomes", "0 2 * * *", {});
   await boss.schedule("watchtower.health", "0 3 * * *", {});
+  await boss.schedule("watchtower.canary", "0 4 * * 2", {});
+  await boss.schedule("analytics.rollup", "5 * * * *", {});
   await boss.schedule("learning.nightly", "0 4 * * *", {});
   logger.info({ queues }, "facility worker started");
   return boss;

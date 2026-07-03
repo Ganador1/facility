@@ -1,0 +1,501 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { newId } from "@facility/core";
+import {
+  actionTypes,
+  agentDefs,
+  analyticsDaily,
+  createDb,
+  llmRequests,
+  migrate,
+  outcomes,
+  platformIssues,
+  projects,
+  proposalEvents,
+  proposals,
+  registryItems,
+  registryVersions,
+  repos,
+  runs,
+  seed,
+} from "@facility/db";
+import { and, eq } from "drizzle-orm";
+import postgres from "postgres";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildApp } from "../src/app.js";
+import type { AppConfig } from "../src/types.js";
+import { rollupAnalytics } from "../src/watchtower/analytics.js";
+import { CANARY_MESSAGE_HASH, collectCanaries } from "../src/watchtower/canary.js";
+import type { GitHubClient, WorkflowRun } from "../src/watchtower/github.js";
+import { collectGitHubHealth } from "../src/watchtower/github-health.js";
+import { expireHitlProposals } from "../src/watchtower/hitl.js";
+import { raisePlatformIssue, resolvePlatformIssue } from "../src/watchtower/issues.js";
+import { collectOutcomes } from "../src/watchtower/outcomes.js";
+
+const databaseUrl =
+  process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility";
+const masterKey = Buffer.alloc(32, 6).toString("base64");
+
+async function canConnect() {
+  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  try {
+    await sqlClient`select 1`;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    await sqlClient.end().catch(() => undefined);
+  }
+}
+
+class FakeGitHub implements GitHubClient {
+  closedPulls: Awaited<ReturnType<GitHubClient["listClosedPulls"]>> = [];
+  commits = new Map<number, Awaited<ReturnType<GitHubClient["listPullCommits"]>>>();
+  reviews = new Map<number, Awaited<ReturnType<GitHubClient["listPullReviews"]>>>();
+  workflowRuns: WorkflowRun[] = [];
+  textFiles = new Map<string, string | null>();
+
+  async listClosedPulls() {
+    return this.closedPulls;
+  }
+
+  async listPullCommits(_repo: unknown, number: number) {
+    return this.commits.get(number) ?? [];
+  }
+
+  async listPullReviews(_repo: unknown, number: number) {
+    return this.reviews.get(number) ?? [];
+  }
+
+  async listWorkflowRuns() {
+    return this.workflowRuns;
+  }
+
+  async readTextFile(_repo: unknown, path: string) {
+    return this.textFiles.get(path) ?? null;
+  }
+}
+
+describe("watchtower", async () => {
+  const reachable = await canConnect();
+  if (!reachable) {
+    it.skip("Postgres is unreachable at DATABASE_URL; watchtower tests skipped", () => undefined);
+    return;
+  }
+
+  const config: AppConfig = {
+    databaseUrl,
+    secretMasterKey: masterKey,
+    port: 4402,
+    publicUrl: "http://localhost:4402",
+    webUrl: "http://localhost:3000",
+    facilityInsecureDev: true,
+    logLevel: "silent",
+  };
+  const { db, client } = createDb(databaseUrl);
+  const app = await buildApp(config);
+  let cookie = "";
+  let orgId = "";
+
+  beforeAll(async () => {
+    await migrate(databaseUrl);
+    await seed(databaseUrl);
+    await app.ready();
+    const login = await app.inject({
+      method: "POST",
+      url: "/auth/dev-login",
+      payload: { email: `watchtower-${Date.now()}@example.com` },
+    });
+    cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
+    orgId = login.json().orgId;
+  });
+
+  afterAll(async () => {
+    await app.close();
+    await client.end();
+  });
+
+  it("ports outcome math for terminal agent PRs", async () => {
+    const project = await insertProject({ watchtower: { branchPrefixes: ["claude/", "codex/"] } });
+    await insertRepo(project.id, "outcomes");
+    const github = new FakeGitHub();
+    const now = new Date();
+    github.closedPulls = [
+      {
+        number: 10,
+        user: { login: "human" },
+        head: { ref: "claude/feature" },
+        created_at: new Date(now.getTime() - 5 * 3600_000).toISOString(),
+        closed_at: now.toISOString(),
+        merged_at: now.toISOString(),
+      },
+      {
+        number: 11,
+        user: { login: "human" },
+        head: { ref: "codex/fix" },
+        created_at: new Date(now.getTime() - 3 * 3600_000).toISOString(),
+        closed_at: now.toISOString(),
+        merged_at: null,
+      },
+    ];
+    github.commits.set(10, [{ author: { login: "codex[bot]" } }]);
+    github.commits.set(11, [{ author: { login: "codex[bot]" } }, { author: { login: "adrian" } }]);
+    github.reviews.set(11, [{ state: "CHANGES_REQUESTED" }]);
+    await collectOutcomes(db, github);
+    const rows = await db
+      .select()
+      .from(outcomes)
+      .where(eq(outcomes.projectId, project.id))
+      .orderBy(outcomes.prNumber);
+    expect(rows.map((row) => row.fate)).toEqual(["merged", "closed"]);
+    expect(rows[0]?.reviewRounds).toBe(0);
+    expect(rows[0]?.fixupCommits).toBe(0);
+    expect(rows[1]?.reviewRounds).toBe(1);
+    expect(rows[1]?.fixupCommits).toBe(1);
+  });
+
+  it("dedupes, resolves, and reopens platform issues by fingerprint", async () => {
+    const project = await insertProject();
+    const fingerprint = `test:${project.id}`;
+    await raisePlatformIssue(db, {
+      orgId,
+      projectId: project.id,
+      kind: "run_failure",
+      severity: "error",
+      fingerprint,
+      title: "first",
+      bodyMd: "first",
+    });
+    await raisePlatformIssue(db, {
+      orgId,
+      projectId: project.id,
+      kind: "run_failure",
+      severity: "error",
+      fingerprint,
+      title: "second",
+      bodyMd: "second",
+    });
+    await resolvePlatformIssue(db, orgId, fingerprint, "recovered");
+    await raisePlatformIssue(db, {
+      orgId,
+      projectId: project.id,
+      kind: "run_failure",
+      severity: "error",
+      fingerprint,
+      title: "again",
+      bodyMd: "again",
+    });
+    const issue = (
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
+    )[0];
+    expect(issue?.state).toBe("open");
+    expect(issue?.count).toBe(3);
+  });
+
+  it("detects GitHub health budget breaches and auto-resolves recovery", async () => {
+    const project = await insertProject();
+    const repo = await insertRepo(project.id, "health");
+    const github = new FakeGitHub();
+    github.textFiles.set(
+      ".github/facility/watchtower/budgets.json",
+      JSON.stringify({ maxDailyFailures: { "facility-crew": 2 } }),
+    );
+    github.workflowRuns = [
+      failureRun("facility-crew", 1),
+      failureRun("facility-crew", 2),
+      failureRun("facility-crew", 3),
+    ];
+    await collectGitHubHealth(db, github);
+    const fingerprint = `run_failure:${repo.id}:facility-crew:24h`;
+    let issue = (
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
+    )[0];
+    expect(issue?.state).toBe("open");
+    github.workflowRuns = [];
+    await collectGitHubHealth(db, github);
+    issue = (
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
+    )[0];
+    expect(issue?.state).toBe("resolved");
+  });
+
+  it("handles platform and repo canary paths", async () => {
+    const platformProject = await insertProject({
+      watchtower: { canary: { enabled: true, lane: "platform" } },
+    });
+    await insertAgent(platformProject.id, "Architect Canary");
+    const dispatched: Record<string, unknown>[] = [];
+    await collectCanaries(db, new FakeGitHub(), (queue, data) => {
+      dispatched.push({ queue, ...data });
+      return Promise.resolve();
+    });
+    expect(dispatched[0]?.queue).toBe("runs.dispatch");
+    const canaryRun = (
+      await db.select().from(runs).where(eq(runs.projectId, platformProject.id)).limit(1)
+    )[0];
+    expect((canaryRun?.trigger as { messageHash?: string }).messageHash).toBe(CANARY_MESSAGE_HASH);
+    await db
+      .update(runs)
+      .set({
+        status: "succeeded",
+        receipt: { ok: true },
+        gh: { canaryAck: true },
+        endedAt: new Date(),
+      })
+      .where(eq(runs.id, canaryRun?.id ?? ""));
+    await collectCanaries(db, new FakeGitHub());
+
+    const repoProject = await insertProject({
+      watchtower: { canary: { enabled: true, lane: "repo" } },
+    });
+    await insertRepo(repoProject.id, "canary");
+    const github = new FakeGitHub();
+    github.workflowRuns = [
+      { id: 1, name: "facility-canary", status: "completed", conclusion: "success" },
+    ];
+    await collectCanaries(db, github);
+    github.workflowRuns = [];
+    await collectCanaries(db, github);
+    const repoIssue = (
+      await db
+        .select()
+        .from(platformIssues)
+        .where(
+          and(
+            eq(platformIssues.projectId, repoProject.id),
+            eq(platformIssues.kind, "canary_failure"),
+          ),
+        )
+        .limit(1)
+    )[0];
+    expect(repoIssue?.state).toBe("open");
+  });
+
+  it("rolls up analytics idempotently and serves rollup-backed endpoints", async () => {
+    const project = await insertProject();
+    const agent = await insertAgent(project.id, "Builder");
+    const run = (
+      await db
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId,
+          projectId: project.id,
+          agentDefId: agent.id,
+          mode: "builder",
+          engine: "codex",
+          status: "succeeded",
+          trigger: {},
+          receipt: { ok: true },
+          createdBy: { type: "system", name: "test" },
+        })
+        .returning()
+    )[0];
+    await db.insert(llmRequests).values({
+      id: newId("evt"),
+      orgId,
+      projectId: project.id,
+      runId: run?.id,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: "ok",
+      inputTokens: 10,
+      outputTokens: 20,
+      costCents: 55,
+      latencyMs: 1,
+    });
+    await db.insert(outcomes).values({
+      id: newId("evt"),
+      orgId,
+      projectId: project.id,
+      repo: "theam/rollup",
+      prNumber: Number(String(Date.now()).slice(-6)),
+      agentLane: "codex",
+      openedAt: new Date(Date.now() - 3600_000),
+      terminalAt: new Date(),
+      fate: "merged",
+    });
+    await rollupAnalytics(db);
+    const firstCount = await db
+      .select()
+      .from(analyticsDaily)
+      .where(eq(analyticsDaily.projectId, project.id));
+    await rollupAnalytics(db);
+    const secondCount = await db
+      .select()
+      .from(analyticsDaily)
+      .where(eq(analyticsDaily.projectId, project.id));
+    expect(secondCount.length).toBe(firstCount.length);
+    const analytics = await app.inject({
+      method: "GET",
+      url: `/v1/analytics?projectId=${project.id}&groupBy=model`,
+      headers: { cookie },
+    });
+    expect(analytics.statusCode).toBe(200);
+    expect(analytics.json().some((row: { bucket: string }) => row.bucket === "gpt-5.5")).toBe(true);
+    const overview = await app.inject({
+      method: "GET",
+      url: "/v1/analytics/overview",
+      headers: { cookie },
+    });
+    expect(overview.json().spendMtdCents).toBeGreaterThanOrEqual(55);
+  });
+
+  it("surfaces error issues in inbox while keeping items as proposals", async () => {
+    const project = await insertProject();
+    const type = (
+      await db
+        .insert(actionTypes)
+        .values({
+          id: newId("act"),
+          orgId,
+          name: `watchtower_action_${Date.now()}`,
+          payloadSchema: { type: "object" },
+          resolver: { type: "permission", config: {} },
+          executor: { type: "none", config: {} },
+          defaultTtlHours: 1,
+        })
+        .returning()
+    )[0];
+    const proposal = (
+      await db
+        .insert(proposals)
+        .values({
+          id: newId("prop"),
+          orgId,
+          projectId: project.id,
+          actionTypeId: type?.id ?? "",
+          payload: {},
+          contextMd: "ctx",
+          expiresAt: new Date(Date.now() - 1000),
+        })
+        .returning()
+    )[0];
+    await db.insert(proposalEvents).values({
+      orgId,
+      proposalId: proposal?.id ?? "",
+      seq: 1,
+      type: "open",
+      actor: { type: "system" },
+      data: {},
+    });
+    await raisePlatformIssue(db, {
+      orgId,
+      projectId: project.id,
+      kind: "canary_failure",
+      severity: "error",
+      fingerprint: `inbox:${project.id}`,
+      title: "Canary failed",
+      bodyMd: "failed",
+    });
+    const inbox = await app.inject({ method: "GET", url: "/v1/inbox", headers: { cookie } });
+    expect(inbox.json().items.length).toBeGreaterThan(0);
+    expect(inbox.json().proposals.length).toBe(inbox.json().items.length);
+    expect(
+      inbox.json().issues.some((issue: { title: string }) => issue.title === "Canary failed"),
+    ).toBe(true);
+    await expireHitlProposals(db);
+    const expired = (
+      await db
+        .select()
+        .from(proposals)
+        .where(eq(proposals.id, proposal?.id ?? ""))
+        .limit(1)
+    )[0];
+    expect(expired?.state).toBe("expired");
+  });
+
+  it("keeps GitHub health collection independent from telemetry reads", async () => {
+    const source = await readFile(join(process.cwd(), "src/watchtower/github-health.ts"), "utf8");
+    expect(source).not.toContain("llmRequests");
+    expect(source).not.toContain("llm_requests");
+    expect(source).not.toContain("receipts");
+  });
+
+  async function insertProject(settings: Record<string, unknown> = {}) {
+    return required(
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: `Watchtower ${Date.now()} ${Math.random()}`,
+          slug: `watchtower-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          settings,
+        })
+        .returning(),
+    );
+  }
+
+  async function insertRepo(projectId: string, name: string) {
+    return required(
+      await db
+        .insert(repos)
+        .values({
+          id: newId("repo"),
+          orgId,
+          projectId,
+          owner: "theam",
+          name: `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+          defaultBranch: "main",
+        })
+        .returning(),
+    );
+  }
+
+  async function insertAgent(projectId: string, name: string) {
+    const item = required(
+      await db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId,
+          kind: "agent_contract",
+          name: `${name}-${Date.now()}`,
+          latestVersion: 1,
+        })
+        .returning(),
+    );
+    await db.insert(registryVersions).values({
+      id: newId("ver"),
+      orgId,
+      itemId: item.id,
+      version: 1,
+      content: "test",
+      contentHash: "test",
+      status: "active",
+    });
+    return required(
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name,
+          engine: "codex",
+          model: { name: "gpt-5.5" },
+          contractItemId: item.id,
+        })
+        .returning(),
+    );
+  }
+});
+
+function failureRun(name: string, id: number): WorkflowRun {
+  return {
+    id,
+    name,
+    status: "completed",
+    conclusion: "failure",
+    html_url: `https://example.test/${id}`,
+  };
+}
+
+function required<T>(rows: T[]): T {
+  const row = rows[0];
+  if (!row) throw new Error("expected row");
+  return row;
+}
