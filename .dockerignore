@@ -1,0 +1,18 @@
+# Keep the build context small and reproducible. Dependencies install fresh
+# in the image; nothing local should leak in.
+**/node_modules
+**/dist
+**/.next
+**/.turbo
+**/.docusaurus
+**/build
+.claude
+.git
+**/.pnpm-store
+**/*.log
+.env
+.env.*
+!.env.example
+**/coverage
+**/.DS_Store
+scratchpad

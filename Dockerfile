@@ -17,8 +17,7 @@ COPY packages/db/package.json packages/db/
 COPY packages/sdk/package.json packages/sdk/
 COPY services/api/package.json services/api/
 COPY services/gateway/package.json services/gateway/
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter '@facility/core...' \
+RUN pnpm install --frozen-lockfile --filter '@facility/core...' \
       --filter '@facility/db...' --filter '@facility/sdk...' \
       --filter '@facility/api...' --filter '@facility/gateway...'
 

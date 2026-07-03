@@ -7,8 +7,7 @@ WORKDIR /app
 
 FROM base AS build
 COPY . .
-RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile --filter '@facility/web...'
+RUN pnpm install --frozen-lockfile --filter '@facility/web...'
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter '@facility/web' build
 
