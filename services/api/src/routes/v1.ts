@@ -1,4 +1,4 @@
-import { generateApiKey, newId, seal } from "@facility/core";
+import { generateApiKey, newId, seal, verifyKey } from "@facility/core";
 import {
   actionTypes,
   agentDefs,
@@ -29,13 +29,24 @@ import {
   virtualKeys,
   withOrg,
 } from "@facility/db";
+import { artifactIdFor, validate } from "@facility/harness";
 import { and, asc, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";
 import { ApiError, notFound } from "../errors.js";
+import { executeApprovedProposal } from "../executors.js";
+import {
+  ensureActive,
+  ensureLinks,
+  loadKbGraph,
+  normalizeKbDraft,
+  toHarnessEntry,
+  toHarnessSpace,
+  validateProjectKb,
+} from "../harness.js";
 import { cancelRun } from "../sandbox/orchestrator.js";
-import { notifyRunEvent } from "../sandbox/state.js";
+import { notifyRunEvent, readSandbox } from "../sandbox/state.js";
 import type { AppConfig, Principal } from "../types.js";
 
 const AnyObject = z.record(z.string(), z.unknown());
@@ -398,7 +409,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         description?: string;
         settings?: Record<string, unknown>;
       };
-      return (
+      const project = (
         await db
           .insert(projects)
           .values({
@@ -411,6 +422,9 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           })
           .returning()
       )[0];
+      if (!project) throw new ApiError(500, "insert_failed", "Could not create project");
+      await seedProjectHarnessAgents(p.orgId, project.id);
+      return project;
     },
   );
 
@@ -1407,6 +1421,9 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         actor: { type: p.type, id: p.id },
         data: { note: body.note },
       });
+      if (row && state === "approved") {
+        await executeApprovedProposal(db, row, { type: p.type, id: p.id });
+      }
       return row;
     },
   );
@@ -1616,6 +1633,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "kb:write", auditAction: "kb.updated" },
       schema: {
         params: IdParams,
+        querystring: z.object({ dry: z.coerce.number().optional() }),
         body: z.object({
           type: z.string(),
           slug: z.string(),
@@ -1638,10 +1656,11 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         status?: string;
         links: string[];
       };
+      const dry = (request.query as { dry?: number }).dry === 1;
       const space = await spaceFor(p.orgId, projectId);
       if (!space) throw notFound("KB space not found");
-      if (body.type !== "H" && body.links.length === 0)
-        throw new ApiError(400, "dag_parent_required", "Non-root KB entries require a parent link");
+      const graph = await loadKbGraph(db, p.orgId, projectId);
+      if (!graph) throw notFound("KB space not found");
       const max =
         (
           await db
@@ -1657,33 +1676,91 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
             .orderBy(desc(kbEntries.number))
             .limit(1)
         )[0]?.number ?? 0;
-      const entry = (
-        await db
-          .insert(kbEntries)
-          .values({
-            id: newId("kb"),
-            orgId: p.orgId,
-            spaceId: space.id,
-            type: body.type,
-            number: max + 1,
-            slug: body.slug,
-            frontmatter: body.frontmatter,
-            bodyMd: body.bodyMd,
-            status: body.status,
-          })
-          .returning()
-      )[0];
-      if (entry) {
+      const parentEntries = graph.entries.filter((entry) => body.links.includes(entry.id));
+      if (parentEntries.length !== body.links.length) {
+        throw new ApiError(400, "link_target_missing", "One or more parent links do not exist");
+      }
+      const normalized = normalizeKbDraft({
+        type: body.type,
+        number: max + 1,
+        slug: body.slug,
+        frontmatter: body.frontmatter,
+        bodyMd: body.bodyMd,
+        parentEntries,
+      });
+      const draft = {
+        id: "__draft__",
+        type: body.type,
+        number: max + 1,
+        slug: body.slug,
+        frontmatter: normalized.frontmatter,
+        bodyMd: normalized.bodyMd,
+        status: body.status,
+        supersedes: null,
+      };
+      const report = validate({
+        space: toHarnessSpace(space),
+        entries: [...graph.entries, draft],
+        links: [
+          ...graph.links,
+          ...parentEntries.flatMap((parent) => [
+            { fromEntry: "__draft__", toEntry: parent.id },
+            { fromEntry: parent.id, toEntry: "__draft__" },
+          ]),
+        ],
+        entryId: "__draft__",
+        validateSpecials: false,
+      });
+      if (!report.ok) {
+        throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
+      }
+      if (dry) {
+        return { ok: true, entry: draft, report };
+      }
+      const entry = await db.transaction(async (tx) => {
+        const inserted = (
+          await tx
+            .insert(kbEntries)
+            .values({
+              id: newId("kb"),
+              orgId: p.orgId,
+              spaceId: space.id,
+              type: body.type,
+              number: max + 1,
+              slug: body.slug,
+              frontmatter: normalized.frontmatter,
+              bodyMd: normalized.bodyMd,
+              status: body.status,
+            })
+            .returning()
+        )[0];
+        if (!inserted) throw new ApiError(500, "insert_failed", "Could not create KB entry");
+        const childArtifactId = artifactIdFor(toHarnessEntry(inserted));
         for (const link of body.links) {
-          await db
+          await tx
             .insert(kbLinks)
             .values([
-              { orgId: p.orgId, spaceId: space.id, fromEntry: entry.id, toEntry: link },
-              { orgId: p.orgId, spaceId: space.id, fromEntry: link, toEntry: entry.id },
+              { orgId: p.orgId, spaceId: space.id, fromEntry: inserted.id, toEntry: link },
+              { orgId: p.orgId, spaceId: space.id, fromEntry: link, toEntry: inserted.id },
             ])
             .onConflictDoNothing();
+          const parent = parentEntries.find((candidate) => candidate.id === link);
+          if (parent) {
+            await tx
+              .update(kbEntries)
+              .set({
+                bodyMd: ensureLinks(parent.bodyMd, [childArtifactId]),
+                updatedAt: new Date(),
+              })
+              .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, parent.id)));
+          }
         }
-      }
+        await tx
+          .update(kbSpaces)
+          .set({ activeMd: ensureActive(space.activeMd, [childArtifactId]), updatedAt: new Date() })
+          .where(and(eq(kbSpaces.orgId, p.orgId), eq(kbSpaces.id, space.id)));
+        return inserted;
+      });
       return entry;
     },
   );
@@ -1694,19 +1771,52 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "kb:write", auditAction: "kb.updated" },
       schema: { params: IdParams, body: AnyObject, response: { 200: AnyObject } },
     },
-    async (request) =>
-      (
+    async (request) => {
+      const p = principal(request);
+      const { entryId } = request.params as { entryId: string };
+      const current = (
+        await db
+          .select()
+          .from(kbEntries)
+          .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, entryId)))
+          .limit(1)
+      )[0];
+      if (!current) throw notFound("KB entry not found");
+      const space = (
+        await db
+          .select()
+          .from(kbSpaces)
+          .where(and(eq(kbSpaces.orgId, p.orgId), eq(kbSpaces.id, current.spaceId)))
+          .limit(1)
+      )[0];
+      if (!space) throw notFound("KB space not found");
+      const entries = await db
+        .select()
+        .from(kbEntries)
+        .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.spaceId, current.spaceId)));
+      const links = await db
+        .select()
+        .from(kbLinks)
+        .where(and(eq(kbLinks.orgId, p.orgId), eq(kbLinks.spaceId, current.spaceId)));
+      const patched = { ...current, ...(request.body as object), updatedAt: new Date() };
+      const report = validate({
+        space: toHarnessSpace(space),
+        entries: entries.map((entry) => toHarnessEntry(entry.id === entryId ? patched : entry)),
+        links: links.map((link) => ({ fromEntry: link.fromEntry, toEntry: link.toEntry })),
+        entryId,
+        validateSpecials: false,
+      });
+      if (!report.ok) {
+        throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
+      }
+      return (
         await db
           .update(kbEntries)
           .set({ ...(request.body as object), updatedAt: new Date() })
-          .where(
-            and(
-              eq(kbEntries.orgId, principal(request).orgId),
-              eq(kbEntries.id, (request.params as { entryId: string }).entryId),
-            ),
-          )
+          .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, entryId)))
           .returning()
-      )[0],
+      )[0];
+    },
   );
   app.post(
     "/v1/projects/:projectId/kb/validate",
@@ -1714,10 +1824,34 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "kb:write", auditAction: "kb.updated" },
       schema: {
         params: IdParams,
-        response: { 200: z.object({ ok: z.boolean(), errors: z.array(z.string()) }) },
+        response: { 200: AnyObject },
       },
     },
-    async () => ({ ok: true, errors: [] }),
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      return validateProjectKb(db, p.orgId, projectId);
+    },
+  );
+
+  app.post(
+    "/v1/runs/:runId/kb-checkpoint",
+    {
+      config: { public: true },
+      schema: { params: IdParams, response: { 200: AnyObject } },
+    },
+    async (request) => {
+      const { runId } = request.params as { runId: string };
+      const token = bearer(request.headers.authorization);
+      if (!token) throw new ApiError(401, "unauthorized", "Runner token required");
+      const run = (await db.select().from(runs).where(eq(runs.id, runId)).limit(1))[0];
+      if (!run) throw notFound("Run not found");
+      const sandbox = readSandbox(run.sandbox);
+      if (!sandbox.runnerTokenHash || !(await verifyKey(token, sandbox.runnerTokenHash))) {
+        throw new ApiError(401, "unauthorized", "Invalid runner token");
+      }
+      return validateProjectKb(db, run.orgId, run.projectId);
+    },
   );
 
   async function spaceFor(orgId: string, projectId: string) {
@@ -1854,6 +1988,149 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       )[0],
   );
 
+  app.post(
+    "/v1/tasks/:taskId/propose",
+    {
+      config: { permission: "tasks:write", auditAction: "task.proposed" },
+      schema: { params: IdParams, response: { 200: AnyObject } },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { taskId } = request.params as { taskId: string };
+      const task = (
+        await db
+          .select()
+          .from(poTasks)
+          .where(and(eq(poTasks.orgId, p.orgId), eq(poTasks.id, taskId)))
+          .limit(1)
+      )[0];
+      if (!task) throw notFound("Task not found");
+      const actionType = await actionTypeByName(p.orgId, "task_creation");
+      if (!actionType) throw notFound("Action type not found");
+      const repo = (
+        await db
+          .select()
+          .from(repos)
+          .where(and(eq(repos.orgId, p.orgId), eq(repos.projectId, task.projectId)))
+          .limit(1)
+      )[0];
+      const project = (
+        await db
+          .select()
+          .from(projects)
+          .where(and(eq(projects.orgId, p.orgId), eq(projects.id, task.projectId)))
+          .limit(1)
+      )[0];
+      const board = objectOrEmpty(project?.settings).board;
+      const proposal = (
+        await db
+          .insert(proposals)
+          .values({
+            id: newId("prop"),
+            orgId: p.orgId,
+            projectId: task.projectId,
+            actionTypeId: actionType.id,
+            payload: {
+              taskId: task.id,
+              title: task.title,
+              bodyMd: task.bodyMd,
+              wsjf: task.wsjf,
+              target: {
+                repo: repo ? { owner: repo.owner, name: repo.name } : null,
+                board,
+              },
+            },
+            contextMd: `Task creation proposal for ${task.title}`,
+            expiresAt: new Date(Date.now() + actionType.defaultTtlHours * 3600_000),
+          })
+          .returning()
+      )[0];
+      if (!proposal) throw new ApiError(500, "insert_failed", "Could not create proposal");
+      await db.insert(proposalEvents).values({
+        orgId: p.orgId,
+        proposalId: proposal.id,
+        seq: 1,
+        type: "open",
+        actor: { type: p.type, id: p.id },
+        data: {},
+      });
+      await db
+        .update(poTasks)
+        .set({ status: "proposed", updatedAt: new Date() })
+        .where(eq(poTasks.id, task.id));
+      return proposal;
+    },
+  );
+
+  async function actionTypeByName(orgId: string, name: string) {
+    return (
+      await db
+        .select()
+        .from(actionTypes)
+        .where(and(eq(actionTypes.orgId, orgId), eq(actionTypes.name, name)))
+        .limit(1)
+    )[0];
+  }
+
+  async function seedProjectHarnessAgents(orgId: string, projectId: string) {
+    const items = await db
+      .select()
+      .from(registryItems)
+      .where(and(eq(registryItems.orgId, orgId), eq(registryItems.scope, "bundled")));
+    const byName = new Map(items.map((item) => [item.name, item]));
+    const sandbox = (
+      await db
+        .select()
+        .from(sandboxProfiles)
+        .where(and(eq(sandboxProfiles.orgId, orgId), eq(sandboxProfiles.id, "sbx_dev_default")))
+        .limit(1)
+    )[0];
+    const productChain = byName.get("product-chain");
+    const poContract = byName.get("po-agent");
+    const learningContract = byName.get("learning-agent");
+    if (productChain && poContract) {
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name: "project-owner",
+          engine: "codex",
+          model: { primary: "gpt-5.5" },
+          contractItemId: poContract.id,
+          harnessItemId: productChain.id,
+          triggers: [
+            { type: "schedule", config: { cron: "0 6 * * *", timezone: "UTC" } },
+            { type: "manual", config: {} },
+          ],
+          sandboxProfileId: sandbox?.id,
+          permissions: ["kb:write", "tasks:write", "hitl:write"],
+          enabled: false,
+        })
+        .onConflictDoNothing();
+    }
+    if (learningContract) {
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name: "learning",
+          engine: "codex",
+          model: { primary: "gpt-5.5" },
+          contractItemId: learningContract.id,
+          harnessItemId: productChain?.id,
+          triggers: [{ type: "schedule", config: { cron: "0 3 * * *", timezone: "UTC" } }],
+          sandboxProfileId: sandbox?.id,
+          permissions: ["runs:read", "hitl:write", "kb:read"],
+          enabled: false,
+        })
+        .onConflictDoNothing();
+    }
+  }
+
   registerCrud(app, "/v1/projects/:projectId/agents", "agents", agentDefs, "agent");
   registerCrud(app, "/v1/sandbox-profiles", "sandboxes", sandboxProfiles, "sbx");
 }
@@ -1932,6 +2209,17 @@ async function streamRunEvents(
     reply.raw.off("close", close);
     void sqlClient.end().catch(() => undefined);
   }
+}
+
+function bearer(value: string | undefined) {
+  if (!value?.startsWith("Bearer ")) return null;
+  return value.slice("Bearer ".length);
+}
+
+function objectOrEmpty(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function registerCrud(

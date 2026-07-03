@@ -1,6 +1,7 @@
 import PgBoss from "pg-boss";
 import pino from "pino";
 import { readConfig } from "./config.js";
+import { runLearningNightly } from "./learning.js";
 import { dispatchRun, reconcileSandboxes } from "./sandbox/orchestrator.js";
 
 export async function startWorker() {
@@ -29,6 +30,10 @@ export async function startWorker() {
         await dispatchRun(config, data as { runId?: string; orgId?: string });
       } else if (queue === "sandbox.reconcile") {
         await reconcileSandboxes(config);
+      } else if (queue === "learning.nightly") {
+        await runLearningNightly(config, (targetQueue, targetData) =>
+          boss.send(targetQueue, targetData),
+        );
       }
       logger.info({ queue, jobId }, "worker completed job");
     });
@@ -37,7 +42,7 @@ export async function startWorker() {
   await boss.schedule("hitl.expire", "0 * * * *", {});
   await boss.schedule("watchtower.outcomes", "0 2 * * *", {});
   await boss.schedule("watchtower.health", "0 3 * * *", {});
-  await boss.schedule("learning.nightly", "0 4 * * *", {});
+  await boss.schedule("learning.nightly", "0 3 * * *", {});
   logger.info({ queues }, "facility worker started");
   return boss;
 }

@@ -81,7 +81,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     try {
       await this.docker.getContainer(ref).remove({ force: true, v: true });
     } catch (error) {
-      if (!isDockerNotFound(error)) throw error;
+      if (!isDockerNotFound(error) && !isRemovalAlreadyInProgress(error)) throw error;
     }
   }
 
@@ -125,6 +125,20 @@ function isAlreadyStopped(error: unknown) {
     String(
       (error as { reason?: string; message?: string }).reason ?? (error as Error).message,
     ).includes("not running")
+  );
+}
+
+function isRemovalAlreadyInProgress(error: unknown) {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    (error as { statusCode?: number }).statusCode === 409 &&
+    String(
+      (error as { reason?: string; message?: string }).reason ?? (error as Error).message,
+    ).includes("removal of container") &&
+    String(
+      (error as { reason?: string; message?: string }).reason ?? (error as Error).message,
+    ).includes("already in progress")
   );
 }
 

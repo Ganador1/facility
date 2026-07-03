@@ -90,26 +90,81 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
     `;
 
     const actionTypes = [
-      "plan_acceptance",
-      "learning_validation",
-      "kickstart_review",
-      "budget_override",
+      { name: "plan_acceptance", required: [] },
+      { name: "learning_validation", required: [] },
+      { name: "kickstart_review", required: [] },
+      { name: "budget_override", required: [] },
+      { name: "task_creation", required: ["taskId", "title", "bodyMd", "wsjf", "target"] },
+      { name: "skill_proposal", required: ["name", "content", "evidence_refs"] },
+      { name: "rule_proposal", required: ["name", "content", "evidence_refs"] },
+      { name: "guard_candidate", required: ["title", "content", "evidence_refs"] },
+      { name: "kb_amendment", required: ["type", "slug", "bodyMd", "evidence_refs"] },
     ];
-    for (const name of actionTypes) {
+    for (const actionType of actionTypes) {
       await sql`
         INSERT INTO action_types (id, org_id, name, payload_schema, resolver, executor, default_ttl_hours)
         VALUES (
-          ${`act_dev_${name}`},
+          ${`act_dev_${actionType.name}`},
           'org_dev_the_agile_monkeys',
-          ${name},
-          '{"type":"object"}'::jsonb,
+          ${actionType.name},
+          ${JSON.stringify({ type: "object", required: actionType.required })}::jsonb,
           '{"type":"permission","config":{"permission":"hitl:decide"}}'::jsonb,
-          '{"type":"none","config":{}}'::jsonb,
+          ${JSON.stringify({
+            type: [
+              "task_creation",
+              "skill_proposal",
+              "rule_proposal",
+              "guard_candidate",
+              "kb_amendment",
+            ].includes(actionType.name)
+              ? "internal"
+              : "none",
+            config: {},
+          })}::jsonb,
           72
         )
-        ON CONFLICT (org_id, name) DO UPDATE SET payload_schema = EXCLUDED.payload_schema, updated_at = now()
+        ON CONFLICT (org_id, name) DO UPDATE SET
+          payload_schema = EXCLUDED.payload_schema,
+          resolver = EXCLUDED.resolver,
+          executor = EXCLUDED.executor,
+          updated_at = now()
       `;
     }
+
+    const harnessRoot = join(repoRoot, "packages/harness");
+    const poContract = await readFile(join(harnessRoot, "contracts/po-agent.md"), "utf8");
+    const learningContract = await readFile(
+      join(harnessRoot, "contracts/learning-agent.md"),
+      "utf8",
+    );
+    await upsertRegistry(
+      sql,
+      "agent_contract",
+      "po-agent",
+      "Bundled Project Owner contract",
+      poContract,
+    );
+    await upsertRegistry(
+      sql,
+      "agent_contract",
+      "learning-agent",
+      "Bundled learning mode contract",
+      learningContract,
+    );
+    await upsertRegistry(
+      sql,
+      "harness",
+      "product-chain",
+      "Bundled product owner artifact chain",
+      JSON.stringify(productChainSeed(), null, 2),
+    );
+    await upsertRegistry(
+      sql,
+      "harness",
+      "research-chain",
+      "Bundled Limina-compatible research artifact chain",
+      JSON.stringify(researchChainSeed(), null, 2),
+    );
 
     const templateRoot = join(repoRoot, "packages/cli/templates");
     const moduleRoot = join(repoRoot, "packages/cli/modules");
@@ -134,6 +189,32 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
   } finally {
     await sql.end();
   }
+}
+
+function productChainSeed() {
+  return {
+    id: "product",
+    types: {
+      S: { name: "Signal", parentTypes: [] },
+      D: { name: "Decision", parentTypes: ["S"] },
+      T: { name: "Task", parentTypes: ["D"] },
+      V: { name: "Verification", parentTypes: ["T"] },
+    },
+  };
+}
+
+function researchChainSeed() {
+  return {
+    id: "research",
+    types: {
+      H: { name: "Hypothesis", parentTypes: [] },
+      E: { name: "Experiment", parentTypes: ["H"] },
+      F: { name: "Finding", parentTypes: ["E"] },
+      L: { name: "Literature", parentTypes: [] },
+      CR: { name: "Challenge Review", parentTypes: [] },
+      SR: { name: "Strategic Review", parentTypes: ["CR"] },
+    },
+  };
 }
 
 async function upsertRegistry(

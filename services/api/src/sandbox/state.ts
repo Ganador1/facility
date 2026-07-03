@@ -22,6 +22,7 @@ export type RunBundle = {
   gatewayUrls: { anthropic: string; openai: string };
   scope: Record<string, unknown>;
   timeoutMin: number;
+  harness?: { files: Record<string, string> };
 };
 
 export type RunSandboxState = {
