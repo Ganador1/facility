@@ -1,7 +1,7 @@
-# CI for facility itself: the test suite (which runs the real CLI against
-# temp repos) and this repo's own guards. Actions pinned to full SHAs — the
-# same rule we generate for everyone (guards/actions-pinned.mjs enforces it
-# here too).
+# CI for the facility monorepo: lint, typecheck, tests (including the CLI
+# end-to-end suite against temp repos) and this repo's own guards. Actions
+# pinned to full SHAs — the same rule we generate for everyone
+# (guards/actions-pinned.mjs enforces it here too).
 name: ci
 
 on:
@@ -12,18 +12,29 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
+          cache: pnpm
 
-      - name: Tests (CLI end to end against temp repos)
-        run: npm test
+      - run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Tests
+        run: pnpm test
 
       - name: Guards (dogfood)
         run: node guards/run.mjs

@@ -1,41 +1,28 @@
 {
-  "name": "@theam/facility",
-  "version": "0.2.0",
-  "description": "Run an AI crew on your GitHub repo: agents that plan before building, build to your standard, verify on a provisioned environment, and never merge their own work.",
-  "keywords": [
-    "ai",
-    "agents",
-    "sdlc",
-    "claude-code",
-    "github-actions",
-    "code-review",
-    "automation"
-  ],
-  "homepage": "https://github.com/theam/facility#readme",
-  "bugs": "https://github.com/theam/facility/issues",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/theam/facility.git"
-  },
+  "name": "facility-monorepo",
+  "private": true,
+  "version": "0.3.0",
+  "description": "Facility — the self-hostable platform that governs your AI SDLC. Monorepo: control plane, gateway, web, docs, CLI, MCP, harnesses.",
   "license": "MIT",
   "author": "The Agile Monkeys (https://theagilemonkeys.com)",
   "type": "module",
-  "bin": {
-    "facility": "bin/facility.mjs"
-  },
-  "files": [
-    "bin",
-    "src",
-    "templates",
-    "modules",
-    "docs",
-    "assets"
-  ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
+  "packageManager": "pnpm@11.1.2",
   "scripts": {
-    "test": "node --test test/*.test.mjs",
-    "guards": "node guards/run.mjs"
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "guards": "node guards/run.mjs",
+    "verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm guards"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.4",
+    "turbo": "^2.5.8",
+    "typescript": "^5.9.3"
   }
 }
