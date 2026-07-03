@@ -3,3 +3,11 @@ packages:
   - services/*
   - packages/*
   - runner
+# Postinstall build-script allowlist — nothing builds unless named here
+# (the tam-os supply-chain convention).
+allowBuilds:
+  sharp: true
+  argon2: true
+  esbuild: true
+  libsodium-wrappers-sumo: true
+  better-sqlite3: false

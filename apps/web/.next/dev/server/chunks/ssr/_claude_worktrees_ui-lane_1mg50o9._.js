@@ -1,0 +1,997 @@
+module.exports = [
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/cx.ts [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "cx",
+    ()=>cx
+]);
+function cx(...parts) {
+    return parts.filter(Boolean).join(" ");
+}
+}),
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "Button",
+    ()=>Button,
+    "ButtonLink",
+    ()=>ButtonLink
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/cx.ts [app-rsc] (ecmascript)");
+;
+;
+const sizes = {
+    sm: "h-8 px-3 text-[11px]",
+    md: "h-10 px-6 text-[12px]",
+    lg: "h-[52px] px-10 text-[12px]"
+};
+function classesFor(variant, size, className) {
+    const base = "group relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap font-mono uppercase tracking-[0.22em] transition-colors disabled:pointer-events-none disabled:opacity-50";
+    if (variant === "textual") {
+        return (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])(base, "h-auto px-0 tracking-[0.18em] text-(--mut) hover:text-(--ink)", className);
+    }
+    if (variant === "danger") {
+        return (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])(base, sizes[size], "border border-(--bad) text-(--bad) hover:bg-(--bad) hover:text-black", className);
+    }
+    if (variant === "primary") {
+        return (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])(base, sizes[size], "border border-(--accent) text-(--accent)", className);
+    }
+    return (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])(base, sizes[size], "border border-(--line) text-(--mut) hover:border-(--accent) hover:text-(--accent)", className);
+}
+/** Primary buttons carry the sliding accent fill — text flips to black on hover. */ function Fill({ variant }) {
+    if (variant !== "primary") return null;
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+        "aria-hidden": true,
+        className: "absolute inset-0 origin-left scale-x-0 bg-(--accent) transition-transform duration-300 group-hover:scale-x-100"
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+        lineNumber: 41,
+        columnNumber: 5
+    }, this);
+}
+function Label({ variant, children }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("relative z-10 inline-flex items-center gap-2 transition-colors", variant === "primary" && "group-hover:text-black"),
+        children: [
+            children,
+            variant === "textual" ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                "aria-hidden": true,
+                children: "→"
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+                lineNumber: 57,
+                columnNumber: 32
+            }, this) : null
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+        lineNumber: 50,
+        columnNumber: 5
+    }, this);
+}
+function Button({ variant = "outline", size = "md", className, children, type, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+        type: type ?? "button",
+        className: classesFor(variant, size, className),
+        ...props,
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(Fill, {
+                variant: variant
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+                lineNumber: 72,
+                columnNumber: 7
+            }, this),
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(Label, {
+                variant: variant,
+                children: children
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+                lineNumber: 73,
+                columnNumber: 7
+            }, this)
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+        lineNumber: 71,
+        columnNumber: 5
+    }, this);
+}
+function ButtonLink({ variant = "outline", size = "md", className, children, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("a", {
+        className: classesFor(variant, size, className),
+        ...props,
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(Fill, {
+                variant: variant
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+                lineNumber: 87,
+                columnNumber: 7
+            }, this),
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(Label, {
+                variant: variant,
+                children: children
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+                lineNumber: 88,
+                columnNumber: 7
+            }, this)
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx",
+        lineNumber: 86,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "Callout",
+    ()=>Callout,
+    "Divider",
+    ()=>Divider,
+    "Eyebrow",
+    ()=>Eyebrow,
+    "LegendChip",
+    ()=>LegendChip,
+    "NumeralAnchor",
+    ()=>NumeralAnchor,
+    "PillTag",
+    ()=>PillTag,
+    "StatusDot",
+    ()=>StatusDot,
+    "toneFor",
+    ()=>toneFor
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/cx.ts [app-rsc] (ecmascript)");
+;
+;
+function Eyebrow({ className, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("eyebrow", className),
+        ...props
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+        lineNumber: 6,
+        columnNumber: 10
+    }, this);
+}
+function NumeralAnchor({ n, className }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("font-mono text-[11px] tracking-[0.24em]", className ?? "text-(--dim)"),
+        children: String(n).padStart(2, "0")
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+        lineNumber: 12,
+        columnNumber: 5
+    }, this);
+}
+function PillTag({ children, active = false, className, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("inline-flex h-8 items-center rounded-full border px-3.5 font-mono text-[11px] uppercase tracking-[0.14em]", active ? "border-(--line-strong) text-(--ink)" : "border-(--line) text-(--mut)", className),
+        ...props,
+        children: children
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+        lineNumber: 26,
+        columnNumber: 5
+    }, this);
+}
+const semanticVar = {
+    agent: "var(--accent)",
+    human: "var(--human)",
+    ok: "var(--ok)",
+    bad: "var(--bad)",
+    info: "var(--info)",
+    machine: "var(--machine)",
+    muted: "var(--dim)"
+};
+function StatusDot({ tone, pulse = false, className }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("relative inline-flex h-2 w-2", className),
+        "aria-hidden": true,
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: "absolute inset-0",
+                style: {
+                    background: semanticVar[tone]
+                }
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+                lineNumber: 65,
+                columnNumber: 7
+            }, this),
+            pulse ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: "absolute inset-0 animate-ping",
+                style: {
+                    background: semanticVar[tone],
+                    opacity: 0.6
+                }
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+                lineNumber: 67,
+                columnNumber: 9
+            }, this) : null
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+        lineNumber: 64,
+        columnNumber: 5
+    }, this);
+}
+function LegendChip({ tone, children }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+        className: "inline-flex items-center px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-[0.12em] text-black",
+        style: {
+            background: semanticVar[tone]
+        },
+        children: children
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+        lineNumber: 79,
+        columnNumber: 5
+    }, this);
+}
+function toneFor(status) {
+    switch(status){
+        case "running":
+        case "provisioning":
+            return "agent";
+        case "awaiting_human":
+        case "open":
+            return "human";
+        case "succeeded":
+        case "approved":
+        case "merged":
+        case "ok":
+            return "ok";
+        case "failed":
+        case "rejected":
+        case "corrupted":
+        case "error":
+            return "bad";
+        case "queued":
+        case "draft":
+            return "info";
+        default:
+            return "machine";
+    }
+}
+function Divider({ className }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("border-t border-(--line)", className)
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+        lineNumber: 116,
+        columnNumber: 10
+    }, this);
+}
+function Callout({ eyebrow, heading, children, action, className }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("flex flex-col gap-6 rounded-[4px] bg-(--card) p-8 sm:p-12", className),
+        children: [
+            eyebrow ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(Eyebrow, {
+                children: eyebrow
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+                lineNumber: 135,
+                columnNumber: 18
+            }, this) : null,
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("h3", {
+                className: "text-xl font-semibold leading-snug text-(--ink)",
+                children: heading
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+                lineNumber: 136,
+                columnNumber: 7
+            }, this),
+            children ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: "text-sm leading-relaxed text-(--mut)",
+                children: children
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+                lineNumber: 137,
+                columnNumber: 19
+            }, this) : null,
+            action ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                children: action
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+                lineNumber: 138,
+                columnNumber: 17
+            }, this) : null
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx",
+        lineNumber: 134,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/grid.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "Cell",
+    ()=>Cell,
+    "CellAccent",
+    ()=>CellAccent,
+    "HairlineGrid",
+    ()=>HairlineGrid
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/cx.ts [app-rsc] (ecmascript)");
+;
+;
+function HairlineGrid({ className, cols = "sm:grid-cols-2 lg:grid-cols-3", ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("grid gap-px border border-(--line) bg-(--line)", cols, className),
+        ...props
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/grid.tsx",
+        lineNumber: 14,
+        columnNumber: 5
+    }, this);
+}
+function Cell({ className, interactive = false, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("group relative bg-(--bg) p-6 sm:p-8", interactive && "transition-colors hover:bg-(--card)", className),
+        ...props
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/grid.tsx",
+        lineNumber: 27,
+        columnNumber: 5
+    }, this);
+}
+function CellAccent() {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+        "aria-hidden": true,
+        className: "absolute inset-x-0 top-0 h-[2px] origin-left scale-x-0 bg-(--accent) transition-transform duration-300 group-hover:scale-x-100"
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/grid.tsx",
+        lineNumber: 41,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "Terminal",
+    ()=>Terminal
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/cx.ts [app-rsc] (ecmascript)");
+;
+;
+const lineColor = {
+    agent: "text-(--accent)",
+    human: "text-(--human)",
+    ok: "text-(--ok)",
+    bad: "text-(--bad)",
+    info: "text-(--info)",
+    machine: "text-(--machine)",
+    muted: "text-(--dim)",
+    plain: "text-(--code)"
+};
+function Terminal({ title, lines, footer, className, children, maxHeight = "max-h-[480px]" }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("flex min-h-0 flex-col border border-(--line) bg-(--bg-subtle)", className),
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: "flex items-center justify-between border-b border-(--line) px-5 py-3",
+                children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                    className: "font-mono text-[10px] uppercase tracking-[0.22em] text-(--mut)",
+                    children: title
+                }, void 0, false, {
+                    fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                    lineNumber: 42,
+                    columnNumber: 9
+                }, this)
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                lineNumber: 41,
+                columnNumber: 7
+            }, this),
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("overflow-y-auto overflow-x-auto px-5 py-4", maxHeight),
+                children: [
+                    lines ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("pre", {
+                        className: "font-mono text-[12.5px] leading-[2.1]",
+                        children: lines.map((line, i)=>// biome-ignore lint/suspicious/noArrayIndexKey: append-only stream
+                            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                                className: "flex gap-4",
+                                children: [
+                                    line.tag ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                        className: "shrink-0 select-none text-(--dim)",
+                                        children: line.tag
+                                    }, void 0, false, {
+                                        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                                        lineNumber: 53,
+                                        columnNumber: 19
+                                    }, this) : null,
+                                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                                        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("whitespace-pre-wrap break-words", lineColor[line.tone ?? "plain"]),
+                                        children: line.text
+                                    }, void 0, false, {
+                                        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                                        lineNumber: 55,
+                                        columnNumber: 17
+                                    }, this)
+                                ]
+                            }, i, true, {
+                                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                                lineNumber: 51,
+                                columnNumber: 15
+                            }, this))
+                    }, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                        lineNumber: 48,
+                        columnNumber: 11
+                    }, this) : null,
+                    children
+                ]
+            }, void 0, true, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                lineNumber: 46,
+                columnNumber: 7
+            }, this),
+            footer ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: "border-t border-(--line) px-5 py-3",
+                children: footer
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+                lineNumber: 64,
+                columnNumber: 17
+            }, this) : null
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx",
+        lineNumber: 40,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/metric.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "Metric",
+    ()=>Metric
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/cx.ts [app-rsc] (ecmascript)");
+;
+;
+function Metric({ label, value, unit, hint, tone, size = "md", className }) {
+    const toneClass = tone === "ok" ? "text-(--ok)" : tone === "bad" ? "text-(--bad)" : tone === "agent" ? "text-(--accent)" : tone === "human" ? "text-(--human)" : "text-(--ink)";
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("flex flex-col gap-2", className),
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: "eyebrow",
+                children: label
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/metric.tsx",
+                lineNumber: 37,
+                columnNumber: 7
+            }, this),
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("tabular font-mono font-semibold leading-none", size === "lg" ? "text-[clamp(34px,4vw,52px)]" : "text-[clamp(24px,3vw,34px)]", toneClass),
+                children: [
+                    value,
+                    unit ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                        className: "ml-1 text-[0.55em] font-medium text-(--mut)",
+                        children: unit
+                    }, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/metric.tsx",
+                        lineNumber: 46,
+                        columnNumber: 17
+                    }, this) : null
+                ]
+            }, void 0, true, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/metric.tsx",
+                lineNumber: 38,
+                columnNumber: 7
+            }, this),
+            hint ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: "text-[12px] leading-relaxed text-(--dim)",
+                children: hint
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/metric.tsx",
+                lineNumber: 48,
+                columnNumber: 15
+            }, this) : null
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/metric.tsx",
+        lineNumber: 36,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "Field",
+    ()=>Field,
+    "Select",
+    ()=>Select,
+    "TextArea",
+    ()=>TextArea,
+    "TextInput",
+    ()=>TextInput
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/cx.ts [app-rsc] (ecmascript)");
+;
+;
+function Field({ label, error, hint, className, children }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("label", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])("flex flex-col gap-2", className),
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: "font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--mut)",
+                children: label
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx",
+                lineNumber: 20,
+                columnNumber: 7
+            }, this),
+            children,
+            error ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: "text-[12px] text-(--bad)",
+                children: error
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx",
+                lineNumber: 25,
+                columnNumber: 9
+            }, this) : hint ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                className: "text-[12px] text-(--dim)",
+                children: hint
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx",
+                lineNumber: 27,
+                columnNumber: 9
+            }, this) : null
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx",
+        lineNumber: 19,
+        columnNumber: 5
+    }, this);
+}
+const inputClasses = "h-10 w-full border border-(--line) bg-(--bg-subtle) px-3 text-[14px] text-(--ink) placeholder:text-(--dim) hover:border-(--line-strong)";
+function TextInput({ className, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("input", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])(inputClasses, className),
+        ...props
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx",
+        lineNumber: 37,
+        columnNumber: 10
+    }, this);
+}
+function TextArea({ className, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("textarea", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])(inputClasses, "h-auto min-h-[96px] py-2 leading-relaxed", className),
+        ...props
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx",
+        lineNumber: 42,
+        columnNumber: 5
+    }, this);
+}
+function Select({ className, children, ...props }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("select", {
+        className: (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$cx$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cx"])(inputClasses, "appearance-none pr-8", className),
+        ...props,
+        children: children
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx",
+        lineNumber: 51,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/packages/ui/src/index.ts [app-rsc] (ecmascript) <locals>", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$button$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/button.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$primitives$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$grid$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/grid.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$terminal$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/terminal.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$metric$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/metric.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$field$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/field.tsx [app-rsc] (ecmascript)");
+;
+;
+;
+;
+;
+;
+;
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "ErrorNotice",
+    ()=>ErrorNotice,
+    "Offline",
+    ()=>Offline
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$index$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__$3c$locals$3e$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/index.ts [app-rsc] (ecmascript) <locals>");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$primitives$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx [app-rsc] (ecmascript)");
+;
+;
+function Offline({ detail }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: "flex flex-col items-start gap-4 border border-(--line) bg-(--bg-subtle) p-8",
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$primitives$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["Eyebrow"], {
+                children: "control plane unreachable"
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx",
+                lineNumber: 7,
+                columnNumber: 7
+            }, this),
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
+                className: "max-w-md text-sm leading-relaxed text-(--mut)",
+                children: [
+                    "The web app is up, but the Facility API did not answer",
+                    detail ? /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["Fragment"], {
+                        children: [
+                            " (",
+                            detail,
+                            ")"
+                        ]
+                    }, void 0, true) : null,
+                    ". Start it with",
+                    " ",
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("code", {
+                        className: "font-mono text-[12.5px] text-(--code)",
+                        children: "pnpm --filter @facility/api dev"
+                    }, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx",
+                        lineNumber: 11,
+                        columnNumber: 9
+                    }, this),
+                    " ",
+                    "and reload."
+                ]
+            }, void 0, true, {
+                fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx",
+                lineNumber: 8,
+                columnNumber: 7
+            }, this)
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx",
+        lineNumber: 6,
+        columnNumber: 5
+    }, this);
+}
+function ErrorNotice({ message }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: "border border-(--bad)/40 bg-(--bg-subtle) p-6",
+        children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("p", {
+            className: "font-mono text-[12px] text-(--bad)",
+            children: message
+        }, void 0, false, {
+            fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx",
+            lineNumber: 21,
+            columnNumber: 7
+        }, this)
+    }, void 0, false, {
+        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx",
+        lineNumber: 20,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx [app-rsc] (client reference proxy) <module evaluation>", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "MobileNav",
+    ()=>MobileNav,
+    "NAV",
+    ()=>NAV,
+    "Sidebar",
+    ()=>Sidebar
+]);
+// This file is generated by next-core EcmascriptClientReferenceModule.
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-server-dom-turbopack-server.js [app-rsc] (ecmascript)");
+;
+const MobileNav = (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["registerClientReference"])(function() {
+    throw new Error("Attempted to call MobileNav() from the server but MobileNav is on the client. It's not possible to invoke a client function from the server, it can only be rendered as a Component or passed to props of a Client Component.");
+}, "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx <module evaluation>", "MobileNav");
+const NAV = (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["registerClientReference"])(function() {
+    throw new Error("Attempted to call NAV() from the server but NAV is on the client. It's not possible to invoke a client function from the server, it can only be rendered as a Component or passed to props of a Client Component.");
+}, "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx <module evaluation>", "NAV");
+const Sidebar = (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["registerClientReference"])(function() {
+    throw new Error("Attempted to call Sidebar() from the server but Sidebar is on the client. It's not possible to invoke a client function from the server, it can only be rendered as a Component or passed to props of a Client Component.");
+}, "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx <module evaluation>", "Sidebar");
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx [app-rsc] (client reference proxy)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "MobileNav",
+    ()=>MobileNav,
+    "NAV",
+    ()=>NAV,
+    "Sidebar",
+    ()=>Sidebar
+]);
+// This file is generated by next-core EcmascriptClientReferenceModule.
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-server-dom-turbopack-server.js [app-rsc] (ecmascript)");
+;
+const MobileNav = (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["registerClientReference"])(function() {
+    throw new Error("Attempted to call MobileNav() from the server but MobileNav is on the client. It's not possible to invoke a client function from the server, it can only be rendered as a Component or passed to props of a Client Component.");
+}, "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx", "MobileNav");
+const NAV = (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["registerClientReference"])(function() {
+    throw new Error("Attempted to call NAV() from the server but NAV is on the client. It's not possible to invoke a client function from the server, it can only be rendered as a Component or passed to props of a Client Component.");
+}, "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx", "NAV");
+const Sidebar = (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$server$2d$dom$2d$turbopack$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["registerClientReference"])(function() {
+    throw new Error("Attempted to call Sidebar() from the server but Sidebar is on the client. It's not possible to invoke a client function from the server, it can only be rendered as a Component or passed to props of a Client Component.");
+}, "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx", "Sidebar");
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$nav$2e$tsx__$5b$app$2d$rsc$5d$__$28$client__reference__proxy$29$__$3c$module__evaluation$3e$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx [app-rsc] (client reference proxy) <module evaluation>");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$nav$2e$tsx__$5b$app$2d$rsc$5d$__$28$client__reference__proxy$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx [app-rsc] (client reference proxy)");
+;
+__turbopack_context__.n(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$nav$2e$tsx__$5b$app$2d$rsc$5d$__$28$client__reference__proxy$29$__);
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "Topbar",
+    ()=>Topbar
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$index$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__$3c$locals$3e$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/index.ts [app-rsc] (ecmascript) <locals>");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$primitives$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/packages/ui/src/primitives.tsx [app-rsc] (ecmascript)");
+;
+;
+function Topbar({ principal }) {
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("header", {
+        className: "hidden items-center justify-between border-b border-(--line) px-8 py-4 lg:flex",
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: "flex items-center gap-3",
+                children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$packages$2f$ui$2f$src$2f$primitives$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["PillTag"], {
+                    children: principal.org.name
+                }, void 0, false, {
+                    fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx",
+                    lineNumber: 8,
+                    columnNumber: 9
+                }, this)
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx",
+                lineNumber: 7,
+                columnNumber: 7
+            }, this),
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: "flex items-center gap-4",
+                children: [
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("span", {
+                        className: "font-mono text-[11px] text-(--dim)",
+                        children: principal.email
+                    }, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx",
+                        lineNumber: 11,
+                        columnNumber: 9
+                    }, this),
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("form", {
+                        action: "/api/auth/logout",
+                        method: "post",
+                        children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("button", {
+                            type: "submit",
+                            className: "font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--mut) hover:text-(--ink)",
+                            children: "sign out"
+                        }, void 0, false, {
+                            fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx",
+                            lineNumber: 13,
+                            columnNumber: 11
+                        }, this)
+                    }, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx",
+                        lineNumber: 12,
+                        columnNumber: 9
+                    }, this)
+                ]
+            }, void 0, true, {
+                fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx",
+                lineNumber: 10,
+                columnNumber: 7
+            }, this)
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx",
+        lineNumber: 6,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/lib/api.ts [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "SESSION_COOKIE",
+    ()=>SESSION_COOKIE,
+    "api",
+    ()=>api
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/headers.js [app-rsc] (ecmascript)");
+;
+/**
+ * Server-side client for the control plane. Typed against the v1 API
+ * (docs/platform/specs/control-plane.md); replaced by @facility/sdk once the
+ * generated client lands — keep this surface minimal.
+ */ const API_URL = process.env.FACILITY_API_URL ?? "http://localhost:4400";
+const SESSION_COOKIE = "facility_session";
+async function apiFetch(path, init) {
+    const jar = await (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$headers$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["cookies"])();
+    const session = jar.get(SESSION_COOKIE);
+    try {
+        const res = await fetch(`${API_URL}${path}`, {
+            ...init,
+            headers: {
+                "content-type": "application/json",
+                ...session ? {
+                    cookie: `${SESSION_COOKIE}=${session.value}`
+                } : {},
+                ...init?.headers
+            },
+            cache: "no-store"
+        });
+        if (!res.ok) {
+            let message = res.statusText;
+            try {
+                const body = await res.json();
+                message = body.error?.message ?? message;
+            } catch  {
+            // non-JSON error body — keep statusText
+            }
+            return {
+                ok: false,
+                status: res.status,
+                offline: false,
+                message
+            };
+        }
+        return {
+            ok: true,
+            data: await res.json()
+        };
+    } catch  {
+        return {
+            ok: false,
+            status: 0,
+            offline: true,
+            message: "control plane unreachable"
+        };
+    }
+}
+const api = {
+    me: ()=>apiFetch("/v1/me"),
+    projects: ()=>apiFetch("/v1/projects"),
+    project: (id)=>apiFetch(`/v1/projects/${id}`),
+    runs: (projectId, params = "")=>apiFetch(`/v1/projects/${projectId}/runs${params}`),
+    run: (id)=>apiFetch(`/v1/runs/${id}`),
+    runEvents: (id, afterSeq = 0)=>apiFetch(`/v1/runs/${id}/events?afterSeq=${afterSeq}`),
+    inbox: ()=>apiFetch("/v1/inbox?state=open"),
+    proposal: (id)=>apiFetch(`/v1/proposals/${id}`),
+    audit: (params = "")=>apiFetch(`/v1/audit${params}`),
+    registry: (params = "")=>apiFetch(`/v1/registry/items${params}`),
+    spend: (params = "")=>apiFetch(`/v1/spend${params}`)
+};
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx [app-rsc] (ecmascript)", ((__turbopack_context__) => {
+"use strict";
+
+__turbopack_context__.s([
+    "default",
+    ()=>AppLayout
+]);
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/server/route-modules/app-page/vendored/rsc/react-jsx-dev-runtime.js [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$offline$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/apps/web/components/offline.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$nav$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/apps/web/components/shell/nav.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$topbar$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/apps/web/components/shell/topbar.tsx [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$lib$2f$api$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/apps/web/lib/api.ts [app-rsc] (ecmascript)");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$api$2f$navigation$2e$react$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__$3c$locals$3e$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/api/navigation.react-server.js [app-rsc] (ecmascript) <locals>");
+var __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$client$2f$components$2f$navigation$2e$react$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__ = __turbopack_context__.i("[project]/.claude/worktrees/ui-lane/node_modules/.pnpm/next@16.2.10_react-dom@19.2.7_react@19.2.7__react@19.2.7/node_modules/next/dist/client/components/navigation.react-server.js [app-rsc] (ecmascript)");
+;
+;
+;
+;
+;
+;
+async function AppLayout({ children }) {
+    const me = await __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$lib$2f$api$2e$ts__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["api"].me();
+    if (!me.ok) {
+        if (me.offline) {
+            return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: "mx-auto flex min-h-dvh max-w-3xl items-center px-6",
+                children: /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$offline$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["Offline"], {
+                    detail: me.message
+                }, void 0, false, {
+                    fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+                    lineNumber: 14,
+                    columnNumber: 11
+                }, this)
+            }, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+                lineNumber: 13,
+                columnNumber: 9
+            }, this);
+        }
+        (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$client$2f$components$2f$navigation$2e$react$2d$server$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["redirect"])("/login");
+    }
+    return /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+        className: "flex min-h-dvh",
+        children: [
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$nav$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["Sidebar"], {}, void 0, false, {
+                fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+                lineNumber: 23,
+                columnNumber: 7
+            }, this),
+            /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("div", {
+                className: "min-w-0 flex-1",
+                children: [
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$nav$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["MobileNav"], {}, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+                        lineNumber: 25,
+                        columnNumber: 9
+                    }, this),
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])(__TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$apps$2f$web$2f$components$2f$shell$2f$topbar$2e$tsx__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["Topbar"], {
+                        principal: me.data
+                    }, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+                        lineNumber: 26,
+                        columnNumber: 9
+                    }, this),
+                    /*#__PURE__*/ (0, __TURBOPACK__imported__module__$5b$project$5d2f2e$claude$2f$worktrees$2f$ui$2d$lane$2f$node_modules$2f2e$pnpm$2f$next$40$16$2e$2$2e$10_react$2d$dom$40$19$2e$2$2e$7_react$40$19$2e$2$2e$7_$5f$react$40$19$2e$2$2e$7$2f$node_modules$2f$next$2f$dist$2f$server$2f$route$2d$modules$2f$app$2d$page$2f$vendored$2f$rsc$2f$react$2d$jsx$2d$dev$2d$runtime$2e$js__$5b$app$2d$rsc$5d$__$28$ecmascript$29$__["jsxDEV"])("main", {
+                        className: "px-5 py-8 sm:px-8 lg:px-10",
+                        children: children
+                    }, void 0, false, {
+                        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+                        lineNumber: 27,
+                        columnNumber: 9
+                    }, this)
+                ]
+            }, void 0, true, {
+                fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+                lineNumber: 24,
+                columnNumber: 7
+            }, this)
+        ]
+    }, void 0, true, {
+        fileName: "[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx",
+        lineNumber: 22,
+        columnNumber: 5
+    }, this);
+}
+}),
+"[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx [app-rsc] (ecmascript, Next.js Server Component)", ((__turbopack_context__) => {
+
+__turbopack_context__.n(__turbopack_context__.i("[project]/.claude/worktrees/ui-lane/apps/web/app/(app)/layout.tsx [app-rsc] (ecmascript)"));
+}),
+];
+
+//# sourceMappingURL=_claude_worktrees_ui-lane_1mg50o9._.js.map
