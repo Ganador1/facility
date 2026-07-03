@@ -4,9 +4,19 @@ import { providerCredentials, runs, virtualKeys } from "@facility/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { AuthedKey, GatewayConfig, Provider, ProviderCredential } from "./types.js";
 
+// Short cache TTL bounds how long a revoked run key can survive in the gateway
+// (revocation happens in the api process; the gateway can't be signalled
+// synchronously, so the ceiling is this TTL). Run keys also carry their own
+// expiry, enforced on every hit regardless of cache.
+const KEY_CACHE_TTL_MS = 15_000;
 const keyCache = new Map<
   string,
-  { expiresAt: number; row: AuthedKey & { hash: string }; secret?: string }
+  {
+    cacheExpiresAt: number;
+    keyExpiresAt: number | null;
+    row: AuthedKey & { hash: string };
+    secret: string;
+  }
 >();
 const credentialCache = new Map<string, { expiresAt: number; credential: ProviderCredential }>();
 
@@ -24,43 +34,58 @@ export async function authenticateVirtualKey(
 ): Promise<AuthedKey | null> {
   const lookup = keyLookup(secret);
   const cached = keyCache.get(lookup);
-  const row =
-    cached && cached.expiresAt > now
-      ? cached.row
-      : await loadVirtualKeyByPrefix(db, lookup, now + 60_000);
-  if (!row) return null;
-  if (cached?.secret === secret && cached.expiresAt > now) return row;
-  if (!(await verifyKey(secret, row.hash))) return null;
-  keyCache.set(lookup, { expiresAt: now + 60_000, row, secret });
-  return row;
+  if (
+    cached &&
+    cached.secret === secret &&
+    cached.cacheExpiresAt > now &&
+    (cached.keyExpiresAt === null || cached.keyExpiresAt > now)
+  ) {
+    return cached.row;
+  }
+  const loaded = await loadVirtualKeyByPrefix(db, lookup, secret, now);
+  if (!loaded) return null;
+  keyCache.set(lookup, {
+    cacheExpiresAt: now + KEY_CACHE_TTL_MS,
+    keyExpiresAt: loaded.keyExpiresAt,
+    row: loaded.row,
+    secret,
+  });
+  return loaded.row;
 }
 
 async function loadVirtualKeyByPrefix(
   db: FacilityDb,
   lookup: string,
-  expiresAt: number,
-): Promise<(AuthedKey & { hash: string }) | null> {
+  secret: string,
+  now: number,
+): Promise<{ row: AuthedKey & { hash: string }; keyExpiresAt: number | null } | null> {
+  // Verify against every non-revoked key sharing this prefix, not just the
+  // first — a prefix collision must not make a valid key fail (finding #6).
   const rows = await db
     .select({ key: virtualKeys, run: runs })
     .from(virtualKeys)
     .leftJoin(runs, eq(virtualKeys.runId, runs.id))
     .where(and(eq(virtualKeys.prefix, lookup), isNull(virtualKeys.revokedAt)))
-    .limit(2);
-  const row = rows[0];
-  if (!row) return null;
-  if (row.key.expiresAt && row.key.expiresAt.getTime() <= Date.now()) return null;
-  const loaded = {
-    id: row.key.id,
-    orgId: row.key.orgId,
-    projectId: row.key.projectId,
-    runId: row.key.runId,
-    allowedModels: row.key.allowedModels,
-    budgetId: row.key.budgetId,
-    agentDefId: row.run?.agentDefId ?? null,
-    hash: row.key.hash,
-  };
-  keyCache.set(lookup, { expiresAt, row: loaded });
-  return loaded;
+    .limit(8);
+  for (const row of rows) {
+    const keyExpiresAt = row.key.expiresAt ? row.key.expiresAt.getTime() : null;
+    if (keyExpiresAt !== null && keyExpiresAt <= now) continue;
+    if (!(await verifyKey(secret, row.key.hash))) continue;
+    return {
+      keyExpiresAt,
+      row: {
+        id: row.key.id,
+        orgId: row.key.orgId,
+        projectId: row.key.projectId,
+        runId: row.key.runId,
+        allowedModels: row.key.allowedModels,
+        budgetId: row.key.budgetId,
+        agentDefId: row.run?.agentDefId ?? null,
+        hash: row.key.hash,
+      },
+    };
+  }
+  return null;
 }
 
 export async function providerCredential(

@@ -303,7 +303,17 @@ export async function enqueueFingerprintVerify(
   await verifyFingerprints({ db, factory, repo });
 }
 
-export async function resolveGithubIntegration(db: FacilityDb, payload: WebhookPayload) {
+/**
+ * Map a verified webhook to its org. A known installation resolves to its
+ * bound org. An UNKNOWN installation is only bound when the deployment has
+ * exactly one org (single-tenant self-host — unambiguous); with multiple orgs
+ * we refuse rather than bind to an arbitrary tenant (finding #5). Installations
+ * become known via the `installation` event, which carries its own org context.
+ */
+export async function resolveGithubIntegration(
+  db: FacilityDb,
+  payload: WebhookPayload,
+): Promise<{ orgId: string; integrationId: string } | null> {
   const installationId = payload.installation?.id;
   if (installationId) {
     const installation = (
@@ -318,18 +328,13 @@ export async function resolveGithubIntegration(db: FacilityDb, payload: WebhookP
       return { orgId: installation.orgId, integrationId: integration.id };
     }
   }
-  const rows = await db
-    .select()
-    .from(integrations)
-    .where(and(eq(integrations.kind, "github_app"), eq(integrations.enabled, true)))
-    .limit(2);
-  if (rows.length === 1 && rows[0]) return { orgId: rows[0].orgId, integrationId: rows[0].id };
+  // Unknown installation: only safe to bind when there is exactly one org.
   const orgRows = (await db.execute(
-    sql`select id from orgs order by created_at asc limit 1` as never,
+    sql`select id from orgs order by created_at asc limit 2` as never,
   )) as unknown as { id: string }[];
-  const orgId = orgRows[0]?.id ?? "org_dev_the_agile_monkeys";
-  const integration = await findOrCreateGithubIntegration(db, orgId);
-  return { orgId, integrationId: integration.id };
+  if (orgRows.length !== 1 || !orgRows[0]) return null;
+  const integration = await findOrCreateGithubIntegration(db, orgRows[0].id);
+  return { orgId: orgRows[0].id, integrationId: integration.id };
 }
 
 async function findOrCreateGithubIntegration(db: FacilityDb, orgId: string) {

@@ -42,6 +42,12 @@ export async function registerWebhookRoutes(app: FastifyInstance, config: AppCon
         }
         const payload = parseGithubJson(rawBody) as Record<string, unknown>;
         const integration = await resolveGithubIntegration(app.facilityDb, payload);
+        if (!integration) {
+          // HMAC-valid but we can't unambiguously attribute it to an org
+          // (unknown installation in a multi-org deployment). Drop, don't guess.
+          request.log.warn({ delivery, eventType }, "github webhook: unresolved installation");
+          return reply.status(202).send({ ok: true });
+        }
         const id = `gh_${delivery}`;
         const inserted = await app.facilityDb
           .insert(inboundEvents)

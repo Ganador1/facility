@@ -26,6 +26,13 @@ export class DockerSandboxDriver implements SandboxDriver {
         AutoRemove: false,
         Memory: Math.max(128, spec.memoryMb) * 1024 * 1024,
         NanoCpus: Math.max(0.1, spec.cpu) * 1_000_000_000,
+        // Contain a rogue agent process: no privilege escalation, no Linux
+        // capabilities, bounded process count. (Network-egress restriction and
+        // read-only rootfs are the remaining hardening — they need an internal
+        // network + proxy and runner-image coordination; see STATUS.md.)
+        SecurityOpt: ["no-new-privileges"],
+        CapDrop: ["ALL"],
+        PidsLimit: 512,
       },
     });
     await container.start();

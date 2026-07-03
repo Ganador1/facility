@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { newId } from "@facility/core";
-import { createDb, inboundEvents, migrate, seed } from "@facility/db";
-import { eq } from "drizzle-orm";
+import { createDb, githubInstallations, inboundEvents, migrate, orgs, seed } from "@facility/db";
+import { asc, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
@@ -50,6 +50,21 @@ describe("github integration", async () => {
     await migrate(databaseUrl);
     await seed(databaseUrl);
     await app.ready();
+    // Pre-bind installation 123 to an org — the install-callback flow does this
+    // in production; an unknown installation is deliberately NOT auto-bound.
+    const org = (await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(1))[0];
+    if (org) {
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId: org.id,
+          installationId: 123,
+          accountLogin: "octo",
+          targetType: "Organization",
+        })
+        .onConflictDoNothing();
+    }
   });
 
   afterAll(async () => {

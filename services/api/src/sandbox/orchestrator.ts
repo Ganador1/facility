@@ -113,12 +113,17 @@ export async function finishRun(
   },
 ) {
   if (terminalStatus(run.status)) return run;
-  if (input.status === "succeeded" && (await runUsesHarness(db, run))) {
+  // A harness run that succeeds must leave the KB valid. If the checkpoint
+  // fails, the run is a FAILURE — but resources must still be reclaimed, so we
+  // downgrade status here and fall through to cleanup rather than throwing and
+  // leaking the sandbox + virtual key (finding #3).
+  let { status } = input;
+  let { error } = input;
+  if (status === "succeeded" && (await runUsesHarness(db, run))) {
     const checkpoint = await validateProjectKb(db, run.orgId, run.projectId);
     if (!checkpoint.ok) {
-      throw new Error(
-        `kb_checkpoint_failed:${checkpoint.errors.map((error) => error.code).join(",")}`,
-      );
+      status = "failed";
+      error = `kb_checkpoint_failed:${checkpoint.errors.map((e) => e.code).join(",")}`;
     }
   }
   const sandbox = readSandbox(run.sandbox);
@@ -142,9 +147,9 @@ export async function finishRun(
     await db
       .update(runs)
       .set({
-        status: input.status,
+        status,
         receipt,
-        error: input.error,
+        error,
         endedAt: new Date(),
         sandbox: { ...sandbox, finishedAt: new Date().toISOString() },
         updatedAt: new Date(),
@@ -162,15 +167,13 @@ export async function finishRun(
       .set({ revokedAt: new Date() })
       .where(eq(virtualKeys.id, sandbox.virtualKeyId));
   }
-  await appendRunEvents(db, run.orgId, run.id, [
-    { type: "result", data: { status: input.status } },
-  ]);
+  await appendRunEvents(db, run.orgId, run.id, [{ type: "result", data: { status, error } }]);
   await insertAuditEvent(db, {
     orgId: run.orgId,
     actor: { type: "agent", id: run.id },
     action: "run.finished",
     target: { type: "run", id: run.id },
-    payload: { status: input.status },
+    payload: { status, error },
   });
   return row ?? run;
 }
