@@ -46,10 +46,17 @@ resource "aws_ecs_task_definition" "service" {
   family                   = "${local.name_prefix}-${each.key}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = tostring(var.task_cpu[each.key])
-  memory                   = tostring(var.task_memory[each.key])
-  execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+
+  # Graviton/ARM64 Fargate — cheaper, and matches images built on Apple Silicon.
+  # Set to X86_64 if you build images on an x86 host.
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+  cpu                = tostring(var.task_cpu[each.key])
+  memory             = tostring(var.task_memory[each.key])
+  execution_role_arn = aws_iam_role.ecs_execution.arn
+  task_role_arn      = aws_iam_role.task.arn
 
   container_definitions = jsonencode([
     merge(
@@ -84,10 +91,17 @@ resource "aws_ecs_task_definition" "runner" {
   family                   = "${local.name_prefix}-runner"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = tostring(var.task_cpu.runner)
-  memory                   = tostring(var.task_memory.runner)
-  execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+
+  # Graviton/ARM64 Fargate — cheaper, and matches images built on Apple Silicon.
+  # Set to X86_64 if you build images on an x86 host.
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+  cpu                = tostring(var.task_cpu.runner)
+  memory             = tostring(var.task_memory.runner)
+  execution_role_arn = aws_iam_role.ecs_execution.arn
+  task_role_arn      = aws_iam_role.task.arn
 
   container_definitions = jsonencode([
     {
@@ -115,10 +129,17 @@ resource "aws_ecs_task_definition" "migrate" {
   family                   = "${local.name_prefix}-migrate"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = tostring(var.task_cpu.migrate)
-  memory                   = tostring(var.task_memory.migrate)
-  execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.task.arn
+
+  # Graviton/ARM64 Fargate — cheaper, and matches images built on Apple Silicon.
+  # Set to X86_64 if you build images on an x86 host.
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+  cpu                = tostring(var.task_cpu.migrate)
+  memory             = tostring(var.task_memory.migrate)
+  execution_role_arn = aws_iam_role.ecs_execution.arn
+  task_role_arn      = aws_iam_role.task.arn
 
   container_definitions = jsonencode([
     {
