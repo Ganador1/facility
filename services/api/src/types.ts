@@ -36,6 +36,7 @@ export type AppConfig = {
   githubAppPrivateKey?: string;
   githubAppWebhookSecret?: string;
   githubAppSlug?: string;
+  githubCloneToken?: string;
   logLevel: string;
 };
 

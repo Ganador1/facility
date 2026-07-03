@@ -80,7 +80,10 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
           : null,
         platformApiUrl: config.sandboxApiUrl.replace(/\/$/, ""),
         projectId: sandbox.projectId ?? run.projectId,
-        repoToken: null,
+        // Short-lived clone credential for private repos. In production this is
+        // a per-run GitHub App installation token; here it falls back to a
+        // configured token for self-host / validation.
+        repoToken: config.githubCloneToken ?? null,
         gatewayUrls: sandbox.bundle.gatewayUrls,
       };
     },

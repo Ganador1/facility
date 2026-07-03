@@ -31,6 +31,10 @@ const EnvSchema = z
     GITHUB_APP_PRIVATE_KEY: z.string().optional(),
     GITHUB_APP_WEBHOOK_SECRET: z.string().optional(),
     GITHUB_APP_SLUG: z.string().optional(),
+    // Fallback clone credential for private repos when a GitHub App
+    // installation token is not available (the App mints per-run tokens in
+    // production; this is the self-host / validation path).
+    GITHUB_CLONE_TOKEN: z.string().optional(),
     LOG_LEVEL: z.string().default("info"),
     NODE_ENV: z.string().optional(),
   })
@@ -68,6 +72,7 @@ export function readConfig(env = process.env): AppConfig {
     githubAppPrivateKey: parsed.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, "\n"),
     githubAppWebhookSecret: parsed.GITHUB_APP_WEBHOOK_SECRET,
     githubAppSlug: parsed.GITHUB_APP_SLUG,
+    githubCloneToken: parsed.GITHUB_CLONE_TOKEN,
     logLevel: parsed.LOG_LEVEL,
   };
 }

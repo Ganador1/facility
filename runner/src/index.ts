@@ -28,6 +28,7 @@ async function main() {
       platformKey: hello.platformKey ? String(hello.platformKey) : null,
       platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl,
       projectId: hello.projectId ? String(hello.projectId) : "",
+      repoToken: hello.repoToken ? String(hello.repoToken) : null,
     });
     steerStop = startSteeringPoll();
     if (bundle.provisionCmd) {
@@ -60,15 +61,29 @@ async function main() {
 async function prepareWorkspace(
   bundle: RunBundle,
   virtualKey: string,
-  platform: { platformKey: string | null; platformApiUrl: string; projectId: string },
+  platform: {
+    platformKey: string | null;
+    platformApiUrl: string;
+    projectId: string;
+    repoToken: string | null;
+  },
 ) {
   await mkdir(workRoot, { recursive: true });
   await writeFile(join(workRoot, "contract.md"), bundle.contract);
   const cwd = cwdFor(bundle);
   if (bundle.repo.cloneUrl) {
+    // Inject a token for private clones (x-access-token is how both PATs and
+    // GitHub App installation tokens authenticate to github.com over HTTPS).
+    const cloneUrl =
+      platform.repoToken && bundle.repo.cloneUrl.startsWith("https://github.com/")
+        ? bundle.repo.cloneUrl.replace(
+            "https://github.com/",
+            `https://x-access-token:${platform.repoToken}@github.com/`,
+          )
+        : bundle.repo.cloneUrl;
     await runCommand(
       "git",
-      ["clone", "--branch", bundle.repo.branch ?? "main", bundle.repo.cloneUrl, repoDir],
+      ["clone", "--branch", bundle.repo.branch ?? "main", cloneUrl, repoDir],
       workRoot,
     );
   } else {
