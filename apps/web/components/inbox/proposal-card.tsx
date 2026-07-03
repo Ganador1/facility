@@ -1,0 +1,94 @@
+"use client";
+
+import type { Proposal } from "@/lib/api";
+import { Button, Eyebrow, cx } from "@facility/ui";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+
+/**
+ * A gate in card form: the evidence inline, the decision one tap.
+ * Decisions hit the HITL ledger and are fully audited.
+ */
+export function ProposalCard({ proposal, focused }: { proposal: Proposal; focused?: boolean }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  const [note, setNote] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function decide(decision: "approve" | "reject") {
+    setBusy(decision);
+    setError(null);
+    try {
+      const res = await fetch(`/api/v1/proposals/${proposal.id}/decide`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision, note: note || undefined }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as {
+          error?: { message?: string };
+        } | null;
+        throw new Error(body?.error?.message ?? `decision failed (${res.status})`);
+      }
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "decision failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <article
+      id={proposal.id}
+      className={cx(
+        "flex flex-col gap-4 border bg-(--bg) p-6",
+        focused ? "border-(--human)" : "border-(--line)",
+      )}
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <Eyebrow className="text-(--human)">{proposal.actionType}</Eyebrow>
+        <span className="font-mono text-[10px] text-(--dim)">
+          {new Date(proposal.createdAt).toLocaleString()}
+          {proposal.expiresAt
+            ? ` · expires ${new Date(proposal.expiresAt).toLocaleDateString()}`
+            : null}
+        </span>
+      </div>
+
+      <div className="whitespace-pre-wrap text-sm leading-relaxed text-(--ink)">
+        {proposal.contextMd}
+      </div>
+
+      <details className="group">
+        <summary className="cursor-pointer select-none font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--dim) hover:text-(--mut)">
+          payload
+        </summary>
+        <pre className="mt-3 overflow-x-auto border border-(--line) bg-(--bg-subtle) p-4 font-mono text-[11.5px] leading-relaxed text-(--code)">
+          {JSON.stringify(proposal.payload, null, 2)}
+        </pre>
+      </details>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={busy !== null}
+          onClick={() => decide("approve")}
+        >
+          {busy === "approve" ? "approving…" : "approve"}
+        </Button>
+        <Button size="sm" variant="danger" disabled={busy !== null} onClick={() => decide("reject")}>
+          {busy === "reject" ? "rejecting…" : "reject"}
+        </Button>
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="note (recorded in the ledger)"
+          className="h-8 min-w-0 flex-1 border-b border-(--line) bg-transparent px-1 text-[13px] text-(--ink) placeholder:text-(--dim) focus:border-(--line-strong)"
+        />
+      </div>
+      {error ? <p className="font-mono text-[11px] text-(--bad)">{error}</p> : null}
+    </article>
+  );
+}

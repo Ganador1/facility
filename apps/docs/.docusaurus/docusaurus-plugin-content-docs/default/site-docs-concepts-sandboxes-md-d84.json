@@ -1,0 +1,26 @@
+{
+  "id": "concepts/sandboxes",
+  "title": "Sandboxes & sessions",
+  "description": "Platform-lane agents execute in disposable, isolated sandboxes — never on",
+  "source": "@site/docs/concepts/sandboxes.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/sandboxes",
+  "permalink": "/concepts/sandboxes",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/concepts/sandboxes.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Sandboxes & sessions"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Projects & governance",
+    "permalink": "/concepts/projects-and-governance"
+  },
+  "next": {
+    "title": "Gateway & cost",
+    "permalink": "/concepts/gateway-and-cost"
+  }
+}

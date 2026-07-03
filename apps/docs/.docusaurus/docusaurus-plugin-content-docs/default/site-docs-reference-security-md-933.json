@@ -1,0 +1,22 @@
+{
+  "id": "reference/security",
+  "title": "Security model",
+  "description": "Security and privacy are first-class concerns; this page is the contract.",
+  "source": "@site/docs/reference/security.md",
+  "sourceDirName": "reference",
+  "slug": "/reference/security",
+  "permalink": "/reference/security",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/reference/security.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Security model"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "MCP",
+    "permalink": "/reference/mcp"
+  }
+}

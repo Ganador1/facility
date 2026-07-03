@@ -1,0 +1,26 @@
+{
+  "id": "self-host/production",
+  "title": "Production",
+  "description": "The production shape is the same five containers against a managed Postgres",
+  "source": "@site/docs/self-host/production.md",
+  "sourceDirName": "self-host",
+  "slug": "/self-host/production",
+  "permalink": "/self-host/production",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/self-host/production.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Production"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "Quickstart",
+    "permalink": "/self-host/quickstart"
+  },
+  "next": {
+    "title": "AWS (Terraform)",
+    "permalink": "/self-host/aws"
+  }
+}

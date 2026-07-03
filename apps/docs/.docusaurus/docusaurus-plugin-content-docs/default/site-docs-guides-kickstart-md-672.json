@@ -1,0 +1,26 @@
+{
+  "id": "guides/kickstart",
+  "title": "Kickstart a project",
+  "description": "From zero to a working factory:",
+  "source": "@site/docs/guides/kickstart.md",
+  "sourceDirName": "guides",
+  "slug": "/guides/kickstart",
+  "permalink": "/guides/kickstart",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/guides/kickstart.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Kickstart a project"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "AWS (Terraform)",
+    "permalink": "/self-host/aws"
+  },
+  "next": {
+    "title": "Adopt an existing repo",
+    "permalink": "/guides/existing-repo"
+  }
+}

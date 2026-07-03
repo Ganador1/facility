@@ -1,0 +1,26 @@
+{
+  "id": "concepts/projects-and-governance",
+  "title": "Projects & governance",
+  "description": "A project is the unit of governance: one product, one or more GitHub",
+  "source": "@site/docs/concepts/projects-and-governance.md",
+  "sourceDirName": "concepts",
+  "slug": "/concepts/projects-and-governance",
+  "permalink": "/concepts/projects-and-governance",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/concepts/projects-and-governance.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Projects & governance"
+  },
+  "sidebar": "docs",
+  "previous": {
+    "title": "The loop",
+    "permalink": "/concepts/the-loop"
+  },
+  "next": {
+    "title": "Sandboxes & sessions",
+    "permalink": "/concepts/sandboxes"
+  }
+}

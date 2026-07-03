@@ -1,0 +1,23 @@
+{
+  "id": "index",
+  "title": "What Facility is",
+  "description": "The platform that governs your AI SDLC. Agents carry every change from",
+  "source": "@site/docs/index.md",
+  "sourceDirName": ".",
+  "slug": "/",
+  "permalink": "/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/theam/facility/tree/main/apps/docs/docs/index.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "slug": "/",
+    "title": "What Facility is"
+  },
+  "sidebar": "docs",
+  "next": {
+    "title": "The loop",
+    "permalink": "/concepts/the-loop"
+  }
+}
