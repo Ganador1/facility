@@ -35,11 +35,11 @@ FROM base AS api
 ENV NODE_ENV=production
 COPY --from=build /app /app
 EXPOSE 4400
-CMD ["node", "services/api/dist/server.js"]
+CMD ["node", "services/api/dist/start.js"]
 
 # --- gateway ---
 FROM base AS gateway
 ENV NODE_ENV=production
 COPY --from=build /app /app
 EXPOSE 4410
-CMD ["node", "services/gateway/dist/server.js"]
+CMD ["node", "services/gateway/dist/start.js"]
