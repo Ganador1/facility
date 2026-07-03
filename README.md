@@ -5,190 +5,122 @@
   </picture>
 </p>
 
-<p align="center"><em>The AI software factory for your repo.</em><br>
+<p align="center"><em>The platform that governs your AI SDLC.</em><br>
 <sub>Agents build. People decide twice. Everything gets measured.</sub></p>
 
 <p align="center">
   <a href="https://github.com/theam/facility/actions/workflows/ci.yml"><img src="https://github.com/theam/facility/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/node-%E2%89%A520-161B22" alt="node >= 20">
+  <img src="https://img.shields.io/badge/node-%E2%89%A522-161B22" alt="node >= 22">
   <img src="https://img.shields.io/badge/license-MIT-FFD923" alt="MIT">
 </p>
 
 ---
 
-Wiring an AI agent into a repository is now the easy part — GitHub will assign
-an issue to one for you. Then the second month happens. The agent ships plans
-instead of code because its environment can't run your tests. PRs merge on
-vibes because the review step has no standard to enforce. And the failures are
-the quiet kind: a dead trigger stops summoning agents, a mis-permissioned
-review lane approves silence, and nothing turns red — because nobody watches
-the watchmen. None of this is a model problem. It's a factory problem.
+Wiring an AI agent into a repository is now the easy part. The second month is
+where it breaks — not in the model, in the **factory around it**. Provider keys
+and budgets sprawl across repo secrets, invisible in aggregate. Upgrading the
+method means re-vendoring files repo by repo. Knowledge forks silently. Humans
+have no inbox for the decisions agents need. And the run data that would tell
+you whether any of it works evaporates.
 
-Facility installs the factory: an opinionated SDLC where agents plan, build,
-review, repair, and security-sweep inside your GitHub repo — against a
-**provisioned environment** so they verify for real, against a **written
-standard** so review means something, with **deterministic guards** for rules
-that should never depend on judgment, with **humans owning both gates** (plan
-acceptance and the merge), and with a **watchtower** that measures whether
-the work was actually accepted and goes red when the pipeline breaks.
+The method is proven — this SDLC has run [The Agile Monkeys](https://theagilemonkeys.com)'
+own products in production since August 2025, the system shown at
+[sdlc.theagilemonkeys.com](https://sdlc.theagilemonkeys.com). What was missing
+is the control plane. **Facility is that control plane** — self-hostable by any
+organization on any cloud, governing identity, money, knowledge, execution, and
+the two human gates across every project.
 
-Built by [The Agile Monkeys](https://theagilemonkeys.com) from the system we
-run our own product engineering on — the one shown in our AI SDLC story:
-*"We taught AI to ship like our engineers. Then we made it prove it."* The
-[hardening notes](docs/hardening.md) are fifteen production scars, not a
-threat model.
+## Two things in one repo
 
-## Quickstart
+**The platform** (this monorepo) — a control plane you self-host:
+
+```
+docker compose up            # postgres · minio · api · worker · gateway · web
+```
+
+**The installer** (`@theam/facility`) — the original CLI that vendors the SDLC
+into a single repo, unchanged and still first-class:
 
 ```
 npx @theam/facility init
 ```
 
-A few questions (your default branch, your provision command, your check
-commands, optional board, optional modules — model tiering defaults to
-`opusplan` build · Sonnet review · Opus plan/repair/sweep) and it writes,
-into *your* repo, with no runtime dependency on us:
+The platform *productizes* the installer: kickstart renders the same proven
+asset set server-side and opens a PR, then keeps the repo governed — fingerprints,
+upgrades, budgets, telemetry, live sessions.
 
-```
-.github/workflows/facility-crew.yml             /architect + /builder
-.github/workflows/facility-review.yml           every PR reviewed against the standard
-.github/workflows/facility-address-review.yml   human review → agent iterates
-.github/workflows/facility-doctor.yml           failed checks → triage or bounded repair
-.github/workflows/facility-security-sweep.yml   weekly audit → deduped, high-confidence issues
-.github/workflows/facility-watchtower.yml       nightly outcomes + daily health, budgets enforced
-.github/workflows/facility-canary.yml           weekly synthetic flight through the real pipeline
-.github/facility/                               operating contracts + vendored watchtower/doctor scripts
-STANDARD.md                                     your quality contract, binding for all
-AGENTS.md · CLAUDE.md                           wired to the method (appended, never overwritten)
-.claude/  (skills, commands, hooks, reviewers)  the craft while working, guardrails always
-.agents/skills → .claude/skills                 same skills for non-Claude agents
-guards/   (zero-dep runner + starter guards)    deterministic invariants, one CI status
-.facility.json                                  the choices you made, for doctor/update
-```
+## What the platform owns
 
-Then the steps only you can do — `init` prints them, `npx @theam/facility
-doctor` checks them: create the `CLAUDE_CODE_OAUTH_TOKEN` secret
-(`claude setup-token`), install the [Claude GitHub App](https://github.com/apps/claude),
-protect your default branch.
+Execution stays where it belongs — GitHub repos, CI, isolated sandboxes. The
+platform owns what has to be centralized to govern an operation:
 
-Now open an issue and comment:
-
-```
-/architect
-```
-
-## How it works
-
-```mermaid
-flowchart LR
-    B[Backlog] -->|"/architect"| P[Planning]
-    P -->|"gate 1: human accepts the plan"| R[Ready]
-    R -->|"/builder"| IP[In Progress]
-    IP -->|crew opens PR| IR[In Review]
-    IR -->|"gate 2: human approves & merges"| D[Done]
-```
-
-One agent per stage of the lifecycle, each with its own contract and model
-tier, all three prohibitions shared — never approve, never merge, never touch
-protected branches:
-
-| role | trigger | does | never |
-|---|---|---|---|
-| **/architect** | issue comment | plans against reality: reads code, runs real commands | commit, push, open PRs |
-| **/builder** | issue/PR comment | implements end to end, runs your checks, opens the PR | merge, defer, ship "phase 1" |
-| **reviewer** | every non-draft PR | reviews against `STANDARD.md`, inline comments | approve, merge |
-| **addresser** | human submits a review | fixes actionable feedback, re-verifies, replies point by point | act on praise, resolve threads |
-| **doctor** | a watched check fails | deterministic triage; bounded repair on crew PRs only | touch security surfaces, human branches |
-| **sweep** | weekly | correlates scanner alerts with reachable code, files deduped issues | edit anything |
-
-And the layer the off-the-shelf kits don't have — **the watchtower**
-([docs/watchtower.md](docs/watchtower.md)): nightly agent-PR outcomes
-(acceptance, one-shot rate, human fixups) on a dashboard issue, a daily
-health monitor with per-workflow budgets that goes red on breach, and a
-weekly canary that flies a synthetic `/architect` probe through the real
-pipeline — authorized by message hash, so a leaked key can at worst replay
-one fixed read-only probe. The whole layer reads only the GitHub API and is
-pinned by its own guard. On the production system it generalizes, the
-canary's first flight caught a real pipeline bug.
-
-The full reasoning — why one-shot delivery, why the architect exists, why the
-board only moves forward — is in [docs/method.md](docs/method.md).
-
-## The opinions
-
-Facility is opinionated so your team doesn't renegotiate these weekly. Every
-one is structural — in prompts, hooks, workflows, guards, or GitHub settings
-— not aspirational:
-
-1. **Agents never approve, never merge, never touch protected branches.**
-   People decide twice; the merge is where accountability lives.
-2. **Provision before prompting.** An agent that can't run your tests will
-   hedge; the environment is the fix, not a sterner prompt.
-3. **One-shot delivery.** The builder finishes or names the concrete blocker.
-4. **One standard for humans and agents.** `STANDARD.md` at the root, cited
-   in reviews, read before work.
-5. **Prose rules graduate to guards.** Missed twice → deterministic check.
-6. **All repo-originated text is untrusted data.** Issues, PRs, reviews,
-   logs — framed as data in every contract, kept out of every shell. Bots
-   never summon agents; the canary's one exception is authorized by message
-   hash, not by sender.
-7. **Everything is vendored.** After `init`, every file is yours. The CLI is
-   an installer, not a framework.
-8. **Everything gets measured.** Acceptance is a nightly metric, budgets are
-   a reviewed file, and the watchtower cannot quietly rot — it's locked by a
-   guard. Numbers straight from the pipeline, never curated for a slide.
-
-## Modules
-
-Concerns beyond the core ship as modules — each packages a concern in every
-form a rule needs to hold: a `STANDARD.md` section, a reviewer subagent,
-guards/hooks, and the slash commands for its workflows.
-
-```
-npx @theam/facility add database
-```
-
-| module | enforces |
+| pillar | what it does |
 |---|---|
-| `database` | migrations append-only + collision-free versions (guards + hook), access-control-by-default |
-| `analytics` | new features ship privacy-safe analytics; missing events are correctness bugs |
-| `ai-queryability` | durable data is reachable by your product's AI surfaces — or the waiver is written down |
-| `design-system` | UI conforms to *your* design system; flows carry browser evidence |
+| **Projects & governance** | many projects per org; kickstart a repo to a working factory in minutes; repo **fingerprints** detect drift/corruption; **upgrades** arrive as PRs; the whole method is versioned |
+| **Sandboxes & sessions** | isolated cloud sandboxes for Claude Code / Codex / BYO; **watch any run live and steer a stuck agent**, on the record; driver-based (Docker local, Fargate cloud) |
+| **Gateway & cost** | every model call routes through the LLM proxy — project **virtual keys**, hard **budgets**, cost by model/agent/task, full request audit |
+| **Registry** | skills, rules, agent contracts, harnesses, guards, templates — versioned, bundled, immutable once published; create project-specific agents from a form |
+| **Watchtower** | outcomes, health, the canary — per project, monitor-independent, live numbers never curated |
+| **Inbox** | one place for every decision an agent needs — plan gates, learning validations, budget overrides — approve/reject/steer, fully audited |
+| **Knowledge & the Project Owner** | a Limina-style agent owns the project domain, maintains a validated knowledge base, and turns needs into implementation tasks; **learning mode** proposes new skills and guards nightly, human-validated |
+| **Access** | WorkOS SSO for humans, scoped API keys for machines, one RBAC for web, CLI, **MCP**, and agents — the platform is safely operable from Claude Code, Cowork, and Codex |
 
-Write your own by copying any module's shape — see [modules/](modules/README.md).
+Everything is auditable and stored by default. Agents never approve, never
+merge, never touch protected branches — the two gates (accept the plan, sign
+the merge) stay human.
 
-## Where it sits
+## Architecture
 
-| | gives you | doesn't give you |
-|---|---|---|
-| [Agent HQ](https://github.blog/news-insights/company-news/pick-your-agent-use-claude-and-codex-on-agent-hq/) / assign-to-agent | an agent on an issue, fast | provisioned verification, a standard, guards, human gates, self-observation |
-| [gh-aw](https://github.github.com/gh-aw/) | markdown → hardened workflows (mechanism) | an SDLC method; opinions about quality, measurement, and what humans own |
-| [claude-code-action](https://github.com/anthropics/claude-code-action) raw | the execution substrate (facility uses it) | everything above it — which is this repo |
-| **facility** | the factory: roles + gates + standard + guards + provisioned env + watchtower + 15 hardening scars | an excuse to stop reading your crew's PRs |
+TypeScript monorepo, pnpm + Turborepo:
 
-Honest scope: today the crew runs on Claude via `claude-code-action`; the
-engine field in `.facility.json` exists because that shouldn't be a forever
-assumption. The production system this generalizes also runs a parallel Codex
-lane under the same guardrails — engine choice as evidence, not folklore —
-and that lane is the first roadmap item.
+```
+apps/web            Next.js 16 app — the TAM-50 interface
+apps/docs           Docusaurus documentation, same brand
+services/api        control plane: REST + OpenAPI, authN/Z, audit, webhooks, HITL, worker
+services/gateway    the LLM proxy — virtual keys, budgets, metering, envelopes
+packages/core       domain logic: permissions, pricing, sealed-secrets, receipts, fingerprints
+packages/db         Postgres schema + migrations (Drizzle)
+packages/ui         the TAM-50 design system (React)
+packages/sdk        typed client generated from the OpenAPI spec
+packages/mcp        the platform MCP server
+packages/cli        @theam/facility — the vendored installer + platform commands
+packages/harness    session protocols: Project Owner + learning mode
+runner/             the sandbox agent host (Claude Code / Codex / BYO)
+infra/              docker-compose (self-host) · Terraform (AWS reference)
+```
 
-## Status & roadmap
+Boring where it counts — Postgres, containers, S3-compatible storage; no
+cloud-proprietary service in the core path. See
+[docs/platform/ARCHITECTURE.md](docs/platform/ARCHITECTURE.md) for the full
+topology and the decision record.
 
-**v0.2 — private preview.** File layout may still move. Roadmap, in order:
-per-run **receipts** (tokens, cost, duration — feeding real cost SLOs into
-the health monitor), the **pattern miner** (recurring failures → proposed
-guards), a second engine lane (Codex) behind the same contracts,
-`facility update` (re-sync vendored files, three-way), and a `validate` role
-for triaging user-reported issues against a live environment.
+## Self-host
 
-## Docs
+```bash
+git clone https://github.com/theam/facility && cd facility
+cp .env.example .env          # set SECRET_MASTER_KEY: openssl rand -base64 32
+docker compose up -d
+```
+
+Full guide, production notes, and the AWS Terraform module:
+[docs/platform/](docs/platform/) and the docs site (`pnpm --filter @facility/docs dev`).
+
+## The method
+
+The reasoning behind the loop — why one-shot delivery, why the architect
+exists, why the board only moves forward, and the fifteen production hardening
+scars that shape every generated workflow — is unchanged and lives in:
 
 - [The method](docs/method.md) — the loop, the roles, the two human gates
 - [The watchtower](docs/watchtower.md) — the SDLC watching itself
 - [Hardening notes](docs/hardening.md) — fifteen things production taught us
-- [Guards](docs/guards.md) — deterministic checks, allowlists with reasons
-- [FAQ](docs/faq.md) — positioning, costs, non-Node stacks
-- [Contributing](CONTRIBUTING.md) · [Security policy](SECURITY.md)
+- [Platform PRD](docs/platform/PRD.md) · [Architecture](docs/platform/ARCHITECTURE.md) · [tam-os migration](docs/platform/migration-tam-os.md)
+
+## Status
+
+**v0.3 — private preview.** The platform is new; the method and the installer
+are production-proven. The first tenant is [tam-os](docs/platform/migration-tam-os.md),
+migrated onto the platform additively and reversibly. File layout may still move.
 
 ---
 
