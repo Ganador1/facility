@@ -1,0 +1,31 @@
+aws_region  = "us-east-1"
+environment = "playground"
+project     = "facility"
+
+app_hostname = "app.example.com"
+api_hostname = "api.example.com"
+
+# Optional. Leave empty to create only HTTP listeners and print the ALB DNS name.
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/placeholder"
+route53_zone_id     = "ZPLACEHOLDER"
+
+# Restrict this for non-public test deployments.
+allowed_http_cidr_blocks = ["0.0.0.0/0"]
+
+database_instance_class       = "db.t4g.micro"
+database_allocated_storage_gb = 20
+database_backup_retention_days = 7
+
+enable_deletion_protection = true
+force_destroy_bucket       = false
+
+container_image_tags = {
+  api     = "replace-with-git-sha"
+  worker  = "replace-with-git-sha"
+  gateway = "replace-with-git-sha"
+  web     = "replace-with-git-sha"
+  runner  = "replace-with-git-sha"
+}
+
+# Use only when images live outside the ECR repositories created by this module.
+image_overrides = {}
