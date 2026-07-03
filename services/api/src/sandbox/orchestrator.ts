@@ -39,7 +39,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
     await db
       .update(runs)
       .set({ status: "provisioning", updatedAt: new Date() })
-      .where(eq(runs.id, run.id));
+      .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id), eq(runs.status, "queued")));
     await appendRunEvents(db, run.orgId, run.id, [{ type: "provisioning", data: {} }]);
 
     const { bundle, profile } = await buildRunBundle(db, run, config);
@@ -236,6 +236,9 @@ async function buildRunBundle(
     ? (await db.select().from(agentDefs).where(eq(agentDefs.id, run.agentDefId)).limit(1))[0]
     : undefined;
   if (!agent) throw new Error("run_missing_agent_def");
+  if (agent.orgId !== run.orgId || agent.projectId !== run.projectId) {
+    throw new Error("agent_not_in_project");
+  }
   const profile = (
     await db
       .select()

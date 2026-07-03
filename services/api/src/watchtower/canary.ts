@@ -63,13 +63,14 @@ export async function collectCanaries(db: FacilityDb, github: GitHubClient, disp
     if (settings.lane === "repo") {
       await verifyRepoCanary(db, github, project.id, project.orgId, settings.workflowName);
     } else {
-      await verifyPlatformCanary(db, project.id, project.orgId, settings, dispatch);
+      await verifyPlatformCanary(db, github, project.id, project.orgId, settings, dispatch);
     }
   }
 }
 
 async function verifyPlatformCanary(
   db: FacilityDb,
+  github: GitHubClient,
   projectId: string,
   orgId: string,
   settings: CanarySettings,
@@ -138,10 +139,15 @@ async function verifyPlatformCanary(
     return;
   }
   if (!["succeeded", "failed", "canceled"].includes(latest.status)) return;
-  const gh = objectValue(latest.gh);
-  const acked = gh.canaryAck === true || gh.ack === true;
-  if (latest.status === "succeeded" && latest.receipt && acked) {
+  const independentEvidence = await hasIndependentCanaryEvidence(db, github, projectId);
+  if (latest.status === "succeeded" && independentEvidence) {
     await resolvePlatformIssue(db, orgId, fingerprint, "platform canary passed");
+    return;
+  }
+  if (latest.status === "succeeded") {
+    // A platform-lane run's status, receipt, and gh fields are written by the
+    // runner itself. Without independent GitHub evidence this is inconclusive,
+    // not a pass and not a red health signal.
     return;
   }
   await raisePlatformIssue(db, {
@@ -151,10 +157,33 @@ async function verifyPlatformCanary(
     severity: "error",
     fingerprint,
     title: "Platform canary failed",
-    bodyMd: `Latest canary run ${latest.id} ended ${latest.status}; receipt=${Boolean(
-      latest.receipt,
-    )}; ack=${acked}.`,
+    bodyMd: `Latest canary run ${latest.id} ended ${latest.status}.`,
   });
+}
+
+async function hasIndependentCanaryEvidence(
+  db: FacilityDb,
+  github: GitHubClient,
+  projectId: string,
+) {
+  const projectRepos = await db.select().from(repos).where(eq(repos.projectId, projectId));
+  for (const repo of projectRepos) {
+    const week = await github.listWorkflowRuns(
+      { owner: repo.owner, name: repo.name },
+      weekStart().toISOString(),
+    );
+    if (
+      week.some(
+        (run) =>
+          run.name === "facility-canary" &&
+          run.status === "completed" &&
+          run.conclusion === "success",
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function canaryAgent(

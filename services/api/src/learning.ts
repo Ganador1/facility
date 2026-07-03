@@ -1,6 +1,6 @@
 import { newId } from "@facility/core";
 import { agentDefs, createDb, platformIssues, proposals, runEvents, runs } from "@facility/db";
-import { and, desc, eq, gte, lte } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import type { AppConfig } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -41,7 +41,17 @@ export async function assembleLearningPacket(
     ? await db
         .select()
         .from(runEvents)
-        .where(and(eq(runEvents.orgId, orgId), gte(runEvents.ts, start), lte(runEvents.ts, end)))
+        .where(
+          and(
+            eq(runEvents.orgId, orgId),
+            inArray(
+              runEvents.runId,
+              dayRuns.map((run) => run.id),
+            ),
+            gte(runEvents.ts, start),
+            lte(runEvents.ts, end),
+          ),
+        )
         .limit(500)
     : [];
   const dayProposals = await db

@@ -1,4 +1,4 @@
-import { generateApiKey, newId, seal, verifyKey } from "@facility/core";
+import { can, generateApiKey, newId, seal, verifyKey } from "@facility/core";
 import {
   actionTypes,
   agentDefs,
@@ -30,7 +30,7 @@ import {
   withOrg,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, asc, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNull, lte, or, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";
@@ -79,6 +79,42 @@ function publicRow<T extends Record<string, unknown>>(row: T) {
 
 export async function registerV1Routes(app: FastifyInstance, config: AppConfig) {
   const db = app.facilityDb;
+
+  function assertProjectScope(p: Principal, projectId: string | null | undefined) {
+    if (projectId && p.projectId && p.projectId !== projectId) {
+      throw new ApiError(404, "not_found", "Project not found");
+    }
+  }
+
+  async function assertRoleAssignable(dbx: typeof db, p: Principal, roleId: string) {
+    const role = (await dbx.select().from(roles).where(eq(roles.id, roleId)).limit(1))[0];
+    if (!role) throw new ApiError(400, "invalid_role", "Role does not exist");
+    if (role.orgId && role.orgId !== p.orgId) {
+      throw new ApiError(403, "role_not_in_org", "Role is not in this organization");
+    }
+    for (const permission of role.permissions) {
+      if (!can(p.permissions, permission)) {
+        throw new ApiError(
+          403,
+          "privilege_escalation",
+          "Cannot issue a key more privileged than yourself",
+        );
+      }
+    }
+    return role;
+  }
+
+  function definedFields<T extends Record<string, unknown>>(fields: T) {
+    return Object.fromEntries(
+      Object.entries(fields).filter((entry): entry is [string, unknown] => entry[1] !== undefined),
+    );
+  }
+
+  app.addHook("preHandler", async (request) => {
+    if (!request.principal) return;
+    const projectId = (request.params as Record<string, string | undefined>)?.projectId;
+    if (projectId) assertProjectScope(request.principal, projectId);
+  });
 
   app.get(
     "/v1/me",
@@ -255,7 +291,13 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       return (
         await db
           .insert(roles)
-          .values({ id: newId("key"), orgId: p.orgId, ...body })
+          .values({
+            id: newId("key"),
+            orgId: p.orgId,
+            name: body.name,
+            description: body.description,
+            permissions: body.permissions,
+          })
           .returning()
       )[0];
     },
@@ -277,13 +319,20 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { roleId } = request.params as { roleId: string };
+      const body = request.body as { description?: string; permissions?: string[] };
       const role = (await db.select().from(roles).where(eq(roles.id, roleId)).limit(1))[0];
       if (!role) throw notFound("Role not found");
       if (!role.orgId) throw new ApiError(400, "bundled_immutable", "Bundled roles are immutable");
       return (
         await db
           .update(roles)
-          .set({ ...(request.body as object), updatedAt: new Date() })
+          .set(
+            definedFields({
+              description: body.description,
+              permissions: body.permissions,
+              updatedAt: new Date(),
+            }),
+          )
           .where(and(eq(roles.id, roleId), eq(roles.orgId, p.orgId)))
           .returning()
       )[0];
@@ -312,7 +361,14 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     { config: { permission: "keys:issue" }, schema: { response: { 200: z.array(AnyObject) } } },
     async (request) => {
       const p = principal(request);
-      return (await db.select().from(apiKeys).where(eq(apiKeys.orgId, p.orgId))).map(publicRow);
+      const clauses = [eq(apiKeys.orgId, p.orgId)];
+      if (p.projectId) clauses.push(eq(apiKeys.projectId, p.projectId));
+      return (
+        await db
+          .select()
+          .from(apiKeys)
+          .where(and(...clauses))
+      ).map(publicRow);
     },
   );
 
@@ -328,6 +384,9 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const body = request.body as { name: string; roleId: string; projectId?: string };
+      await assertRoleAssignable(db, p, body.roleId);
+      assertProjectScope(p, body.projectId);
+      const projectId = p.projectId ?? body.projectId;
       const key = await generateApiKey("fak");
       const row = (
         await db
@@ -339,8 +398,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
             prefix: key.lookup,
             last4: key.last4,
             hash: key.hash,
-            scopeType: body.projectId ? "project" : "org",
-            projectId: body.projectId,
+            scopeType: projectId ? "project" : "org",
+            projectId,
             roleId: body.roleId,
             createdBy: p.id,
           })
@@ -364,6 +423,15 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { keyId } = request.params as { keyId: string };
+      const key = (
+        await db
+          .select()
+          .from(apiKeys)
+          .where(and(eq(apiKeys.orgId, p.orgId), eq(apiKeys.id, keyId)))
+          .limit(1)
+      )[0];
+      if (!key) throw notFound("Key not found");
+      assertProjectScope(p, key.projectId);
       await db
         .update(apiKeys)
         .set({ revokedAt: new Date() })
@@ -484,10 +552,19 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
       return (
         await db
           .update(projects)
-          .set({ ...(request.body as object), updatedAt: new Date() })
+          .set(
+            definedFields({
+              name: (request.body as { name?: string }).name,
+              description: (request.body as { description?: string }).description,
+              status: (request.body as { status?: string }).status,
+              settings: (request.body as { settings?: Record<string, unknown> }).settings,
+              updatedAt: new Date(),
+            }),
+          )
           .where(and(eq(projects.orgId, p.orgId), eq(projects.id, projectId)))
           .returning()
       )[0];
@@ -545,7 +622,14 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       return (
         await db
           .insert(repos)
-          .values({ id: newId("repo"), orgId: p.orgId, projectId, ...body })
+          .values({
+            id: newId("repo"),
+            orgId: p.orgId,
+            projectId,
+            owner: body.owner,
+            name: body.name,
+            defaultBranch: body.defaultBranch,
+          })
           .returning()
       )[0];
     },
@@ -589,7 +673,12 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const clauses = [eq(registryItems.orgId, p.orgId)];
       if (q.kind) clauses.push(eq(registryItems.kind, q.kind));
       if (q.scope) clauses.push(eq(registryItems.scope, q.scope));
-      if (q.projectId) clauses.push(eq(registryItems.projectId, q.projectId));
+      if (q.projectId) {
+        assertProjectScope(p, q.projectId);
+        clauses.push(eq(registryItems.projectId, q.projectId));
+      } else if (p.projectId) {
+        clauses.push(eq(registryItems.projectId, p.projectId));
+      }
       return db
         .select()
         .from(registryItems)
@@ -649,6 +738,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         description?: string;
         content: string;
       };
+      assertProjectScope(p, body.projectId);
+      const projectId = p.projectId ?? body.projectId;
       const item = (
         await db
           .insert(registryItems)
@@ -656,7 +747,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
             id: newId("item"),
             orgId: p.orgId,
             scope: body.scope,
-            projectId: body.projectId,
+            projectId,
             kind: body.kind,
             name: body.name,
             description: body.description,
@@ -824,6 +915,15 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         trigger?: Record<string, unknown>;
         agentDefId?: string;
       };
+      assertProjectScope(p, projectId);
+      if (body.agentDefId) {
+        const agent = (
+          await db.select().from(agentDefs).where(eq(agentDefs.id, body.agentDefId)).limit(1)
+        )[0];
+        if (!agent || agent.orgId !== p.orgId || agent.projectId !== projectId) {
+          throw new ApiError(400, "agent_not_in_project", "Agent definition is not in project");
+        }
+      }
       const run = (
         await db
           .insert(runs)
@@ -1103,6 +1203,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
       const body = request.body as { name: string; allowedModels?: string[]; expiresAt?: string };
+      assertProjectScope(p, projectId);
       const key = await generateApiKey("fvk");
       const row = (
         await db
@@ -1133,6 +1234,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
       return (
         await db
           .select()
@@ -1153,11 +1255,18 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     },
     async (request) => {
       const p = principal(request);
-      const { keyId } = request.params as { keyId: string };
+      const { projectId, keyId } = request.params as { projectId: string; keyId: string };
+      assertProjectScope(p, projectId);
       await db
         .update(virtualKeys)
         .set({ revokedAt: new Date() })
-        .where(and(eq(virtualKeys.orgId, p.orgId), eq(virtualKeys.id, keyId)));
+        .where(
+          and(
+            eq(virtualKeys.orgId, p.orgId),
+            eq(virtualKeys.projectId, projectId),
+            eq(virtualKeys.id, keyId),
+          ),
+        );
       return { ok: true };
     },
   );
@@ -1189,6 +1298,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       },
     },
     async (request) => {
+      const p = principal(request);
       const body = request.body as {
         scope: string;
         projectId?: string;
@@ -1198,10 +1308,22 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         mode: string;
         enabled: boolean;
       };
+      assertProjectScope(p, body.projectId);
+      const projectId = p.projectId ?? body.projectId;
       return (
         await db
           .insert(budgets)
-          .values({ id: newId("bud"), orgId: principal(request).orgId, ...body })
+          .values({
+            id: newId("bud"),
+            orgId: p.orgId,
+            scope: body.scope,
+            projectId,
+            agentDefId: body.agentDefId,
+            period: body.period,
+            limitCents: body.limitCents,
+            mode: body.mode,
+            enabled: body.enabled,
+          })
           .returning()
       )[0];
     },
@@ -1212,23 +1334,54 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "budgets:write", auditAction: "budget.breached" },
       schema: {
         params: z.object({ budgetId: z.string() }),
-        body: AnyObject,
+        body: z.object({
+          scope: z.string().optional(),
+          projectId: z.string().optional(),
+          agentDefId: z.string().optional(),
+          period: z.string().optional(),
+          limitCents: z.number().int().optional(),
+          mode: z.string().optional(),
+          enabled: z.boolean().optional(),
+        }),
         response: { 200: AnyObject },
       },
     },
-    async (request) =>
-      (
+    async (request) => {
+      const p = principal(request);
+      const body = request.body as {
+        scope?: string;
+        projectId?: string;
+        agentDefId?: string;
+        period?: string;
+        limitCents?: number;
+        mode?: string;
+        enabled?: boolean;
+      };
+      assertProjectScope(p, body.projectId);
+      return (
         await db
           .update(budgets)
-          .set({ ...(request.body as object), updatedAt: new Date() })
+          .set(
+            definedFields({
+              scope: body.scope,
+              projectId: p.projectId ?? body.projectId,
+              agentDefId: body.agentDefId,
+              period: body.period,
+              limitCents: body.limitCents,
+              mode: body.mode,
+              enabled: body.enabled,
+              updatedAt: new Date(),
+            }),
+          )
           .where(
             and(
-              eq(budgets.orgId, principal(request).orgId),
+              eq(budgets.orgId, p.orgId),
               eq(budgets.id, (request.params as { budgetId: string }).budgetId),
             ),
           )
           .returning()
-      )[0],
+      )[0];
+    },
   );
   app.delete(
     "/v1/budgets/:budgetId",
@@ -1273,15 +1426,17 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       };
       const from = (q.from ? new Date(q.from) : new Date("1970-01-01T00:00:00Z")).toISOString();
       const to = (q.to ? new Date(q.to) : new Date("2999-01-01T00:00:00Z")).toISOString();
+      assertProjectScope(p, q.projectId);
+      const projectId = p.projectId ?? q.projectId;
       const groupExpr =
         q.groupBy === "day"
           ? sql`date_trunc('day', created_at)::text`
           : q.groupBy === "agent"
             ? sql`coalesce(run_id, 'none')`
             : sql`model`;
-      const result = q.projectId
+      const result = projectId
         ? await db.execute(
-            sql`SELECT ${groupExpr} AS bucket, coalesce(sum(cost_cents), 0)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND project_id = ${q.projectId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
+            sql`SELECT ${groupExpr} AS bucket, coalesce(sum(cost_cents), 0)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND project_id = ${projectId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
           )
         : await db.execute(
             sql`SELECT ${groupExpr} AS bucket, coalesce(sum(cost_cents), 0)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
@@ -1312,7 +1467,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         to?: string;
         groupBy: "day" | "agent" | "model";
       };
-      return queryAnalytics(db, p.orgId, q);
+      assertProjectScope(p, q.projectId);
+      return queryAnalytics(db, p.orgId, { ...q, projectId: p.projectId ?? q.projectId });
     },
   );
 
@@ -1322,7 +1478,10 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "analytics:read" },
       schema: { response: { 200: AnyObject } },
     },
-    async (request) => analyticsOverview(db, principal(request).orgId),
+    async (request) => {
+      const p = principal(request);
+      return analyticsOverview(db, p.orgId, p.projectId ?? undefined);
+    },
   );
 
   app.get(
@@ -1343,26 +1502,25 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const state = (request.query as { state?: string }).state;
+      const proposalClauses = [eq(proposals.orgId, p.orgId)];
+      if (state) proposalClauses.push(eq(proposals.state, state));
+      if (p.projectId) proposalClauses.push(eq(proposals.projectId, p.projectId));
       const proposalRows = await db
         .select()
         .from(proposals)
-        .where(
-          state
-            ? and(eq(proposals.orgId, p.orgId), eq(proposals.state, state))
-            : eq(proposals.orgId, p.orgId),
-        );
+        .where(and(...proposalClauses));
+      const issueClauses = [
+        eq(platformIssues.orgId, p.orgId),
+        eq(platformIssues.severity, "error"),
+        state
+          ? eq(platformIssues.state, state)
+          : or(eq(platformIssues.state, "open"), eq(platformIssues.state, "acked")),
+      ];
+      if (p.projectId) issueClauses.push(eq(platformIssues.projectId, p.projectId));
       const issueRows = await db
         .select()
         .from(platformIssues)
-        .where(
-          and(
-            eq(platformIssues.orgId, p.orgId),
-            eq(platformIssues.severity, "error"),
-            state
-              ? eq(platformIssues.state, state)
-              : or(eq(platformIssues.state, "open"), eq(platformIssues.state, "acked")),
-          ),
-        );
+        .where(and(...issueClauses));
       return { items: proposalRows, proposals: proposalRows, issues: issueRows };
     },
   );
@@ -1383,6 +1541,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           .where(and(eq(proposals.orgId, p.orgId), eq(proposals.id, proposalId)))
           .limit(1)
       )[0];
+      if (!proposal) throw notFound("Proposal not found");
+      assertProjectScope(p, proposal.projectId);
       const events = await db
         .select()
         .from(proposalEvents)
@@ -1418,6 +1578,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         contextMd: string;
         expiresAt?: string;
       };
+      assertProjectScope(p, body.projectId);
+      const projectId = p.projectId ?? body.projectId;
       const actionType = (
         await db
           .select()
@@ -1438,7 +1600,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           .values({
             id: newId("prop"),
             orgId: p.orgId,
-            projectId: body.projectId,
+            projectId,
             runId: body.runId,
             actionTypeId: body.actionTypeId,
             payload: body.payload,
@@ -1477,26 +1639,38 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const { proposalId } = request.params as { proposalId: string };
       const body = request.body as { decision: "approve" | "reject"; note?: string };
       const state = body.decision === "approve" ? "approved" : "rejected";
-      const row = (
-        await db
-          .update(proposals)
-          .set({ state, decidedBy: p.id, decidedAt: new Date() })
-          .where(and(eq(proposals.orgId, p.orgId), eq(proposals.id, proposalId)))
-          .returning()
-      )[0];
-      const current = await db
-        .select()
-        .from(proposalEvents)
-        .where(and(eq(proposalEvents.orgId, p.orgId), eq(proposalEvents.proposalId, proposalId)))
-        .orderBy(desc(proposalEvents.seq))
-        .limit(1);
-      await db.insert(proposalEvents).values({
-        orgId: p.orgId,
-        proposalId,
-        seq: (current[0]?.seq ?? 0) + 1,
-        type: state,
-        actor: { type: p.type, id: p.id },
-        data: { note: body.note },
+      const row = await db.transaction(async (tx) => {
+        const updated = (
+          await tx
+            .update(proposals)
+            .set({ state, decidedBy: p.id, decidedAt: new Date() })
+            .where(
+              and(
+                eq(proposals.orgId, p.orgId),
+                eq(proposals.id, proposalId),
+                eq(proposals.state, "open"),
+                or(isNull(proposals.expiresAt), gt(proposals.expiresAt, new Date())),
+              ),
+            )
+            .returning()
+        )[0];
+        if (!updated) throw new ApiError(409, "not_open", "Proposal is not open");
+        assertProjectScope(p, updated.projectId);
+        const current = await tx
+          .select()
+          .from(proposalEvents)
+          .where(and(eq(proposalEvents.orgId, p.orgId), eq(proposalEvents.proposalId, proposalId)))
+          .orderBy(desc(proposalEvents.seq))
+          .limit(1);
+        await tx.insert(proposalEvents).values({
+          orgId: p.orgId,
+          proposalId,
+          seq: (current[0]?.seq ?? 0) + 1,
+          type: state,
+          actor: { type: p.type, id: p.id },
+          data: { note: body.note },
+        });
+        return updated;
       });
       if (row && state === "approved") {
         await executeApprovedProposal(db, row, { type: p.type, id: p.id });
@@ -1520,6 +1694,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const clauses = [eq(platformIssues.orgId, p.orgId)];
       if (q.state) clauses.push(eq(platformIssues.state, q.state));
       if (q.kind) clauses.push(eq(platformIssues.kind, q.kind));
+      if (p.projectId) clauses.push(eq(platformIssues.projectId, p.projectId));
       return db
         .select()
         .from(platformIssues)
@@ -1540,6 +1715,15 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       async (request) => {
         const p = principal(request);
         const { issueId } = request.params as { issueId: string };
+        const issue = (
+          await db
+            .select()
+            .from(platformIssues)
+            .where(and(eq(platformIssues.orgId, p.orgId), eq(platformIssues.id, issueId)))
+            .limit(1)
+        )[0];
+        if (!issue) throw notFound("Issue not found");
+        assertProjectScope(p, issue.projectId);
         return (
           await db
             .update(platformIssues)
@@ -1602,6 +1786,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
       return (
         (
           await db
@@ -1631,6 +1816,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
       const body = request.body as {
         charterMd: string;
         activeMd: string;
@@ -1639,10 +1825,22 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       return (
         await db
           .insert(kbSpaces)
-          .values({ id: newId("kb"), orgId: p.orgId, projectId, ...body })
+          .values({
+            id: newId("kb"),
+            orgId: p.orgId,
+            projectId,
+            charterMd: body.charterMd,
+            activeMd: body.activeMd,
+            config: body.config,
+          })
           .onConflictDoUpdate({
             target: kbSpaces.projectId,
-            set: { ...body, updatedAt: new Date() },
+            set: {
+              charterMd: body.charterMd,
+              activeMd: body.activeMd,
+              config: body.config,
+              updatedAt: new Date(),
+            },
           })
           .returning()
       )[0];
@@ -1661,7 +1859,9 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     },
     async (request) => {
       const p = principal(request);
-      const space = await spaceFor(p.orgId, (request.params as { projectId: string }).projectId);
+      const projectId = (request.params as { projectId: string }).projectId;
+      assertProjectScope(p, projectId);
+      const space = await spaceFor(p.orgId, projectId);
       if (!space) return [];
       const type = (request.query as { type?: string }).type;
       return db
@@ -1687,20 +1887,11 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     },
     async (request) => {
       const p = principal(request);
-      return (
-        (
-          await db
-            .select()
-            .from(kbEntries)
-            .where(
-              and(
-                eq(kbEntries.orgId, p.orgId),
-                eq(kbEntries.id, (request.params as { entryId: string }).entryId),
-              ),
-            )
-            .limit(1)
-        )[0] ?? null
+      const entry = await loadKbEntryForPrincipal(
+        p,
+        (request.params as { entryId: string }).entryId,
       );
+      return entry;
     },
   );
 
@@ -1725,6 +1916,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
       const body = request.body as {
         type: string;
         slug: string;
@@ -1846,19 +2038,33 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     "/v1/kb/entries/:entryId",
     {
       config: { permission: "kb:write", auditAction: "kb.updated" },
-      schema: { params: IdParams, body: AnyObject, response: { 200: AnyObject } },
+      schema: {
+        params: IdParams,
+        body: z.object({
+          type: z.string().optional(),
+          number: z.number().int().optional(),
+          slug: z.string().optional(),
+          frontmatter: AnyObject.optional(),
+          bodyMd: z.string().optional(),
+          status: z.string().optional(),
+          supersedes: z.string().nullable().optional(),
+        }),
+        response: { 200: AnyObject },
+      },
     },
     async (request) => {
       const p = principal(request);
       const { entryId } = request.params as { entryId: string };
-      const current = (
-        await db
-          .select()
-          .from(kbEntries)
-          .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, entryId)))
-          .limit(1)
-      )[0];
-      if (!current) throw notFound("KB entry not found");
+      const body = request.body as {
+        type?: string;
+        number?: number;
+        slug?: string;
+        frontmatter?: Record<string, unknown>;
+        bodyMd?: string;
+        status?: string;
+        supersedes?: string | null;
+      };
+      const current = await loadKbEntryForPrincipal(p, entryId);
       const space = (
         await db
           .select()
@@ -1875,7 +2081,17 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         .select()
         .from(kbLinks)
         .where(and(eq(kbLinks.orgId, p.orgId), eq(kbLinks.spaceId, current.spaceId)));
-      const patched = { ...current, ...(request.body as object), updatedAt: new Date() };
+      const patch = definedFields({
+        type: body.type,
+        number: body.number,
+        slug: body.slug,
+        frontmatter: body.frontmatter,
+        bodyMd: body.bodyMd,
+        status: body.status,
+        supersedes: body.supersedes,
+        updatedAt: new Date(),
+      });
+      const patched = { ...current, ...patch };
       const report = validate({
         space: toHarnessSpace(space),
         entries: entries.map((entry) => toHarnessEntry(entry.id === entryId ? patched : entry)),
@@ -1889,7 +2105,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       return (
         await db
           .update(kbEntries)
-          .set({ ...(request.body as object), updatedAt: new Date() })
+          .set(patch)
           .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, entryId)))
           .returning()
       )[0];
@@ -1907,6 +2123,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
       return validateProjectKb(db, p.orgId, projectId);
     },
   );
@@ -1939,6 +2156,20 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         .where(and(eq(kbSpaces.orgId, orgId), eq(kbSpaces.projectId, projectId)))
         .limit(1)
     )[0];
+  }
+
+  async function loadKbEntryForPrincipal(p: Principal, entryId: string) {
+    const row = (
+      await db
+        .select({ entry: kbEntries, space: kbSpaces })
+        .from(kbEntries)
+        .innerJoin(kbSpaces, eq(kbEntries.spaceId, kbSpaces.id))
+        .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, entryId)))
+        .limit(1)
+    )[0];
+    if (!row) throw notFound("KB entry not found");
+    assertProjectScope(p, row.space.projectId);
+    return row.entry;
   }
 
   app.get(
@@ -1975,6 +2206,9 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       },
     },
     async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
       const body = request.body as {
         title: string;
         bodyMd: string;
@@ -1987,9 +2221,13 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           .insert(poTasks)
           .values({
             id: newId("task"),
-            orgId: principal(request).orgId,
-            projectId: (request.params as { projectId: string }).projectId,
-            ...body,
+            orgId: p.orgId,
+            projectId,
+            title: body.title,
+            bodyMd: body.bodyMd,
+            status: body.status,
+            kbEntryId: body.kbEntryId,
+            wsjf: body.wsjf,
           })
           .returning()
       )[0];
@@ -2001,23 +2239,53 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "tasks:write", auditAction: "task.updated" },
       schema: {
         params: z.object({ projectId: z.string(), taskId: z.string() }),
-        body: AnyObject,
+        body: z.object({
+          title: z.string().optional(),
+          bodyMd: z.string().optional(),
+          status: z.string().optional(),
+          kbEntryId: z.string().optional(),
+          wsjf: AnyObject.optional(),
+          gh: AnyObject.optional(),
+        }),
         response: { 200: AnyObject },
       },
     },
-    async (request) =>
-      (
+    async (request) => {
+      const p = principal(request);
+      const { projectId, taskId } = request.params as { projectId: string; taskId: string };
+      const body = request.body as {
+        title?: string;
+        bodyMd?: string;
+        status?: string;
+        kbEntryId?: string;
+        wsjf?: Record<string, unknown>;
+        gh?: Record<string, unknown>;
+      };
+      assertProjectScope(p, projectId);
+      return (
         await db
           .update(poTasks)
-          .set({ ...(request.body as object), updatedAt: new Date() })
+          .set(
+            definedFields({
+              title: body.title,
+              bodyMd: body.bodyMd,
+              status: body.status,
+              kbEntryId: body.kbEntryId,
+              wsjf: body.wsjf,
+              gh: body.gh,
+              updatedAt: new Date(),
+            }),
+          )
           .where(
             and(
-              eq(poTasks.orgId, principal(request).orgId),
-              eq(poTasks.id, (request.params as { taskId: string }).taskId),
+              eq(poTasks.orgId, p.orgId),
+              eq(poTasks.projectId, projectId),
+              eq(poTasks.id, taskId),
             ),
           )
           .returning()
-      )[0],
+      )[0];
+    },
   );
   app.delete(
     "/v1/projects/:projectId/tasks/:taskId",
@@ -2029,13 +2297,13 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       },
     },
     async (request) => {
+      const p = principal(request);
+      const { projectId, taskId } = request.params as { projectId: string; taskId: string };
+      assertProjectScope(p, projectId);
       await db
         .delete(poTasks)
         .where(
-          and(
-            eq(poTasks.orgId, principal(request).orgId),
-            eq(poTasks.id, (request.params as { taskId: string }).taskId),
-          ),
+          and(eq(poTasks.orgId, p.orgId), eq(poTasks.projectId, projectId), eq(poTasks.id, taskId)),
         );
       return { ok: true };
     },
@@ -2050,19 +2318,32 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         response: { 200: AnyObject },
       },
     },
-    async (request) =>
-      (
+    async (request) => {
+      const p = principal(request);
+      const { taskId } = request.params as { taskId: string };
+      const task = (
+        await db
+          .select()
+          .from(poTasks)
+          .where(and(eq(poTasks.orgId, p.orgId), eq(poTasks.id, taskId)))
+          .limit(1)
+      )[0];
+      if (!task) throw notFound("Task not found");
+      assertProjectScope(p, task.projectId);
+      return (
         await db
           .update(poTasks)
           .set({ status: (request.body as { status: string }).status, updatedAt: new Date() })
           .where(
             and(
-              eq(poTasks.orgId, principal(request).orgId),
-              eq(poTasks.id, (request.params as { taskId: string }).taskId),
+              eq(poTasks.orgId, p.orgId),
+              eq(poTasks.projectId, task.projectId),
+              eq(poTasks.id, taskId),
             ),
           )
           .returning()
-      )[0],
+      )[0];
+    },
   );
 
   app.post(
@@ -2082,6 +2363,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           .limit(1)
       )[0];
       if (!task) throw notFound("Task not found");
+      assertProjectScope(p, task.projectId);
       const actionType = await actionTypeByName(p.orgId, "task_creation");
       if (!actionType) throw notFound("Action type not found");
       const repo = (
@@ -2134,7 +2416,13 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       await db
         .update(poTasks)
         .set({ status: "proposed", updatedAt: new Date() })
-        .where(eq(poTasks.id, task.id));
+        .where(
+          and(
+            eq(poTasks.orgId, p.orgId),
+            eq(poTasks.projectId, task.projectId),
+            eq(poTasks.id, task.id),
+          ),
+        );
       return proposal;
     },
   );
@@ -2307,6 +2595,47 @@ function registerCrud(
   table: any,
   prefix: "agent" | "sbx",
 ) {
+  const createBody =
+    prefix === "agent"
+      ? z.object({
+          name: z.string(),
+          engine: z.string(),
+          model: AnyObject.default({}),
+          contractItemId: z.string(),
+          harnessItemId: z.string().optional(),
+          triggers: z.array(AnyObject).default([]),
+          sandboxProfileId: z.string().optional(),
+          enabled: z.boolean().default(true),
+        })
+      : z.object({
+          name: z.string(),
+          driver: z.string(),
+          image: z.string(),
+          setup: AnyObject.default({}),
+          resources: AnyObject.default({}),
+          network: AnyObject.default({}),
+        });
+  const patchBody =
+    prefix === "agent"
+      ? z.object({
+          name: z.string().optional(),
+          engine: z.string().optional(),
+          model: AnyObject.optional(),
+          contractItemId: z.string().optional(),
+          harnessItemId: z.string().optional(),
+          triggers: z.array(AnyObject).optional(),
+          sandboxProfileId: z.string().optional(),
+          enabled: z.boolean().optional(),
+        })
+      : z.object({
+          name: z.string().optional(),
+          driver: z.string().optional(),
+          image: z.string().optional(),
+          setup: AnyObject.optional(),
+          resources: AnyObject.optional(),
+          network: AnyObject.optional(),
+        });
+
   app.get(
     base,
     {
@@ -2317,7 +2646,13 @@ function registerCrud(
       const p = principal(request);
       const params = request.params as { projectId?: string };
       const clauses = [eq(table.orgId, p.orgId)];
+      if (params.projectId && p.projectId && p.projectId !== params.projectId) {
+        throw new ApiError(404, "not_found", "Project not found");
+      }
       if (params.projectId && table.projectId) clauses.push(eq(table.projectId, params.projectId));
+      if (!params.projectId && p.projectId && table.projectId) {
+        clauses.push(eq(table.projectId, p.projectId));
+      }
       return app.facilityDb
         .select()
         .from(table)
@@ -2331,11 +2666,52 @@ function registerCrud(
         permission: `${permissionResource}:write`,
         auditAction: `${permissionResource}.updated`,
       },
-      schema: { params: IdParams, body: AnyObject, response: { 200: AnyObject } },
+      schema: { params: IdParams, body: createBody, response: { 200: AnyObject } },
     },
     async (request) => {
       const p = principal(request);
       const params = request.params as { projectId?: string };
+      if (params.projectId && p.projectId && p.projectId !== params.projectId) {
+        throw new ApiError(404, "not_found", "Project not found");
+      }
+      if (prefix === "agent") {
+        const body = request.body as {
+          name: string;
+          engine: string;
+          model: Record<string, unknown>;
+          contractItemId: string;
+          harnessItemId?: string;
+          triggers: Record<string, unknown>[];
+          sandboxProfileId?: string;
+          enabled: boolean;
+        };
+        return (
+          await app.facilityDb
+            .insert(table)
+            .values({
+              id: newId(prefix),
+              orgId: p.orgId,
+              projectId: params.projectId,
+              name: body.name,
+              engine: body.engine,
+              model: body.model,
+              contractItemId: body.contractItemId,
+              harnessItemId: body.harnessItemId,
+              triggers: body.triggers,
+              sandboxProfileId: body.sandboxProfileId,
+              enabled: body.enabled,
+            })
+            .returning()
+        )[0];
+      }
+      const body = request.body as {
+        name: string;
+        driver: string;
+        image: string;
+        setup: Record<string, unknown>;
+        resources: Record<string, unknown>;
+        network: Record<string, unknown>;
+      };
       return (
         await app.facilityDb
           .insert(table)
@@ -2343,7 +2719,12 @@ function registerCrud(
             id: newId(prefix),
             orgId: p.orgId,
             projectId: params.projectId,
-            ...(request.body as object),
+            name: body.name,
+            driver: body.driver,
+            image: body.image,
+            setup: body.setup,
+            resources: body.resources,
+            network: body.network,
           })
           .returning()
       )[0];
@@ -2358,18 +2739,45 @@ function registerCrud(
       },
       schema: {
         params: z.object({ projectId: z.string().optional(), id: z.string() }),
-        body: AnyObject,
+        body: patchBody,
         response: { 200: AnyObject },
       },
     },
     async (request) => {
       const p = principal(request);
-      const { id } = request.params as { id: string };
+      const { projectId, id } = request.params as { projectId?: string; id: string };
+      if (projectId && p.projectId && p.projectId !== projectId) {
+        throw new ApiError(404, "not_found", "Project not found");
+      }
+      const clauses = [eq(table.orgId, p.orgId), eq(table.id, id)];
+      if (projectId && table.projectId) clauses.push(eq(table.projectId, projectId));
+      const set =
+        prefix === "agent"
+          ? crudDefinedFields({
+              name: (request.body as { name?: string }).name,
+              engine: (request.body as { engine?: string }).engine,
+              model: (request.body as { model?: Record<string, unknown> }).model,
+              contractItemId: (request.body as { contractItemId?: string }).contractItemId,
+              harnessItemId: (request.body as { harnessItemId?: string }).harnessItemId,
+              triggers: (request.body as { triggers?: Record<string, unknown>[] }).triggers,
+              sandboxProfileId: (request.body as { sandboxProfileId?: string }).sandboxProfileId,
+              enabled: (request.body as { enabled?: boolean }).enabled,
+              updatedAt: new Date(),
+            })
+          : crudDefinedFields({
+              name: (request.body as { name?: string }).name,
+              driver: (request.body as { driver?: string }).driver,
+              image: (request.body as { image?: string }).image,
+              setup: (request.body as { setup?: Record<string, unknown> }).setup,
+              resources: (request.body as { resources?: Record<string, unknown> }).resources,
+              network: (request.body as { network?: Record<string, unknown> }).network,
+              updatedAt: new Date(),
+            });
       return (
         await app.facilityDb
           .update(table)
-          .set({ ...(request.body as object), updatedAt: new Date() })
-          .where(and(eq(table.orgId, p.orgId), eq(table.id, id)))
+          .set(set)
+          .where(and(...clauses))
           .returning()
       )[0];
     },
@@ -2388,9 +2796,20 @@ function registerCrud(
     },
     async (request) => {
       const p = principal(request);
-      const { id } = request.params as { id: string };
-      await app.facilityDb.delete(table).where(and(eq(table.orgId, p.orgId), eq(table.id, id)));
+      const { projectId, id } = request.params as { projectId?: string; id: string };
+      if (projectId && p.projectId && p.projectId !== projectId) {
+        throw new ApiError(404, "not_found", "Project not found");
+      }
+      const clauses = [eq(table.orgId, p.orgId), eq(table.id, id)];
+      if (projectId && table.projectId) clauses.push(eq(table.projectId, projectId));
+      await app.facilityDb.delete(table).where(and(...clauses));
       return { ok: true };
     },
+  );
+}
+
+function crudDefinedFields<T extends Record<string, unknown>>(fields: T) {
+  return Object.fromEntries(
+    Object.entries(fields).filter((entry): entry is [string, unknown] => entry[1] !== undefined),
   );
 }

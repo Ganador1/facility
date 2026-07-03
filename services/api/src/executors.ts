@@ -4,6 +4,7 @@ import type { createDb } from "@facility/db";
 import {
   actionTypes,
   kbEntries,
+  kbLinks,
   kbSpaces,
   platformIssues,
   poTasks,
@@ -13,7 +14,16 @@ import {
   registryVersions,
   repos,
 } from "@facility/db";
+import { artifactIdFor, validate } from "@facility/harness";
 import { and, desc, eq } from "drizzle-orm";
+import {
+  ensureActive,
+  ensureLinks,
+  loadKbGraph,
+  normalizeKbDraft,
+  toHarnessEntry,
+  toHarnessSpace,
+} from "./harness.js";
 
 type Db = ReturnType<typeof createDb>["db"];
 
@@ -55,6 +65,7 @@ export async function executeApprovedProposal(
   )[0];
   if (!actionType) return;
   try {
+    validatePayload(actionType.payloadSchema, proposal.payload);
     if (actionType.name === "task_creation") {
       await executeTaskCreation(db, proposal, github);
     } else if (actionType.name === "skill_proposal" || actionType.name === "rule_proposal") {
@@ -88,16 +99,30 @@ async function executeTaskCreation(
   const payload = objectOrEmpty(proposal.payload);
   const taskId = stringField(payload.taskId);
   if (!taskId) throw new Error("task_creation_missing_task_id");
-  const task = (await db.select().from(poTasks).where(eq(poTasks.id, taskId)).limit(1))[0];
+  const task = (
+    await db
+      .select()
+      .from(poTasks)
+      .where(
+        and(
+          eq(poTasks.orgId, proposal.orgId),
+          eq(poTasks.projectId, proposal.projectId ?? ""),
+          eq(poTasks.id, taskId),
+        ),
+      )
+      .limit(1)
+  )[0];
   if (!task) throw new Error("task_not_found");
-  const repo =
-    (
-      await db
-        .select()
-        .from(repos)
-        .where(and(eq(repos.orgId, proposal.orgId), eq(repos.projectId, task.projectId)))
-        .limit(1)
-    )[0] ?? repoFromPayload(payload);
+  if (task.orgId !== proposal.orgId || task.projectId !== proposal.projectId) {
+    throw new Error("task_not_in_proposal_project");
+  }
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, proposal.orgId), eq(repos.projectId, task.projectId)))
+      .limit(1)
+  )[0];
   if (!repo) throw new Error("task_creation_missing_repo");
   const issueBody = `${task.bodyMd.trimEnd()}
 
@@ -132,7 +157,13 @@ ${JSON.stringify(task.wsjf, null, 2)}
       gh: { repo: `${repo.owner}/${repo.name}`, issue_number: issue.number, url: issue.url },
       updatedAt: new Date(),
     })
-    .where(eq(poTasks.id, task.id));
+    .where(
+      and(
+        eq(poTasks.orgId, proposal.orgId),
+        eq(poTasks.projectId, task.projectId),
+        eq(poTasks.id, task.id),
+      ),
+    );
 }
 
 async function executeRegistryDraft(db: Db, proposal: typeof proposals.$inferSelect, kind: string) {
@@ -212,6 +243,10 @@ async function executeGuardCandidate(db: Db, proposal: typeof proposals.$inferSe
 async function executeKbAmendment(db: Db, proposal: typeof proposals.$inferSelect) {
   if (!proposal.projectId) throw new Error("kb_amendment_missing_project");
   const payload = objectOrEmpty(proposal.payload);
+  const type = stringField(payload.type);
+  const slug = stringField(payload.slug);
+  const bodyMd = stringField(payload.bodyMd);
+  if (!type || !slug || !bodyMd) throw new Error("kb_amendment_payload_invalid");
   const space = (
     await db
       .select()
@@ -220,16 +255,97 @@ async function executeKbAmendment(db: Db, proposal: typeof proposals.$inferSelec
       .limit(1)
   )[0];
   if (!space) throw new Error("kb_space_missing");
-  await db.insert(kbEntries).values({
-    id: newId("kb"),
-    orgId: proposal.orgId,
-    spaceId: space.id,
-    type: stringField(payload.type) ?? "L",
-    number: typeof payload.number === "number" ? payload.number : Date.now() % 1_000_000,
-    slug: stringField(payload.slug) ?? `learning-${proposal.id}`,
+  const graph = await loadKbGraph(db, proposal.orgId, proposal.projectId);
+  if (!graph) throw new Error("kb_space_missing");
+  const max =
+    (
+      await db
+        .select()
+        .from(kbEntries)
+        .where(
+          and(
+            eq(kbEntries.orgId, proposal.orgId),
+            eq(kbEntries.spaceId, space.id),
+            eq(kbEntries.type, type),
+          ),
+        )
+        .orderBy(desc(kbEntries.number))
+        .limit(1)
+    )[0]?.number ?? 0;
+  const links = arrayOfStrings(payload.links);
+  const parentEntries = graph.entries.filter((entry) => links.includes(entry.id));
+  if (parentEntries.length !== links.length) throw new Error("kb_amendment_link_target_missing");
+  const normalized = normalizeKbDraft({
+    type,
+    number: max + 1,
+    slug,
     frontmatter: objectOrEmpty(payload.frontmatter),
-    bodyMd: stringField(payload.bodyMd) ?? proposal.contextMd,
+    bodyMd,
+    parentEntries,
+  });
+  const draft = {
+    id: "__draft__",
+    type,
+    number: max + 1,
+    slug,
+    frontmatter: normalized.frontmatter,
+    bodyMd: normalized.bodyMd,
     status: "draft",
+    supersedes: null,
+  };
+  const report = validate({
+    space: toHarnessSpace(space),
+    entries: [...graph.entries, draft],
+    links: [
+      ...graph.links,
+      ...parentEntries.flatMap((parent) => [
+        { fromEntry: "__draft__", toEntry: parent.id },
+        { fromEntry: parent.id, toEntry: "__draft__" },
+      ]),
+    ],
+    entryId: "__draft__",
+    validateSpecials: false,
+  });
+  if (!report.ok) throw new Error("kb_validation_failed");
+  await db.transaction(async (tx) => {
+    const inserted = (
+      await tx
+        .insert(kbEntries)
+        .values({
+          id: newId("kb"),
+          orgId: proposal.orgId,
+          spaceId: space.id,
+          type,
+          number: max + 1,
+          slug,
+          frontmatter: normalized.frontmatter,
+          bodyMd: normalized.bodyMd,
+          status: "draft",
+        })
+        .returning()
+    )[0];
+    if (!inserted) throw new Error("kb_amendment_insert_failed");
+    const childArtifactId = artifactIdFor(toHarnessEntry(inserted));
+    for (const link of links) {
+      await tx
+        .insert(kbLinks)
+        .values([
+          { orgId: proposal.orgId, spaceId: space.id, fromEntry: inserted.id, toEntry: link },
+          { orgId: proposal.orgId, spaceId: space.id, fromEntry: link, toEntry: inserted.id },
+        ])
+        .onConflictDoNothing();
+      const parent = parentEntries.find((candidate) => candidate.id === link);
+      if (parent) {
+        await tx
+          .update(kbEntries)
+          .set({ bodyMd: ensureLinks(parent.bodyMd, [childArtifactId]), updatedAt: new Date() })
+          .where(and(eq(kbEntries.orgId, proposal.orgId), eq(kbEntries.id, parent.id)));
+      }
+    }
+    await tx
+      .update(kbSpaces)
+      .set({ activeMd: ensureActive(space.activeMd, [childArtifactId]), updatedAt: new Date() })
+      .where(and(eq(kbSpaces.orgId, proposal.orgId), eq(kbSpaces.id, space.id)));
   });
 }
 
@@ -258,14 +374,6 @@ async function appendProposalEvent(
   });
 }
 
-function repoFromPayload(payload: Record<string, unknown>) {
-  const target = objectOrEmpty(payload.target);
-  const repo = objectOrEmpty(target.repo);
-  const owner = stringField(repo.owner);
-  const name = stringField(repo.name);
-  return owner && name ? { owner, name } : null;
-}
-
 function objectOrEmpty(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -274,4 +382,20 @@ function objectOrEmpty(value: unknown): Record<string, unknown> {
 
 function stringField(value: unknown) {
   return typeof value === "string" && value.trim() ? value : null;
+}
+
+function arrayOfStrings(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function validatePayload(schema: unknown, payload: unknown) {
+  const required = Array.isArray((schema as { required?: unknown }).required)
+    ? (schema as { required: string[] }).required
+    : [];
+  const objectPayload = objectOrEmpty(payload);
+  for (const key of required) {
+    if (!(key in objectPayload)) throw new Error(`schema_validation_failed:${key}`);
+  }
 }

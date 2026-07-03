@@ -1,12 +1,17 @@
 import { newId } from "@facility/core";
 import {
   actionTypes,
+  agentDefs,
   auditEvents,
   createDb,
   llmRequests,
   migrate,
+  poTasks,
   projects,
+  proposalEvents,
+  proposals,
   registryVersions,
+  repos,
   seed,
 } from "@facility/db";
 import { eq, sql } from "drizzle-orm";
@@ -409,6 +414,209 @@ describe("api", async () => {
     });
     expect(a.json().prefix).not.toBe(b.json().prefix);
     expect(a.json().prefix).toBe(String(a.json().secret).slice(0, 12));
+  });
+
+  it("rejects issuing a more privileged role than the caller has", async () => {
+    const role = await app.inject({
+      method: "POST",
+      url: "/v1/roles",
+      headers: { cookie },
+      payload: { name: `issuer-${Date.now()}`, permissions: ["keys:issue"] },
+    });
+    expect(role.statusCode).toBe(200);
+    const issued = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "limited-issuer", roleId: role.json().id },
+    });
+    const denied = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+      payload: { name: "owner-escalation", roleId: ownerRole },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe("privilege_escalation");
+  });
+
+  it("blocks project-scoped keys from another project's proposal, task, and key", async () => {
+    const other = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Scoped Other", slug: `scoped-other-${Date.now()}` },
+    });
+    const otherProjectId = other.json().id;
+    const ownKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "own-project-owner", roleId: ownerRole, projectId },
+    });
+    const otherKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "other-project-owner", roleId: ownerRole, projectId: otherProjectId },
+    });
+    const type = (
+      await db
+        .insert(actionTypes)
+        .values({
+          id: newId("act"),
+          orgId,
+          name: `scope_test_${Date.now()}`,
+          payloadSchema: { type: "object", required: [] },
+          resolver: { type: "permission", config: {} },
+          executor: { type: "none", config: {} },
+          defaultTtlHours: 1,
+        })
+        .returning()
+    )[0];
+    const proposal = (
+      await db
+        .insert(proposals)
+        .values({
+          id: newId("prop"),
+          orgId,
+          projectId: otherProjectId,
+          actionTypeId: type?.id ?? "",
+          payload: {},
+          contextMd: "cross project",
+          expiresAt: new Date(Date.now() + 3600_000),
+        })
+        .returning()
+    )[0];
+    const task = (
+      await db
+        .insert(poTasks)
+        .values({
+          id: newId("task"),
+          orgId,
+          projectId: otherProjectId,
+          title: "Cross task",
+          bodyMd: "body",
+          wsjf: {},
+        })
+        .returning()
+    )[0];
+    const auth = { authorization: `Bearer ${ownKey.json().secret}` };
+    const readProposal = await app.inject({
+      method: "GET",
+      url: `/v1/proposals/${proposal?.id}`,
+      headers: auth,
+    });
+    expect(readProposal.statusCode).toBe(404);
+    const mutateTask = await app.inject({
+      method: "POST",
+      url: `/v1/tasks/${task?.id}/transition`,
+      headers: auth,
+      payload: { status: "created" },
+    });
+    expect(mutateTask.statusCode).toBe(404);
+    const revokeKey = await app.inject({
+      method: "DELETE",
+      url: `/v1/keys/${otherKey.json().id}`,
+      headers: auth,
+    });
+    expect(revokeKey.statusCode).toBe(404);
+  });
+
+  it("returns 409 for an already-approved proposal without re-executing it", async () => {
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId,
+      owner: `facility-test-${Date.now()}`,
+      name: "repo",
+      defaultBranch: "main",
+    });
+    const task = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/tasks`,
+      headers: { cookie },
+      payload: { title: "Create issue once", bodyMd: "body", wsjf: {} },
+    });
+    const proposed = await app.inject({
+      method: "POST",
+      url: `/v1/tasks/${task.json().id}/propose`,
+      headers: { cookie },
+    });
+    const approved = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/decide`,
+      headers: { cookie },
+      payload: { decision: "approve" },
+    });
+    expect(approved.statusCode).toBe(200);
+    const repeated = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/decide`,
+      headers: { cookie },
+      payload: { decision: "approve" },
+    });
+    expect(repeated.statusCode).toBe(409);
+    const executed = await db
+      .select()
+      .from(proposalEvents)
+      .where(
+        sql`${proposalEvents.proposalId} = ${proposed.json().id} and ${proposalEvents.type} = 'executed'`,
+      );
+    expect(executed).toHaveLength(1);
+  });
+
+  it("ignores forbidden projectId and orgId fields on PATCH", async () => {
+    const other = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Patch Other", slug: `patch-other-${Date.now()}` },
+    });
+    const task = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/tasks`,
+      headers: { cookie },
+      payload: { title: "Patch guarded", bodyMd: "body", wsjf: {} },
+    });
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${projectId}/tasks/${task.json().id}`,
+      headers: { cookie },
+      payload: { title: "Patch guarded updated", projectId: other.json().id, orgId: "org_bad" },
+    });
+    expect(patched.statusCode).toBe(200);
+    const row = (await db.select().from(poTasks).where(eq(poTasks.id, task.json().id)).limit(1))[0];
+    expect(row?.title).toBe("Patch guarded updated");
+    expect(row?.projectId).toBe(projectId);
+    expect(row?.orgId).toBe(orgId);
+  });
+
+  it("rejects triggering a run with an agent definition from another project", async () => {
+    const projectA = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Run A", slug: `run-a-${Date.now()}` },
+    });
+    const projectB = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Run B", slug: `run-b-${Date.now()}` },
+    });
+    const foreignAgent = (
+      await db.select().from(agentDefs).where(eq(agentDefs.projectId, projectB.json().id)).limit(1)
+    )[0];
+    expect(foreignAgent).toBeTruthy();
+    const run = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectA.json().id}/runs`,
+      headers: { cookie },
+      payload: { mode: "builder", engine: "codex", agentDefId: foreignAgent?.id },
+    });
+    expect(run.statusCode).toBe(400);
+    expect(run.json().error.code).toBe("agent_not_in_project");
   });
 
   it("refuses steering a finished run", async () => {

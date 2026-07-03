@@ -67,7 +67,12 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
       }
       reply.clearCookie(STATE_COOKIE, { path: "/" });
 
-      let workosUser: { id: string; email: string; firstName?: string | null; lastName?: string | null };
+      let workosUser: {
+        id: string;
+        email: string;
+        firstName?: string | null;
+        lastName?: string | null;
+      };
       try {
         const result = await workos.userManagement.authenticateWithCode({
           clientId: config.workosClientId,
@@ -182,7 +187,11 @@ async function ensureWorkosUser(
   if (existing) {
     await db
       .update(users)
-      .set({ workosUserId: input.workosUserId, name: input.name ?? existing.name, updatedAt: new Date() })
+      .set({
+        workosUserId: input.workosUserId,
+        name: input.name ?? existing.name,
+        updatedAt: new Date(),
+      })
       .where(eq(users.id, existing.id));
   } else {
     await db.insert(users).values({
@@ -201,14 +210,23 @@ async function ensureWorkosUser(
 
   const orgRows = await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(2);
   if (orgRows.length !== 1 || !orgRows[0]) {
-    throw new ApiError(403, "not_invited", "No membership for this user; ask an admin to invite you");
+    throw new ApiError(
+      403,
+      "not_invited",
+      "No membership for this user; ask an admin to invite you",
+    );
   }
   const org = orgRows[0];
   const viewer = (
     await db
       .select()
       .from(rolesTable)
-      .where(and(eq(rolesTable.name, "viewer"), or(isNull(rolesTable.orgId), eq(rolesTable.orgId, org.id))))
+      .where(
+        and(
+          eq(rolesTable.name, "viewer"),
+          or(isNull(rolesTable.orgId), eq(rolesTable.orgId, org.id)),
+        ),
+      )
       .limit(1)
   )[0];
   if (!viewer) throw new ApiError(500, "seed_required", "Bundled viewer role is not seeded");

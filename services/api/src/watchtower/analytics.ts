@@ -221,31 +221,35 @@ export async function queryAnalytics(
   }));
 }
 
-export async function analyticsOverview(db: FacilityDb, orgId: string) {
+export async function analyticsOverview(db: FacilityDb, orgId: string, projectId?: string) {
   const monthStart = new Date();
   monthStart.setUTCDate(1);
   monthStart.setUTCHours(0, 0, 0, 0);
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600_000).toISOString().slice(0, 10);
+  const agentClauses = [eq(agentDefs.orgId, orgId), eq(agentDefs.enabled, true)];
+  if (projectId) agentClauses.push(eq(agentDefs.projectId, projectId));
   const liveAgents =
     (
       await db
         .select({ count: sql<number>`count(*)::int` })
         .from(agentDefs)
-        .where(and(eq(agentDefs.orgId, orgId), eq(agentDefs.enabled, true)))
+        .where(and(...agentClauses))
     )[0]?.count ?? 0;
+  const mtdClauses = [
+    eq(analyticsDaily.orgId, orgId),
+    gte(analyticsDaily.day, monthStart.toISOString().slice(0, 10)),
+  ];
+  if (projectId) mtdClauses.push(eq(analyticsDaily.projectId, projectId));
   const spendMtd = Number(
     (
       await db
         .select({ cents: sql<number>`coalesce(sum(${analyticsDaily.costCents}), 0)::bigint` })
         .from(analyticsDaily)
-        .where(
-          and(
-            eq(analyticsDaily.orgId, orgId),
-            gte(analyticsDaily.day, monthStart.toISOString().slice(0, 10)),
-          ),
-        )
+        .where(and(...mtdClauses))
     )[0]?.cents ?? 0,
   );
+  const outcomeClauses = [eq(analyticsDaily.orgId, orgId), gte(analyticsDaily.day, thirtyDaysAgo)];
+  if (projectId) outcomeClauses.push(eq(analyticsDaily.projectId, projectId));
   const rawOutcomeTotals = (
     await db
       .select({
@@ -254,7 +258,7 @@ export async function analyticsOverview(db: FacilityDb, orgId: string) {
         oneShot: sql<number>`coalesce(sum(${analyticsDaily.outcomesOneShot}), 0)::int`,
       })
       .from(analyticsDaily)
-      .where(and(eq(analyticsDaily.orgId, orgId), gte(analyticsDaily.day, thirtyDaysAgo)))
+      .where(and(...outcomeClauses))
   )[0] ?? { total: 0, merged: 0, oneShot: 0 };
   const outcomeTotals = {
     total: Number(rawOutcomeTotals.total),
@@ -276,7 +280,11 @@ export async function analyticsOverview(db: FacilityDb, orgId: string) {
       analyticsDaily,
       and(eq(analyticsDaily.projectId, projects.id), gte(analyticsDaily.day, thirtyDaysAgo)),
     )
-    .where(eq(projects.orgId, orgId))
+    .where(
+      projectId
+        ? and(eq(projects.orgId, orgId), eq(projects.id, projectId))
+        : eq(projects.orgId, orgId),
+    )
     .groupBy(projects.id, projects.name)
     .orderBy(projects.name);
   return {

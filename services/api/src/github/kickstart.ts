@@ -17,6 +17,7 @@ import {
   repos,
 } from "@facility/db";
 import { and, eq, sql } from "drizzle-orm";
+import { ApiError } from "../errors.js";
 import type { AppConfig, Principal } from "../types.js";
 import { FacilityGithubClient, type GithubClientFactory, type TreeItem } from "./client.js";
 import { readRepoFiles } from "./repo-files.js";
@@ -26,6 +27,45 @@ export type KickstartAnswers = RenderAnswers & {
 };
 
 export type RepoRow = typeof repos.$inferSelect;
+
+const MANAGED_FACILITY_PATHS = [
+  ".facility.json",
+  "STANDARD.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  ".github/workflows/facility-crew.yml",
+  ".github/workflows/facility-review.yml",
+  ".github/workflows/facility-address-review.yml",
+  ".github/workflows/facility-doctor.yml",
+  ".github/workflows/facility-security-sweep.yml",
+  ".github/workflows/facility-watchtower.yml",
+  ".github/workflows/facility-canary.yml",
+  ".github/facility/architect.md",
+  ".github/facility/builder.md",
+  ".github/facility/doctor.md",
+  ".github/facility/sweep.md",
+  ".github/facility/doctor/resolve.mjs",
+  ".github/facility/watchtower/outcomes.mjs",
+  ".github/facility/watchtower/health.mjs",
+  ".github/facility/watchtower/canary.mjs",
+  ".github/facility/watchtower/budgets.json",
+  ".github/facility/move-board-status.sh",
+  ".claude/settings.json",
+  ".claude/hooks/protect-branch.mjs",
+  ".claude/hooks/protect-files.mjs",
+  ".claude/agents/standards-reviewer.md",
+  ".claude/agents/security-reviewer.md",
+  ".claude/skills/working-to-standard/SKILL.md",
+  ".claude/skills/reviewing-to-standard/SKILL.md",
+  ".claude/skills/maintainable-software/SKILL.md",
+  ".claude/commands/verify.md",
+  ".claude/commands/open-pr.md",
+  "guards/run.mjs",
+  "guards/_kit.mjs",
+  "guards/actions-pinned.mjs",
+  "guards/watchtower-locked.mjs",
+  "guards/README.md",
+];
 
 export async function createGithubClientForRepo(
   db: FacilityDb,
@@ -245,9 +285,12 @@ export async function adoptFingerprints(args: {
   principal: Principal;
 }) {
   const expected = args.repo.fingerprint as ReturnType<typeof manifestFor> | null;
-  const paths = expected?.files.map((file) => file.path) ?? [];
+  const paths = expected?.files.map((file) => file.path) ?? MANAGED_FACILITY_PATHS;
   const client = await createGithubClientForRepo(args.db, args.factory, args.repo);
   const files = await readRepoFiles(client, args.repo.defaultBranch, paths);
+  if (!expected && files.size === 0) {
+    throw new ApiError(400, "nothing_to_adopt", "No managed Facility files were found to adopt");
+  }
   const manifest = manifestFor([...files.entries()].map(([path, content]) => ({ path, content })));
   await args.db
     .update(repos)
