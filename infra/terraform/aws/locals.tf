@@ -44,7 +44,16 @@ locals {
     { name = "AWS_REGION", value = var.aws_region },
   ]
 
-  api_environment = concat(local.common_environment, [
+  aws_sandbox_environment = [
+    { name = "FACILITY_AWS_ECS_CLUSTER", value = aws_ecs_cluster.facility.name },
+    { name = "FACILITY_AWS_RUNNER_TASK_DEF", value = aws_ecs_task_definition.runner.arn },
+    { name = "FACILITY_AWS_SUBNETS", value = join(",", [for subnet in aws_subnet.private : subnet.id]) },
+    { name = "FACILITY_AWS_SECURITY_GROUPS", value = aws_security_group.sandbox.id },
+    { name = "FACILITY_AWS_RUNNER_CONTAINER", value = "runner" },
+    { name = "FACILITY_AWS_RUNNER_LOG_GROUP", value = aws_cloudwatch_log_group.service["runner"].name },
+  ]
+
+  api_environment = concat(local.common_environment, local.aws_sandbox_environment, [
     { name = "PORT", value = tostring(local.ports.api) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
@@ -52,7 +61,7 @@ locals {
     { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
 
-  worker_environment = concat(local.common_environment, [
+  worker_environment = concat(local.common_environment, local.aws_sandbox_environment, [
     { name = "PORT", value = tostring(local.ports.worker) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },

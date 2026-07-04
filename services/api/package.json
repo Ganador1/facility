@@ -18,6 +18,8 @@
     "openapi": "tsx src/openapi.ts && pnpm --filter @facility/sdk generate"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch-logs": "3.1079.0",
+    "@aws-sdk/client-ecs": "3.1079.0",
     "@facility/core": "workspace:*",
     "@facility/db": "workspace:*",
     "@facility/harness": "workspace:*",

@@ -90,8 +90,8 @@ describe("sandbox api", async () => {
     await client.end();
   });
 
-  it("aws driver fails loudly as not_configured", async () => {
-    expect(() =>
+  it("aws driver fails loudly as not_configured when env is missing", async () => {
+    await expect(
       new AwsSandboxDriver().launch({
         runId: "run_test",
         image: "facility-runner:dev",
@@ -100,7 +100,7 @@ describe("sandbox api", async () => {
         memoryMb: 512,
         timeoutMin: 1,
       }),
-    ).toThrow(/not configured/i);
+    ).rejects.toMatchObject({ code: "not_configured" });
   });
 
   it("rejects wrong runner tokens and terminal internal posts", async () => {

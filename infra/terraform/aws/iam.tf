@@ -122,6 +122,52 @@ resource "aws_iam_role_policy" "task" {
           "kms:GenerateDataKey"
         ]
         Resource = aws_kms_key.facility.arn
+      },
+      {
+        Sid    = "LaunchRunnerTasks"
+        Effect = "Allow"
+        Action = [
+          "ecs:RunTask"
+        ]
+        Resource = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task-definition/${local.name_prefix}-runner:*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = aws_ecs_cluster.facility.arn
+          }
+        }
+      },
+      {
+        Sid    = "ManageRunnerTasks"
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTasks",
+          "ecs:StopTask"
+        ]
+        Resource = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${aws_ecs_cluster.facility.name}/*"
+      },
+      {
+        Sid    = "PassRunnerRoles"
+        Effect = "Allow"
+        Action = [
+          "iam:PassRole"
+        ]
+        Resource = [
+          aws_iam_role.ecs_execution.arn,
+          aws_iam_role.task.arn
+        ]
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ecs-tasks.amazonaws.com"
+          }
+        }
+      },
+      {
+        Sid    = "ReadRunnerLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:GetLogEvents"
+        ]
+        Resource = "${aws_cloudwatch_log_group.service["runner"].arn}:*"
       }
     ]
   })
