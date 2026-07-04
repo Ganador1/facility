@@ -129,6 +129,16 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     }
   }
 
+  function assertBareRowProjectScope(
+    p: Principal,
+    projectId: string | null | undefined,
+    message: string,
+  ) {
+    if (p.projectId && projectId !== p.projectId) {
+      throw notFound(message);
+    }
+  }
+
   async function assertRoleAssignable(dbx: typeof db, p: Principal, roleId: string) {
     const role = (await dbx.select().from(roles).where(eq(roles.id, roleId)).limit(1))[0];
     if (!role) throw new ApiError(400, "invalid_role", "Role does not exist");
@@ -812,6 +822,39 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     },
   );
 
+  async function loadRegistryItem(p: Principal, itemId: string) {
+    const item = (
+      await db
+        .select()
+        .from(registryItems)
+        .where(and(eq(registryItems.orgId, p.orgId), eq(registryItems.id, itemId)))
+        .limit(1)
+    )[0];
+    if (!item) throw notFound("Registry item not found");
+    assertBareRowProjectScope(p, item.projectId, "Registry item not found");
+    return item;
+  }
+
+  async function loadRegistryVersion(p: Principal, versionId: string) {
+    const row = (
+      await db
+        .select({ version: registryVersions, item: registryItems })
+        .from(registryVersions)
+        .innerJoin(
+          registryItems,
+          and(
+            eq(registryItems.orgId, registryVersions.orgId),
+            eq(registryItems.id, registryVersions.itemId),
+          ),
+        )
+        .where(and(eq(registryVersions.orgId, p.orgId), eq(registryVersions.id, versionId)))
+        .limit(1)
+    )[0];
+    if (!row) throw notFound("Registry version not found");
+    assertBareRowProjectScope(p, row.item.projectId, "Registry version not found");
+    return row.version;
+  }
+
   app.get(
     "/v1/registry/items/:itemId",
     {
@@ -821,14 +864,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { itemId } = request.params as { itemId: string };
-      const item = (
-        await db
-          .select()
-          .from(registryItems)
-          .where(and(eq(registryItems.orgId, p.orgId), eq(registryItems.id, itemId)))
-          .limit(1)
-      )[0];
-      if (!item) throw notFound("Registry item not found");
+      const item = await loadRegistryItem(p, itemId);
       const versions = await db
         .select()
         .from(registryVersions)
@@ -926,6 +962,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { itemId } = request.params as { itemId: string };
+      await loadRegistryItem(p, itemId);
       const max =
         (
           await db
@@ -955,6 +992,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { versionId } = request.params as { versionId: string };
+      await loadRegistryVersion(p, versionId);
       const version = (
         await db
           .update(registryVersions)
@@ -987,6 +1025,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const { versionId } = request.params as { versionId: string };
+      await loadRegistryVersion(p, versionId);
       return (
         await db
           .update(registryVersions)
@@ -1496,6 +1535,32 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       )[0];
     },
   );
+
+  async function loadBudget(p: Principal, budgetId: string) {
+    const budget = (
+      await db
+        .select()
+        .from(budgets)
+        .where(and(eq(budgets.orgId, p.orgId), eq(budgets.id, budgetId)))
+        .limit(1)
+    )[0];
+    if (!budget) throw notFound("Budget not found");
+    assertBareRowProjectScope(p, budget.projectId, "Budget not found");
+    return budget;
+  }
+
+  app.get(
+    "/v1/budgets/:budgetId",
+    {
+      config: { permission: "budgets:read" },
+      schema: { params: z.object({ budgetId: z.string() }), response: { 200: AnyObject } },
+    },
+    async (request) => {
+      const p = principal(request);
+      return loadBudget(p, (request.params as { budgetId: string }).budgetId);
+    },
+  );
+
   app.patch(
     "/v1/budgets/:budgetId",
     {
@@ -1516,6 +1581,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     },
     async (request) => {
       const p = principal(request);
+      const { budgetId } = request.params as { budgetId: string };
       const body = request.body as {
         scope?: string;
         projectId?: string;
@@ -1525,6 +1591,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         mode?: string;
         enabled?: boolean;
       };
+      await loadBudget(p, budgetId);
       await assertProjectInOrg(p, body.projectId);
       return (
         await db
@@ -1541,12 +1608,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
               updatedAt: new Date(),
             }),
           )
-          .where(
-            and(
-              eq(budgets.orgId, p.orgId),
-              eq(budgets.id, (request.params as { budgetId: string }).budgetId),
-            ),
-          )
+          .where(and(eq(budgets.orgId, p.orgId), eq(budgets.id, budgetId)))
           .returning()
       )[0];
     },
@@ -1558,14 +1620,10 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       schema: { params: z.object({ budgetId: z.string() }), response: { 200: Ok } },
     },
     async (request) => {
-      await db
-        .delete(budgets)
-        .where(
-          and(
-            eq(budgets.orgId, principal(request).orgId),
-            eq(budgets.id, (request.params as { budgetId: string }).budgetId),
-          ),
-        );
+      const p = principal(request);
+      const { budgetId } = request.params as { budgetId: string };
+      await loadBudget(p, budgetId);
+      await db.delete(budgets).where(and(eq(budgets.orgId, p.orgId), eq(budgets.id, budgetId)));
       return { ok: true };
     },
   );

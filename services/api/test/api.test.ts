@@ -1089,7 +1089,7 @@ describe("api", async () => {
     expect(bogus.json().error.code).toBe("invalid_permission");
   });
 
-  it("blocks project-scoped keys from another project's proposal, task, and key", async () => {
+  it("blocks project-scoped keys from another project's proposal, task, key, budget, and registry item", async () => {
     const other = await app.inject({
       method: "POST",
       url: "/v1/projects",
@@ -1170,6 +1170,77 @@ describe("api", async () => {
       headers: auth,
     });
     expect(revokeKey.statusCode).toBe(404);
+    const budget = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: {
+        scope: "project",
+        projectId: otherProjectId,
+        period: "daily",
+        limitCents: 100,
+        mode: "hard",
+      },
+    });
+    expect(budget.statusCode).toBe(200);
+    const registry = await app.inject({
+      method: "POST",
+      url: "/v1/registry/items",
+      headers: { cookie },
+      payload: {
+        scope: "project",
+        projectId: otherProjectId,
+        kind: "skill",
+        name: `cross-scope-skill-${Date.now()}`,
+        content: "body",
+      },
+    });
+    expect(registry.statusCode).toBe(200);
+    const versionId = registry.json().versions[0].id;
+    const readBudget = await app.inject({
+      method: "GET",
+      url: `/v1/budgets/${budget.json().id}`,
+      headers: auth,
+    });
+    expect(readBudget.statusCode).toBe(404);
+    const patchBudget = await app.inject({
+      method: "PATCH",
+      url: `/v1/budgets/${budget.json().id}`,
+      headers: auth,
+      payload: { limitCents: 200 },
+    });
+    expect(patchBudget.statusCode).toBe(404);
+    const deleteBudget = await app.inject({
+      method: "DELETE",
+      url: `/v1/budgets/${budget.json().id}`,
+      headers: auth,
+    });
+    expect(deleteBudget.statusCode).toBe(404);
+    const readRegistry = await app.inject({
+      method: "GET",
+      url: `/v1/registry/items/${registry.json().id}`,
+      headers: auth,
+    });
+    expect(readRegistry.statusCode).toBe(404);
+    const versionRegistry = await app.inject({
+      method: "POST",
+      url: `/v1/registry/items/${registry.json().id}/versions`,
+      headers: auth,
+      payload: { content: "v2" },
+    });
+    expect(versionRegistry.statusCode).toBe(404);
+    const publishRegistry = await app.inject({
+      method: "POST",
+      url: `/v1/registry/versions/${versionId}/publish`,
+      headers: auth,
+    });
+    expect(publishRegistry.statusCode).toBe(404);
+    const deprecateRegistry = await app.inject({
+      method: "POST",
+      url: `/v1/registry/versions/${versionId}/deprecate`,
+      headers: auth,
+    });
+    expect(deprecateRegistry.statusCode).toBe(404);
   });
 
   it("returns 409 for an already-approved proposal without re-executing it", async () => {
