@@ -26,6 +26,7 @@ export async function routeTrigger(
   db: FacilityDb,
   client: FacilityGithubClient,
   payload: TriggerPayload,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ): Promise<{ routed: boolean; reason?: string; runId?: string }> {
   if (payload.sender?.type === "Bot") return { routed: false, reason: "bot_sender" };
   const body = payload.comment?.body ?? "";
@@ -82,6 +83,9 @@ export async function routeTrigger(
     type: "queued",
     data: { queue: "runs.dispatch" },
   });
+  // Actually dispatch to a sandbox — parity with manual run creation. The
+  // slash-command path created the run but never enqueued it, so it never ran.
+  await enqueue?.("runs.dispatch", { runId: run.id, orgId: repo.orgId });
   await client.createIssueComment(
     issueNumber,
     `Queued Facility ${resolved.command} run ${run.id}.`,

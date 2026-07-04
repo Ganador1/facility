@@ -3,6 +3,7 @@ import { newId } from "@facility/core";
 import type { createDb } from "@facility/db";
 import {
   actionTypes,
+  githubInstallations,
   kbEntries,
   kbLinks,
   kbSpaces,
@@ -17,6 +18,11 @@ import {
 import { artifactIdFor, validate } from "@facility/harness";
 import { and, desc, eq } from "drizzle-orm";
 import {
+  createGithubClientFactory,
+  FacilityGithubClient,
+  type GithubClientFactory,
+} from "./github/client.js";
+import {
   ensureActive,
   ensureLinks,
   loadKbGraph,
@@ -24,6 +30,7 @@ import {
   toHarnessEntry,
   toHarnessSpace,
 } from "./harness.js";
+import type { AppConfig } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
 
@@ -53,12 +60,19 @@ export function mockGitHubIssueClient(): GitHubIssueClient {
   };
 }
 
+type ExecuteApprovedProposalOptions = {
+  config?: AppConfig;
+  github?: GitHubIssueClient;
+  githubFactory?: GithubClientFactory;
+};
+
 export async function executeApprovedProposal(
   db: Db,
   proposal: typeof proposals.$inferSelect,
   actor: { type: string; id: string },
-  github: GitHubIssueClient = mockGitHubIssueClient(),
+  options: ExecuteApprovedProposalOptions | GitHubIssueClient = {},
 ) {
+  const executionOptions = isGitHubIssueClient(options) ? { github: options } : options;
   if (proposal.state !== "approved") return;
   const actionType = (
     await db.select().from(actionTypes).where(eq(actionTypes.id, proposal.actionTypeId)).limit(1)
@@ -67,7 +81,7 @@ export async function executeApprovedProposal(
   try {
     validatePayload(actionType.payloadSchema, proposal.payload);
     if (actionType.name === "task_creation") {
-      await executeTaskCreation(db, proposal, github);
+      await executeTaskCreation(db, proposal, executionOptions);
     } else if (actionType.name === "skill_proposal" || actionType.name === "rule_proposal") {
       await executeRegistryDraft(
         db,
@@ -94,7 +108,7 @@ export async function executeApprovedProposal(
 async function executeTaskCreation(
   db: Db,
   proposal: typeof proposals.$inferSelect,
-  github: GitHubIssueClient,
+  options: ExecuteApprovedProposalOptions,
 ) {
   const payload = objectOrEmpty(proposal.payload);
   const taskId = stringField(payload.taskId);
@@ -124,6 +138,7 @@ async function executeTaskCreation(
       .limit(1)
   )[0];
   if (!repo) throw new Error("task_creation_missing_repo");
+  const github = options.github ?? (await githubIssueClientForRepo(db, repo, options));
   const issueBody = `${task.bodyMd.trimEnd()}
 
 ## Value
@@ -164,6 +179,48 @@ ${JSON.stringify(task.wsjf, null, 2)}
         eq(poTasks.id, task.id),
       ),
     );
+}
+
+async function githubIssueClientForRepo(
+  db: Db,
+  repo: typeof repos.$inferSelect,
+  options: ExecuteApprovedProposalOptions,
+): Promise<GitHubIssueClient> {
+  const config = options.config;
+  if (!repo.installationId) {
+    return mockGitHubIssueClient();
+  }
+  if (!options.githubFactory && (!config?.githubAppId || !config.githubAppPrivateKey)) {
+    return mockGitHubIssueClient();
+  }
+  const installation = (
+    await db
+      .select()
+      .from(githubInstallations)
+      .where(eq(githubInstallations.id, repo.installationId))
+      .limit(1)
+  )[0];
+  if (!installation) return mockGitHubIssueClient();
+
+  const factory = options.githubFactory ?? createGithubClientFactory(config as AppConfig);
+  const client = new FacilityGithubClient(await factory(installation.installationId), {
+    owner: repo.owner,
+    repo: repo.name,
+    defaultBranch: repo.defaultBranch,
+  });
+  return {
+    createIssue(input) {
+      return client.createIssue({
+        title: input.title,
+        body: input.body,
+        labels: input.labels,
+      });
+    },
+  };
+}
+
+function isGitHubIssueClient(value: ExecuteApprovedProposalOptions | GitHubIssueClient) {
+  return "createIssue" in value;
 }
 
 async function executeRegistryDraft(db: Db, proposal: typeof proposals.$inferSelect, kind: string) {

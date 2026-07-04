@@ -6,6 +6,7 @@ export type RunBundle = {
   skills: Array<{ name: string; content: string }>;
   engineConfig: Record<string, unknown>;
   repo: { cloneUrl: string | null; branch: string | null; installationTokenRef: string | null };
+  harness?: { files: Record<string, string> } | null;
   provisionCmd: string | null;
   checkCmds: string[];
   gatewayUrls: { anthropic: string; openai: string };

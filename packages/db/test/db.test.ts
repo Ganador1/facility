@@ -1,5 +1,5 @@
 import { hashChain, newId } from "@facility/core";
-import { count, eq } from "drizzle-orm";
+import { count, eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, insertAuditEvent, migrate, seed, withOrg } from "../src/index.js";
@@ -128,5 +128,18 @@ describe("db", async () => {
     await seed(databaseUrl);
     const after = (await db.select({ value: count() }).from(schema.registryItems))[0]?.value ?? 0;
     expect(after).toBe(before);
+  });
+
+  it("seeds bundled Project Owner and learning agents enabled", async () => {
+    await seed(databaseUrl);
+    const agents = await db
+      .select()
+      .from(schema.agentDefs)
+      .where(inArray(schema.agentDefs.id, ["agent_dev_project_owner", "agent_dev_learning"]));
+    expect(agents).toHaveLength(2);
+    expect(agents.map((agent) => [agent.name, agent.enabled]).sort()).toEqual([
+      ["learning", true],
+      ["project-owner", true],
+    ]);
   });
 });

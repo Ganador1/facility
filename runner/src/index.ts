@@ -2,17 +2,13 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
 import { parseClaudeStreamJsonLine, parseCodexJsonlLine } from "./parsers.js";
 import type { RunBundle, RunEvent } from "./types.js";
 
-const apiUrl = requiredEnv("FACILITY_API_URL").replace(/\/$/, "");
-const runId = requiredEnv("RUN_ID");
-const runnerToken = requiredEnv("RUNNER_TOKEN");
 const workRoot = "/work";
-const repoDir = join(workRoot, "repo");
-const scratchDir = join(workRoot, "scratch");
 const steerFile = join(workRoot, "STEERING.md");
 
 async function main() {
@@ -20,13 +16,13 @@ async function main() {
   let bundle: RunBundle | null = null;
   let steerStop: (() => void) | undefined;
   try {
-    const hello = await api<Record<string, unknown>>(`/internal/runs/${runId}/hello`, {
+    const hello = await api<Record<string, unknown>>(`/internal/runs/${currentRunId()}/hello`, {
       method: "POST",
     });
     bundle = (await fetchJson(String(hello.bundleUrl))) as RunBundle;
     await prepareWorkspace(bundle, String(hello.virtualKey), {
       platformKey: hello.platformKey ? String(hello.platformKey) : null,
-      platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl,
+      platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl(),
       projectId: hello.projectId ? String(hello.projectId) : "",
       repoToken: hello.repoToken ? String(hello.repoToken) : null,
     });
@@ -58,7 +54,7 @@ async function main() {
   }
 }
 
-async function prepareWorkspace(
+export async function prepareWorkspace(
   bundle: RunBundle,
   virtualKey: string,
   platform: {
@@ -67,10 +63,11 @@ async function prepareWorkspace(
     projectId: string;
     repoToken: string | null;
   },
+  root = workRoot,
 ) {
-  await mkdir(workRoot, { recursive: true });
-  await writeFile(join(workRoot, "contract.md"), bundle.contract);
-  const cwd = cwdFor(bundle);
+  await mkdir(root, { recursive: true });
+  await writeFile(join(root, "contract.md"), bundle.contract);
+  const cwd = cwdFor(bundle, root);
   if (bundle.repo.cloneUrl) {
     // Inject a token for private clones (x-access-token is how both PATs and
     // GitHub App installation tokens authenticate to github.com over HTTPS).
@@ -83,17 +80,24 @@ async function prepareWorkspace(
         : bundle.repo.cloneUrl;
     await runCommand(
       "git",
-      ["clone", "--branch", bundle.repo.branch ?? "main", cloneUrl, repoDir],
-      workRoot,
+      ["clone", "--branch", bundle.repo.branch ?? "main", cloneUrl, repoDirFor(root)],
+      root,
     );
   } else {
-    await mkdir(scratchDir, { recursive: true });
-    await runCommand("git", ["init"], scratchDir).catch(() => undefined);
+    await mkdir(scratchDirFor(root), { recursive: true });
+    await runCommand("git", ["init"], scratchDirFor(root)).catch(() => undefined);
   }
   for (const root of [join(cwd, ".claude", "skills"), join(cwd, ".agents", "skills")]) {
     await mkdir(root, { recursive: true });
     for (const skill of bundle.skills) {
       await writeFile(join(root, `${safeName(skill.name)}.md`), skill.content);
+    }
+  }
+  if (bundle.harness?.files) {
+    for (const [relativePath, content] of Object.entries(bundle.harness.files)) {
+      const path = join(cwd, relativePath);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, content);
     }
   }
   await writeFile(
@@ -162,7 +166,7 @@ function startSteeringPoll() {
     while (!stopped) {
       const query = afterId ? `?afterId=${encodeURIComponent(afterId)}` : "";
       const messages = await api<Array<{ id: string; body: string }>>(
-        `/internal/runs/${runId}/steer${query}`,
+        `/internal/runs/${currentRunId()}/steer${query}`,
       );
       for (const message of messages) {
         afterId = message.id;
@@ -240,7 +244,7 @@ async function postResult(
   error?: Record<string, unknown>,
 ) {
   const stderrTail = await readFile(join(workRoot, "engine.stderr.log"), "utf8").catch(() => "");
-  await api(`/internal/runs/${runId}/result`, {
+  await api(`/internal/runs/${currentRunId()}/result`, {
     method: "POST",
     body: JSON.stringify({
       status,
@@ -269,13 +273,16 @@ async function postResult(
 
 async function emit(events: RunEvent[]) {
   if (events.length === 0) return;
-  await api(`/internal/runs/${runId}/events`, { method: "POST", body: JSON.stringify(events) });
+  await api(`/internal/runs/${currentRunId()}/events`, {
+    method: "POST",
+    body: JSON.stringify(events),
+  });
 }
 
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { authorization: `Bearer ${runnerToken}` };
+  const headers: Record<string, string> = { authorization: `Bearer ${runnerToken()}` };
   if (init.body) headers["content-type"] = "application/json";
-  return fetchJson(`${apiUrl}${path}`, {
+  return fetchJson(`${apiUrl()}${path}`, {
     ...init,
     headers: {
       ...headers,
@@ -296,8 +303,16 @@ function engineEnv() {
   return env;
 }
 
-function cwdFor(bundle: RunBundle) {
-  return bundle.repo.cloneUrl ? repoDir : scratchDir;
+function cwdFor(bundle: RunBundle, root = workRoot) {
+  return bundle.repo.cloneUrl ? repoDirFor(root) : scratchDirFor(root);
+}
+
+function repoDirFor(root: string) {
+  return join(root, "repo");
+}
+
+function scratchDirFor(root: string) {
+  return join(root, "scratch");
 }
 
 async function runCommand(command: string, args: string[], cwd: string) {
@@ -310,8 +325,11 @@ function exitCode(child: ReturnType<typeof spawn>) {
   return new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? 1)));
 }
 
-function composedPrompt(bundle: RunBundle) {
-  return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}`;
+export function composedPrompt(bundle: RunBundle) {
+  const harnessNote = bundle.harness?.files
+    ? "\n\nProject harness/KB context is in ./harness/SESSION.md - read it first."
+    : "";
+  return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}`;
 }
 
 function addModelFlags(args: string[], config: Record<string, unknown>) {
@@ -328,8 +346,22 @@ function requiredEnv(key: string) {
   return value;
 }
 
+function apiUrl() {
+  return requiredEnv("FACILITY_API_URL").replace(/\/$/, "");
+}
+
+function currentRunId() {
+  return requiredEnv("RUN_ID");
+}
+
+function runnerToken() {
+  return requiredEnv("RUNNER_TOKEN");
+}
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-main();
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
+}

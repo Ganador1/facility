@@ -1697,7 +1697,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         return updated;
       });
       if (row && state === "approved") {
-        await executeApprovedProposal(db, row, { type: p.type, id: p.id });
+        await executeApprovedProposal(db, row, { type: p.type, id: p.id }, { config });
       }
       return row;
     },
@@ -2495,7 +2495,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           ],
           sandboxProfileId: sandbox?.id,
           permissions: ["kb:write", "tasks:write", "hitl:write"],
-          enabled: false,
+          enabled: true,
         })
         .onConflictDoNothing();
     }
@@ -2514,7 +2514,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           triggers: [{ type: "schedule", config: { cron: "0 3 * * *", timezone: "UTC" } }],
           sandboxProfileId: sandbox?.id,
           permissions: ["runs:read", "hitl:write", "kb:read"],
-          enabled: false,
+          enabled: true,
         })
         .onConflictDoNothing();
     }

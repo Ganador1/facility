@@ -57,7 +57,7 @@ export async function processGithubWebhook(
     } else if (event.eventType === "push") {
       await processPush(db, payload, enqueue);
     } else if (event.eventType === "issues" || event.eventType === "issue_comment") {
-      await processTrigger(db, factory ?? createGithubClientFactory(config), payload);
+      await processTrigger(db, factory ?? createGithubClientFactory(config), payload, enqueue);
     } else if (event.eventType === "pull_request") {
       await processPullRequest(db, payload, factory ?? createGithubClientFactory(config));
     } else if (event.eventType === "workflow_run") {
@@ -163,6 +163,7 @@ async function processTrigger(
   db: FacilityDb,
   factory: GithubClientFactory,
   payload: WebhookPayload,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
   const owner = payload.repository?.owner?.login;
   const name = payload.repository?.name;
@@ -181,7 +182,7 @@ async function processTrigger(
     repo: name,
     defaultBranch: repo.defaultBranch,
   });
-  const result = await routeTrigger(db, client, payload);
+  const result = await routeTrigger(db, client, payload, enqueue);
   if (result.routed) {
     await auditGithub(db, repo.orgId, "github.comment.created", repo, {
       issueNumber: payload.issue?.number,

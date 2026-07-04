@@ -25,6 +25,38 @@ async function canConnect() {
   }
 }
 
+describe("FacilityGithubClient", () => {
+  it("maps issue creation through Octokit", async () => {
+    let args: Record<string, unknown> | undefined;
+    const octokit = {
+      rest: {
+        issues: {
+          create: async (input: Record<string, unknown>) => {
+            args = input;
+            return { data: { number: 42, html_url: "https://github.com/octo/repo/issues/42" } };
+          },
+        },
+      },
+    } as never;
+    const client = new FacilityGithubClient(octokit, {
+      owner: "octo",
+      repo: "repo",
+      defaultBranch: "main",
+    });
+
+    await expect(
+      client.createIssue({ title: "Task", body: "Body", labels: ["type:task"] }),
+    ).resolves.toEqual({ number: 42, url: "https://github.com/octo/repo/issues/42" });
+    expect(args).toEqual({
+      owner: "octo",
+      repo: "repo",
+      title: "Task",
+      body: "Body",
+      labels: ["type:task"],
+    });
+  });
+});
+
 describe("github integration", async () => {
   const reachable = await canConnect();
   if (!reachable) {

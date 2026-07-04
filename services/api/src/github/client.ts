@@ -36,6 +36,9 @@ type Octokit = {
       listCommits?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
     };
     issues: {
+      create: (
+        args: Record<string, unknown>,
+      ) => Promise<{ data: { number: number; html_url: string } }>;
       createComment: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { id: number; html_url?: string } }>;
@@ -193,6 +196,21 @@ export class FacilityGithubClient {
       body: args.body,
       head: args.head,
       base: args.base ?? this.repo.defaultBranch,
+    });
+    return { number: response.data.number, url: response.data.html_url };
+  }
+
+  async createIssue(input: {
+    title: string;
+    body: string;
+    labels?: string[];
+  }): Promise<{ number: number; url: string }> {
+    const response = await this.octokit.rest.issues.create({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      title: input.title,
+      body: input.body,
+      labels: input.labels,
     });
     return { number: response.data.number, url: response.data.html_url };
   }

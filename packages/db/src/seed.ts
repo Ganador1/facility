@@ -86,8 +86,26 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
         '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
         '{"egress":"restricted"}'::jsonb
       )
-      ON CONFLICT (id) DO UPDATE SET image = EXCLUDED.image, updated_at = now()
+        ON CONFLICT (id) DO UPDATE SET image = EXCLUDED.image, updated_at = now()
     `;
+    const devProjects = await sql<{ id: string }[]>`
+      INSERT INTO projects (id, org_id, name, slug, description, settings)
+      VALUES (
+        'proj_dev_facility',
+        'org_dev_the_agile_monkeys',
+        'Facility Dev',
+        'facility-dev',
+        'Seeded development project',
+        '{"default_branch":"main","check_cmds":[]}'::jsonb
+      )
+      ON CONFLICT (org_id, slug) DO UPDATE SET
+        name = EXCLUDED.name,
+        description = EXCLUDED.description,
+        updated_at = now()
+      RETURNING id
+    `;
+    const devProjectId = devProjects[0]?.id;
+    if (!devProjectId) throw new Error("failed to seed dev project");
 
     const actionTypes = [
       { name: "plan_acceptance", required: [] },
@@ -137,21 +155,21 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
       join(harnessRoot, "contracts/learning-agent.md"),
       "utf8",
     );
-    await upsertRegistry(
+    const poContractId = await upsertRegistry(
       sql,
       "agent_contract",
       "po-agent",
       "Bundled Project Owner contract",
       poContract,
     );
-    await upsertRegistry(
+    const learningContractId = await upsertRegistry(
       sql,
       "agent_contract",
       "learning-agent",
       "Bundled learning mode contract",
       learningContract,
     );
-    await upsertRegistry(
+    const productChainId = await upsertRegistry(
       sql,
       "harness",
       "product-chain",
@@ -165,6 +183,86 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
       "Bundled Limina-compatible research artifact chain",
       JSON.stringify(researchChainSeed(), null, 2),
     );
+    await sql`
+      INSERT INTO agent_defs (
+        id,
+        org_id,
+        project_id,
+        name,
+        engine,
+        model,
+        contract_item_id,
+        harness_item_id,
+        triggers,
+        sandbox_profile_id,
+        permissions,
+        enabled
+      )
+      VALUES (
+        'agent_dev_project_owner',
+        'org_dev_the_agile_monkeys',
+        ${devProjectId},
+        'project-owner',
+        'codex',
+        '{"primary":"gpt-5.5"}'::jsonb,
+        ${poContractId},
+        ${productChainId},
+        '[{"type":"schedule","config":{"cron":"0 6 * * *","timezone":"UTC"}},{"type":"manual","config":{}}]'::jsonb,
+        'sbx_dev_default',
+        ARRAY['kb:write','tasks:write','hitl:write']::text[],
+        true
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        project_id = EXCLUDED.project_id,
+        model = EXCLUDED.model,
+        contract_item_id = EXCLUDED.contract_item_id,
+        harness_item_id = EXCLUDED.harness_item_id,
+        triggers = EXCLUDED.triggers,
+        sandbox_profile_id = EXCLUDED.sandbox_profile_id,
+        permissions = EXCLUDED.permissions,
+        enabled = true,
+        updated_at = now()
+    `;
+    await sql`
+      INSERT INTO agent_defs (
+        id,
+        org_id,
+        project_id,
+        name,
+        engine,
+        model,
+        contract_item_id,
+        harness_item_id,
+        triggers,
+        sandbox_profile_id,
+        permissions,
+        enabled
+      )
+      VALUES (
+        'agent_dev_learning',
+        'org_dev_the_agile_monkeys',
+        ${devProjectId},
+        'learning',
+        'codex',
+        '{"primary":"gpt-5.5"}'::jsonb,
+        ${learningContractId},
+        ${productChainId},
+        '[{"type":"schedule","config":{"cron":"0 3 * * *","timezone":"UTC"}}]'::jsonb,
+        'sbx_dev_default',
+        ARRAY['runs:read','hitl:write','kb:read']::text[],
+        true
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        project_id = EXCLUDED.project_id,
+        model = EXCLUDED.model,
+        contract_item_id = EXCLUDED.contract_item_id,
+        harness_item_id = EXCLUDED.harness_item_id,
+        triggers = EXCLUDED.triggers,
+        sandbox_profile_id = EXCLUDED.sandbox_profile_id,
+        permissions = EXCLUDED.permissions,
+        enabled = true,
+        updated_at = now()
+    `;
 
     const templateRoot = join(repoRoot, "packages/cli/templates");
     const moduleRoot = join(repoRoot, "packages/cli/modules");
@@ -223,7 +321,7 @@ async function upsertRegistry(
   name: string,
   description: string,
   content: string,
-) {
+): Promise<string> {
   const contentHash = hash(content);
   const rows = await sql<{ id: string }[]>`
     INSERT INTO registry_items (id, org_id, scope, kind, name, description, latest_version)
@@ -240,6 +338,7 @@ async function upsertRegistry(
     ON CONFLICT (item_id, version)
     DO UPDATE SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, status = 'active', updated_at = now()
   `;
+  return itemId;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
