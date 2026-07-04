@@ -92,6 +92,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       memoryMb: resourceNumber(profile.resources, "memory_mb", 4096),
       timeoutMin: bundle.timeoutMin,
       cmd: command(profile.setup),
+      network: objectOrEmpty(profile.network),
     };
     const launched = await driver.launch(launchSpec);
     await db

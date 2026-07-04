@@ -17,6 +17,7 @@ export class DockerSandboxDriver implements SandboxDriver {
 
   async launch(spec: LaunchSpec): Promise<{ ref: string }> {
     await this.ensureImage(spec.image);
+    const network = dockerNetworkMode(spec.network);
     const container = await this.docker.createContainer({
       Image: spec.image,
       Cmd: spec.cmd,
@@ -26,14 +27,23 @@ export class DockerSandboxDriver implements SandboxDriver {
         AutoRemove: false,
         Memory: Math.max(128, spec.memoryMb) * 1024 * 1024,
         NanoCpus: Math.max(0.1, spec.cpu) * 1_000_000_000,
+        ReadonlyRootfs: true,
+        Tmpfs: {
+          // Owned by the non-root `node` user (uid 1000) the runner image runs
+          // as — a root-owned tmpfs over /work would be unwritable to the agent.
+          "/work": "rw,exec,nosuid,nodev,size=4g,uid=1000,gid=1000",
+          "/tmp": "rw,exec,nosuid,nodev,size=512m",
+          "/var/tmp": "rw,exec,nosuid,nodev,size=512m",
+        },
+        ...(network.hostConfig ?? {}),
         // Contain a rogue agent process: no privilege escalation, no Linux
-        // capabilities, bounded process count. (Network-egress restriction and
-        // read-only rootfs are the remaining hardening — they need an internal
-        // network + proxy and runner-image coordination; see STATUS.md.)
+        // capabilities, bounded process count, read-only rootfs, and a
+        // profile-selected network posture.
         SecurityOpt: ["no-new-privileges"],
         CapDrop: ["ALL"],
         PidsLimit: 512,
       },
+      ...(network.networkDisabled ? { NetworkDisabled: true } : {}),
     });
     await container.start();
     return { ref: container.id };
@@ -117,6 +127,33 @@ export class DockerSandboxDriver implements SandboxDriver {
       this.docker.modem.followProgress(stream, (error) => (error ? reject(error) : resolve()));
     });
   }
+}
+
+function dockerNetworkMode(network: Record<string, unknown> | undefined): {
+  hostConfig?: { NetworkMode: string };
+  networkDisabled?: boolean;
+} {
+  const egress = typeof network?.egress === "string" ? network.egress : "restricted";
+  if (egress === "unrestricted") return {};
+  if (egress === "none" || egress === "disabled") {
+    return { hostConfig: { NetworkMode: "none" }, networkDisabled: true };
+  }
+  const configured = dockerNetworkName(network);
+  if (configured) return { hostConfig: { NetworkMode: configured } };
+  return { hostConfig: { NetworkMode: "none" }, networkDisabled: true };
+}
+
+function dockerNetworkName(network: Record<string, unknown> | undefined): string | undefined {
+  const profileValue =
+    stringValue(network?.docker_network) ??
+    stringValue(network?.dockerNetwork) ??
+    stringValue(network?.network_name) ??
+    stringValue(network?.name);
+  return profileValue ?? process.env.FACILITY_SANDBOX_DOCKER_NETWORK;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function isDockerNotFound(error: unknown) {

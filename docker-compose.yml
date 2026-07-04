@@ -31,7 +31,12 @@ services:
 
   migrate:
     build: { context: ., target: api }
-    command: ["node", "packages/db/dist/migrate.js"]
+    command:
+      [
+        "sh",
+        "-c",
+        "node packages/db/dist/migrate.js && FACILITY_SEED_DEMO=0 node packages/db/dist/seed.js",
+      ]
     environment:
       DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility
     depends_on:

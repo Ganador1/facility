@@ -4,10 +4,19 @@ import { basename, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BUNDLED_ROLES, newId } from "@facility/core";
 import { config as loadDotenv } from "dotenv";
+import { sql as drizzleSql, type SQL } from "drizzle-orm";
 import postgres from "postgres";
 
 const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "../../..");
 loadDotenv({ path: join(repoRoot, ".env"), quiet: true });
+
+type SeedOptions = {
+  includeDemoData?: boolean;
+};
+
+type RegistryDb = {
+  execute: (query: SQL) => Promise<unknown>;
+};
 
 function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
@@ -38,10 +47,14 @@ function kindFor(path: string): string {
   return "template_set";
 }
 
-export async function seed(connectionString = process.env.DATABASE_URL): Promise<void> {
+export async function seed(
+  connectionString = process.env.DATABASE_URL,
+  options: SeedOptions = {},
+): Promise<void> {
   if (!connectionString) {
     throw new Error("DATABASE_URL is required");
   }
+  const includeDemoData = options.includeDemoData ?? process.env.FACILITY_SEED_DEMO !== "0";
   const sql = postgres(connectionString, { max: 1 });
   try {
     for (const role of BUNDLED_ROLES) {
@@ -51,6 +64,10 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
         ON CONFLICT (coalesce(org_id, '__bundled__'), name)
         DO UPDATE SET description = EXCLUDED.description, permissions = EXCLUDED.permissions, updated_at = now()
       `;
+    }
+    if (!includeDemoData) {
+      console.log("seed complete");
+      return;
     }
 
     await sql`
@@ -149,40 +166,7 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
       `;
     }
 
-    const harnessRoot = join(repoRoot, "packages/harness");
-    const poContract = await readFile(join(harnessRoot, "contracts/po-agent.md"), "utf8");
-    const learningContract = await readFile(
-      join(harnessRoot, "contracts/learning-agent.md"),
-      "utf8",
-    );
-    const poContractId = await upsertRegistry(
-      sql,
-      "agent_contract",
-      "po-agent",
-      "Bundled Project Owner contract",
-      poContract,
-    );
-    const learningContractId = await upsertRegistry(
-      sql,
-      "agent_contract",
-      "learning-agent",
-      "Bundled learning mode contract",
-      learningContract,
-    );
-    const productChainId = await upsertRegistry(
-      sql,
-      "harness",
-      "product-chain",
-      "Bundled product owner artifact chain",
-      JSON.stringify(productChainSeed(), null, 2),
-    );
-    await upsertRegistry(
-      sql,
-      "harness",
-      "research-chain",
-      "Bundled Limina-compatible research artifact chain",
-      JSON.stringify(researchChainSeed(), null, 2),
-    );
+    const bundled = await seedBundledRegistrySql(sql, "org_dev_the_agile_monkeys");
     await sql`
       INSERT INTO agent_defs (
         id,
@@ -205,8 +189,8 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
         'project-owner',
         'codex',
         '{"primary":"gpt-5.5"}'::jsonb,
-        ${poContractId},
-        ${productChainId},
+        ${bundled.poContractId},
+        ${bundled.productChainId},
         '[{"type":"schedule","config":{"cron":"0 6 * * *","timezone":"UTC"}},{"type":"manual","config":{}}]'::jsonb,
         'sbx_dev_default',
         ARRAY['kb:write','tasks:write','hitl:write']::text[],
@@ -245,8 +229,8 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
         'learning',
         'codex',
         '{"primary":"gpt-5.5"}'::jsonb,
-        ${learningContractId},
-        ${productChainId},
+        ${bundled.learningContractId},
+        ${bundled.productChainId},
         '[{"type":"schedule","config":{"cron":"0 3 * * *","timezone":"UTC"}}]'::jsonb,
         'sbx_dev_default',
         ARRAY['runs:read','hitl:write','kb:read']::text[],
@@ -263,29 +247,138 @@ export async function seed(connectionString = process.env.DATABASE_URL): Promise
         enabled = true,
         updated_at = now()
     `;
-
-    const templateRoot = join(repoRoot, "packages/cli/templates");
-    const moduleRoot = join(repoRoot, "packages/cli/modules");
-    const files = [...(await walk(templateRoot)), ...(await walk(moduleRoot))];
-    const allContent = files.map((file) => relative(repoRoot, file)).join("\n");
-    await upsertRegistry(
-      sql,
-      "template_set",
-      "facility-standard",
-      "Facility standard template set",
-      allContent,
-    );
-    for (const file of files) {
-      const content = await readFile(file, "utf8");
-      const rel = relative(repoRoot, file);
-      const name =
-        rel.replace(/^packages\/cli\/(templates|modules)\//, "").replace(extname(rel), "") ||
-        basename(file);
-      await upsertRegistry(sql, kindFor(rel), name, rel, content);
-    }
     console.log("seed complete");
   } finally {
     await sql.end();
+  }
+}
+
+export async function seedBundledRegistryForOrg(db: RegistryDb, orgId: string): Promise<void> {
+  await seedBundledRegistryDb(db, orgId);
+}
+
+async function seedBundledRegistrySql(sql: postgres.Sql, orgId: string) {
+  const harnessRoot = join(repoRoot, "packages/harness");
+  const poContract = await readFile(join(harnessRoot, "contracts/po-agent.md"), "utf8");
+  const learningContract = await readFile(join(harnessRoot, "contracts/learning-agent.md"), "utf8");
+  const poContractId = await upsertRegistrySql(
+    sql,
+    orgId,
+    "agent_contract",
+    "po-agent",
+    "Bundled Project Owner contract",
+    poContract,
+  );
+  const learningContractId = await upsertRegistrySql(
+    sql,
+    orgId,
+    "agent_contract",
+    "learning-agent",
+    "Bundled learning mode contract",
+    learningContract,
+  );
+  const productChainId = await upsertRegistrySql(
+    sql,
+    orgId,
+    "harness",
+    "product-chain",
+    "Bundled product owner artifact chain",
+    JSON.stringify(productChainSeed(), null, 2),
+  );
+  await upsertRegistrySql(
+    sql,
+    orgId,
+    "harness",
+    "research-chain",
+    "Bundled Limina-compatible research artifact chain",
+    JSON.stringify(researchChainSeed(), null, 2),
+  );
+  await seedTemplateRegistrySql(sql, orgId);
+  return { poContractId, learningContractId, productChainId };
+}
+
+async function seedBundledRegistryDb(db: RegistryDb, orgId: string) {
+  const harnessRoot = join(repoRoot, "packages/harness");
+  const poContract = await readFile(join(harnessRoot, "contracts/po-agent.md"), "utf8");
+  const learningContract = await readFile(join(harnessRoot, "contracts/learning-agent.md"), "utf8");
+  await upsertRegistryDb(
+    db,
+    orgId,
+    "agent_contract",
+    "po-agent",
+    "Bundled Project Owner contract",
+    poContract,
+  );
+  await upsertRegistryDb(
+    db,
+    orgId,
+    "agent_contract",
+    "learning-agent",
+    "Bundled learning mode contract",
+    learningContract,
+  );
+  await upsertRegistryDb(
+    db,
+    orgId,
+    "harness",
+    "product-chain",
+    "Bundled product owner artifact chain",
+    JSON.stringify(productChainSeed(), null, 2),
+  );
+  await upsertRegistryDb(
+    db,
+    orgId,
+    "harness",
+    "research-chain",
+    "Bundled Limina-compatible research artifact chain",
+    JSON.stringify(researchChainSeed(), null, 2),
+  );
+  await seedTemplateRegistryDb(db, orgId);
+}
+
+async function seedTemplateRegistrySql(sql: postgres.Sql, orgId: string) {
+  const templateRoot = join(repoRoot, "packages/cli/templates");
+  const moduleRoot = join(repoRoot, "packages/cli/modules");
+  const files = [...(await walk(templateRoot)), ...(await walk(moduleRoot))];
+  const allContent = files.map((file) => relative(repoRoot, file)).join("\n");
+  await upsertRegistrySql(
+    sql,
+    orgId,
+    "template_set",
+    "facility-standard",
+    "Facility standard template set",
+    allContent,
+  );
+  for (const file of files) {
+    const content = await readFile(file, "utf8");
+    const rel = relative(repoRoot, file);
+    const name =
+      rel.replace(/^packages\/cli\/(templates|modules)\//, "").replace(extname(rel), "") ||
+      basename(file);
+    await upsertRegistrySql(sql, orgId, kindFor(rel), name, rel, content);
+  }
+}
+
+async function seedTemplateRegistryDb(db: RegistryDb, orgId: string) {
+  const templateRoot = join(repoRoot, "packages/cli/templates");
+  const moduleRoot = join(repoRoot, "packages/cli/modules");
+  const files = [...(await walk(templateRoot)), ...(await walk(moduleRoot))];
+  const allContent = files.map((file) => relative(repoRoot, file)).join("\n");
+  await upsertRegistryDb(
+    db,
+    orgId,
+    "template_set",
+    "facility-standard",
+    "Facility standard template set",
+    allContent,
+  );
+  for (const file of files) {
+    const content = await readFile(file, "utf8");
+    const rel = relative(repoRoot, file);
+    const name =
+      rel.replace(/^packages\/cli\/(templates|modules)\//, "").replace(extname(rel), "") ||
+      basename(file);
+    await upsertRegistryDb(db, orgId, kindFor(rel), name, rel, content);
   }
 }
 
@@ -315,8 +408,9 @@ function researchChainSeed() {
   };
 }
 
-async function upsertRegistry(
+async function upsertRegistrySql(
   sql: postgres.Sql,
+  orgId: string,
   kind: string,
   name: string,
   description: string,
@@ -325,7 +419,7 @@ async function upsertRegistry(
   const contentHash = hash(content);
   const rows = await sql<{ id: string }[]>`
     INSERT INTO registry_items (id, org_id, scope, kind, name, description, latest_version)
-    VALUES (${newId("item")}, 'org_dev_the_agile_monkeys', 'bundled', ${kind}, ${name}, ${description}, 1)
+    VALUES (${newId("item")}, ${orgId}, 'bundled', ${kind}, ${name}, ${description}, 1)
     ON CONFLICT (org_id, coalesce(project_id, '__none__'), kind, name)
     DO UPDATE SET description = EXCLUDED.description, latest_version = 1, updated_at = now()
     RETURNING id
@@ -334,10 +428,37 @@ async function upsertRegistry(
   if (!itemId) throw new Error(`failed to seed registry item ${name}`);
   await sql`
     INSERT INTO registry_versions (id, org_id, item_id, version, content, content_hash, changelog, status, created_by)
-    VALUES (${newId("ver")}, 'org_dev_the_agile_monkeys', ${itemId}, 1, ${content}, ${contentHash}, 'seeded from CLI templates', 'active', 'seed')
+    VALUES (${newId("ver")}, ${orgId}, ${itemId}, 1, ${content}, ${contentHash}, 'seeded from CLI templates', 'active', 'seed')
     ON CONFLICT (item_id, version)
     DO UPDATE SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, status = 'active', updated_at = now()
   `;
+  return itemId;
+}
+
+async function upsertRegistryDb(
+  db: RegistryDb,
+  orgId: string,
+  kind: string,
+  name: string,
+  description: string,
+  content: string,
+): Promise<string> {
+  const contentHash = hash(content);
+  const rows = await db.execute(drizzleSql`
+    INSERT INTO registry_items (id, org_id, scope, kind, name, description, latest_version)
+    VALUES (${newId("item")}, ${orgId}, 'bundled', ${kind}, ${name}, ${description}, 1)
+    ON CONFLICT (org_id, coalesce(project_id, '__none__'), kind, name)
+    DO UPDATE SET description = EXCLUDED.description, latest_version = 1, updated_at = now()
+    RETURNING id
+  `);
+  const itemId = Array.from(rows as Iterable<{ id: string }>)[0]?.id;
+  if (!itemId) throw new Error(`failed to seed registry item ${name}`);
+  await db.execute(drizzleSql`
+    INSERT INTO registry_versions (id, org_id, item_id, version, content, content_hash, changelog, status, created_by)
+    VALUES (${newId("ver")}, ${orgId}, ${itemId}, 1, ${content}, ${contentHash}, 'seeded from CLI templates', 'active', 'seed')
+    ON CONFLICT (item_id, version)
+    DO UPDATE SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, status = 'active', updated_at = now()
+  `);
   return itemId;
 }
 

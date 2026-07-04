@@ -6,19 +6,24 @@ import {
   createDb,
   llmRequests,
   migrate,
+  orgMembers,
+  orgs,
   poTasks,
   projects,
   proposalEvents,
   proposals,
   registryVersions,
   repos,
+  roles,
   runs,
   seed,
+  users,
 } from "@facility/db";
 import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import { ensureWorkosUser } from "../src/routes/auth.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -101,6 +106,46 @@ describe("api", async () => {
     const response = await app.inject({ method: "GET", url: "/v1/me", headers: { cookie } });
     expect(response.statusCode).toBe(200);
     expect(response.json().org.slug).toBe("the-agile-monkeys");
+  });
+
+  it("bootstraps the first WorkOS user as owner when no orgs exist", async () => {
+    const rollback = new Error("rollback bootstrap test");
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.execute(sql`TRUNCATE TABLE orgs, users, roles CASCADE`);
+        await tx.insert(roles).values({
+          id: "role_bundled_owner",
+          orgId: null,
+          name: "owner",
+          description: "Full organization control.",
+          permissions: ["*"],
+        });
+
+        const session = await ensureWorkosUser(
+          tx as unknown as Parameters<typeof ensureWorkosUser>[0],
+          {
+            workosUserId: "workos_first_admin",
+            email: "first@theagilemonkeys.com",
+            name: "First Admin",
+          },
+        );
+
+        const membership = (
+          await tx
+            .select({ org: orgs, member: orgMembers, role: roles, user: users })
+            .from(orgMembers)
+            .innerJoin(orgs, eq(orgMembers.orgId, orgs.id))
+            .innerJoin(roles, eq(orgMembers.roleId, roles.id))
+            .innerJoin(users, eq(orgMembers.userId, users.id))
+            .where(eq(orgMembers.userId, session.userId))
+            .limit(1)
+        )[0];
+        expect(membership?.org.slug).toBe("theagilemonkeys");
+        expect(membership?.role.name).toBe("owner");
+        expect(membership?.user.workosUserId).toBe("workos_first_admin");
+        throw rollback;
+      }),
+    ).rejects.toThrow(rollback.message);
   });
 
   it("denies viewer key project mutation with needed permission", async () => {

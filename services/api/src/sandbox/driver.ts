@@ -8,6 +8,7 @@ export type LaunchSpec = {
   memoryMb: number;
   timeoutMin: number;
   cmd?: string[];
+  network?: Record<string, unknown>;
 };
 
 export interface SandboxDriver {

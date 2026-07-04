@@ -1,6 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { newId } from "@facility/core";
-import { orgMembers, orgs, roles as rolesTable, users } from "@facility/db";
+import {
+  orgMembers,
+  orgs,
+  roles as rolesTable,
+  seedBundledRegistryForOrg,
+  users,
+} from "@facility/db";
 import { WorkOS } from "@workos-inc/node";
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -175,7 +181,7 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
  * (self-host) — with multiple orgs, membership must be provisioned first
  * (invite), so we never silently place someone in an arbitrary tenant.
  */
-async function ensureWorkosUser(
+export async function ensureWorkosUser(
   db: FastifyInstance["facilityDb"],
   input: { workosUserId: string; email: string; name?: string },
 ): Promise<{ userId: string; orgId: string }> {
@@ -209,6 +215,9 @@ async function ensureWorkosUser(
   if (membership) return { userId, orgId: membership.orgId };
 
   const orgRows = await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(2);
+  if (orgRows.length === 0) {
+    return bootstrapFirstOrg(db, userId, input.email);
+  }
   if (orgRows.length !== 1 || !orgRows[0]) {
     throw new ApiError(
       403,
@@ -217,22 +226,78 @@ async function ensureWorkosUser(
     );
   }
   const org = orgRows[0];
-  const viewer = (
-    await db
-      .select()
-      .from(rolesTable)
-      .where(
-        and(
-          eq(rolesTable.name, "viewer"),
-          or(isNull(rolesTable.orgId), eq(rolesTable.orgId, org.id)),
-        ),
-      )
-      .limit(1)
-  )[0];
+  const viewer = await findRole(db, "viewer", org.id);
   if (!viewer) throw new ApiError(500, "seed_required", "Bundled viewer role is not seeded");
   await db
     .insert(orgMembers)
     .values({ id: newId("user"), orgId: org.id, userId, roleId: viewer.id })
     .onConflictDoNothing();
   return { userId, orgId: org.id };
+}
+
+async function bootstrapFirstOrg(
+  db: FastifyInstance["facilityDb"],
+  userId: string,
+  email: string,
+): Promise<{ userId: string; orgId: string }> {
+  const orgName = bootstrapOrgName(email);
+  const slug = await uniqueOrgSlug(db, slugify(orgName));
+  const org = (
+    await db
+      .insert(orgs)
+      .values({ id: newId("org"), name: orgName, slug, settings: {} })
+      .returning()
+  )[0];
+  if (!org) throw new ApiError(500, "bootstrap_failed", "Failed to create bootstrap org");
+  const owner = await findRole(db, "owner", org.id);
+  if (!owner) throw new ApiError(500, "seed_required", "Bundled owner role is not seeded");
+  await db
+    .insert(orgMembers)
+    .values({ id: newId("user"), orgId: org.id, userId, roleId: owner.id })
+    .onConflictDoNothing();
+  await seedBundledRegistryForOrg(db, org.id);
+  return { userId, orgId: org.id };
+}
+
+async function findRole(
+  db: FastifyInstance["facilityDb"],
+  name: "owner" | "viewer",
+  orgId: string,
+) {
+  return (
+    await db
+      .select()
+      .from(rolesTable)
+      .where(
+        and(eq(rolesTable.name, name), or(isNull(rolesTable.orgId), eq(rolesTable.orgId, orgId))),
+      )
+      .limit(1)
+  )[0];
+}
+
+function bootstrapOrgName(email: string) {
+  const configured = process.env.FACILITY_BOOTSTRAP_ORG_NAME?.trim();
+  if (configured) return configured;
+  const domain = email.split("@")[1]?.trim().toLowerCase();
+  return domain?.split(".").filter(Boolean)[0] || "facility";
+}
+
+async function uniqueOrgSlug(db: FastifyInstance["facilityDb"], base: string) {
+  let slug = base || "facility";
+  let suffix = 2;
+  while ((await db.select({ id: orgs.id }).from(orgs).where(eq(orgs.slug, slug)).limit(1))[0]) {
+    slug = `${base}-${suffix}`;
+    suffix += 1;
+  }
+  return slug;
+}
+
+function slugify(value: string) {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "facility"
+  );
 }

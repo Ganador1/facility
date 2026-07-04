@@ -100,18 +100,6 @@ export async function prepareWorkspace(
       await writeFile(path, content);
     }
   }
-  await writeFile(
-    join(cwd, ".facility-engine-env"),
-    [
-      `ANTHROPIC_BASE_URL=${bundle.gatewayUrls.anthropic}`,
-      `OPENAI_BASE_URL=${bundle.gatewayUrls.openai}`,
-      `ANTHROPIC_API_KEY=${virtualKey}`,
-      `OPENAI_API_KEY=${virtualKey}`,
-      `FACILITY_API_URL=${platform.platformApiUrl}`,
-      `FACILITY_PROJECT_ID=${platform.projectId}`,
-      ...(platform.platformKey ? [`FACILITY_PLATFORM_KEY=${platform.platformKey}`] : []),
-    ].join("\n"),
-  );
   process.env.ANTHROPIC_BASE_URL = bundle.gatewayUrls.anthropic;
   process.env.OPENAI_BASE_URL = bundle.gatewayUrls.openai;
   process.env.ANTHROPIC_API_KEY = virtualKey;

@@ -48,14 +48,16 @@ locals {
     { name = "PORT", value = tostring(local.ports.api) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
-    { name = "FACILITY_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
 
   worker_environment = concat(local.common_environment, [
     { name = "PORT", value = tostring(local.ports.worker) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
-    { name = "FACILITY_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
 
   gateway_environment = concat(local.common_environment, [

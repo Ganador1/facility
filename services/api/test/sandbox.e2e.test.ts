@@ -119,7 +119,7 @@ describe("sandbox docker e2e", () => {
           image: "facility-runner:dev",
           setup: { provision_cmd: "echo provisioned" },
           resources: { cpu: 1, memory_mb: 512, timeout_min: 5 },
-          network: {},
+          network: { egress: "unrestricted" },
         })
         .returning(),
       "sandbox profile",

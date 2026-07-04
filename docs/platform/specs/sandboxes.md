@@ -17,9 +17,9 @@ interface SandboxDriver {
 }
 ```
 
-`LaunchSpec`: {runId, image, env (NON-secret), cpu, memoryMb, timeoutMin, cmd}. Secrets travel differently: the runner authenticates back to the api with a one-time **runner token** (random 32B, argon2-hashed on runs row, expires at run end) passed via env — everything else (virtual key, repo token) the runner FETCHES over HTTPS after boot. Container env never holds provider or installation credentials.
+`LaunchSpec`: {runId, image, env (NON-secret), cpu, memoryMb, timeoutMin, cmd, network}. Secrets travel differently: the runner authenticates back to the api with a one-time **runner token** (random 32B, argon2-hashed on runs row, expires at run end) passed via env — everything else (virtual key, repo token) the runner FETCHES over HTTPS after boot. Container env never holds provider or installation credentials.
 
-**v1 drivers**: `docker` (dockerode against local socket; label `facility.run=<id>`; auto-remove off — we destroy explicitly). `aws` = STUB module implementing the interface with a clear `not_configured` error (real Fargate driver is a later chunk; the seam and its tests are the deliverable here — keep the stub honest, no fake success).
+**v1 drivers**: `docker` (dockerode against local socket; label `facility.run=<id>`; auto-remove off — we destroy explicitly). Docker sandboxes run with a read-only root filesystem and tmpfs mounts at `/work`, `/tmp`, and `/var/tmp`. Network egress defaults to `restricted`: the container is attached only to `network.docker_network` / `network.dockerNetwork` / `FACILITY_SANDBOX_DOCKER_NETWORK`; if none is configured, networking is disabled. Set `network.egress="unrestricted"` only for trusted local/e2e profiles. `aws` = STUB module implementing the interface with a clear `not_configured` error (real Fargate driver is a later chunk; the seam and its tests are the deliverable here — keep the stub honest, no fake success).
 
 ## Run lifecycle (worker `runs.dispatch`)
 

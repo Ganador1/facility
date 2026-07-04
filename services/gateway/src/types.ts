@@ -10,6 +10,7 @@ export type GatewayConfig = {
   s3AccessKey?: string;
   s3SecretKey?: string;
   s3Bucket?: string;
+  awsRegion?: string;
   logLevel: string;
   devAnthropicApiKey?: string;
   devOpenaiApiKey?: string;
