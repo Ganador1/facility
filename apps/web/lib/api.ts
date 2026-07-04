@@ -184,7 +184,16 @@ export const api = {
   run: (id: string) => apiFetch<Run>(`/v1/runs/${id}`),
   runEvents: (id: string, afterSeq = 0) =>
     apiFetch<RunEvent[]>(`/v1/runs/${id}/events?afterSeq=${afterSeq}`),
-  inbox: () => apiFetch<Proposal[]>("/v1/inbox?state=open"),
+  // GET /v1/inbox returns { items, proposals, issues } — unwrap to the
+  // proposals array both consumers expect (guarded so a bare array also works).
+  inbox: async (): Promise<ApiResult<Proposal[]>> => {
+    const res = await apiFetch<Proposal[] | { proposals?: Proposal[]; items?: Proposal[] }>(
+      "/v1/inbox?state=open",
+    );
+    if (!res.ok) return res;
+    const d = res.data;
+    return { ok: true, data: Array.isArray(d) ? d : (d.proposals ?? d.items ?? []) };
+  },
   proposal: (id: string) => apiFetch<Proposal & { events?: unknown[] }>(`/v1/proposals/${id}`),
   audit: (params = "") => apiFetch<AuditEvent[]>(`/v1/audit${params}`),
   registry: (params = "") => apiFetch<RegistryItem[]>(`/v1/registry/items${params}`),
