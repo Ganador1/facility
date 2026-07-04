@@ -101,7 +101,7 @@ resource "aws_ecs_task_definition" "runner" {
   cpu                = tostring(var.task_cpu.runner)
   memory             = tostring(var.task_memory.runner)
   execution_role_arn = aws_iam_role.ecs_execution.arn
-  task_role_arn      = aws_iam_role.task.arn
+  task_role_arn      = aws_iam_role.runner_task.arn
 
   container_definitions = jsonencode([
     {
@@ -113,7 +113,7 @@ resource "aws_ecs_task_definition" "runner" {
         { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
         { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
       ])
-      secrets = local.common_secrets
+      secrets = []
       logConfiguration = {
         logDriver = "awslogs"
         options = {

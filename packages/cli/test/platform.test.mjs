@@ -119,6 +119,38 @@ test("steer and decide send exact request bodies", async () => {
   ]);
 });
 
+test("runs trigger sends agent identity for API resolution", async () => {
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    const body = init.body && JSON.parse(init.body);
+    calls.push({ method: init.method, path, body });
+    if (path === "/v1/projects") return json([{ id: "proj_1", slug: "demo", name: "Demo" }]);
+    if (path === "/v1/projects/proj_1/runs") return json({ id: "run_1" });
+    return json({ error: { message: "missing fixture" } }, 404);
+  };
+
+  assert.equal(
+    await runPlatformCommand("runs", ["trigger", "demo", "project-owner", "--input", '{"ok":true}'], {
+      config: config(),
+      stdout: sink(),
+      fetch,
+    }),
+    0
+  );
+
+  assert.deepEqual(calls.at(-1), {
+    method: "POST",
+    path: "/v1/projects/proj_1/runs",
+    body: {
+      mode: "manual",
+      engine: "codex",
+      agent: "project-owner",
+      trigger: { source: "cli", agentName: "project-owner", input: { ok: true } },
+    },
+  });
+});
+
 test("non-2xx maps to exit 1 with API error message", async () => {
   const stdout = sink();
   const exit = await runPlatformCommand("projects", ["list"], {

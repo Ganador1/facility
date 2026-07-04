@@ -128,6 +128,65 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     );
   }
 
+  function agentDefMatches(row: typeof agentDefs.$inferSelect, name: string) {
+    const values = new Set([name, name.startsWith("/") ? name.slice(1) : `/${name}`]);
+    if (values.has(row.name)) return true;
+    const triggers = row.triggers as unknown;
+    if (!Array.isArray(triggers)) return false;
+    return triggers.some((trigger) => {
+      if (!trigger || typeof trigger !== "object") return false;
+      const value =
+        (trigger as { command?: unknown; handle?: unknown }).command ??
+        (trigger as { handle?: unknown }).handle;
+      return typeof value === "string" && values.has(value);
+    });
+  }
+
+  async function resolveRunAgentDef(
+    orgId: string,
+    projectId: string,
+    input: { agentDefId?: string; agent?: string; trigger?: Record<string, unknown> },
+  ) {
+    if (input.agentDefId) {
+      const agent = (
+        await db.select().from(agentDefs).where(eq(agentDefs.id, input.agentDefId)).limit(1)
+      )[0];
+      if (!agent || agent.orgId !== orgId || agent.projectId !== projectId) {
+        throw new ApiError(400, "agent_not_in_project", "Agent definition is not in project");
+      }
+      if (!agent.enabled) {
+        throw new ApiError(400, "agent_required", "Agent definition is disabled");
+      }
+      return agent;
+    }
+
+    const triggerAgentName = input.trigger?.agentName ?? input.trigger?.agent;
+    const agentName =
+      typeof input.agent === "string"
+        ? input.agent
+        : typeof triggerAgentName === "string"
+          ? triggerAgentName
+          : undefined;
+    if (!agentName) {
+      throw new ApiError(400, "agent_required", "A valid enabled agent is required");
+    }
+    const candidates = await db
+      .select()
+      .from(agentDefs)
+      .where(
+        and(
+          eq(agentDefs.orgId, orgId),
+          eq(agentDefs.projectId, projectId),
+          eq(agentDefs.enabled, true),
+        ),
+      );
+    const agent = candidates.find((row) => agentDefMatches(row, agentName));
+    if (!agent) {
+      throw new ApiError(400, "agent_required", "A valid enabled agent is required");
+    }
+    return agent;
+  }
+
   app.addHook("preHandler", async (request) => {
     if (!request.principal) return;
     const projectId = (request.params as Record<string, string | undefined>)?.projectId;
@@ -936,6 +995,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           engine: z.string().default("codex"),
           trigger: AnyObject.optional(),
           agentDefId: z.string().optional(),
+          agent: z.string().optional(),
         }),
         response: { 200: AnyObject },
       },
@@ -948,16 +1008,10 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         engine: string;
         trigger?: Record<string, unknown>;
         agentDefId?: string;
+        agent?: string;
       };
       assertProjectScope(p, projectId);
-      if (body.agentDefId) {
-        const agent = (
-          await db.select().from(agentDefs).where(eq(agentDefs.id, body.agentDefId)).limit(1)
-        )[0];
-        if (!agent || agent.orgId !== p.orgId || agent.projectId !== projectId) {
-          throw new ApiError(400, "agent_not_in_project", "Agent definition is not in project");
-        }
-      }
+      const agent = await resolveRunAgentDef(p.orgId, projectId, body);
       const run = (
         await db
           .insert(runs)
@@ -965,7 +1019,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
             id: newId("run"),
             orgId: p.orgId,
             projectId,
-            agentDefId: body.agentDefId,
+            agentDefId: agent.id,
             mode: body.mode,
             engine: body.engine,
             trigger: body.trigger ?? {},
@@ -2519,7 +2573,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       await db
         .select()
         .from(sandboxProfiles)
-        .where(and(eq(sandboxProfiles.orgId, orgId), eq(sandboxProfiles.id, "sbx_dev_default")))
+        .where(eq(sandboxProfiles.orgId, orgId))
+        .orderBy(asc(sandboxProfiles.createdAt))
         .limit(1)
     )[0];
     const productChain = byName.get("product-chain");

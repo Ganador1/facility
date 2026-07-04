@@ -102,6 +102,22 @@ describe("api", async () => {
     await client.end();
   });
 
+  async function createProjectWithAgent(name: string) {
+    const project = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name, slug: `${name.toLowerCase().replaceAll(" ", "-")}-${Date.now()}` },
+    });
+    expect(project.statusCode).toBe(200);
+    const agent = (
+      await db.select().from(agentDefs).where(eq(agentDefs.projectId, project.json().id)).limit(1)
+    )[0];
+    expect(agent).toBeTruthy();
+    if (!agent) throw new Error("agent fixture missing");
+    return { projectId: project.json().id as string, agent };
+  }
+
   it("dev-login resolves /v1/me", async () => {
     const response = await app.inject({ method: "GET", url: "/v1/me", headers: { cookie } });
     expect(response.statusCode).toBe(200);
@@ -241,26 +257,84 @@ describe("api", async () => {
     expect(row?.content).toBe("v1");
   });
 
-  it("creates a run, pages events, and streams an SSE chunk", async () => {
-    const run = await app.inject({
-      method: "POST",
-      url: `/v1/projects/${projectId}/runs`,
-      headers: { cookie },
-      payload: { mode: "builder", engine: "codex" },
-    });
-    expect(run.statusCode).toBe(200);
-    const events = await app.inject({
-      method: "GET",
-      url: `/v1/runs/${run.json().id}/events`,
-      headers: { cookie },
-    });
-    expect(events.json()[0].type).toBe("queued");
-    const stream = await app.inject({
-      method: "GET",
-      url: `/v1/runs/${run.json().id}/stream?idleMs=50`,
-      headers: { cookie },
-    });
-    expect(stream.body).toContain("event: heartbeat");
+  it("requires a resolved agent before enqueuing a run", async () => {
+    const target = await createProjectWithAgent("Run Resolution");
+    const before = (await db.select().from(runs).where(eq(runs.projectId, target.projectId)))
+      .length;
+    const dispatched: { queue: string; data: Record<string, unknown> }[] = [];
+    const originalEnqueue = app.enqueue;
+    app.enqueue = async (queue: string, data: Record<string, unknown>) => {
+      dispatched.push({ queue, data });
+      return `job_${dispatched.length}`;
+    };
+    try {
+      const absent = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${target.projectId}/runs`,
+        headers: { cookie },
+        payload: { mode: "builder", engine: "codex" },
+      });
+      expect(absent.statusCode).toBe(400);
+      expect(absent.json().error.code).toBe("agent_required");
+
+      const unknown = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${target.projectId}/runs`,
+        headers: { cookie },
+        payload: {
+          mode: "builder",
+          engine: "codex",
+          trigger: { agentName: "missing-agent" },
+        },
+      });
+      expect(unknown.statusCode).toBe(400);
+      expect(unknown.json().error.code).toBe("agent_required");
+      expect(dispatched).toHaveLength(0);
+      expect(await db.select().from(runs).where(eq(runs.projectId, target.projectId))).toHaveLength(
+        before,
+      );
+
+      const run = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${target.projectId}/runs`,
+        headers: { cookie },
+        payload: {
+          mode: "builder",
+          engine: "codex",
+          trigger: { agentName: target.agent.name },
+        },
+      });
+      expect(run.statusCode).toBe(200);
+      expect(run.json().agentDefId).toBe(target.agent.id);
+      expect(dispatched).toEqual([
+        { queue: "runs.dispatch", data: { runId: run.json().id, orgId } },
+      ]);
+
+      const runById = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${target.projectId}/runs`,
+        headers: { cookie },
+        payload: { mode: "builder", engine: "codex", agentDefId: target.agent.id },
+      });
+      expect(runById.statusCode).toBe(200);
+      expect(runById.json().agentDefId).toBe(target.agent.id);
+      expect(dispatched).toHaveLength(2);
+
+      const events = await app.inject({
+        method: "GET",
+        url: `/v1/runs/${run.json().id}/events`,
+        headers: { cookie },
+      });
+      expect(events.json()[0].type).toBe("queued");
+      const stream = await app.inject({
+        method: "GET",
+        url: `/v1/runs/${run.json().id}/stream?idleMs=50`,
+        headers: { cookie },
+      });
+      expect(stream.body).toContain("event: heartbeat");
+    } finally {
+      app.enqueue = originalEnqueue;
+    }
   });
 
   it("returns org-wide paginated runs with project metadata", async () => {
@@ -567,11 +641,15 @@ describe("api", async () => {
     });
     expect(cross.statusCode).toBe(404);
     // bare-id resources are pinned too
+    const otherAgent = (
+      await db.select().from(agentDefs).where(eq(agentDefs.projectId, other.json().id)).limit(1)
+    )[0];
+    expect(otherAgent).toBeTruthy();
     const crossRun = await app.inject({
       method: "POST",
       url: `/v1/projects/${other.json().id}/runs`,
       headers: { cookie },
-      payload: { mode: "builder", engine: "codex" },
+      payload: { mode: "builder", engine: "codex", agentDefId: otherAgent?.id },
     });
     const denied = await app.inject({
       method: "GET",
@@ -865,11 +943,12 @@ describe("api", async () => {
   });
 
   it("refuses steering a finished run", async () => {
+    const target = await createProjectWithAgent("Steering Run");
     const run = await app.inject({
       method: "POST",
-      url: `/v1/projects/${projectId}/runs`,
+      url: `/v1/projects/${target.projectId}/runs`,
       headers: { cookie },
-      payload: { mode: "builder", engine: "codex" },
+      payload: { mode: "builder", engine: "codex", agentDefId: target.agent.id },
     });
     await app.inject({
       method: "POST",

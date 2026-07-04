@@ -143,6 +143,50 @@ describe("db", async () => {
     ]);
   });
 
+  it("non-demo seed populates org essentials without demo projects", async () => {
+    const orgId = newId("org");
+    await db.insert(schema.orgs).values({
+      id: orgId,
+      name: "Prod Seed Org",
+      slug: `prod-seed-${orgId}`,
+      settings: {},
+    });
+    await seed(databaseUrl, { includeDemoData: false });
+    const seededActionTypes = await db
+      .select()
+      .from(schema.actionTypes)
+      .where(eq(schema.actionTypes.orgId, orgId));
+    const seededProfiles = await db
+      .select()
+      .from(schema.sandboxProfiles)
+      .where(eq(schema.sandboxProfiles.orgId, orgId));
+    const seededProjects = await db
+      .select()
+      .from(schema.projects)
+      .where(eq(schema.projects.orgId, orgId));
+    expect(seededActionTypes.map((action) => action.name).sort()).toEqual([
+      "budget_override",
+      "guard_candidate",
+      "kb_amendment",
+      "kickstart_review",
+      "learning_validation",
+      "plan_acceptance",
+      "rule_proposal",
+      "skill_proposal",
+      "task_creation",
+    ]);
+    expect(seededProfiles.map((profile) => profile.name)).toEqual(["Default Docker Node 22"]);
+    expect(seededProjects).toHaveLength(0);
+
+    await seed(databaseUrl, { includeDemoData: false });
+    expect(
+      await db.select().from(schema.actionTypes).where(eq(schema.actionTypes.orgId, orgId)),
+    ).toHaveLength(seededActionTypes.length);
+    expect(
+      await db.select().from(schema.sandboxProfiles).where(eq(schema.sandboxProfiles.orgId, orgId)),
+    ).toHaveLength(seededProfiles.length);
+  });
+
   it("applies llm request attribution migration in order", async () => {
     const columns = (await db.execute(
       sql`

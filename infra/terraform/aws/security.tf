@@ -114,14 +114,6 @@ resource "aws_vpc_security_group_ingress_rule" "db_from_services" {
   to_port                      = 5432
 }
 
-resource "aws_vpc_security_group_ingress_rule" "db_from_sandbox" {
-  security_group_id            = aws_security_group.database.id
-  referenced_security_group_id = aws_security_group.sandbox.id
-  from_port                    = 5432
-  ip_protocol                  = "tcp"
-  to_port                      = 5432
-}
-
 resource "aws_vpc_security_group_egress_rule" "service_to_db" {
   security_group_id            = aws_security_group.service.id
   referenced_security_group_id = aws_security_group.database.id
@@ -144,14 +136,6 @@ resource "aws_vpc_security_group_egress_rule" "service_https_ipv4" {
   from_port         = 443
   ip_protocol       = "tcp"
   to_port           = 443
-}
-
-resource "aws_vpc_security_group_egress_rule" "sandbox_to_db" {
-  security_group_id            = aws_security_group.sandbox.id
-  referenced_security_group_id = aws_security_group.database.id
-  from_port                    = 5432
-  ip_protocol                  = "tcp"
-  to_port                      = 5432
 }
 
 resource "aws_vpc_security_group_egress_rule" "sandbox_to_gateway" {

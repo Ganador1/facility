@@ -18,6 +18,37 @@ type RegistryDb = {
   execute: (query: SQL) => Promise<unknown>;
 };
 
+const BUNDLED_ACTION_TYPES = [
+  { name: "plan_acceptance", required: [] },
+  { name: "learning_validation", required: [] },
+  { name: "kickstart_review", required: [] },
+  { name: "budget_override", required: [] },
+  { name: "task_creation", required: ["taskId", "title", "bodyMd", "wsjf", "target"] },
+  { name: "skill_proposal", required: ["name", "content", "evidence_refs"] },
+  { name: "rule_proposal", required: ["name", "content", "evidence_refs"] },
+  { name: "guard_candidate", required: ["title", "content", "evidence_refs"] },
+  { name: "kb_amendment", required: ["type", "slug", "bodyMd", "evidence_refs"] },
+];
+
+function defaultSandboxProfileId(orgId: string): string {
+  return orgId === "org_dev_the_agile_monkeys" ? "sbx_dev_default" : `sbx_default_${orgId}`;
+}
+
+function actionTypeExecutor(name: string) {
+  return {
+    type: [
+      "task_creation",
+      "skill_proposal",
+      "rule_proposal",
+      "guard_candidate",
+      "kb_amendment",
+    ].includes(name)
+      ? "internal"
+      : "none",
+    config: {},
+  };
+}
+
 function hash(content: string): string {
   return createHash("sha256").update(content).digest("hex");
 }
@@ -65,6 +96,10 @@ export async function seed(
         DO UPDATE SET description = EXCLUDED.description, permissions = EXCLUDED.permissions, updated_at = now()
       `;
     }
+    const seededOrgs = await sql<{ id: string }[]>`SELECT id FROM orgs`;
+    for (const org of seededOrgs) {
+      await seedOrgEssentialsSql(sql, org.id);
+    }
     if (!includeDemoData) {
       console.log("seed complete");
       return;
@@ -91,20 +126,7 @@ export async function seed(
       ON CONFLICT (org_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, updated_at = now()
     `;
 
-    await sql`
-      INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
-      VALUES (
-        'sbx_dev_default',
-        'org_dev_the_agile_monkeys',
-        'Default Docker Node 22',
-        'docker',
-        'node:22-bookworm',
-        '{"deps":[]}'::jsonb,
-        '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
-        '{"egress":"restricted"}'::jsonb
-      )
-        ON CONFLICT (id) DO UPDATE SET image = EXCLUDED.image, updated_at = now()
-    `;
+    await seedOrgEssentialsSql(sql, "org_dev_the_agile_monkeys");
     const devProjects = await sql<{ id: string }[]>`
       INSERT INTO projects (id, org_id, name, slug, description, settings)
       VALUES (
@@ -123,48 +145,6 @@ export async function seed(
     `;
     const devProjectId = devProjects[0]?.id;
     if (!devProjectId) throw new Error("failed to seed dev project");
-
-    const actionTypes = [
-      { name: "plan_acceptance", required: [] },
-      { name: "learning_validation", required: [] },
-      { name: "kickstart_review", required: [] },
-      { name: "budget_override", required: [] },
-      { name: "task_creation", required: ["taskId", "title", "bodyMd", "wsjf", "target"] },
-      { name: "skill_proposal", required: ["name", "content", "evidence_refs"] },
-      { name: "rule_proposal", required: ["name", "content", "evidence_refs"] },
-      { name: "guard_candidate", required: ["title", "content", "evidence_refs"] },
-      { name: "kb_amendment", required: ["type", "slug", "bodyMd", "evidence_refs"] },
-    ];
-    for (const actionType of actionTypes) {
-      await sql`
-        INSERT INTO action_types (id, org_id, name, payload_schema, resolver, executor, default_ttl_hours)
-        VALUES (
-          ${`act_dev_${actionType.name}`},
-          'org_dev_the_agile_monkeys',
-          ${actionType.name},
-          ${JSON.stringify({ type: "object", required: actionType.required })}::jsonb,
-          '{"type":"permission","config":{"permission":"hitl:decide"}}'::jsonb,
-          ${JSON.stringify({
-            type: [
-              "task_creation",
-              "skill_proposal",
-              "rule_proposal",
-              "guard_candidate",
-              "kb_amendment",
-            ].includes(actionType.name)
-              ? "internal"
-              : "none",
-            config: {},
-          })}::jsonb,
-          72
-        )
-        ON CONFLICT (org_id, name) DO UPDATE SET
-          payload_schema = EXCLUDED.payload_schema,
-          resolver = EXCLUDED.resolver,
-          executor = EXCLUDED.executor,
-          updated_at = now()
-      `;
-    }
 
     const bundled = await seedBundledRegistrySql(sql, "org_dev_the_agile_monkeys");
     await sql`
@@ -254,7 +234,98 @@ export async function seed(
 }
 
 export async function seedBundledRegistryForOrg(db: RegistryDb, orgId: string): Promise<void> {
+  await seedOrgEssentialsDb(db, orgId);
   await seedBundledRegistryDb(db, orgId);
+}
+
+async function seedOrgEssentialsSql(sql: postgres.Sql, orgId: string): Promise<void> {
+  await sql`
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    VALUES (
+      ${defaultSandboxProfileId(orgId)},
+      ${orgId},
+      'Default Docker Node 22',
+      'docker',
+      'node:22-bookworm',
+      '{"deps":[]}'::jsonb,
+      '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `;
+
+  for (const actionType of BUNDLED_ACTION_TYPES) {
+    await sql`
+      INSERT INTO action_types (id, org_id, name, payload_schema, resolver, executor, default_ttl_hours)
+      VALUES (
+        ${`act_${orgId}_${actionType.name}`},
+        ${orgId},
+        ${actionType.name},
+        ${JSON.stringify({ type: "object", required: actionType.required })}::jsonb,
+        '{"type":"permission","config":{"permission":"hitl:decide"}}'::jsonb,
+        ${JSON.stringify(actionTypeExecutor(actionType.name))}::jsonb,
+        72
+      )
+      ON CONFLICT (org_id, name) DO UPDATE SET
+        payload_schema = EXCLUDED.payload_schema,
+        resolver = EXCLUDED.resolver,
+        executor = EXCLUDED.executor,
+        default_ttl_hours = EXCLUDED.default_ttl_hours,
+        updated_at = now()
+    `;
+  }
+}
+
+async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void> {
+  await db.execute(drizzleSql`
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    VALUES (
+      ${defaultSandboxProfileId(orgId)},
+      ${orgId},
+      'Default Docker Node 22',
+      'docker',
+      'node:22-bookworm',
+      '{"deps":[]}'::jsonb,
+      '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `);
+
+  for (const actionType of BUNDLED_ACTION_TYPES) {
+    await db.execute(drizzleSql`
+      INSERT INTO action_types (id, org_id, name, payload_schema, resolver, executor, default_ttl_hours)
+      VALUES (
+        ${`act_${orgId}_${actionType.name}`},
+        ${orgId},
+        ${actionType.name},
+        ${JSON.stringify({ type: "object", required: actionType.required })}::jsonb,
+        '{"type":"permission","config":{"permission":"hitl:decide"}}'::jsonb,
+        ${JSON.stringify(actionTypeExecutor(actionType.name))}::jsonb,
+        72
+      )
+      ON CONFLICT (org_id, name) DO UPDATE SET
+        payload_schema = EXCLUDED.payload_schema,
+        resolver = EXCLUDED.resolver,
+        executor = EXCLUDED.executor,
+        default_ttl_hours = EXCLUDED.default_ttl_hours,
+        updated_at = now()
+    `);
+  }
 }
 
 async function seedBundledRegistrySql(sql: postgres.Sql, orgId: string) {

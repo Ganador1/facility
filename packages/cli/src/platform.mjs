@@ -156,7 +156,7 @@ async function runs(args, ctx, flags) {
     if (!agent) throw new CliError("Usage: facility runs trigger <project> <agent> [--input]");
     const input = parseInput(flags.input);
     const result = await api(ctx, "POST", `/v1/projects/${project.id}/runs`, {
-      body: { mode: "manual", engine: "codex", trigger: { source: "cli", agentName: agent, input } },
+      body: { mode: "manual", engine: "codex", agent, trigger: { source: "cli", agentName: agent, input } },
     });
     output(ctx, result, () => `  ${accent("run")} ${result.id || "(queued)"} triggered\n`);
     return 0;

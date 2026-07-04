@@ -28,6 +28,21 @@ resource "aws_iam_role" "task" {
   })
 }
 
+resource "aws_iam_role" "runner_task" {
+  name = "${local.name_prefix}-runner-task"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ecs-tasks.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
 resource "aws_iam_role_policy" "ecs_execution" {
   name = "${local.name_prefix}-ecs-execution"
   role = aws_iam_role.ecs_execution.id
@@ -153,7 +168,7 @@ resource "aws_iam_role_policy" "task" {
         ]
         Resource = [
           aws_iam_role.ecs_execution.arn,
-          aws_iam_role.task.arn
+          aws_iam_role.runner_task.arn
         ]
         Condition = {
           StringEquals = {
@@ -166,6 +181,26 @@ resource "aws_iam_role_policy" "task" {
         Effect = "Allow"
         Action = [
           "logs:GetLogEvents"
+        ]
+        Resource = "${aws_cloudwatch_log_group.service["runner"].arn}:*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "runner_task" {
+  name = "${local.name_prefix}-runner-task"
+  role = aws_iam_role.runner_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WriteOwnLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
         ]
         Resource = "${aws_cloudwatch_log_group.service["runner"].arn}:*"
       }
