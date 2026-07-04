@@ -12,10 +12,13 @@ import {
   projects,
   proposalEvents,
   proposals,
+  providerCredentials,
+  registryItems,
   registryVersions,
   repos,
   roles,
   runs,
+  sandboxProfiles,
   seed,
   users,
 } from "@facility/db";
@@ -164,6 +167,50 @@ describe("api", async () => {
     ).rejects.toThrow(rollback.message);
   });
 
+  it("requires WorkOS users to be invited or admitted by org email domain", async () => {
+    const rollback = new Error("rollback workos admission test");
+    await expect(
+      db.transaction(async (tx) => {
+        await expect(
+          ensureWorkosUser(
+            tx as unknown as Parameters<typeof ensureWorkosUser>[0],
+            {
+              workosUserId: `workos_uninvited_${Date.now()}`,
+              email: `uninvited-${Date.now()}@blocked.example`,
+              name: "Uninvited",
+            },
+            { autoJoin: false },
+          ),
+        ).rejects.toMatchObject({ statusCode: 403, code: "not_invited" });
+
+        await tx
+          .update(orgs)
+          .set({ settings: { allowedDomains: ["allowed.example"] }, updatedAt: new Date() })
+          .where(eq(orgs.id, orgId));
+        const admitted = await ensureWorkosUser(
+          tx as unknown as Parameters<typeof ensureWorkosUser>[0],
+          {
+            workosUserId: `workos_allowed_${Date.now()}`,
+            email: `allowed-${Date.now()}@allowed.example`,
+            name: "Allowed",
+          },
+          { autoJoin: false },
+        );
+        expect(admitted.orgId).toBe(orgId);
+        const membership = (
+          await tx
+            .select({ member: orgMembers, role: roles })
+            .from(orgMembers)
+            .innerJoin(roles, eq(orgMembers.roleId, roles.id))
+            .where(eq(orgMembers.userId, admitted.userId))
+            .limit(1)
+        )[0];
+        expect(membership?.role.name).toBe("viewer");
+        throw rollback;
+      }),
+    ).rejects.toThrow(rollback.message);
+  });
+
   it("denies viewer key project mutation with needed permission", async () => {
     const issued = await app.inject({
       method: "POST",
@@ -257,6 +304,36 @@ describe("api", async () => {
     expect(row?.content).toBe("v1");
   });
 
+  it("rejects unsafe BYO provider base URLs on write", async () => {
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/v1/providers",
+      headers: { cookie },
+      payload: {
+        provider: "anthropic",
+        name: `metadata-${Date.now()}`,
+        baseUrl: "https://169.254.169.254/latest/meta-data",
+        secret: "secret",
+      },
+    });
+    expect(blocked.statusCode).toBe(400);
+    expect(blocked.json().error.code).toBe("invalid_provider_base_url");
+
+    const allowed = await app.inject({
+      method: "POST",
+      url: "/v1/providers",
+      headers: { cookie },
+      payload: {
+        provider: "openai",
+        name: `openai-${Date.now()}`,
+        baseUrl: "http://localhost:4411/v1",
+        secret: "secret",
+      },
+    });
+    expect(allowed.statusCode).toBe(200);
+    await db.delete(providerCredentials).where(eq(providerCredentials.id, allowed.json().id));
+  });
+
   it("requires a resolved agent before enqueuing a run", async () => {
     const target = await createProjectWithAgent("Run Resolution");
     const before = (await db.select().from(runs).where(eq(runs.projectId, target.projectId)))
@@ -335,6 +412,191 @@ describe("api", async () => {
     } finally {
       app.enqueue = originalEnqueue;
     }
+  });
+
+  it("rejects cross-org project IDs on key, budget, and registry writes", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const foreignOrgId = newId("org");
+    const foreignProjectId = newId("proj");
+    await db.insert(orgs).values({
+      id: foreignOrgId,
+      name: "Foreign Org",
+      slug: `foreign-${suffix}`,
+      settings: {},
+    });
+    await db.insert(projects).values({
+      id: foreignProjectId,
+      orgId: foreignOrgId,
+      name: "Foreign Project",
+      slug: `foreign-project-${suffix}`,
+      settings: {},
+    });
+
+    const key = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: `foreign-key-${suffix}`, roleId: ownerRole, projectId: foreignProjectId },
+    });
+    expect(key.statusCode).toBe(400);
+    expect(key.json().error.code).toBe("project_not_in_org");
+
+    const budget = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: {
+        scope: "project",
+        projectId: foreignProjectId,
+        period: "daily",
+        limitCents: 100,
+        mode: "hard",
+      },
+    });
+    expect(budget.statusCode).toBe(400);
+    expect(budget.json().error.code).toBe("project_not_in_org");
+
+    const registry = await app.inject({
+      method: "POST",
+      url: "/v1/registry/items",
+      headers: { cookie },
+      payload: {
+        scope: "project",
+        projectId: foreignProjectId,
+        kind: "skill",
+        name: `foreign-skill-${suffix}`,
+        content: "body",
+      },
+    });
+    expect(registry.statusCode).toBe(400);
+    expect(registry.json().error.code).toBe("project_not_in_org");
+
+    const sameOrgKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: `same-org-key-${suffix}`, roleId: ownerRole, projectId },
+    });
+    expect(sameOrgKey.statusCode).toBe(200);
+  });
+
+  it("rejects agent references outside the agent project", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const projectA = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Agent Ref A",
+          slug: `agent-ref-a-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    const projectB = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Agent Ref B",
+          slug: `agent-ref-b-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    if (!projectA || !projectB) throw new Error("project setup failed");
+    const contractA = (
+      await db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId: projectA.id,
+          kind: "contract",
+          name: `contract-a-${suffix}`,
+        })
+        .returning()
+    )[0];
+    const contractB = (
+      await db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId: projectB.id,
+          kind: "contract",
+          name: `contract-b-${suffix}`,
+        })
+        .returning()
+    )[0];
+    const sandboxA = (
+      await db
+        .insert(sandboxProfiles)
+        .values({
+          id: newId("sbx"),
+          orgId,
+          projectId: projectA.id,
+          name: `sandbox-a-${suffix}`,
+          driver: "docker",
+          image: "node:22",
+        })
+        .returning()
+    )[0];
+    const sandboxB = (
+      await db
+        .insert(sandboxProfiles)
+        .values({
+          id: newId("sbx"),
+          orgId,
+          projectId: projectB.id,
+          name: `sandbox-b-${suffix}`,
+          driver: "docker",
+          image: "node:22",
+        })
+        .returning()
+    )[0];
+    if (!contractA || !contractB || !sandboxA || !sandboxB) throw new Error("agent setup failed");
+
+    const crossContract = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectA.id}/agents`,
+      headers: { cookie },
+      payload: {
+        name: `cross-contract-${suffix}`,
+        engine: "codex",
+        model: {},
+        contractItemId: contractB.id,
+      },
+    });
+    expect(crossContract.statusCode).toBe(400);
+    expect(crossContract.json().error.code).toBe("reference_not_in_project");
+
+    const created = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectA.id}/agents`,
+      headers: { cookie },
+      payload: {
+        name: `agent-ok-${suffix}`,
+        engine: "codex",
+        model: {},
+        contractItemId: contractA.id,
+        sandboxProfileId: sandboxA.id,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+
+    const crossSandbox = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${projectA.id}/agents/${created.json().id}`,
+      headers: { cookie },
+      payload: { sandboxProfileId: sandboxB.id },
+    });
+    expect(crossSandbox.statusCode).toBe(400);
+    expect(crossSandbox.json().error.code).toBe("reference_not_in_project");
   });
 
   it("returns org-wide paginated runs with project metadata", async () => {
@@ -450,6 +712,70 @@ describe("api", async () => {
       headers: { cookie },
     });
     expect(loaded.json().events.map((event: { seq: number }) => event.seq)).toEqual([1, 2]);
+  });
+
+  it("marks failed HITL execution explicitly and can retry it", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const project = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "HITL Failure", slug: `hitl-failure-${suffix}` },
+    });
+    expect(project.statusCode).toBe(200);
+    const task = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${project.json().id}/tasks`,
+      headers: { cookie },
+      payload: { title: "Needs retry", bodyMd: "body", wsjf: {} },
+    });
+    expect(task.statusCode).toBe(200);
+    const proposed = await app.inject({
+      method: "POST",
+      url: `/v1/tasks/${task.json().id}/propose`,
+      headers: { cookie },
+    });
+    expect(proposed.statusCode).toBe(200);
+
+    const failed = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/decide`,
+      headers: { cookie },
+      payload: { decision: "approve" },
+    });
+    expect(failed.statusCode).toBe(200);
+    expect(failed.json().state).toBe("execution_failed");
+    const failedLoaded = await app.inject({
+      method: "GET",
+      url: `/v1/proposals/${proposed.json().id}`,
+      headers: { cookie },
+    });
+    expect(failedLoaded.json().events.map((event: { type: string }) => event.type)).toContain(
+      "execution_failed",
+    );
+
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId: project.json().id,
+      owner: `facility-retry-${suffix}`,
+      name: "repo",
+      defaultBranch: "main",
+    });
+    const retried = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/execute`,
+      headers: { cookie },
+    });
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json().state).toBe("executed");
+    const executed = await db
+      .select()
+      .from(proposalEvents)
+      .where(
+        sql`${proposalEvents.proposalId} = ${proposed.json().id} and ${proposalEvents.type} = 'executed'`,
+      );
+    expect(executed).toHaveLength(1);
   });
 
   it("audit verify detects a manually corrupted row", async () => {

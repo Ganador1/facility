@@ -10,7 +10,7 @@ import {
   platformIssues,
   poTasks,
   proposalEvents,
-  type proposals,
+  proposals,
   registryItems,
   registryVersions,
   repos,
@@ -73,7 +73,7 @@ export async function executeApprovedProposal(
   options: ExecuteApprovedProposalOptions | GitHubIssueClient = {},
 ) {
   const executionOptions = isGitHubIssueClient(options) ? { github: options } : options;
-  if (proposal.state !== "approved") return;
+  if (proposal.state !== "approved" && proposal.state !== "execution_failed") return;
   const actionType = (
     await db.select().from(actionTypes).where(eq(actionTypes.id, proposal.actionTypeId)).limit(1)
   )[0];
@@ -95,13 +95,20 @@ export async function executeApprovedProposal(
     } else {
       return;
     }
+    await db
+      .update(proposals)
+      .set({ state: "executed", updatedAt: new Date() })
+      .where(and(eq(proposals.orgId, proposal.orgId), eq(proposals.id, proposal.id)));
     await appendProposalEvent(db, proposal, "executed", actor, { actionType: actionType.name });
   } catch (error) {
+    await db
+      .update(proposals)
+      .set({ state: "execution_failed", updatedAt: new Date() })
+      .where(and(eq(proposals.orgId, proposal.orgId), eq(proposals.id, proposal.id)));
     await appendProposalEvent(db, proposal, "execution_failed", actor, {
       actionType: actionType.name,
       error: error instanceof Error ? error.message : String(error),
     });
-    throw error;
   }
 }
 

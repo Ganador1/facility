@@ -8,7 +8,7 @@ import {
   users,
 } from "@facility/db";
 import { WorkOS } from "@workos-inc/node";
-import { and, asc, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ensureDevUser, mintSessionCookie } from "../app.js";
@@ -90,12 +90,19 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
         throw new ApiError(401, "auth_failed", "WorkOS authentication failed");
       }
 
-      const session = await ensureWorkosUser(app.facilityDb, {
-        workosUserId: workosUser.id,
-        email: workosUser.email,
-        name:
-          [workosUser.firstName, workosUser.lastName].filter(Boolean).join(" ").trim() || undefined,
-      });
+      const session = await ensureWorkosUser(
+        app.facilityDb,
+        {
+          workosUserId: workosUser.id,
+          email: workosUser.email,
+          name:
+            [workosUser.firstName, workosUser.lastName].filter(Boolean).join(" ").trim() ||
+            undefined,
+        },
+        {
+          autoJoin: config.facilityAutoJoin,
+        },
+      );
       const sealed = await mintSessionCookie(config, session.userId, session.orgId);
       reply.setCookie("facility_session", sealed, {
         httpOnly: true,
@@ -177,13 +184,13 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
 
 /**
  * Upsert a WorkOS-authenticated user and resolve their org. An existing member
- * keeps their org; a new user is admitted only into a single-org deployment
- * (self-host) — with multiple orgs, membership must be provisioned first
- * (invite), so we never silently place someone in an arbitrary tenant.
+ * keeps their org. Otherwise membership must be provisioned first, unless an
+ * org explicitly admits the user's email domain or auto-join is opted in.
  */
 export async function ensureWorkosUser(
   db: FastifyInstance["facilityDb"],
   input: { workosUserId: string; email: string; name?: string },
+  options: { autoJoin?: boolean } = {},
 ): Promise<{ userId: string; orgId: string }> {
   const existing =
     (await db.select().from(users).where(eq(users.workosUserId, input.workosUserId)).limit(1))[0] ??
@@ -214,18 +221,24 @@ export async function ensureWorkosUser(
   )[0];
   if (membership) return { userId, orgId: membership.orgId };
 
-  const orgRows = await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(2);
+  const orgRows = await db.select().from(orgs);
   if (orgRows.length === 0) {
     return bootstrapFirstOrg(db, userId, input.email);
   }
-  if (orgRows.length !== 1 || !orgRows[0]) {
+  const autoJoinEnabled = options.autoJoin ?? process.env.FACILITY_AUTO_JOIN === "1";
+  const domainMatch = orgRows.filter((org) => orgAllowsEmailDomain(org.settings, input.email));
+  const org =
+    domainMatch.length === 1
+      ? domainMatch[0]
+      : autoJoinEnabled && orgRows.length === 1
+        ? orgRows[0]
+        : null;
+  if (!org)
     throw new ApiError(
       403,
       "not_invited",
       "No membership for this user; ask an admin to invite you",
     );
-  }
-  const org = orgRows[0];
   const viewer = await findRole(db, "viewer", org.id);
   if (!viewer) throw new ApiError(500, "seed_required", "Bundled viewer role is not seeded");
   await db
@@ -233,6 +246,32 @@ export async function ensureWorkosUser(
     .values({ id: newId("user"), orgId: org.id, userId, roleId: viewer.id })
     .onConflictDoNothing();
   return { userId, orgId: org.id };
+}
+
+function orgAllowsEmailDomain(settings: unknown, email: string) {
+  const domain = email.split("@")[1]?.trim().toLowerCase();
+  if (!domain) return false;
+  const object =
+    settings && typeof settings === "object" && !Array.isArray(settings)
+      ? (settings as Record<string, unknown>)
+      : {};
+  const auth =
+    object.auth && typeof object.auth === "object" && !Array.isArray(object.auth)
+      ? (object.auth as Record<string, unknown>)
+      : {};
+  const values = [
+    object.allowedDomain,
+    object.allowedDomains,
+    object["allowed-domain"],
+    object["allowed-domains"],
+    object.autoJoinDomain,
+    object.autoJoinDomains,
+    auth.allowedDomain,
+    auth.allowedDomains,
+    auth["allowed-domain"],
+    auth["allowed-domains"],
+  ].flatMap((value) => (Array.isArray(value) ? value : [value]));
+  return values.some((value) => typeof value === "string" && value.trim().toLowerCase() === domain);
 }
 
 async function bootstrapFirstOrg(

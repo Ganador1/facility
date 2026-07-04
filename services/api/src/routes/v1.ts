@@ -1,4 +1,12 @@
-import { can, generateApiKey, newId, PermissionSchema, seal, verifyKey } from "@facility/core";
+import {
+  can,
+  generateApiKey,
+  newId,
+  PermissionSchema,
+  seal,
+  validateProviderBaseUrl,
+  verifyKey,
+} from "@facility/core";
 import {
   actionTypes,
   agentDefs,
@@ -77,12 +85,47 @@ function publicRow<T extends Record<string, unknown>>(row: T) {
   return rest;
 }
 
+async function validateApiProviderBaseUrl(value: string, allowLocalhostHttp: boolean) {
+  try {
+    return await validateProviderBaseUrl(value, { allowLocalhostHttp });
+  } catch (error) {
+    throw new ApiError(
+      400,
+      "invalid_provider_base_url",
+      error instanceof Error ? error.message : "Invalid provider base URL",
+    );
+  }
+}
+
 export async function registerV1Routes(app: FastifyInstance, config: AppConfig) {
   const db = app.facilityDb;
 
   function assertProjectScope(p: Principal, projectId: string | null | undefined) {
     if (projectId && p.projectId && p.projectId !== projectId) {
       throw new ApiError(404, "not_found", "Project not found");
+    }
+  }
+
+  async function assertProjectInOrg(
+    p: Principal,
+    projectId: string | null | undefined,
+    statusCode = 400,
+  ) {
+    assertProjectScope(p, projectId);
+    if (!projectId) return;
+    const project = (
+      await db
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.orgId, p.orgId), eq(projects.id, projectId)))
+        .limit(1)
+    )[0];
+    if (!project) {
+      throw new ApiError(
+        statusCode,
+        statusCode === 404 ? "not_found" : "project_not_in_org",
+        "Project not found",
+      );
     }
   }
 
@@ -190,7 +233,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
   app.addHook("preHandler", async (request) => {
     if (!request.principal) return;
     const projectId = (request.params as Record<string, string | undefined>)?.projectId;
-    if (projectId) assertProjectScope(request.principal, projectId);
+    if (projectId) await assertProjectInOrg(request.principal, projectId, 404);
   });
 
   app.get(
@@ -468,7 +511,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const p = principal(request);
       const body = request.body as { name: string; roleId: string; projectId?: string };
       await assertRoleAssignable(db, p, body.roleId);
-      assertProjectScope(p, body.projectId);
+      await assertProjectInOrg(p, body.projectId);
       const projectId = p.projectId ?? body.projectId;
       const key = await generateApiKey("fak");
       const row = (
@@ -757,7 +800,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       if (q.kind) clauses.push(eq(registryItems.kind, q.kind));
       if (q.scope) clauses.push(eq(registryItems.scope, q.scope));
       if (q.projectId) {
-        assertProjectScope(p, q.projectId);
+        await assertProjectInOrg(p, q.projectId);
         clauses.push(eq(registryItems.projectId, q.projectId));
       } else if (p.projectId) {
         clauses.push(eq(registryItems.projectId, p.projectId));
@@ -821,7 +864,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         description?: string;
         content: string;
       };
-      assertProjectScope(p, body.projectId);
+      await assertProjectInOrg(p, body.projectId);
       const projectId = p.projectId ?? body.projectId;
       const item = (
         await db
@@ -1260,6 +1303,9 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         baseUrl?: string;
         secret: string;
       };
+      const baseUrl = body.baseUrl
+        ? await validateApiProviderBaseUrl(body.baseUrl, config.facilityInsecureDev)
+        : undefined;
       const sealedSecret = await seal(body.secret, config.secretMasterKey);
       const row = (
         await db
@@ -1269,7 +1315,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
             orgId: p.orgId,
             provider: body.provider,
             name: body.name,
-            baseUrl: body.baseUrl,
+            baseUrl,
             sealedSecret,
             createdBy: p.id,
           })
@@ -1430,7 +1476,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         mode: string;
         enabled: boolean;
       };
-      assertProjectScope(p, body.projectId);
+      await assertProjectInOrg(p, body.projectId);
       const projectId = p.projectId ?? body.projectId;
       return (
         await db
@@ -1479,7 +1525,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         mode?: string;
         enabled?: boolean;
       };
-      assertProjectScope(p, body.projectId);
+      await assertProjectInOrg(p, body.projectId);
       return (
         await db
           .update(budgets)
@@ -1550,7 +1596,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const fromDate = q.from ? new Date(q.from) : new Date(toDate.getTime() - 30 * 86_400_000);
       const from = fromDate.toISOString();
       const to = toDate.toISOString();
-      assertProjectScope(p, q.projectId);
+      await assertProjectInOrg(p, q.projectId);
       const projectId = p.projectId ?? q.projectId;
       const groupExpr =
         q.groupBy === "day"
@@ -1704,7 +1750,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         contextMd: string;
         expiresAt?: string;
       };
-      assertProjectScope(p, body.projectId);
+      await assertProjectInOrg(p, body.projectId);
       const projectId = p.projectId ?? body.projectId;
       const actionType = (
         await db
@@ -1800,8 +1846,47 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       });
       if (row && state === "approved") {
         await executeApprovedProposal(db, row, { type: p.type, id: p.id }, { config });
+        return (
+          await db
+            .select()
+            .from(proposals)
+            .where(and(eq(proposals.orgId, p.orgId), eq(proposals.id, proposalId)))
+            .limit(1)
+        )[0];
       }
       return row;
+    },
+  );
+
+  app.post(
+    "/v1/proposals/:proposalId/execute",
+    {
+      config: { permission: "hitl:decide", auditAction: "hitl.executed" },
+      schema: { params: IdParams, response: { 200: AnyObject } },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { proposalId } = request.params as { proposalId: string };
+      const proposal = (
+        await db
+          .select()
+          .from(proposals)
+          .where(and(eq(proposals.orgId, p.orgId), eq(proposals.id, proposalId)))
+          .limit(1)
+      )[0];
+      if (!proposal) throw notFound("Proposal not found");
+      assertProjectScope(p, proposal.projectId);
+      if (proposal.state !== "execution_failed" && proposal.state !== "approved") {
+        throw new ApiError(409, "not_executable", "Proposal is not pending execution");
+      }
+      await executeApprovedProposal(db, proposal, { type: p.type, id: p.id }, { config });
+      return (
+        await db
+          .select()
+          .from(proposals)
+          .where(and(eq(proposals.orgId, p.orgId), eq(proposals.id, proposalId)))
+          .limit(1)
+      )[0];
     },
   );
 
@@ -2763,6 +2848,73 @@ function registerCrud(
           network: AnyObject.optional(),
         });
 
+  async function assertCrudProject(p: Principal, projectId: string | undefined) {
+    if (!projectId) return;
+    if (p.projectId && p.projectId !== projectId) {
+      throw new ApiError(404, "not_found", "Project not found");
+    }
+    const project = (
+      await app.facilityDb
+        .select({ id: projects.id })
+        .from(projects)
+        .where(and(eq(projects.orgId, p.orgId), eq(projects.id, projectId)))
+        .limit(1)
+    )[0];
+    if (!project) throw new ApiError(404, "not_found", "Project not found");
+  }
+
+  async function assertAgentReferences(
+    p: Principal,
+    projectId: string | undefined,
+    body: { contractItemId?: string; harnessItemId?: string; sandboxProfileId?: string },
+  ) {
+    if (!projectId) throw new ApiError(400, "project_required", "Agent project is required");
+    await assertRegistryItemInAgentProject(p, projectId, body.contractItemId, "contractItemId");
+    await assertRegistryItemInAgentProject(p, projectId, body.harnessItemId, "harnessItemId");
+    await assertSandboxProfileInAgentProject(p, projectId, body.sandboxProfileId);
+  }
+
+  async function assertRegistryItemInAgentProject(
+    p: Principal,
+    projectId: string,
+    itemId: string | undefined,
+    field: string,
+  ) {
+    if (!itemId) return;
+    const item = (
+      await app.facilityDb
+        .select()
+        .from(registryItems)
+        .where(and(eq(registryItems.orgId, p.orgId), eq(registryItems.id, itemId)))
+        .limit(1)
+    )[0];
+    if (!item || (item.projectId && item.projectId !== projectId)) {
+      throw new ApiError(400, "reference_not_in_project", `${field} is not in this project`);
+    }
+  }
+
+  async function assertSandboxProfileInAgentProject(
+    p: Principal,
+    projectId: string,
+    profileId: string | undefined,
+  ) {
+    if (!profileId) return;
+    const profile = (
+      await app.facilityDb
+        .select()
+        .from(sandboxProfiles)
+        .where(and(eq(sandboxProfiles.orgId, p.orgId), eq(sandboxProfiles.id, profileId)))
+        .limit(1)
+    )[0];
+    if (!profile || (profile.projectId && profile.projectId !== projectId)) {
+      throw new ApiError(
+        400,
+        "reference_not_in_project",
+        "sandboxProfileId is not in this project",
+      );
+    }
+  }
+
   app.get(
     base,
     {
@@ -2773,9 +2925,7 @@ function registerCrud(
       const p = principal(request);
       const params = request.params as { projectId?: string };
       const clauses = [eq(table.orgId, p.orgId)];
-      if (params.projectId && p.projectId && p.projectId !== params.projectId) {
-        throw new ApiError(404, "not_found", "Project not found");
-      }
+      await assertCrudProject(p, params.projectId);
       if (params.projectId && table.projectId) clauses.push(eq(table.projectId, params.projectId));
       if (!params.projectId && p.projectId && table.projectId) {
         clauses.push(eq(table.projectId, p.projectId));
@@ -2798,9 +2948,7 @@ function registerCrud(
     async (request) => {
       const p = principal(request);
       const params = request.params as { projectId?: string };
-      if (params.projectId && p.projectId && p.projectId !== params.projectId) {
-        throw new ApiError(404, "not_found", "Project not found");
-      }
+      await assertCrudProject(p, params.projectId);
       if (prefix === "agent") {
         const body = request.body as {
           name: string;
@@ -2812,6 +2960,7 @@ function registerCrud(
           sandboxProfileId?: string;
           enabled: boolean;
         };
+        await assertAgentReferences(p, params.projectId, body);
         return (
           await app.facilityDb
             .insert(table)
@@ -2873,11 +3022,20 @@ function registerCrud(
     async (request) => {
       const p = principal(request);
       const { projectId, id } = request.params as { projectId?: string; id: string };
-      if (projectId && p.projectId && p.projectId !== projectId) {
-        throw new ApiError(404, "not_found", "Project not found");
-      }
+      await assertCrudProject(p, projectId);
       const clauses = [eq(table.orgId, p.orgId), eq(table.id, id)];
       if (projectId && table.projectId) clauses.push(eq(table.projectId, projectId));
+      if (prefix === "agent") {
+        await assertAgentReferences(
+          p,
+          projectId,
+          request.body as {
+            contractItemId?: string;
+            harnessItemId?: string;
+            sandboxProfileId?: string;
+          },
+        );
+      }
       const set =
         prefix === "agent"
           ? crudDefinedFields({
@@ -2924,9 +3082,7 @@ function registerCrud(
     async (request) => {
       const p = principal(request);
       const { projectId, id } = request.params as { projectId?: string; id: string };
-      if (projectId && p.projectId && p.projectId !== projectId) {
-        throw new ApiError(404, "not_found", "Project not found");
-      }
+      await assertCrudProject(p, projectId);
       const clauses = [eq(table.orgId, p.orgId), eq(table.id, id)];
       if (projectId && table.projectId) clauses.push(eq(table.projectId, projectId));
       await app.facilityDb.delete(table).where(and(...clauses));

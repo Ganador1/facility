@@ -25,6 +25,7 @@ import { diffManifest, manifestFor } from "../src/fingerprints.js";
 import { newId } from "../src/ids.js";
 import { can } from "../src/permissions.js";
 import { costCents } from "../src/pricing.js";
+import { validateProviderBaseUrl } from "../src/provider-url.js";
 import { parseTamOsReceipt } from "../src/receipts.js";
 import { renderFacilityInit } from "../src/render.js";
 
@@ -61,6 +62,54 @@ describe("pricing", () => {
     expect(
       costCents({ model: "gpt-5.5-2025-11-01", inputTokens: 1_000_000, outputTokens: 0 }),
     ).toBe(1000);
+  });
+});
+
+describe("provider base URL validation", () => {
+  const resolveHost = async (host: string) => {
+    if (host === "api.anthropic.com") return ["160.79.104.10"];
+    if (host === "api.openai.com") return ["172.64.154.211"];
+    if (host === "private.example") return ["10.1.2.3"];
+    return [host];
+  };
+
+  it("blocks metadata, loopback, private, and carrier-grade NAT addresses", async () => {
+    await expect(
+      validateProviderBaseUrl("https://169.254.169.254/latest/meta-data", { resolveHost }),
+    ).rejects.toThrow("provider_base_url_private_host");
+    await expect(validateProviderBaseUrl("https://127.0.0.1/v1", { resolveHost })).rejects.toThrow(
+      "provider_base_url_private_host",
+    );
+    await expect(validateProviderBaseUrl("https://10.1.2.3/v1", { resolveHost })).rejects.toThrow(
+      "provider_base_url_private_host",
+    );
+    await expect(validateProviderBaseUrl("https://100.64.0.1/v1", { resolveHost })).rejects.toThrow(
+      "provider_base_url_private_host",
+    );
+    await expect(
+      validateProviderBaseUrl("https://private.example/v1", { resolveHost }),
+    ).rejects.toThrow("provider_base_url_private_host");
+  });
+
+  it("allows standard public provider endpoints", async () => {
+    await expect(
+      validateProviderBaseUrl("https://api.anthropic.com/v1", { resolveHost }),
+    ).resolves.toBe("https://api.anthropic.com/v1");
+    await expect(
+      validateProviderBaseUrl("https://api.openai.com/v1", { resolveHost }),
+    ).resolves.toBe("https://api.openai.com/v1");
+  });
+
+  it("allows HTTP localhost only when explicitly enabled for dev", async () => {
+    await expect(
+      validateProviderBaseUrl("http://127.0.0.1:4411/v1", { resolveHost }),
+    ).rejects.toThrow("provider_base_url_https_required");
+    await expect(
+      validateProviderBaseUrl("http://127.0.0.1:4411/v1", {
+        allowLocalhostHttp: true,
+        resolveHost,
+      }),
+    ).resolves.toBe("http://127.0.0.1:4411/v1");
   });
 });
 

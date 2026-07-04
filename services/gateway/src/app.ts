@@ -1,6 +1,11 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { MODEL_PRICES_USD_PER_1M, newId, normalizeModel } from "@facility/core";
+import {
+  MODEL_PRICES_USD_PER_1M,
+  newId,
+  normalizeModel,
+  validateProviderBaseUrl,
+} from "@facility/core";
 import { createDb } from "@facility/db";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { uuidv7 } from "uuidv7";
@@ -192,14 +197,7 @@ async function handleProvider(
   }
 
   await emitSoftBudgetIssues(db, budgets, key);
-  const credential = await providerCredential(db, config, provider, key.orgId);
   const upstreamBody = provider === "openai" ? prepareOpenAiBody(parsed.json).raw : parsed.raw;
-  const upstreamHeaders = providerHeaders(
-    provider,
-    request.headers,
-    credential.apiKey,
-    upstreamBody,
-  );
   const reservation =
     estimatedCents > 0
       ? await reserveHardBudgets(db, budgets, key, estimatedCents)
@@ -234,11 +232,22 @@ async function handleProvider(
 
   let upstream: Response;
   try {
-    upstream = await fetch(upstreamUrl(credential.baseUrl, suffix, request.url), {
+    const credential = await providerCredential(db, config, provider, key.orgId);
+    const upstreamHeaders = providerHeaders(
+      provider,
+      request.headers,
+      credential.apiKey,
+      upstreamBody,
+    );
+    const safeBaseUrl = await validateProviderBaseUrl(credential.baseUrl, {
+      allowLocalhostHttp: config.facilityInsecureDev,
+    });
+    upstream = await fetch(upstreamUrl(safeBaseUrl, suffix, request.url), {
       method: "POST",
       headers: upstreamHeaders,
       body: upstreamBody,
       signal: controller.signal,
+      redirect: "error",
     });
   } catch (error) {
     const record = baseRecord({

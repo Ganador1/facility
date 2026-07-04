@@ -28,6 +28,7 @@ export type AppConfig = {
   workosClientId?: string;
   workosCookiePassword?: string;
   facilityInsecureDev: boolean;
+  facilityAutoJoin?: boolean;
   s3Endpoint?: string;
   s3AccessKey?: string;
   s3SecretKey?: string;

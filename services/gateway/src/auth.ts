@@ -1,4 +1,4 @@
-import { keyLookup, open, verifyKey } from "@facility/core";
+import { keyLookup, open, validateProviderBaseUrl, verifyKey } from "@facility/core";
 import type { FacilityDb } from "@facility/db";
 import { providerCredentials, runs, virtualKeys } from "@facility/db";
 import { and, eq, isNull } from "drizzle-orm";
@@ -112,7 +112,12 @@ export async function providerCredential(
     if (config.nodeEnv === "production" && !config.facilityInsecureDev) {
       throw new Error("dev provider key fallback refused in production");
     }
-    const credential = { apiKey: fallback, baseUrl: defaultBaseUrl(provider) };
+    const credential = {
+      apiKey: fallback,
+      baseUrl: await validateProviderBaseUrl(defaultBaseUrl(provider), {
+        allowLocalhostHttp: config.facilityInsecureDev,
+      }),
+    };
     credentialCache.set(cacheKey, { expiresAt: Date.now() + 60_000, credential });
     return credential;
   }
@@ -120,7 +125,9 @@ export async function providerCredential(
 
   const credential = {
     apiKey: await open(row.sealedSecret, config.secretMasterKey),
-    baseUrl: row.baseUrl ?? defaultBaseUrl(provider),
+    baseUrl: await validateProviderBaseUrl(row.baseUrl ?? defaultBaseUrl(provider), {
+      allowLocalhostHttp: config.facilityInsecureDev,
+    }),
   };
   credentialCache.set(cacheKey, { expiresAt: Date.now() + 60_000, credential });
   return credential;

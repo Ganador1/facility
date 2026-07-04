@@ -15,6 +15,7 @@ import { eq, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { clearAuthCaches } from "../src/auth.js";
 import { buildApp, MemoryEnvelopeStore } from "../src/index.js";
 import type { GatewayConfig } from "../src/types.js";
 
@@ -82,6 +83,7 @@ describe("gateway", async () => {
   });
 
   beforeEach(async () => {
+    clearAuthCaches();
     stubState.anthropicCalls = 0;
     stubState.openaiCalls = 0;
     stubState.lastOpenAiRequest = null;
@@ -348,6 +350,25 @@ describe("gateway", async () => {
       await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
     )[0];
     expect(row?.outputTokens).toBe(333);
+  });
+
+  it("9b. rejects private BYO provider base URLs before upstream fetch", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: "https://169.254.169.254/v1",
+    });
+    const response = await postAnthropic(setup.secret, {
+      model: "claude-sonnet-5",
+      messages: [],
+    });
+    expect(response.status).toBe(502);
+    expect(stubState.anthropicCalls).toBe(0);
+    await waitForRequestCount(1);
+    const row = (
+      await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
+    )[0];
+    expect(row?.status).toBe("error");
+    expect(row?.error).toBe("upstream fetch failed");
   });
 
   it("10. Stub p95 latency overhead stays below 50ms", async () => {
