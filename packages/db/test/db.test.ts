@@ -187,28 +187,54 @@ describe("db", async () => {
     ).toHaveLength(seededProfiles.length);
   });
 
-  it("applies llm request attribution migration in order", async () => {
+  it("applies metering precision and index migrations in order", async () => {
     const columns = (await db.execute(
       sql`
-        SELECT column_name
+        SELECT table_name, column_name, data_type
         FROM information_schema.columns
-        WHERE table_name = 'llm_requests'
-          AND column_name IN ('task_id', 'agent_def_id', 'priced')
+        WHERE (table_name = 'llm_requests' AND column_name IN ('task_id', 'agent_def_id', 'priced', 'cost_cents'))
+           OR (table_name = 'spend_counters' AND column_name = 'spent_cents')
+           OR (table_name = 'analytics_daily' AND column_name = 'cost_cents')
       `,
-    )) as Iterable<{ column_name: string }>;
-    expect(new Set(Array.from(columns).map((row) => row.column_name))).toEqual(
-      new Set(["task_id", "agent_def_id", "priced"]),
+    )) as Iterable<{ table_name: string; column_name: string; data_type: string }>;
+    const columnTypes = new Map(
+      Array.from(columns).map((row) => [`${row.table_name}.${row.column_name}`, row.data_type]),
     );
+    expect(columnTypes.get("llm_requests.task_id")).toBe("text");
+    expect(columnTypes.get("llm_requests.agent_def_id")).toBe("text");
+    expect(columnTypes.get("llm_requests.priced")).toBe("boolean");
+    expect(columnTypes.get("llm_requests.cost_cents")).toBe("numeric");
+    expect(columnTypes.get("spend_counters.spent_cents")).toBe("numeric");
+    expect(columnTypes.get("analytics_daily.cost_cents")).toBe("numeric");
     const indexes = (await db.execute(
       sql`
         SELECT indexname
         FROM pg_indexes
-        WHERE tablename = 'llm_requests'
-          AND indexname = 'llm_requests_org_created_group_idx'
+        WHERE indexname IN (
+          'llm_requests_org_created_group_idx',
+          'llm_requests_org_project_created_group_idx',
+          'runs_org_queued_idx',
+          'runs_org_project_queued_idx',
+          'runs_org_status_queued_idx',
+          'runs_org_project_status_queued_idx',
+          'audit_events_org_seq_idx',
+          'registry_versions_org_item_version_idx',
+          'sandbox_profiles_org_created_idx'
+        )
       `,
     )) as Iterable<{ indexname: string }>;
-    expect(Array.from(indexes).map((row) => row.indexname)).toContain(
-      "llm_requests_org_created_group_idx",
+    expect(new Set(Array.from(indexes).map((row) => row.indexname))).toEqual(
+      new Set([
+        "llm_requests_org_created_group_idx",
+        "llm_requests_org_project_created_group_idx",
+        "runs_org_queued_idx",
+        "runs_org_project_queued_idx",
+        "runs_org_status_queued_idx",
+        "runs_org_project_status_queued_idx",
+        "audit_events_org_seq_idx",
+        "registry_versions_org_item_version_idx",
+        "sandbox_profiles_org_created_idx",
+      ]),
     );
     const applied = (await db.execute(
       sql`
@@ -221,6 +247,6 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0005_llm_request_attribution.sql");
+    ).toBe("0006_budget_precision_hot_indexes.sql");
   });
 });

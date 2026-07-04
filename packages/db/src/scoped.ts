@@ -81,7 +81,7 @@ export function withOrg(db: Db, orgId: string) {
     llmRequests: {
       spendByDay: (from: Date, to: Date) =>
         db.execute(sql`
-          SELECT date_trunc('day', created_at)::date AS bucket, coalesce(sum(cost_cents), 0)::int AS cost_cents
+          SELECT date_trunc('day', created_at)::date AS bucket, floor(coalesce(sum(cost_cents), 0) + 0.5)::int AS cost_cents
           FROM llm_requests
           WHERE org_id = ${orgId} AND created_at >= ${from} AND created_at <= ${to}
           GROUP BY 1

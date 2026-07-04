@@ -1608,10 +1608,10 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
               : sql`model`;
       const result = projectId
         ? await db.execute(
-            sql`SELECT ${groupExpr} AS bucket, coalesce(sum(cost_cents), 0)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND project_id = ${projectId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
+            sql`SELECT ${groupExpr} AS bucket, floor(coalesce(sum(cost_cents), 0) + 0.5)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND project_id = ${projectId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
           )
         : await db.execute(
-            sql`SELECT ${groupExpr} AS bucket, coalesce(sum(cost_cents), 0)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
+            sql`SELECT ${groupExpr} AS bucket, floor(coalesce(sum(cost_cents), 0) + 0.5)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
           );
       return Array.from(result as Iterable<Record<string, unknown>>);
     },
@@ -2756,22 +2756,20 @@ async function streamRunEvents(
   };
   reply.raw.on("close", close);
   let unlisten: { unlisten: () => Promise<void> } | undefined;
+  let safetyRefresh: NodeJS.Timeout | undefined;
   try {
-    void sqlClient
-      .listen(`run_events:${runId}`, async () => {
-        await writeEvents(await load(cursor));
-      })
-      .then((listener) => {
-        unlisten = listener;
-      })
-      .catch(async () => {
+    try {
+      unlisten = await sqlClient.listen(`run_events:${runId}`, async () => {
         await writeEvents(await load(cursor));
       });
-    const poll = setInterval(() => {
+    } catch {
+      await writeEvents(await load(cursor));
+    }
+    safetyRefresh = setInterval(() => {
       void (async () => {
         await writeEvents(await load(cursor));
       })();
-    }, 5_000);
+    }, 25_000);
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, idleMs);
       reply.raw.on("close", () => {
@@ -2779,10 +2777,10 @@ async function streamRunEvents(
         resolve();
       });
     });
-    clearInterval(poll);
     if (!done) reply.raw.end();
     void unlisten?.unlisten().catch(() => undefined);
   } finally {
+    if (safetyRefresh) clearInterval(safetyRefresh);
     reply.raw.off("close", close);
     void sqlClient.end().catch(() => undefined);
   }

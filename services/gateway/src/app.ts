@@ -146,7 +146,12 @@ async function handleProvider(
     return reply.status(402).send(responseBody);
   }
 
-  const estimatedCents = estimatedCostCents(parsed.json, normalizedModel, priced);
+  const estimatedCents = estimatedCostCents(
+    parsed.json,
+    parsed.raw.length,
+    normalizedModel,
+    priced,
+  );
   const hardBlock = estimatedCents > 0 ? hardBudgetBlock(budgets) : null;
   if (hardBlock) {
     const responseBody = providerEnvelope(
@@ -336,6 +341,7 @@ function isZeroCostVirtualKey(key: { allowedModels: string[] | null }, model: st
 
 function estimatedCostCents(
   body: unknown,
+  rawBytes: number,
   normalizedModel: keyof typeof MODEL_PRICES_USD_PER_1M | null,
   priced: boolean,
 ): number {
@@ -343,7 +349,10 @@ function estimatedCostCents(
   const price = MODEL_PRICES_USD_PER_1M[normalizedModel];
   if (price.input <= 0 && price.output <= 0) return 0;
   const maxTokens = maxOutputTokens(body) ?? 4096;
-  return Math.max(1, Math.ceil((maxTokens / 1_000_000) * (price.input + price.output) * 100));
+  const inputTokens = inputTokensEstimate(body, rawBytes);
+  const cents =
+    ((inputTokens / 1_000_000) * price.input + (maxTokens / 1_000_000) * price.output) * 100;
+  return Math.round(cents * 1_000_000) / 1_000_000;
 }
 
 function maxOutputTokens(body: unknown): number | null {
@@ -351,6 +360,27 @@ function maxOutputTokens(body: unknown): number | null {
   const row = body as Record<string, unknown>;
   for (const key of ["max_tokens", "max_completion_tokens", "max_output_tokens"]) {
     const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.ceil(value);
+  }
+  return null;
+}
+
+function inputTokensEstimate(body: unknown, rawBytes: number): number {
+  const declared = declaredInputTokens(body);
+  if (declared !== null) return declared;
+  return Math.max(1, Math.ceil(rawBytes / 4));
+}
+
+function declaredInputTokens(body: unknown): number | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const row = body as Record<string, unknown>;
+  for (const key of ["input_tokens", "prompt_tokens", "estimated_input_tokens"]) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.ceil(value);
+  }
+  const usage = row.usage;
+  if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+    const value = (usage as Record<string, unknown>).input_tokens;
     if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.ceil(value);
   }
   return null;

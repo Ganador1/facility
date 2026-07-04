@@ -53,7 +53,7 @@ export async function rollupAnalytics(db: FacilityDb) {
         0::bigint as output_tokens,
         0::bigint as cache_read,
         0::bigint as cache_write,
-        0::bigint as cost_cents,
+        0::numeric as cost_cents,
         0::int as outcomes_total,
         0::int as outcomes_merged,
         0::int as outcomes_one_shot
@@ -77,7 +77,7 @@ export async function rollupAnalytics(db: FacilityDb) {
         coalesce(sum(lr.output_tokens), 0)::bigint,
         coalesce(sum(lr.cache_read), 0)::bigint,
         coalesce(sum(lr.cache_write), 0)::bigint,
-        coalesce(sum(lr.cost_cents), 0)::bigint,
+        coalesce(sum(lr.cost_cents), 0)::numeric,
         0::int,
         0::int,
         0::int
@@ -97,7 +97,7 @@ export async function rollupAnalytics(db: FacilityDb) {
         0::int,
         0::int,
         0::int,
-        0::bigint,
+        0::numeric,
         0::bigint,
         0::bigint,
         0::bigint,
@@ -125,7 +125,7 @@ export async function rollupAnalytics(db: FacilityDb) {
         sum(output_tokens)::bigint as output_tokens,
         sum(cache_read)::bigint as cache_read,
         sum(cache_write)::bigint as cache_write,
-        sum(cost_cents)::bigint as cost_cents,
+        sum(cost_cents)::numeric as cost_cents,
         sum(outcomes_total)::int as outcomes_total,
         sum(outcomes_merged)::int as outcomes_merged,
         sum(outcomes_one_shot)::int as outcomes_one_shot
@@ -192,7 +192,7 @@ export async function queryAnalytics(
       runsFailed: sql<number>`coalesce(sum(${analyticsDaily.runsFailed}), 0)::int`,
       inputTokens: sql<number>`coalesce(sum(${analyticsDaily.inputTokens}), 0)::bigint`,
       outputTokens: sql<number>`coalesce(sum(${analyticsDaily.outputTokens}), 0)::bigint`,
-      costCents: sql<number>`coalesce(sum(${analyticsDaily.costCents}), 0)::bigint`,
+      costCents: sql<number>`floor(coalesce(sum(${analyticsDaily.costCents}), 0) + 0.5)::bigint`,
       outcomesTotal: sql<number>`coalesce(sum(${analyticsDaily.outcomesTotal}), 0)::int`,
       outcomesMerged: sql<number>`coalesce(sum(${analyticsDaily.outcomesMerged}), 0)::int`,
       outcomesOneShot: sql<number>`coalesce(sum(${analyticsDaily.outcomesOneShot}), 0)::int`,
@@ -243,7 +243,9 @@ export async function analyticsOverview(db: FacilityDb, orgId: string, projectId
   const spendMtd = Number(
     (
       await db
-        .select({ cents: sql<number>`coalesce(sum(${analyticsDaily.costCents}), 0)::bigint` })
+        .select({
+          cents: sql<number>`floor(coalesce(sum(${analyticsDaily.costCents}), 0) + 0.5)::bigint`,
+        })
         .from(analyticsDaily)
         .where(and(...mtdClauses))
     )[0]?.cents ?? 0,
@@ -269,7 +271,7 @@ export async function analyticsOverview(db: FacilityDb, orgId: string, projectId
     .select({
       projectId: projects.id,
       projectName: projects.name,
-      spendCents: sql<number>`coalesce(sum(${analyticsDaily.costCents}), 0)::bigint`,
+      spendCents: sql<number>`floor(coalesce(sum(${analyticsDaily.costCents}), 0) + 0.5)::bigint`,
       runsStarted: sql<number>`coalesce(sum(${analyticsDaily.runsStarted}), 0)::int`,
       outcomesTotal: sql<number>`coalesce(sum(${analyticsDaily.outcomesTotal}), 0)::int`,
       outcomesMerged: sql<number>`coalesce(sum(${analyticsDaily.outcomesMerged}), 0)::int`,

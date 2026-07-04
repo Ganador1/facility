@@ -292,6 +292,57 @@ describe("gateway", async () => {
     expect(counter?.spentCents).toBe(1800);
   });
 
+  it("6d. tiny sub-cent calls accumulate fractional spend", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+      budgetLimitCents: 100_000,
+    });
+    for (let index = 0; index < 5; index += 1) {
+      const response = await postAnthropic(setup.secret, {
+        model: "claude-fable-5",
+        max_tokens: 1,
+        tinyUsage: true,
+        messages: [{ role: "user", content: "x" }],
+      });
+      expect(response.status).toBe(200);
+    }
+    await waitForRequestCount(5);
+    const rows = await db
+      .select()
+      .from(llmRequests)
+      .where(eq(llmRequests.virtualKeyId, setup.keyId));
+    expect(rows).toHaveLength(5);
+    expect(rows[0]?.costCents).toBeGreaterThan(0);
+    expect(rows[0]?.costCents).toBeLessThan(1);
+    const counter = (
+      await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
+    )[0];
+    expect(counter?.spentCents).toBeCloseTo(0.045, 6);
+  });
+
+  it("6e. hard budget reservation includes input exposure before upstream", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+      budgetMode: "hard",
+      budgetLimitCents: 1,
+    });
+    const response = await postAnthropic(setup.secret, {
+      model: "claude-fable-5",
+      max_tokens: 1,
+      messages: [{ role: "user", content: "x".repeat(4_000) }],
+    });
+    expect(response.status).toBe(402);
+    expect(await response.json()).toMatchObject({ error: { type: "budget_exceeded" } });
+    expect(stubState.anthropicCalls).toBe(0);
+    await waitForRequestCount(1);
+    const row = (
+      await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
+    )[0];
+    expect(row?.status).toBe("blocked_budget");
+  });
+
   it("7. Revoked key and unknown prefix both return provider-shaped 401", async () => {
     const setup = await setupVirtualKey({
       provider: "anthropic",
@@ -492,7 +543,12 @@ async function buildStub(state: StubState) {
   app.post("/anthropic/v1/messages", async (request, reply) => {
     state.anthropicCalls += 1;
     expect(request.headers["x-api-key"]).toBe("real-anthropic");
-    const body = request.body as { model: string; stream?: boolean; abortStream?: boolean };
+    const body = request.body as {
+      model: string;
+      stream?: boolean;
+      abortStream?: boolean;
+      tinyUsage?: boolean;
+    };
     if ((body as { slow?: boolean }).slow) {
       await new Promise((resolve) => setTimeout(resolve, 250));
     }
@@ -517,8 +573,8 @@ async function buildStub(state: StubState) {
       type: "message",
       content: [{ type: "text", text: "ok" }],
       usage: {
-        input_tokens: 1_000_000,
-        output_tokens: 1_000_000,
+        input_tokens: body.tinyUsage ? 1 : 1_000_000,
+        output_tokens: body.tinyUsage ? 1 : 1_000_000,
         cache_read_input_tokens: 0,
         cache_creation_input_tokens: 0,
       },

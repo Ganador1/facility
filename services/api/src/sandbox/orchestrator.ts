@@ -468,7 +468,7 @@ async function gatewayAggregate(db: ReturnType<typeof createDb>["db"], runId: st
         outputTokens: sql<number>`coalesce(sum(${llmRequests.outputTokens}), 0)`,
         cacheRead: sql<number>`coalesce(sum(${llmRequests.cacheRead}), 0)`,
         cacheWrite: sql<number>`coalesce(sum(${llmRequests.cacheWrite}), 0)`,
-        costCents: sql<number>`coalesce(sum(${llmRequests.costCents}), 0)`,
+        costCents: sql<number>`floor(coalesce(sum(${llmRequests.costCents}), 0) + 0.5)::bigint`,
       })
       .from(llmRequests)
       .where(eq(llmRequests.runId, runId))

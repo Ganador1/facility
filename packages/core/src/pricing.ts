@@ -23,6 +23,8 @@ export type CostInput = {
   cacheWriteTokens?: number;
 };
 
+const MICRO_CENTS_PER_CENT = 1_000_000;
+
 // Common aliases and dated model IDs providers return (e.g.
 // "claude-haiku-4-5-20251001", "gpt-5.5-2025-xx") map to our price keys.
 const MODEL_ALIASES: Record<string, keyof typeof MODEL_PRICES_USD_PER_1M> = {
@@ -56,5 +58,9 @@ export function costCents(input: CostInput): number | null {
     (input.outputTokens / 1_000_000) * price.output +
     ((input.cacheReadTokens ?? 0) / 1_000_000) * (price.cacheRead ?? 0) +
     ((input.cacheWriteTokens ?? 0) / 1_000_000) * (price.cacheWrite ?? 0);
-  return Math.floor(usd * 100 + 0.5);
+  return Math.round(usd * 100 * MICRO_CENTS_PER_CENT) / MICRO_CENTS_PER_CENT;
+}
+
+export function displayCents(cents: number): number {
+  return Math.floor(cents + 0.5);
 }

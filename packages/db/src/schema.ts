@@ -426,7 +426,7 @@ export const llmRequests = pgTable(
     outputTokens: integer("output_tokens").notNull().default(0),
     cacheRead: integer("cache_read").notNull().default(0),
     cacheWrite: integer("cache_write").notNull().default(0),
-    costCents: integer("cost_cents"),
+    costCents: numeric("cost_cents", { mode: "number" }),
     priced: boolean("priced").notNull().default(true),
     latencyMs: integer("latency_ms").notNull().default(0),
     requestUri: text("request_uri"),
@@ -476,7 +476,7 @@ export const spendCounters = pgTable(
       .notNull()
       .references(() => budgets.id),
     windowStart: date("window_start").notNull(),
-    spentCents: bigint("spent_cents", { mode: "number" }).notNull().default(0),
+    spentCents: numeric("spent_cents", { mode: "number" }).notNull().default(0),
   },
   (table) => [unique("spend_counters_budget_window_uidx").on(table.budgetId, table.windowStart)],
 );
@@ -720,7 +720,7 @@ export const analyticsDaily = pgTable(
     outputTokens: bigint("output_tokens", { mode: "number" }).notNull().default(0),
     cacheRead: bigint("cache_read", { mode: "number" }).notNull().default(0),
     cacheWrite: bigint("cache_write", { mode: "number" }).notNull().default(0),
-    costCents: bigint("cost_cents", { mode: "number" }).notNull().default(0),
+    costCents: numeric("cost_cents", { mode: "number" }).notNull().default(0),
     outcomesTotal: integer("outcomes_total").notNull().default(0),
     outcomesMerged: integer("outcomes_merged").notNull().default(0),
     outcomesOneShot: integer("outcomes_one_shot").notNull().default(0),

@@ -47,10 +47,11 @@ describe("permissions", () => {
 });
 
 describe("pricing", () => {
-  it("rounds half up and returns null for unknown models", () => {
+  it("returns exact cents and null for unknown models", () => {
     expect(
       costCents({ model: "gpt-5.5-mini", inputTokens: 1_000_000, outputTokens: 1_000_000 }),
     ).toBe(225);
+    expect(costCents({ model: "gpt-5.5-mini", inputTokens: 1, outputTokens: 1 })).toBe(0.000225);
     expect(costCents({ model: "missing", inputTokens: 1, outputTokens: 1 })).toBeNull();
   });
 

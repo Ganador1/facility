@@ -126,7 +126,7 @@ describe("sandbox api", async () => {
     expect(terminal.statusCode).toBe(409);
   });
 
-  it("delivers run events over the NOTIFY-backed SSE path", async () => {
+  it("delivers run events over the NOTIFY-backed SSE path without safety polling", async () => {
     const token = "frt_stream";
     const run = await insertRunnerRun(token, "running");
     const address = await app.listen({ port: 0, host: "127.0.0.1" });
