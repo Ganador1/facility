@@ -273,9 +273,16 @@ async function resolvePrincipal(
         .from(orgMembers)
         .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
         .innerJoin(users, eq(orgMembers.userId, users.id))
-        .where(and(eq(orgMembers.userId, session.userId), eq(orgMembers.orgId, session.orgId)))
+        .where(
+          and(
+            eq(orgMembers.userId, session.userId),
+            eq(orgMembers.orgId, session.orgId),
+            eq(users.status, "active"),
+          ),
+        )
         .limit(1)
     )[0];
+    // No member row, or the user has been deactivated → session no longer valid.
     if (!member) return undefined;
     return {
       type: "user",

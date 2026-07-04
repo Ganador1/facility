@@ -1,4 +1,4 @@
-import { can, generateApiKey, newId, seal, verifyKey } from "@facility/core";
+import { can, generateApiKey, newId, PermissionSchema, seal, verifyKey } from "@facility/core";
 import {
   actionTypes,
   agentDefs,
@@ -104,6 +104,24 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     return role;
   }
 
+  // A principal may never grant a permission it does not itself hold, nor an
+  // unknown permission string. This is the same "no privilege escalation" rule
+  // assertRoleAssignable enforces for roles, applied to raw permission arrays.
+  function assertPermissionsGrantable(p: Principal, permissions: string[]) {
+    for (const permission of permissions) {
+      if (!PermissionSchema.safeParse(permission).success) {
+        throw new ApiError(400, "invalid_permission", `Unknown permission: ${permission}`);
+      }
+      if (!can(p.permissions, permission)) {
+        throw new ApiError(
+          403,
+          "privilege_escalation",
+          `Cannot grant a permission you do not hold: ${permission}`,
+        );
+      }
+    }
+  }
+
   function definedFields<T extends Record<string, unknown>>(fields: T) {
     return Object.fromEntries(
       Object.entries(fields).filter((entry): entry is [string, unknown] => entry[1] !== undefined),
@@ -193,6 +211,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const body = request.body as { email: string; roleId: string };
+      // Cannot add a member into a role more privileged than the caller.
+      await assertRoleAssignable(db, p, body.roleId);
       const existing = (
         await db.select().from(users).where(eq(users.email, body.email)).limit(1)
       )[0];
@@ -232,6 +252,8 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const p = principal(request);
       const { userId } = request.params as { userId: string };
       const { roleId } = request.body as { roleId: string };
+      // Cannot re-assign a member (incl. self) into a role you cannot grant.
+      await assertRoleAssignable(db, p, roleId);
       const row = (
         await db
           .update(orgMembers)
@@ -288,6 +310,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     async (request) => {
       const p = principal(request);
       const body = request.body as { name: string; description?: string; permissions: string[] };
+      assertPermissionsGrantable(p, body.permissions);
       return (
         await db
           .insert(roles)
@@ -323,6 +346,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       const role = (await db.select().from(roles).where(eq(roles.id, roleId)).limit(1))[0];
       if (!role) throw notFound("Role not found");
       if (!role.orgId) throw new ApiError(400, "bundled_immutable", "Bundled roles are immutable");
+      if (body.permissions) assertPermissionsGrantable(p, body.permissions);
       return (
         await db
           .update(roles)

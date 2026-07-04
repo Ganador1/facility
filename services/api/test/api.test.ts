@@ -440,6 +440,69 @@ describe("api", async () => {
     expect(denied.json().error.code).toBe("privilege_escalation");
   });
 
+  it("rejects assigning a member into a role more privileged than the caller", async () => {
+    const mgrRole = await app.inject({
+      method: "POST",
+      url: "/v1/roles",
+      headers: { cookie },
+      payload: { name: `mgr-${Date.now()}`, permissions: ["members:write", "members:read"] },
+    });
+    const mgrKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "limited-mgr", roleId: mgrRole.json().id },
+    });
+    const token = mgrKey.json().secret;
+    const target = await app.inject({
+      method: "POST",
+      url: "/v1/members",
+      headers: { cookie },
+      payload: { email: `target-${Date.now()}@example.com`, roleId: viewerRole },
+    });
+    // The members-only manager cannot promote anyone (incl. itself) to owner(*).
+    const denied = await app.inject({
+      method: "PATCH",
+      url: `/v1/members/${target.json().userId}`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { roleId: ownerRole },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe("privilege_escalation");
+  });
+
+  it("rejects creating a role with permissions the caller does not hold", async () => {
+    const rolerRole = await app.inject({
+      method: "POST",
+      url: "/v1/roles",
+      headers: { cookie },
+      payload: { name: `roler-${Date.now()}`, permissions: ["roles:write", "roles:read"] },
+    });
+    const rolerKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "limited-roler", roleId: rolerRole.json().id },
+    });
+    const token = rolerKey.json().secret;
+    const wildcard = await app.inject({
+      method: "POST",
+      url: "/v1/roles",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: `escalated-${Date.now()}`, permissions: ["*"] },
+    });
+    expect(wildcard.statusCode).toBe(403);
+    expect(wildcard.json().error.code).toBe("privilege_escalation");
+    const bogus = await app.inject({
+      method: "POST",
+      url: "/v1/roles",
+      headers: { authorization: `Bearer ${token}` },
+      payload: { name: `bogus-${Date.now()}`, permissions: ["not:aperm"] },
+    });
+    expect(bogus.statusCode).toBe(400);
+    expect(bogus.json().error.code).toBe("invalid_permission");
+  });
+
   it("blocks project-scoped keys from another project's proposal, task, and key", async () => {
     const other = await app.inject({
       method: "POST",
