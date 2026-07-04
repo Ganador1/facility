@@ -55,10 +55,11 @@ export function RunTranscript({
       cache: "no-store",
     });
     if (!res.ok) return;
-    const body = (await res.json()) as { items: RunEvent[] };
-    if (body.items.length) {
-      lastSeq.current = body.items[body.items.length - 1]?.seq ?? lastSeq.current;
-      setEvents((prev) => [...prev, ...body.items]);
+    // GET /events returns a bare array of run events (not { items }).
+    const body = (await res.json()) as RunEvent[];
+    if (body.length) {
+      lastSeq.current = body[body.length - 1]?.seq ?? lastSeq.current;
+      setEvents((prev) => [...prev, ...body]);
     }
   }, [runId]);
 
@@ -67,7 +68,9 @@ export function RunTranscript({
     if (!live) return;
 
     const source = new EventSource(`/api/v1/runs/${runId}/stream`);
-    source.onmessage = (msg) => {
+    // The server emits named `run_event` frames (plus `heartbeat`); the default
+    // `message` handler never fires for named events.
+    source.addEventListener("run_event", (msg) => {
       try {
         const event = JSON.parse(msg.data) as RunEvent;
         if (event.seq > lastSeq.current) {
@@ -77,7 +80,7 @@ export function RunTranscript({
       } catch {
         // heartbeat or malformed frame — ignore
       }
-    };
+    });
     source.onerror = () => {
       // SSE dropped — fall back to polling until it reconnects
       void pull();

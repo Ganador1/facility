@@ -98,7 +98,7 @@ async function login(flags, ctx) {
 
 async function status(ctx) {
   const projects = await api(ctx, "GET", "/v1/projects");
-  const inbox = await api(ctx, "GET", "/v1/inbox", { query: { state: "open" } });
+  const inbox = unwrapInbox(await api(ctx, "GET", "/v1/inbox", { query: { state: "open" } }));
   const issues = await api(ctx, "GET", "/v1/issues", { query: { state: "open" } });
   const spend = await api(ctx, "GET", "/v1/spend", { query: { from: monthStart(), groupBy: "day" } });
   const runs = (
@@ -175,7 +175,7 @@ async function runs(args, ctx, flags) {
 
 async function inbox(args, ctx, flags) {
   if (!args.length) {
-    const items = await api(ctx, "GET", "/v1/inbox", { query: { state: flags.state || "open" } });
+    const items = unwrapInbox(await api(ctx, "GET", "/v1/inbox", { query: { state: flags.state || "open" } }));
     if (ctx.json) writeJson(ctx, items);
     else table(ctx, ["id", "state", "action", "project"], asArray(items).map((item) => [item.id, item.state, item.actionTypeId, item.projectId]));
     return 0;
@@ -193,20 +193,23 @@ async function inbox(args, ctx, flags) {
 async function kickstart(args, ctx, flags, rawCtx) {
   const project = await resolveProject(ctx, args[0]);
   if (!flags.repo) throw new CliError("Usage: facility kickstart <project> --repo owner/name [--yes]");
-  const preview = await api(ctx, "GET", `/v1/projects/${project.id}/kickstart/preview`, { query: { repo: flags.repo } });
+  const repoId = await resolveRepoId(ctx, project.id, flags.repo);
+  const preview = await api(ctx, "GET", `/v1/projects/${project.id}/kickstart/preview`, { query: { repoId } });
   if (!flags.yes && !ctx.json) {
     table(ctx, ["path", "size", "sha256"], asArray(preview.files || preview).map((file) => [file.path, file.size, file.sha256]));
     const answer = await prompt("Open kickstart PR? [y/N]", rawCtx);
     if (!/^y(es)?$/i.test(answer.trim())) throw new CliError("Cancelled", 1);
   }
-  const result = await api(ctx, "POST", `/v1/projects/${project.id}/kickstart`, { body: { repo: flags.repo, answers: flags } });
+  const result = await api(ctx, "POST", `/v1/projects/${project.id}/kickstart`, { body: { repoId, answers: flags } });
   output(ctx, result, () => `  ${bold("kickstart")} PR requested for ${flags.repo}\n`);
   return 0;
 }
 
 async function upgrade(args, ctx, flags) {
   const project = await resolveProject(ctx, args[0]);
-  const result = await api(ctx, "POST", `/v1/projects/${project.id}/upgrade`, { body: { toVersion: flags.to } });
+  if (!flags.repo) throw new CliError("Usage: facility upgrade <project> --repo owner/name [--to <version>]");
+  const repoId = await resolveRepoId(ctx, project.id, flags.repo);
+  const result = await api(ctx, "POST", `/v1/projects/${project.id}/upgrade`, { body: { repoId, toVersion: flags.to } });
   output(ctx, result, () => `  ${bold("upgrade")} requested for ${project.slug || project.id}\n`);
   return 0;
 }
@@ -341,6 +344,27 @@ function row(label, value, live = false) {
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+// GET /v1/inbox returns { items, proposals, issues }; the CLI wants the proposals array.
+function unwrapInbox(value) {
+  if (Array.isArray(value)) return value;
+  return value?.proposals ?? value?.items ?? [];
+}
+
+// The kickstart/upgrade APIs take a connected repo's id, not an owner/name slug.
+async function resolveRepoId(ctx, projectId, ownerName) {
+  const repos = asArray(await api(ctx, "GET", `/v1/projects/${projectId}/repos`));
+  const match = repos.find(
+    (r) => r.id === ownerName || `${r.owner}/${r.name}` === ownerName || r.fullName === ownerName,
+  );
+  if (!match) {
+    throw new CliError(
+      `Repo "${ownerName}" is not connected to this project. Connect it (GitHub App / web UI) first, then retry.`,
+      1,
+    );
+  }
+  return match.id;
 }
 
 function sum(rows, key) {
