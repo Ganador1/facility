@@ -35,11 +35,11 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             className={cx(
               "group flex items-baseline gap-3 border-l-2 px-5 py-2.5 font-mono text-[12px] uppercase tracking-[0.18em] transition-colors",
               active
-                ? "border-(--accent) text-(--ink)"
+                ? "border-(--line-strong) text-(--ink)"
                 : "border-transparent text-(--mut) hover:text-(--ink)",
             )}
           >
-            <span className={cx("text-[10px]", active ? "text-(--accent)" : "text-(--dim)")}>
+            <span className={cx("text-[10px]", active ? "text-(--ink)" : "text-(--dim)")}>
               {String(i + 1).padStart(2, "0")}
             </span>
             {item.label}
@@ -47,6 +47,37 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
         );
       })}
     </nav>
+  );
+}
+
+function FacilityMark() {
+  return (
+    <span
+      aria-hidden
+      className="relative h-8 w-8 shrink-0 overflow-hidden rounded-[1.5px] bg-(--card)"
+    >
+      <span className="absolute left-1 right-1 top-1/2 h-px -translate-y-1/2 bg-(--machine)" />
+      <span className="absolute left-[9px] top-2 h-4 w-px bg-(--ink)" />
+      <span className="absolute right-[9px] top-2 h-4 w-px bg-(--ink)" />
+      <span className="absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 bg-(--accent)" />
+    </span>
+  );
+}
+
+function FooterSignature({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={cx("flex items-center gap-3 px-5", compact && "items-start")}>
+      <FacilityMark />
+      <p className="font-mono text-[10px] leading-relaxed text-(--dim)">
+        An initiative by{" "}
+        <a
+          href="https://theagilemonkeys.com"
+          className="underline-offset-4 hover:text-(--mut) hover:underline"
+        >
+          The Agile Monkeys
+        </a>
+      </p>
+    </div>
   );
 }
 
@@ -59,15 +90,7 @@ export function Sidebar() {
         </Link>
         <NavLinks />
       </div>
-      <p className="px-5 font-mono text-[10px] leading-relaxed text-(--dim)">
-        An initiative by{" "}
-        <a
-          href="https://theagilemonkeys.com"
-          className="underline-offset-4 hover:text-(--mut) hover:underline"
-        >
-          The Agile Monkeys
-        </a>
-      </p>
+      <FooterSignature />
     </aside>
   );
 }
@@ -120,9 +143,7 @@ export function MobileNav() {
       {open ? (
         <div className="fixed inset-0 top-[57px] z-30 flex flex-col justify-between bg-(--bg) pb-8 pt-4">
           <NavLinks onNavigate={() => setOpen(false)} />
-          <p className="px-5 font-mono text-[10px] text-(--dim)">
-            An initiative by The Agile Monkeys
-          </p>
+          <FooterSignature compact />
         </div>
       ) : null}
     </div>

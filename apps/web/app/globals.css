@@ -33,6 +33,6 @@ body {
 }
 
 ::selection {
-  background: var(--accent);
-  color: #000;
+  background: var(--ink);
+  color: var(--bg);
 }

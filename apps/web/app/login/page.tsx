@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, Eyebrow, Field, TextInput } from "@facility/ui";
+import { Button, ButtonLink, Eyebrow, Field, TextInput } from "@facility/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -47,15 +47,9 @@ export default function LoginPage() {
       </div>
 
       <div className="flex flex-col gap-6">
-        <a
-          href="/api/auth/login"
-          className="group relative inline-flex h-[52px] items-center justify-center border border-(--accent) px-10 font-mono text-[12px] uppercase tracking-[0.22em] text-(--accent)"
-        >
-          <span className="absolute inset-0 origin-left scale-x-0 bg-(--accent) transition-transform duration-300 group-hover:scale-x-100" />
-          <span className="relative z-10 transition-colors group-hover:text-black">
-            continue with sso
-          </span>
-        </a>
+        <ButtonLink href="/api/auth/login" variant="primary" size="lg">
+          continue with sso
+        </ButtonLink>
 
         <div className="flex items-center gap-4">
           <span className="h-px flex-1 bg-(--line)" />

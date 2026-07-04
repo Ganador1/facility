@@ -26,44 +26,96 @@ export default async function AuditPage() {
       {items.length === 0 ? (
         <p className="text-sm text-(--dim)">No events yet.</p>
       ) : (
-        <div className="overflow-x-auto border border-(--line)">
-          <table className="w-full min-w-[640px] border-collapse text-left">
-            <thead>
-              <tr className="border-b border-(--line)">
-                {["seq", "actor", "action", "target", "when"].map((h) => (
-                  <th
-                    key={h}
-                    className="px-5 py-3 font-mono text-[10px] font-medium uppercase tracking-[0.2em] text-(--dim)"
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((event) => (
-                <tr key={event.seq} className="border-b border-(--line) last:border-b-0">
-                  <td className="tabular px-5 py-3 font-mono text-[11px] text-(--dim)">
-                    {event.seq}
-                  </td>
-                  <td className="px-5 py-3 font-mono text-[12px] text-(--mut)">
-                    {event.actor.name ?? event.actor.id}
-                    <span className="ml-2 text-[10px] uppercase text-(--dim)">
-                      {event.actor.type}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3 font-mono text-[12px] text-(--ink)">{event.action}</td>
-                  <td className="px-5 py-3 font-mono text-[11px] text-(--dim)">
-                    {event.target ? `${event.target.type}/${event.target.id}` : "—"}
-                  </td>
-                  <td className="px-5 py-3 font-mono text-[11px] text-(--dim)">
-                    {new Date(event.createdAt).toLocaleString()}
-                  </td>
+        <>
+          <div className="flex flex-col gap-3 sm:hidden">
+            {items.map((event) => (
+              <article key={event.seq} className="border border-(--line) bg-(--bg)">
+                <div className="flex items-baseline justify-between gap-4 border-b border-(--line) px-4 py-3">
+                  <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
+                    seq
+                  </span>
+                  <span className="tabular font-mono text-[11px] text-(--dim)">{event.seq}</span>
+                </div>
+                <dl className="grid gap-px bg-(--line)">
+                  <div className="flex items-start justify-between gap-4 bg-(--bg) px-4 py-3">
+                    <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
+                      actor
+                    </dt>
+                    <dd className="text-right font-mono text-[12px] text-(--mut)">
+                      {event.actor.name ?? event.actor.id}
+                      <span className="ml-2 text-[10px] uppercase text-(--dim)">
+                        {event.actor.type}
+                      </span>
+                    </dd>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 bg-(--bg) px-4 py-3">
+                    <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
+                      action
+                    </dt>
+                    <dd className="break-words text-right font-mono text-[12px] text-(--ink)">
+                      {event.action}
+                    </dd>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 bg-(--bg) px-4 py-3">
+                    <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
+                      target
+                    </dt>
+                    <dd className="break-all text-right font-mono text-[11px] text-(--dim)">
+                      {event.target ? `${event.target.type}/${event.target.id}` : "—"}
+                    </dd>
+                  </div>
+                  <div className="flex items-start justify-between gap-4 bg-(--bg) px-4 py-3">
+                    <dt className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
+                      when
+                    </dt>
+                    <dd className="text-right font-mono text-[11px] text-(--dim)">
+                      {new Date(event.createdAt).toLocaleString()}
+                    </dd>
+                  </div>
+                </dl>
+              </article>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto border border-(--line) sm:block">
+            <table className="w-full min-w-[640px] border-collapse text-left">
+              <thead>
+                <tr className="border-b border-(--line)">
+                  {["seq", "actor", "action", "target", "when"].map((h) => (
+                    <th
+                      key={h}
+                      className="px-5 py-3 font-mono text-[10px] font-medium uppercase tracking-[0.2em] text-(--dim)"
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {items.map((event) => (
+                  <tr key={event.seq} className="border-b border-(--line) last:border-b-0">
+                    <td className="tabular px-5 py-3 font-mono text-[11px] text-(--dim)">
+                      {event.seq}
+                    </td>
+                    <td className="px-5 py-3 font-mono text-[12px] text-(--mut)">
+                      {event.actor.name ?? event.actor.id}
+                      <span className="ml-2 text-[10px] uppercase text-(--dim)">
+                        {event.actor.type}
+                      </span>
+                    </td>
+                    <td className="px-5 py-3 font-mono text-[12px] text-(--ink)">{event.action}</td>
+                    <td className="px-5 py-3 font-mono text-[11px] text-(--dim)">
+                      {event.target ? `${event.target.type}/${event.target.id}` : "—"}
+                    </td>
+                    <td className="px-5 py-3 font-mono text-[11px] text-(--dim)">
+                      {new Date(event.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       )}
     </div>
   );

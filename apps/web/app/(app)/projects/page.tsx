@@ -1,4 +1,4 @@
-import { Cell, Eyebrow, HairlineGrid, PillTag } from "@facility/ui";
+import { ButtonLink, Cell, Eyebrow, HairlineGrid, PillTag } from "@facility/ui";
 import Link from "next/link";
 import { Offline } from "@/components/offline";
 import { api } from "@/lib/api";
@@ -20,13 +20,9 @@ export default async function ProjectsPage() {
             Everything governed, per project.
           </h1>
         </div>
-        <Link
-          href="/projects/new"
-          className="group relative inline-flex h-10 items-center border border-(--accent) px-6 font-mono text-[12px] uppercase tracking-[0.22em] text-(--accent)"
-        >
-          <span className="absolute inset-0 origin-left scale-x-0 bg-(--accent) transition-transform duration-300 group-hover:scale-x-100" />
-          <span className="relative z-10 transition-colors group-hover:text-black">kickstart</span>
-        </Link>
+        <ButtonLink href="/projects/new" variant="primary">
+          kickstart
+        </ButtonLink>
       </div>
 
       {items.length === 0 ? (

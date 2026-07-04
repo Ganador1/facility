@@ -3,6 +3,7 @@ import { cx } from "./cx";
 
 type Variant = "primary" | "outline" | "textual" | "danger";
 type Size = "sm" | "md" | "lg";
+type Tone = "agent";
 
 const sizes: Record<Size, string> = {
   sm: "h-8 px-3 text-[11px]",
@@ -10,7 +11,7 @@ const sizes: Record<Size, string> = {
   lg: "h-[52px] px-10 text-[12px]",
 };
 
-function classesFor(variant: Variant, size: Size, className?: string) {
+function classesFor(variant: Variant, size: Size, tone?: Tone, className?: string) {
   const base =
     "group relative inline-flex select-none items-center justify-center gap-2 whitespace-nowrap font-mono uppercase tracking-[0.22em] transition-colors disabled:pointer-events-none disabled:opacity-50";
   if (variant === "textual") {
@@ -25,19 +26,27 @@ function classesFor(variant: Variant, size: Size, className?: string) {
     );
   }
   if (variant === "primary") {
-    return cx(base, sizes[size], "border border-(--accent) text-(--accent)", className);
+    if (tone === "agent") {
+      return cx(base, sizes[size], "border border-(--accent) text-(--accent)", className);
+    }
+    return cx(
+      base,
+      sizes[size],
+      "border border-(--line-strong) bg-(--ink) text-(--bg) hover:bg-(--card) hover:text-(--ink)",
+      className,
+    );
   }
   return cx(
     base,
     sizes[size],
-    "border border-(--line) text-(--mut) hover:border-(--accent) hover:text-(--accent)",
+    "border border-(--line) text-(--mut) hover:border-(--line-strong) hover:text-(--ink)",
     className,
   );
 }
 
-/** Primary buttons carry the sliding accent fill — text flips to black on hover. */
-function Fill({ variant }: { variant: Variant }) {
-  if (variant !== "primary") return null;
+/** Agent buttons carry the sliding accent fill — text flips to black on hover. */
+function Fill({ variant, tone }: { variant: Variant; tone?: Tone }) {
+  if (variant !== "primary" || tone !== "agent") return null;
   return (
     <span
       aria-hidden
@@ -46,12 +55,20 @@ function Fill({ variant }: { variant: Variant }) {
   );
 }
 
-function Label({ variant, children }: { variant: Variant; children: ReactNode }) {
+function Label({
+  variant,
+  tone,
+  children,
+}: {
+  variant: Variant;
+  tone?: Tone;
+  children: ReactNode;
+}) {
   return (
     <span
       className={cx(
         "relative z-10 inline-flex items-center gap-2 transition-colors",
-        variant === "primary" && "group-hover:text-black",
+        variant === "primary" && tone === "agent" && "group-hover:text-black",
       )}
     >
       {children}
@@ -63,15 +80,22 @@ function Label({ variant, children }: { variant: Variant; children: ReactNode })
 export function Button({
   variant = "outline",
   size = "md",
+  tone,
   className,
   children,
   type,
   ...props
-}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size }) {
+}: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: Size; tone?: Tone }) {
   return (
-    <button type={type ?? "button"} className={classesFor(variant, size, className)} {...props}>
-      <Fill variant={variant} />
-      <Label variant={variant}>{children}</Label>
+    <button
+      type={type ?? "button"}
+      className={classesFor(variant, size, tone, className)}
+      {...props}
+    >
+      <Fill variant={variant} tone={tone} />
+      <Label variant={variant} tone={tone}>
+        {children}
+      </Label>
     </button>
   );
 }
@@ -79,14 +103,17 @@ export function Button({
 export function ButtonLink({
   variant = "outline",
   size = "md",
+  tone,
   className,
   children,
   ...props
-}: AnchorHTMLAttributes<HTMLAnchorElement> & { variant?: Variant; size?: Size }) {
+}: AnchorHTMLAttributes<HTMLAnchorElement> & { variant?: Variant; size?: Size; tone?: Tone }) {
   return (
-    <a className={classesFor(variant, size, className)} {...props}>
-      <Fill variant={variant} />
-      <Label variant={variant}>{children}</Label>
+    <a className={classesFor(variant, size, tone, className)} {...props}>
+      <Fill variant={variant} tone={tone} />
+      <Label variant={variant} tone={tone}>
+        {children}
+      </Label>
     </a>
   );
 }
