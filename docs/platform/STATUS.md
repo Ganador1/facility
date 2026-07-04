@@ -1,6 +1,6 @@
 # Facility Platform — delivery status
 
-**Branch**: `feat/platform-v0.3` (local, unpushed) · **as of** 2026-07-03
+**Branch**: `feat/platform-v0.3` (local, unpushed) · **as of** 2026-07-04
 
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
@@ -111,13 +111,59 @@ the platform owner, not an agent:
 4. **Pushing this branch / opening the PR** — the work is committed locally on
    `feat/platform-v0.3`, awaiting your review.
 
+## Post-verification hardening (2026-07-04)
+
+Six independent GPT-5.5 (xhigh) verifiers audited the platform against GOAL.md,
+one per aspect. Consensus: a strong, tasteful foundation, but only ~1/3 of the
+named capabilities were production-complete (scores 56–76). Every load-bearing
+finding was re-verified against the source by hand, then fixed in eight waves
+(each with regression tests, re-run and reviewed before commit):
+
+1. **Security — RBAC escalation closed** (46e94b3): member/role writes now use
+   the same "cannot grant more than you hold" subset-check as key issuance;
+   deactivated users are refused at session resolution. Regression-tested.
+2. **Client/API contracts** (921a6c3): fixed the web run-transcript, the CLI
+   inbox, and CLI kickstart/upgrade (repo→repoId) shape mismatches.
+3. **Execution loop made real** (f1c5f89): GitHub slash-commands now dispatch;
+   HITL approval creates REAL GitHub issues (no more mock); the runner receives
+   and loads the harness/KB context; PO + learning agents seeded enabled.
+4. **Cost/perf** (28a99d1): fail-closed on unpriced models; concurrency-safe
+   hard-budget reservation (no overspend); the overview/runs N+1 replaced with
+   a paginated org-wide `/v1/runs`; task/agent cost attribution; bounded
+   envelope buffering; SSE stops polling when NOTIFY is active.
+5. **Self-host bootstrap** (986fd50): a fresh zero-org instance's first user
+   becomes owner of a new org; prod compose seeds bundled data; envelopes
+   persist on stock AWS.
+6. **Sandbox security** (986fd50): the runner no longer writes live keys into
+   the agent workspace; Docker gets read-only rootfs + node-owned tmpfs + a
+   profile network posture. Validated against the real docker e2e.
+7. **AWS Fargate driver** (d9c9f60): the stub is now a real ECS driver
+   (RunTask/DescribeTasks/StopTask/logs) with private networking + IAM, unit-
+   tested with fakes.
+8. **UI** (3891e14): agent-yellow reserved for agent work only; destructive
+   actions confirm; runs/audit tables responsive.
+
+### Corrections to earlier claims in this file
+Prior versions of this doc overstated a few things; setting the record straight:
+- "Zero-copy streaming" — the gateway streams to the client but retains a
+  **bounded** copy for the envelope (was unbounded until wave 4).
+- "NOTIFY-backed SSE" — true only after wave 4 removed the residual poll loop.
+- "Budget-race fixed" — the earlier fix prevented lost updates, not overspend
+  under concurrency; the wave-4 reservation closes that.
+- "PO agent + learning demonstrated" / harness — the agents were seeded
+  **disabled** and the harness was built but dropped by the runner until wave 3.
+- "tam-os operates 100%" — **not** achieved end-to-end; treat as aspirational
+  until a full tam-os migration is run and cut over (owner-gated).
+
 ## Known follow-ups (tracked, non-blocking)
 
-- Production WorkOS callback exchange is stubbed (dev-login + AuthKit redirect
-  work); finish the token exchange for a production SSO deploy.
-- Sandbox hardening: enforce the profile's network egress and add
-  cap-drop/readonly-rootfs on the Docker driver (Fargate enforces via SG).
-- `cost_cents` is integer — accurate for real agent runs; store sub-cent
-  precision only if fine-grained tiny-call attribution is needed.
-- Per-run receipts/pattern-miner deeper engine integration (the v0.2 roadmap
-  items) remain roadmap.
+- **`services/api/src/routes/v1.ts` is a ~2.8k-line module** — deliberately
+  deferred a split into per-domain routers (large, purely-structural refactor);
+  functional behavior is covered by tests.
+- **Deeper UX**: the run-steering "cockpit" (structured phase/tool state,
+  abort/retry) and a guided kickstart repo-onboarding flow are product-design
+  work, not yet built.
+- **tam-os production migration** run end-to-end (owner-gated).
+- `cost_cents` is integer — fine for real runs; sub-cent precision only if
+  fine-grained tiny-call attribution is needed.
+- Per-run receipts / pattern-miner deeper engine integration remain roadmap.
