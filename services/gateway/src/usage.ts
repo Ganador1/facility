@@ -1,6 +1,9 @@
 import { Transform, type TransformCallback } from "node:stream";
 import type { Provider, Usage } from "./types.js";
 
+const MAX_RETAINED_RESPONSE_BYTES = 256 * 1024;
+const TRUNCATED_MARKER = "\n[facility:response_truncated]\n";
+
 export function emptyUsage(): Usage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 }
@@ -46,6 +49,8 @@ export class UsageTee extends Transform {
   readonly usage = emptyUsage();
   readonly textParts: string[] = [];
   private pending = "";
+  private retainedBytes = 0;
+  private retainedTruncated = false;
 
   constructor(private provider: Provider) {
     super();
@@ -53,8 +58,8 @@ export class UsageTee extends Transform {
 
   _transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
     const text = chunk.toString("utf8");
-    this.textParts.push(text);
-    this.pending += text;
+    this.retainText(chunk);
+    this.appendPending(text);
     this.parsePending();
     this.push(chunk);
     callback();
@@ -114,6 +119,30 @@ export class UsageTee extends Transform {
       }
     } catch {
       // Provider bytes are still passed through; malformed telemetry frames only affect metering.
+    }
+  }
+
+  private retainText(chunk: Buffer) {
+    if (this.retainedTruncated) return;
+    const remaining = MAX_RETAINED_RESPONSE_BYTES - this.retainedBytes;
+    if (chunk.byteLength <= remaining) {
+      this.textParts.push(chunk.toString("utf8"));
+      this.retainedBytes += chunk.byteLength;
+      return;
+    }
+    if (remaining > 0) {
+      this.textParts.push(chunk.subarray(0, remaining).toString("utf8"));
+      this.retainedBytes += remaining;
+    }
+    this.textParts.push(TRUNCATED_MARKER);
+    this.retainedTruncated = true;
+  }
+
+  private appendPending(text: string) {
+    if (this.pending.length > MAX_RETAINED_RESPONSE_BYTES) return;
+    this.pending += text;
+    if (Buffer.byteLength(this.pending, "utf8") > MAX_RETAINED_RESPONSE_BYTES) {
+      this.pending = this.pending.slice(0, MAX_RETAINED_RESPONSE_BYTES);
     }
   }
 }

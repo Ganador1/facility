@@ -416,6 +416,8 @@ export const llmRequests = pgTable(
       .notNull()
       .references(() => projects.id),
     runId: text("run_id").references(() => runs.id),
+    taskId: text("task_id").references(() => poTasks.id),
+    agentDefId: text("agent_def_id").references(() => agentDefs.id),
     virtualKeyId: text("virtual_key_id").references(() => virtualKeys.id),
     provider: text("provider").notNull(),
     model: text("model").notNull(),
@@ -425,6 +427,7 @@ export const llmRequests = pgTable(
     cacheRead: integer("cache_read").notNull().default(0),
     cacheWrite: integer("cache_write").notNull().default(0),
     costCents: integer("cost_cents"),
+    priced: boolean("priced").notNull().default(true),
     latencyMs: integer("latency_ms").notNull().default(0),
     requestUri: text("request_uri"),
     responseUri: text("response_uri"),
@@ -433,6 +436,13 @@ export const llmRequests = pgTable(
   },
   (table) => [
     index("llm_requests_org_project_created_idx").on(table.orgId, table.projectId, table.createdAt),
+    index("llm_requests_org_created_group_idx").on(
+      table.orgId,
+      table.createdAt,
+      table.agentDefId,
+      table.taskId,
+      table.model,
+    ),
   ],
 );
 

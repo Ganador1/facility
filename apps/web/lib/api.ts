@@ -181,6 +181,8 @@ export const api = {
   project: (id: string) => apiFetch<Project>(`/v1/projects/${id}`),
   runs: (projectId: string, params = "") =>
     apiFetch<Run[]>(`/v1/projects/${projectId}/runs${params}`),
+  allRuns: (params = "") =>
+    apiFetch<(Run & { project: Pick<Project, "id" | "name" | "slug"> })[]>(`/v1/runs${params}`),
   run: (id: string) => apiFetch<Run>(`/v1/runs/${id}`),
   runEvents: (id: string, afterSeq = 0) =>
     apiFetch<RunEvent[]>(`/v1/runs/${id}/events?afterSeq=${afterSeq}`),

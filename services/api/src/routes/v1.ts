@@ -901,17 +901,27 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
       config: { permission: "runs:read" },
       schema: {
         params: IdParams,
-        querystring: z.object({ status: z.string().optional() }),
+        querystring: z.object({
+          status: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(200).default(50),
+          offset: z.coerce.number().int().min(0).default(0),
+        }),
         response: { 200: z.array(AnyObject) },
       },
     },
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
-      return withOrg(db, p.orgId).runs.listForProject(
-        projectId,
-        request.query as { status?: string },
-      );
+      const query = request.query as { status?: string; limit: number; offset: number };
+      const clauses = [eq(runs.orgId, p.orgId), eq(runs.projectId, projectId)];
+      if (query.status) clauses.push(eq(runs.status, query.status));
+      return db
+        .select()
+        .from(runs)
+        .where(and(...clauses))
+        .orderBy(desc(runs.queuedAt))
+        .limit(query.limit)
+        .offset(query.offset);
     },
   );
 
@@ -985,6 +995,40 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
     if (p.projectId && row.projectId !== p.projectId) throw notFound("Run not found");
     return row;
   }
+
+  app.get(
+    "/v1/runs",
+    {
+      config: { permission: "runs:read" },
+      schema: {
+        querystring: z.object({
+          status: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(200).default(50),
+          offset: z.coerce.number().int().min(0).default(0),
+        }),
+        response: { 200: z.array(AnyObject) },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const query = request.query as { status?: string; limit: number; offset: number };
+      const clauses = [eq(runs.orgId, p.orgId)];
+      if (p.projectId) clauses.push(eq(runs.projectId, p.projectId));
+      if (query.status) clauses.push(eq(runs.status, query.status));
+      const rows = await db
+        .select({
+          run: runs,
+          project: { id: projects.id, name: projects.name, slug: projects.slug },
+        })
+        .from(runs)
+        .innerJoin(projects, eq(projects.id, runs.projectId))
+        .where(and(...clauses))
+        .orderBy(desc(runs.queuedAt))
+        .limit(query.limit)
+        .offset(query.offset);
+      return rows.map((row) => ({ ...row.run, project: row.project }));
+    },
+  );
 
   // Human-rate seq allocation (steer). The runner's internal event ingest owns
   // high-frequency assignment; collisions here surface as a retryable 500.
@@ -1435,7 +1479,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
           projectId: z.string().optional(),
           from: z.string().optional(),
           to: z.string().optional(),
-          groupBy: z.enum(["model", "agent", "day"]).optional(),
+          groupBy: z.enum(["model", "agent", "task", "day"]).optional(),
         }),
         response: { 200: z.array(AnyObject) },
       },
@@ -1446,18 +1490,22 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
         projectId?: string;
         from?: string;
         to?: string;
-        groupBy?: "model" | "agent" | "day";
+        groupBy?: "model" | "agent" | "task" | "day";
       };
-      const from = (q.from ? new Date(q.from) : new Date("1970-01-01T00:00:00Z")).toISOString();
-      const to = (q.to ? new Date(q.to) : new Date("2999-01-01T00:00:00Z")).toISOString();
+      const toDate = q.to ? new Date(q.to) : new Date();
+      const fromDate = q.from ? new Date(q.from) : new Date(toDate.getTime() - 30 * 86_400_000);
+      const from = fromDate.toISOString();
+      const to = toDate.toISOString();
       assertProjectScope(p, q.projectId);
       const projectId = p.projectId ?? q.projectId;
       const groupExpr =
         q.groupBy === "day"
           ? sql`date_trunc('day', created_at)::text`
           : q.groupBy === "agent"
-            ? sql`coalesce(run_id, 'none')`
-            : sql`model`;
+            ? sql`coalesce(agent_def_id, 'none')`
+            : q.groupBy === "task"
+              ? sql`coalesce(task_id, 'none')`
+              : sql`model`;
       const result = projectId
         ? await db.execute(
             sql`SELECT ${groupExpr} AS bucket, coalesce(sum(cost_cents), 0)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND project_id = ${projectId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1`,
@@ -2583,7 +2631,7 @@ async function streamRunEvents(
       void (async () => {
         await writeEvents(await load(cursor));
       })();
-    }, 250);
+    }, 5_000);
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, idleMs);
       reply.raw.on("close", () => {

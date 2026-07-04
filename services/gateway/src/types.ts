@@ -22,6 +22,7 @@ export type AuthedKey = {
   orgId: string;
   projectId: string;
   runId: string | null;
+  taskId: string | null;
   allowedModels: string[] | null;
   budgetId: string | null;
   agentDefId: string | null;
@@ -38,15 +39,17 @@ export type RequestRecord = {
   requestId: string;
   provider: Provider;
   model: string;
-  status: "ok" | "error" | "blocked_budget" | "blocked_policy";
+  status: "ok" | "error" | "blocked_budget" | "blocked_policy" | "model_not_priced";
   statusCode: number;
   startedAt: number;
   key: AuthedKey;
   usage: Usage;
+  priced: boolean;
   error?: string;
   requestBody: unknown;
   responseBody: unknown;
   budgets: BudgetState[];
+  reservations?: Array<{ budget: BudgetState; estimatedCents: number }>;
 };
 
 export type BudgetState = {

@@ -78,6 +78,7 @@ async function loadVirtualKeyByPrefix(
         orgId: row.key.orgId,
         projectId: row.key.projectId,
         runId: row.key.runId,
+        taskId: taskIdFromRunTrigger(row.run?.trigger),
         allowedModels: row.key.allowedModels,
         budgetId: row.key.budgetId,
         agentDefId: row.run?.agentDefId ?? null,
@@ -132,4 +133,10 @@ export function clearAuthCaches() {
 
 function defaultBaseUrl(provider: Provider): string {
   return provider === "anthropic" ? "https://api.anthropic.com/v1" : "https://api.openai.com/v1";
+}
+
+function taskIdFromRunTrigger(trigger: unknown): string | null {
+  if (!trigger || typeof trigger !== "object" || Array.isArray(trigger)) return null;
+  const taskId = (trigger as { taskId?: unknown }).taskId;
+  return typeof taskId === "string" && taskId ? taskId : null;
 }

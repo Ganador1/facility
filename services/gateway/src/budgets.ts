@@ -94,6 +94,96 @@ export function hardBudgetBlock(states: BudgetState[]): BudgetState | null {
   );
 }
 
+export type BudgetReservation = {
+  budget: BudgetState;
+  estimatedCents: number;
+};
+
+export async function reserveHardBudgets(
+  db: FacilityDb,
+  states: BudgetState[],
+  key: AuthedKey,
+  estimatedCents: number,
+): Promise<{ ok: true; reservations: BudgetReservation[] } | { ok: false; budget: BudgetState }> {
+  if (estimatedCents <= 0) return { ok: true, reservations: [] };
+  const reservations: BudgetReservation[] = [];
+  for (const budget of states.filter((state) => state.mode === "hard")) {
+    const row = (
+      await db
+        .insert(spendCounters)
+        .values({
+          id: newId("evt"),
+          orgId: key.orgId,
+          budgetId: budget.id,
+          windowStart: budget.windowStart,
+          spentCents: estimatedCents,
+        })
+        .onConflictDoUpdate({
+          target: [spendCounters.budgetId, spendCounters.windowStart],
+          set: { spentCents: sql`${spendCounters.spentCents} + ${estimatedCents}` },
+        })
+        .returning({ spentCents: spendCounters.spentCents })
+    )[0];
+    reservations.push({ budget, estimatedCents });
+    if ((row?.spentCents ?? 0) > budget.limitCents) {
+      await adjustBudgetReservations(db, reservations, -estimatedCents);
+      return { ok: false, budget };
+    }
+  }
+  return { ok: true, reservations };
+}
+
+export async function adjustBudgetReservations(
+  db: FacilityDb,
+  reservations: BudgetReservation[],
+  deltaCents: number,
+) {
+  if (deltaCents === 0) return;
+  for (const reservation of reservations) {
+    await adjustBudgetCounter(db, reservation.budget, deltaCents);
+  }
+}
+
+export async function reconcileBudgetReservations(
+  db: FacilityDb,
+  reservations: BudgetReservation[],
+  actualCents: number,
+) {
+  for (const reservation of reservations) {
+    await adjustBudgetCounter(db, reservation.budget, actualCents - reservation.estimatedCents);
+  }
+}
+
+export async function addBudgetSpend(
+  db: FacilityDb,
+  budget: BudgetState,
+  key: AuthedKey,
+  costCents: number,
+) {
+  await db
+    .insert(spendCounters)
+    .values({
+      id: newId("evt"),
+      orgId: key.orgId,
+      budgetId: budget.id,
+      windowStart: budget.windowStart,
+      spentCents: costCents,
+    })
+    .onConflictDoUpdate({
+      target: [spendCounters.budgetId, spendCounters.windowStart],
+      set: { spentCents: sql`${spendCounters.spentCents} + ${costCents}` },
+    });
+}
+
+async function adjustBudgetCounter(db: FacilityDb, budget: BudgetState, deltaCents: number) {
+  await db
+    .update(spendCounters)
+    .set({ spentCents: sql`${spendCounters.spentCents} + ${deltaCents}` })
+    .where(
+      and(eq(spendCounters.budgetId, budget.id), eq(spendCounters.windowStart, budget.windowStart)),
+    );
+}
+
 export async function emitSoftBudgetIssues(db: FacilityDb, states: BudgetState[], key: AuthedKey) {
   const breached = states.filter(
     (budget) => budget.mode === "soft" && budget.spentCents >= budget.limitCents,

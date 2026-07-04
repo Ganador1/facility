@@ -1,12 +1,17 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { newId } from "@facility/core";
+import { MODEL_PRICES_USD_PER_1M, newId, normalizeModel } from "@facility/core";
 import { createDb } from "@facility/db";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { uuidv7 } from "uuidv7";
 import { authenticateVirtualKey, providerCredential, virtualKeyFromHeaders } from "./auth.js";
 import { modelFrom, prepareOpenAiBody, readJsonBody, sanitizedRequest } from "./body.js";
-import { applicableBudgets, emitSoftBudgetIssues, hardBudgetBlock } from "./budgets.js";
+import {
+  applicableBudgets,
+  emitSoftBudgetIssues,
+  hardBudgetBlock,
+  reserveHardBudgets,
+} from "./budgets.js";
 import { readConfig } from "./config.js";
 import { createEnvelopeStore } from "./envelope-store.js";
 import { GatewayError, providerEnvelope, sendProviderError } from "./errors.js";
@@ -104,22 +109,51 @@ async function handleProvider(
   if (!model) {
     throw new GatewayError(400, "bad_request", "Request body must include model", provider);
   }
+  const normalizedModel = normalizeModel(model);
+  const priced = normalizedModel !== null;
+  const zeroCostPolicy = isZeroCostVirtualKey(key, model);
   const budgets = await applicableBudgets(db, key, now());
-  const hardBlock = hardBudgetBlock(budgets);
   const recordedBody =
     provider === "openai" ? prepareOpenAiBody(parsed.json).recordedBody : parsed.json;
   const requestBody = sanitizedRequest(recordedBody, request.headers);
 
+  if (!priced && !zeroCostPolicy) {
+    const responseBody = providerEnvelope(
+      provider,
+      "model_not_priced",
+      `Model ${model} is not priced for this virtual key. Configure pricing or use an explicit zero-cost BYO key.`,
+    );
+    const record = baseRecord({
+      requestId,
+      provider,
+      model,
+      priced: false,
+      status: "model_not_priced",
+      statusCode: 402,
+      startedAt,
+      key,
+      requestBody,
+      responseBody,
+      budgets,
+      error: "model not priced",
+    });
+    enqueueMetering(db, envelopeStore, request.log, record, now());
+    return reply.status(402).send(responseBody);
+  }
+
+  const estimatedCents = estimatedCostCents(parsed.json, normalizedModel, priced);
+  const hardBlock = estimatedCents > 0 ? hardBudgetBlock(budgets) : null;
   if (hardBlock) {
     const responseBody = providerEnvelope(
       provider,
-      "blocked_budget",
+      "budget_exceeded",
       `Budget ${hardBlock.id} is exhausted. Request an override in /inbox/budget_override.`,
     );
     const record = baseRecord({
       requestId,
       provider,
       model,
+      priced,
       status: "blocked_budget",
       statusCode: 402,
       startedAt,
@@ -143,6 +177,7 @@ async function handleProvider(
       requestId,
       provider,
       model,
+      priced,
       status: "blocked_policy",
       statusCode: 403,
       startedAt,
@@ -165,6 +200,33 @@ async function handleProvider(
     credential.apiKey,
     upstreamBody,
   );
+  const reservation =
+    estimatedCents > 0
+      ? await reserveHardBudgets(db, budgets, key, estimatedCents)
+      : { ok: true as const, reservations: [] };
+  if (!reservation.ok) {
+    const responseBody = providerEnvelope(
+      provider,
+      "budget_exceeded",
+      `Budget ${reservation.budget.id} would be exceeded by this request.`,
+    );
+    const record = baseRecord({
+      requestId,
+      provider,
+      model,
+      priced,
+      status: "blocked_budget",
+      statusCode: 402,
+      startedAt,
+      key,
+      requestBody,
+      responseBody,
+      budgets,
+      error: `hard budget ${reservation.budget.id} exceeded`,
+    });
+    enqueueMetering(db, envelopeStore, request.log, record, now());
+    return reply.status(402).send(responseBody);
+  }
   const controller = new AbortController();
   reply.raw.on("close", () => {
     if (!reply.raw.writableEnded) controller.abort();
@@ -183,6 +245,7 @@ async function handleProvider(
       requestId,
       provider,
       model,
+      priced,
       status: "error",
       statusCode: 502,
       startedAt,
@@ -190,6 +253,7 @@ async function handleProvider(
       requestBody,
       responseBody: { error: error instanceof Error ? error.message : "upstream fetch failed" },
       budgets,
+      reservations: reservation.reservations,
       error: "upstream fetch failed",
     });
     enqueueMetering(db, envelopeStore, request.log, record, now());
@@ -223,6 +287,7 @@ async function handleProvider(
       requestId,
       provider,
       model,
+      priced,
       status,
       statusCode: upstream.status,
       startedAt,
@@ -231,6 +296,7 @@ async function handleProvider(
       requestBody,
       responseBody,
       budgets,
+      reservations: reservation.reservations,
       error,
     });
     enqueueMetering(db, envelopeStore, request.log, record, now());
@@ -248,6 +314,37 @@ function mergeParsedUsage(base: Usage, parsed: Partial<Usage>): Usage {
     cacheReadTokens: parsed.cacheReadTokens ?? base.cacheReadTokens,
     cacheWriteTokens: parsed.cacheWriteTokens ?? base.cacheWriteTokens,
   };
+}
+
+function isZeroCostVirtualKey(key: { allowedModels: string[] | null }, model: string): boolean {
+  const allowed = key.allowedModels;
+  if (!allowed?.length || !allowed.includes(model)) return false;
+  return allowed.every((allowedModel) => {
+    const normalized = normalizeModel(allowedModel);
+    return normalized === null || normalized === "custom";
+  });
+}
+
+function estimatedCostCents(
+  body: unknown,
+  normalizedModel: keyof typeof MODEL_PRICES_USD_PER_1M | null,
+  priced: boolean,
+): number {
+  if (!priced || !normalizedModel) return 0;
+  const price = MODEL_PRICES_USD_PER_1M[normalizedModel];
+  if (price.input <= 0 && price.output <= 0) return 0;
+  const maxTokens = maxOutputTokens(body) ?? 4096;
+  return Math.max(1, Math.ceil((maxTokens / 1_000_000) * (price.input + price.output) * 100));
+}
+
+function maxOutputTokens(body: unknown): number | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const row = body as Record<string, unknown>;
+  for (const key of ["max_tokens", "max_completion_tokens", "max_output_tokens"]) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.ceil(value);
+  }
+  return null;
 }
 
 function providerSuffix(request: FastifyRequest, provider: Provider): string {

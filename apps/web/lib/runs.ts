@@ -2,28 +2,16 @@ import { api, type Project, type Run } from "./api";
 
 export type RunWithProject = Run & { project: Pick<Project, "id" | "name" | "slug"> };
 
-/** Org-wide runs view: fan out per project (projects are few; runs are the hot axis). */
 export async function fetchAllRuns(params = ""): Promise<{
   offline: boolean;
   projects: Project[];
   runs: RunWithProject[];
 }> {
-  const projects = await api.projects();
+  const [projects, runs] = await Promise.all([api.projects(), api.allRuns(params)]);
   if (!projects.ok) return { offline: projects.offline, projects: [], runs: [] };
+  if (!runs.ok) return { offline: runs.offline, projects: projects.data, runs: [] };
 
-  const perProject = await Promise.all(
-    projects.data.map(async (project) => {
-      const runs = await api.runs(project.id, params);
-      if (!runs.ok) return [];
-      return runs.data.map((run) => ({
-        ...run,
-        project: { id: project.id, name: project.name, slug: project.slug },
-      }));
-    }),
-  );
-
-  const runs = perProject.flat().sort((a, b) => (b.queuedAt ?? "").localeCompare(a.queuedAt ?? ""));
-  return { offline: false, projects: projects.data, runs };
+  return { offline: false, projects: projects.data, runs: runs.data };
 }
 
 export function fmtCost(cents?: number | null): string {

@@ -1,8 +1,9 @@
-import { costCents, newId } from "@facility/core";
+import { costCents } from "@facility/core";
 import type { FacilityDb } from "@facility/db";
-import { llmRequests, spendCounters, virtualKeys } from "@facility/db";
-import { eq, sql } from "drizzle-orm";
+import { llmRequests, virtualKeys } from "@facility/db";
+import { eq } from "drizzle-orm";
 import type { FastifyBaseLogger } from "fastify";
+import { addBudgetSpend, reconcileBudgetReservations } from "./budgets.js";
 import type { EnvelopeStore, RequestRecord } from "./types.js";
 
 export function enqueueMetering(
@@ -34,13 +35,14 @@ export async function writeMetering(
   record: RequestRecord,
   now: Date,
 ) {
-  const cost = costCents({
+  const computedCost = costCents({
     model: record.model,
     inputTokens: record.usage.inputTokens,
     outputTokens: record.usage.outputTokens,
     cacheReadTokens: record.usage.cacheReadTokens,
     cacheWriteTokens: record.usage.cacheWriteTokens,
   });
+  const cost = record.priced ? computedCost : 0;
   let envelopeUri: string | null = null;
   try {
     envelopeUri = await store.putEnvelope({
@@ -69,6 +71,8 @@ export async function writeMetering(
     orgId: record.key.orgId,
     projectId: record.key.projectId,
     runId: record.key.runId,
+    taskId: record.key.taskId,
+    agentDefId: record.key.agentDefId,
     virtualKeyId: record.key.id,
     provider: record.provider,
     model: record.model,
@@ -78,28 +82,22 @@ export async function writeMetering(
     cacheRead: record.usage.cacheReadTokens,
     cacheWrite: record.usage.cacheWriteTokens,
     costCents: cost,
+    priced: record.priced,
     latencyMs: Date.now() - record.startedAt,
     requestUri: envelopeUri,
     responseUri: envelopeUri,
     error: record.error,
   });
 
+  const reservations = record.reservations ?? [];
   if (cost !== null && record.status === "ok") {
+    const reservedBudgetIds = new Set(reservations.map((reservation) => reservation.budget.id));
     for (const budget of record.budgets) {
-      await db
-        .insert(spendCounters)
-        .values({
-          id: newId("evt"),
-          orgId: record.key.orgId,
-          budgetId: budget.id,
-          windowStart: budget.windowStart,
-          spentCents: cost,
-        })
-        .onConflictDoUpdate({
-          target: [spendCounters.budgetId, spendCounters.windowStart],
-          set: { spentCents: sql`${spendCounters.spentCents} + ${cost}` },
-        });
+      if (!reservedBudgetIds.has(budget.id)) await addBudgetSpend(db, budget, record.key, cost);
     }
+    await reconcileBudgetReservations(db, reservations, cost);
+  } else {
+    await reconcileBudgetReservations(db, reservations, 0);
   }
 
   await db

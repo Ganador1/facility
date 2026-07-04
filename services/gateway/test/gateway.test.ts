@@ -91,6 +91,7 @@ describe("gateway", async () => {
     await db.delete(spendCounters).where(eq(spendCounters.orgId, orgId));
     await db.delete(platformIssues).where(eq(platformIssues.orgId, orgId));
     await db.delete(providerCredentials).where(eq(providerCredentials.orgId, orgId));
+    await db.delete(llmRequests).where(eq(llmRequests.orgId, orgId));
     await db.delete(virtualKeys).where(eq(virtualKeys.orgId, orgId));
     await db.delete(budgets).where(eq(budgets.orgId, orgId));
   });
@@ -177,7 +178,7 @@ describe("gateway", async () => {
     });
     const response = await postAnthropic(setup.secret, { model: "claude-sonnet-5", messages: [] });
     expect(response.status).toBe(402);
-    expect(await response.json()).toMatchObject({ error: { type: "blocked_budget" } });
+    expect(await response.json()).toMatchObject({ error: { type: "budget_exceeded" } });
     expect(stubState.anthropicCalls).toBe(0);
     await waitForRequestCount(1);
     const row = (
@@ -217,6 +218,78 @@ describe("gateway", async () => {
     await waitForRequestCount(1);
   });
 
+  it("6b. unpriced models fail closed before upstream unless the key is explicit zero-cost", async () => {
+    const blocked = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+    });
+    const blockedResponse = await postAnthropic(blocked.secret, {
+      model: "future-expensive-model",
+      messages: [],
+    });
+    expect(blockedResponse.status).toBe(402);
+    expect(await blockedResponse.json()).toMatchObject({ error: { type: "model_not_priced" } });
+    expect(stubState.anthropicCalls).toBe(0);
+    await waitForRequestCount(1);
+    const blockedRow = (
+      await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, blocked.keyId))
+    )[0];
+    expect(blockedRow?.status).toBe("model_not_priced");
+    expect(blockedRow?.priced).toBe(false);
+
+    await db.delete(llmRequests).where(eq(llmRequests.orgId, orgId));
+    await db.delete(providerCredentials).where(eq(providerCredentials.orgId, orgId));
+    const byo = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+      allowedModels: ["byo-model"],
+      budgetMode: "hard",
+      budgetLimitCents: 0,
+    });
+    const allowedResponse = await postAnthropic(byo.secret, {
+      model: "byo-model",
+      messages: [],
+    });
+    expect(allowedResponse.status).toBe(200);
+    expect(stubState.anthropicCalls).toBe(1);
+    await waitForRequestCount(1);
+    const byoRow = (
+      await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, byo.keyId))
+    )[0];
+    expect(byoRow?.costCents).toBe(0);
+    expect(byoRow?.priced).toBe(false);
+  });
+
+  it("6c. hard budget reservation blocks a concurrent over-limit request", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+      budgetMode: "hard",
+      budgetLimitCents: 1800,
+    });
+    const first = postAnthropic(setup.secret, {
+      model: "claude-sonnet-5",
+      max_tokens: 1_000_000,
+      slow: true,
+      messages: [],
+    });
+    await waitFor(() => stubState.anthropicCalls === 1);
+    const second = await postAnthropic(setup.secret, {
+      model: "claude-sonnet-5",
+      max_tokens: 1_000_000,
+      messages: [],
+    });
+    expect(second.status).toBe(402);
+    expect(await second.json()).toMatchObject({ error: { type: "budget_exceeded" } });
+    expect(stubState.anthropicCalls).toBe(1);
+    expect((await first).status).toBe(200);
+    await waitForRequestCount(2);
+    const counter = (
+      await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
+    )[0];
+    expect(counter?.spentCents).toBe(1800);
+  });
+
   it("7. Revoked key and unknown prefix both return provider-shaped 401", async () => {
     const setup = await setupVirtualKey({
       provider: "anthropic",
@@ -236,7 +309,11 @@ describe("gateway", async () => {
 
   it("8. Upstream 500 status and body pass through and meter as error", async () => {
     const setup = await setupVirtualKey({ provider: "openai", baseUrl: `${stubOrigin}/openai/v1` });
-    const response = await postOpenAi(setup.secret, { model: "force-500", messages: [] });
+    const response = await postOpenAi(setup.secret, {
+      model: "gpt-5.5-mini",
+      force500: true,
+      messages: [],
+    });
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({ error: { message: "upstream exploded" } });
     await waitForRequestCount(1);
@@ -255,7 +332,12 @@ describe("gateway", async () => {
     const response = await fetch(`${gatewayOrigin}/anthropic/v1/messages`, {
       method: "POST",
       headers: { "x-api-key": setup.secret, "content-type": "application/json" },
-      body: JSON.stringify({ model: "abort-stream", stream: true, messages: [] }),
+      body: JSON.stringify({
+        model: "claude-sonnet-5",
+        abortStream: true,
+        stream: true,
+        messages: [],
+      }),
       signal: controller.signal,
     });
     await response.body?.getReader().read();
@@ -389,8 +471,11 @@ async function buildStub(state: StubState) {
   app.post("/anthropic/v1/messages", async (request, reply) => {
     state.anthropicCalls += 1;
     expect(request.headers["x-api-key"]).toBe("real-anthropic");
-    const body = request.body as { model: string; stream?: boolean };
-    if (body.model === "abort-stream") {
+    const body = request.body as { model: string; stream?: boolean; abortStream?: boolean };
+    if ((body as { slow?: boolean }).slow) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (body.abortStream) {
       reply.raw.on("close", () => {
         state.abortObserved = true;
       });
@@ -422,9 +507,9 @@ async function buildStub(state: StubState) {
   app.post("/openai/v1/chat/completions", async (request, reply) => {
     state.openaiCalls += 1;
     expect(request.headers.authorization).toBe("Bearer real-openai");
-    const body = request.body as { model: string; stream?: boolean };
+    const body = request.body as { model: string; stream?: boolean; force500?: boolean };
     state.lastOpenAiRequest = body;
-    if (body.model === "force-500") {
+    if (body.force500) {
       return reply.status(500).send({ error: { message: "upstream exploded" } });
     }
     if (body.stream) {

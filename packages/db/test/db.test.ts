@@ -1,5 +1,5 @@
 import { hashChain, newId } from "@facility/core";
-import { count, eq, inArray } from "drizzle-orm";
+import { count, eq, inArray, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, insertAuditEvent, migrate, seed, withOrg } from "../src/index.js";
@@ -141,5 +141,42 @@ describe("db", async () => {
       ["learning", true],
       ["project-owner", true],
     ]);
+  });
+
+  it("applies llm request attribution migration in order", async () => {
+    const columns = (await db.execute(
+      sql`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'llm_requests'
+          AND column_name IN ('task_id', 'agent_def_id', 'priced')
+      `,
+    )) as Iterable<{ column_name: string }>;
+    expect(new Set(Array.from(columns).map((row) => row.column_name))).toEqual(
+      new Set(["task_id", "agent_def_id", "priced"]),
+    );
+    const indexes = (await db.execute(
+      sql`
+        SELECT indexname
+        FROM pg_indexes
+        WHERE tablename = 'llm_requests'
+          AND indexname = 'llm_requests_org_created_group_idx'
+      `,
+    )) as Iterable<{ indexname: string }>;
+    expect(Array.from(indexes).map((row) => row.indexname)).toContain(
+      "llm_requests_org_created_group_idx",
+    );
+    const applied = (await db.execute(
+      sql`
+        SELECT name
+        FROM _facility_migrations
+        ORDER BY name
+      `,
+    )) as Iterable<{ name: string }>;
+    expect(
+      Array.from(applied)
+        .map((row) => row.name)
+        .at(-1),
+    ).toBe("0005_llm_request_attribution.sql");
   });
 });

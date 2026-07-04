@@ -12,6 +12,7 @@ import {
   proposals,
   registryVersions,
   repos,
+  runs,
   seed,
 } from "@facility/db";
 import { eq, sql } from "drizzle-orm";
@@ -217,6 +218,78 @@ describe("api", async () => {
     expect(stream.body).toContain("event: heartbeat");
   });
 
+  it("returns org-wide paginated runs with project metadata", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const projectA = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Runs Page A",
+          slug: `runs-page-a-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    const projectB = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Runs Page B",
+          slug: `runs-page-b-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    if (!projectA || !projectB) throw new Error("project setup failed");
+    const oldRunId = newId("run");
+    const newRunId = newId("run");
+    const status = `runs_page_${suffix.replace(/[^a-z0-9]/g, "_")}`;
+    await db.insert(runs).values([
+      {
+        id: oldRunId,
+        orgId,
+        projectId: projectA.id,
+        mode: "builder",
+        engine: "codex",
+        status,
+        queuedAt: new Date("2999-01-01T00:00:00Z"),
+        createdBy: { type: "test", id: "api" },
+      },
+      {
+        id: newRunId,
+        orgId,
+        projectId: projectB.id,
+        mode: "builder",
+        engine: "codex",
+        status,
+        queuedAt: new Date("2999-01-02T00:00:00Z"),
+        createdBy: { type: "test", id: "api" },
+      },
+    ]);
+    const page = await app.inject({
+      method: "GET",
+      url: `/v1/runs?status=${status}&limit=1&offset=0`,
+      headers: { cookie },
+    });
+    expect(page.statusCode).toBe(200);
+    expect(page.json()).toHaveLength(1);
+    expect(page.json()[0]).toMatchObject({
+      id: newRunId,
+      project: { id: projectB.id, name: projectB.name, slug: projectB.slug },
+    });
+    const secondPage = await app.inject({
+      method: "GET",
+      url: `/v1/runs?status=${status}&limit=1&offset=1`,
+      headers: { cookie },
+    });
+    expect(secondPage.statusCode).toBe(200);
+    expect(secondPage.json()[0]?.id).toBe(oldRunId);
+  });
+
   it("validates HITL payloads and appends decision ledger events", async () => {
     const type = (
       await db
@@ -349,6 +422,70 @@ describe("api", async () => {
             row.bucket === "gpt-5.5" && row.cost_cents >= 123,
         ),
     ).toBe(true);
+  });
+
+  it("groups spend by agent definition, not run id", async () => {
+    const agent = (await db.select().from(agentDefs).where(eq(agentDefs.orgId, orgId)).limit(1))[0];
+    expect(agent).toBeTruthy();
+    if (!agent) throw new Error("agent fixture missing");
+    const runA = newId("run");
+    const runB = newId("run");
+    await db.insert(runs).values([
+      {
+        id: runA,
+        orgId,
+        projectId: agent.projectId,
+        agentDefId: agent.id,
+        mode: "builder",
+        engine: "codex",
+        createdBy: { type: "test", id: "api" },
+      },
+      {
+        id: runB,
+        orgId,
+        projectId: agent.projectId,
+        agentDefId: agent.id,
+        mode: "builder",
+        engine: "codex",
+        createdBy: { type: "test", id: "api" },
+      },
+    ]);
+    await db.insert(llmRequests).values([
+      {
+        id: newId("evt"),
+        orgId,
+        projectId: agent.projectId,
+        runId: runA,
+        agentDefId: agent.id,
+        provider: "openai",
+        model: "gpt-5.5",
+        status: "ok",
+        costCents: 100,
+        latencyMs: 10,
+      },
+      {
+        id: newId("evt"),
+        orgId,
+        projectId: agent.projectId,
+        runId: runB,
+        agentDefId: agent.id,
+        provider: "openai",
+        model: "gpt-5.5",
+        status: "ok",
+        costCents: 125,
+        latencyMs: 10,
+      },
+    ]);
+    const spend = await app.inject({
+      method: "GET",
+      url: "/v1/spend?groupBy=agent",
+      headers: { cookie },
+    });
+    expect(spend.statusCode).toBe(200);
+    const row = spend
+      .json()
+      .find((item: { bucket: string; cost_cents: number }) => item.bucket === agent.id);
+    expect(row?.cost_cents).toBeGreaterThanOrEqual(225);
   });
 
   it("startup assertion catches an undeclared protected route", async () => {
