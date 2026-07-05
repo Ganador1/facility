@@ -1,9 +1,50 @@
 # Facility Platform — delivery status
 
-**Branch**: `feat/platform-v0.3` (local, unpushed) · **as of** 2026-07-04
+**Branch**: `feat/platform-v0.3` (local, unpushed) · **as of** 2026-07-05
 
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
+
+## Current state (round 9, 2026-07-05)
+
+The platform was driven through nine independent GPT-5.5 (xhigh) verification
+rounds — six adversarial verifiers per full round, one per aspect — each round
+followed by fixes to the named findings, re-verified against primary evidence
+(diff review + a re-run full suite) before commit. Latest per-aspect scores:
+
+| aspect | round 1 | round 9 |
+|---|---:|---:|
+| Implementation & architecture | 56 | **90** |
+| Security & privacy | 58 | **91** |
+| UI/UX | 76 | 88 |
+| Feature completeness & product fit | 58 | **86** |
+| Optimization | 58 | 90 |
+| Docs, DX, operability | 56 | **89** |
+| **average** | **~59** | **~89** |
+
+~134 tests green (real Postgres), Biome clean, `tsc` green across packages, web
++ docs build. Recent hardening (rounds 4–9): SSRF guard on BYO provider URLs,
+real MCP human-gate (write tools create HITL proposals a *separate* principal
+approves), the `v1.ts` god-router split into per-domain routers, run-steer
+cockpit + guided kickstart, penny-accurate budget reservation, idempotent
+metering, a deployment-readiness `facility doctor` (DB/migrations, object-store
+round-trip, seed, GitHub App, audit-chain), a contract-typed web client, one
+shared SigV4 S3 object store for API+gateway (MinIO-turnkey), **project-scoped
+audit isolation with complete per-producer attribution**, and HITL GitHub issue
+creation that **fails closed** instead of fabricating URLs.
+
+**Remaining non-owner-gated work** (the honest gap to a higher score):
+- **Remote MCP auth** is still Facility API-key bearer only; GOAL/architecture
+  call for a tam-os-style OAuth 2.1 / PKCE / JWKS protected-resource flow for
+  interactive MCP clients (keep API keys for service use). Largest remaining item.
+- **SDK route contract** is hand-maintained (not generated from the API schemas)
+  and has no type/behavioural tests; broad template-literal paths can typecheck a
+  wrong nested path.
+- A few non-core v1 endpoints still return loose `AnyObject` response schemas.
+
+**Owner-gated ceiling**: "tam-os operates 100% on the platform" requires the
+production App install + cutover, which is the owner's decision (see below) — it
+is validated against a private mirror but **not** cut over.
 
 ## What was built
 
@@ -157,13 +198,16 @@ Prior versions of this doc overstated a few things; setting the record straight:
 
 ## Known follow-ups (tracked, non-blocking)
 
-- **`services/api/src/routes/v1.ts` is a ~2.8k-line module** — deliberately
-  deferred a split into per-domain routers (large, purely-structural refactor);
-  functional behavior is covered by tests.
-- **Deeper UX**: the run-steering "cockpit" (structured phase/tool state,
-  abort/retry) remains product-design work; guided kickstart repo onboarding
-  is built in the web/API flow.
+- **Remote MCP OAuth 2.1 / PKCE / JWKS** — the top remaining non-gated item (see
+  "Current state" above); MCP HTTP is API-key-only today.
+- **Generated, type-tested SDK route contract** — the client route map is
+  hand-maintained and untested; generate it from the API schemas and add
+  type-regression tests that reject wrong path/response pairings.
 - **tam-os production migration** run end-to-end (owner-gated).
 - `cost_cents` is integer — fine for real runs; sub-cent precision only if
   fine-grained tiny-call attribution is needed.
 - Per-run receipts / pattern-miner deeper engine integration remain roadmap.
+
+_(Done since earlier drafts: the `v1.ts` god-router is split into per-domain
+routers under `routes/v1/`; the run-steer cockpit and guided kickstart are built;
+audit is project-scoped end to end.)_
