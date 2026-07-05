@@ -37,14 +37,13 @@ resource server** — remote MCP now accepts WorkOS-issued access-token JWTs
 (JWKS/RS256, issuer+expiry+audience validated) alongside `fak_` keys, with RFC
 9728 protected-resource discovery.
 
-**Remaining non-owner-gated work** (all minor now that OAuth has shipped):
-- **`@facility/mcp` strict typecheck**: the MCP tool dispatcher models requests
-  as `path: string`, so `pnpm --filter @facility/mcp exec tsc --noEmit` reports
-  errors (the build via tsup and the tests both pass). Fix: constrain the
-  dispatcher generic to `FacilityRoutePath<Method>`.
+**Remaining non-owner-gated work** (all minor):
 - **SDK route contract** is hand-maintained (not generated from the API schemas);
-  broad template-literal paths can typecheck a wrong nested path (behavioural +
-  type tests now exist).
+  its broad template-literal id segments (`/v1/projects/${string}`) can still
+  typecheck a wrong nested path — a known TypeScript limitation, low real risk
+  because the typed convenience methods construct paths safely. (`@facility/mcp`
+  now strict-typechecks clean, and a real write-route response-typing bug was
+  fixed.)
 - A few non-core v1 endpoints still return loose `AnyObject` response schemas.
 
 **Owner-gated ceiling**: "tam-os operates 100% on the platform" requires the
