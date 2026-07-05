@@ -12,11 +12,15 @@ import type { Proposal } from "@/lib/api";
 export function ProposalCard({ proposal, focused }: { proposal: Proposal; focused?: boolean }) {
   const router = useRouter();
   const [busy, setBusy] = useState<"approve" | "reject" | null>(null);
+  // A human gate must be deliberate: the first click arms a decision, a second
+  // confirms it, so one stray tap cannot dispatch or deny.
+  const [pending, setPending] = useState<"approve" | "reject" | null>(null);
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   async function decide(decision: "approve" | "reject") {
     setBusy(decision);
+    setPending(null);
     setError(null);
     try {
       const res = await fetch(`/api/v1/proposals/${proposal.id}/decide`, {
@@ -69,30 +73,55 @@ export function ProposalCard({ proposal, focused }: { proposal: Proposal; focuse
         </pre>
       </details>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <Button
-          size="sm"
-          variant="primary"
-          disabled={busy !== null}
-          onClick={() => decide("approve")}
-        >
-          {busy === "approve" ? "approving…" : "approve"}
-        </Button>
-        <Button
-          size="sm"
-          variant="danger"
-          disabled={busy !== null}
-          onClick={() => decide("reject")}
-        >
-          {busy === "reject" ? "rejecting…" : "reject"}
-        </Button>
-        <input
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="note (recorded in the ledger)"
-          className="h-8 min-w-0 flex-1 border-b border-(--line) bg-transparent px-1 text-[13px] text-(--ink) placeholder:text-(--dim) focus:border-(--line-strong)"
-        />
-      </div>
+      {pending ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[13px] text-(--ink)">
+            Confirm <span className="font-mono uppercase">{pending}</span>? Recorded in the HITL
+            ledger.
+          </span>
+          <Button
+            size="sm"
+            variant={pending === "approve" ? "primary" : "danger"}
+            disabled={busy !== null}
+            onClick={() => decide(pending)}
+          >
+            {busy ? `${pending}…` : `confirm ${pending}`}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy !== null}
+            onClick={() => setPending(null)}
+          >
+            cancel
+          </Button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            size="sm"
+            variant="primary"
+            disabled={busy !== null}
+            onClick={() => setPending("approve")}
+          >
+            approve
+          </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            disabled={busy !== null}
+            onClick={() => setPending("reject")}
+          >
+            reject
+          </Button>
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder="note (recorded in the ledger)"
+            className="h-8 min-w-0 flex-1 border-b border-(--line) bg-transparent px-1 text-[13px] text-(--ink) placeholder:text-(--dim) focus:border-(--line-strong)"
+          />
+        </div>
+      )}
       {error ? <p className="font-mono text-[11px] text-(--bad)">{error}</p> : null}
     </article>
   );
