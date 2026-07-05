@@ -328,6 +328,11 @@ export type FacilityGetRoutePath =
   | `/v1/llm-requests/${string}/envelope`
   | "/v1/sandbox-profiles";
 
+// A bare `:id` route's `${string}` segment also admits `a/b`, so wrong nested
+// paths (e.g. /v1/projects/x/not-a-route) wrongly resolve to the resource type.
+// Require the captured id to contain no "/" — otherwise the response is `never`.
+type IfLeaf<Id extends string, Then> = Id extends `${string}/${string}` ? never : Then;
+
 export type FacilityGetRouteResponse<Path extends FacilityGetRoutePath> = Path extends "/v1/me"
   ? Me
   : Path extends "/v1/org"
@@ -342,18 +347,18 @@ export type FacilityGetRouteResponse<Path extends FacilityGetRoutePath> = Path e
             ? AgentDef[]
             : Path extends `/v1/projects/${string}/runs`
               ? Run[]
-              : Path extends `/v1/projects/${string}`
-                ? Project
+              : Path extends `/v1/projects/${infer Id}`
+                ? IfLeaf<Id, Project>
                 : Path extends "/v1/runs"
                   ? RunWithProject[]
                   : Path extends `/v1/runs/${string}/events`
                     ? RunEvent[]
-                    : Path extends `/v1/runs/${string}`
-                      ? Run
+                    : Path extends `/v1/runs/${infer Id}`
+                      ? IfLeaf<Id, Run>
                       : Path extends "/v1/inbox"
                         ? InboxResponse
-                        : Path extends `/v1/proposals/${string}`
-                          ? ProposalWithEvents
+                        : Path extends `/v1/proposals/${infer Id}`
+                          ? IfLeaf<Id, ProposalWithEvents>
                           : Path extends "/v1/audit"
                             ? AuditTail
                             : Path extends "/v1/audit/verify"
@@ -362,8 +367,8 @@ export type FacilityGetRouteResponse<Path extends FacilityGetRoutePath> = Path e
                                 ? DoctorResponse
                                 : Path extends "/v1/registry/items"
                                   ? RegistryItem[]
-                                  : Path extends `/v1/registry/items/${string}`
-                                    ? RegistryItemWithVersions
+                                  : Path extends `/v1/registry/items/${infer Id}`
+                                    ? IfLeaf<Id, RegistryItemWithVersions>
                                     : Path extends "/v1/spend"
                                       ? SpendRow[]
                                       : Path extends "/v1/members"
@@ -376,8 +381,8 @@ export type FacilityGetRouteResponse<Path extends FacilityGetRoutePath> = Path e
                                               ? Provider[]
                                               : Path extends "/v1/budgets"
                                                 ? Budget[]
-                                                : Path extends `/v1/budgets/${string}`
-                                                  ? Budget
+                                                : Path extends `/v1/budgets/${infer Id}`
+                                                  ? IfLeaf<Id, Budget>
                                                   : Path extends "/v1/llm-requests"
                                                     ? LlmRequestPage
                                                     : Path extends `/v1/llm-requests/${string}/envelope`

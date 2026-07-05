@@ -202,6 +202,14 @@ describe("typed route contracts", () => {
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/inbox">>().toEqualTypeOf<InboxResponse>();
   });
 
+  it("resolves a bare :id route but rejects a wrong nested path as never", () => {
+    expectTypeOf<FacilityRouteResponse<"GET", "/v1/projects/proj_1">>().toEqualTypeOf<Project>();
+    // The broad `/v1/projects/${string}` template admits `a/b`; the id guard
+    // makes a wrong nested path resolve to `never` instead of the resource type.
+    expectTypeOf<FacilityRouteResponse<"GET", "/v1/projects/proj_1/not-a-route">>().toBeNever();
+    expectTypeOf<FacilityRouteResponse<"GET", "/v1/budgets/bud_1/nope">>().toBeNever();
+  });
+
   it("maps route bodies and rejects invalid pairings at compile time", () => {
     expectTypeOf<FacilityRouteBody<"POST", "/v1/projects">>().toEqualTypeOf<CreateProjectRequest>();
     expectTypeOf<FacilityRouteBody<"GET", "/v1/me">>().toEqualTypeOf<never>();
