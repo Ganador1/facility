@@ -21,11 +21,13 @@ import {
   serializerCompiler,
   validatorCompiler,
 } from "fastify-type-provider-zod";
+import type { JWTVerifyGetKey } from "jose";
 import PgBoss from "pg-boss";
 import { uuidv7 } from "uuidv7";
 import { z } from "zod";
 import { readConfig } from "./config.js";
 import { ApiError, sendError } from "./errors.js";
+import { looksLikeJwt, oauthConfigFromApp, verifyAccessToken } from "./oauth.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerGithubRoutes } from "./routes/github.js";
 import { registerInternalRoutes } from "./routes/internal.js";
@@ -49,7 +51,11 @@ type RouteRecord = {
   public?: boolean;
 };
 
-export async function buildApp(config: AppConfig = readConfig()): Promise<FastifyInstance> {
+export async function buildApp(
+  config: AppConfig = readConfig(),
+  deps: { oauthJwks?: JWTVerifyGetKey } = {},
+): Promise<FastifyInstance> {
+  const oauthConfig = oauthConfigFromApp(config);
   const app = Fastify({
     logger: { level: config.logLevel },
     genReqId: () => uuidv7(),
@@ -133,7 +139,7 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
   );
 
   app.addHook("preHandler", async (request) => {
-    request.principal = await resolvePrincipal(request, db, config);
+    request.principal = await resolvePrincipal(request, db, config, oauthConfig, deps.oauthJwks);
     const permission = request.routeOptions.config?.permission as string | string[] | undefined;
     const isPublic = request.routeOptions.config?.public === true;
     if (!permission && isPublic) return;
@@ -248,6 +254,8 @@ async function resolvePrincipal(
   request: FastifyRequest,
   db: ReturnType<typeof createDb>["db"],
   config: AppConfig,
+  oauthConfig: ReturnType<typeof oauthConfigFromApp>,
+  oauthJwks?: JWTVerifyGetKey,
 ): Promise<Principal | undefined> {
   const auth = request.headers.authorization;
   if (auth?.startsWith("Bearer fak_")) {
@@ -276,6 +284,43 @@ async function resolvePrincipal(
       }
     }
     throw new ApiError(401, "unauthorized", "Invalid API key");
+  }
+
+  // OAuth 2.1 resource server: a WorkOS AuthKit access-token JWT, used by
+  // interactive MCP clients. `fak_` keys are handled above and never reach here.
+  if (auth?.startsWith("Bearer ") && oauthConfig) {
+    const token = auth.slice("Bearer ".length);
+    if (looksLikeJwt(token)) {
+      let workosUserId: string;
+      try {
+        ({ workosUserId } = await verifyAccessToken(token, oauthConfig, oauthJwks));
+      } catch {
+        throw new ApiError(401, "unauthorized", "Invalid access token");
+      }
+      // Map the verified WorkOS subject to a platform member. An authenticated
+      // token with no platform membership is forbidden, not anonymous.
+      const member = (
+        await db
+          .select({ role: rolesTable, user: users, member: orgMembers })
+          .from(orgMembers)
+          .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
+          .innerJoin(users, eq(orgMembers.userId, users.id))
+          .where(and(eq(users.workosUserId, workosUserId), eq(users.status, "active")))
+          .limit(1)
+      )[0];
+      if (!member) {
+        throw new ApiError(403, "not_provisioned", "Authenticated user has no platform membership");
+      }
+      return {
+        type: "user",
+        id: member.user.id,
+        userId: member.user.id,
+        orgId: member.member.orgId,
+        email: member.user.email,
+        name: member.user.name ?? undefined,
+        permissions: member.role.permissions,
+      };
+    }
   }
 
   const sealedSession = request.cookies.facility_session;

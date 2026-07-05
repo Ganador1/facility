@@ -8,7 +8,12 @@ Read first: control-plane.md (routes + permissions), discovery/tam-os.md (§MCP 
 
 `@modelcontextprotocol/sdk` (official TS SDK). Two transports:
 - stdio (`facility-mcp` bin): auth from `FACILITY_API_KEY` + `FACILITY_API_URL` env.
-- streamable HTTP (`facility-mcp serve --port 4420`): `Authorization: Bearer fak_…` per request. (WorkOS OAuth relay = later phase; API keys are the v1 path and stay supported forever.)
+- streamable HTTP (`facility-mcp serve --port 4420`): `Authorization: Bearer <credential>` per
+  request. Two credential kinds: `fak_…` API keys (non-interactive services) and WorkOS-issued
+  OAuth 2.1 access-token JWTs (interactive clients — Claude, Cursor, ChatGPT). The server advertises
+  the authorization server at `/.well-known/oauth-protected-resource` (RFC 9728) and returns
+  `WWW-Authenticate: Bearer resource_metadata=…` on 401; the control plane validates the JWT against
+  WorkOS's JWKS (RS256, issuer + expiry + optional audience). API keys stay supported forever.
 
 Tools (names `facility_*`; JSON Schema inputs via zod-to-json-schema; every description written for an operator LLM — concise, states permissions needed):
 

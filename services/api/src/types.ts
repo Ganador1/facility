@@ -28,6 +28,9 @@ export type AppConfig = {
   workosRedirectUri?: string;
   workosClientId?: string;
   workosCookiePassword?: string;
+  // Optional expected `aud` for WorkOS OAuth access tokens presented to the MCP
+  // resource server; when set it is enforced during JWT validation.
+  mcpOauthAudience?: string;
   facilityInsecureDev: boolean;
   facilityAutoJoin?: boolean;
   s3Endpoint?: string;

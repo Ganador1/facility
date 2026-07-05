@@ -210,4 +210,67 @@ describe("@facility/mcp", () => {
     assert.equal(response.status, 401);
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
+
+  test("serves OAuth protected-resource metadata when configured", async () => {
+    const server = serveHttp({
+      apiUrl: "http://facility.test",
+      port: 0,
+      resourceUrl: "https://mcp.facility.test",
+      authorizationServer: "https://auth.facility.test",
+    });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const response = await fetch(`http://127.0.0.1:${port}/.well-known/oauth-protected-resource`);
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as {
+      resource: string;
+      authorization_servers: string[];
+    };
+    assert.equal(body.resource, "https://mcp.facility.test");
+    assert.deepEqual(body.authorization_servers, ["https://auth.facility.test"]);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  test("advertises resource metadata via WWW-Authenticate on 401 when OAuth configured", async () => {
+    const server = serveHttp({
+      apiUrl: "http://facility.test",
+      port: 0,
+      resourceUrl: "https://mcp.facility.test",
+      authorizationServer: "https://auth.facility.test",
+    });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, { method: "POST", body: "{}" });
+    assert.equal(response.status, 401);
+    assert.match(
+      response.headers.get("www-authenticate") ?? "",
+      /resource_metadata="https:\/\/mcp\.facility\.test\/\.well-known\/oauth-protected-resource"/,
+    );
+    // Metadata discovery is unconfigured (no authorization server) => 404.
+    const bare = serveHttp({ apiUrl: "http://facility.test", port: 0 });
+    await once(bare, "listening");
+    const barePort = (bare.address() as AddressInfo).port;
+    const meta = await fetch(`http://127.0.0.1:${barePort}/.well-known/oauth-protected-resource`);
+    assert.equal(meta.status, 404);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => bare.close(() => resolve()));
+  });
+
+  test("accepts any non-empty bearer (JWT) and does not 401 at the gate", async () => {
+    const server = serveHttp({ apiUrl: "http://facility.test", port: 0 });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const response = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer header.payload.signature",
+        "content-type": "application/json",
+      },
+      body: "{}",
+    });
+    // The bearer clears the auth gate; the control plane (not the MCP proxy)
+    // decides token validity, so the response is anything but 401.
+    assert.notEqual(response.status, 401);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
 });

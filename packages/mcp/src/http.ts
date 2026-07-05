@@ -7,25 +7,57 @@ export type HttpServerOptions = {
   port: number;
   confirmationSecret?: string;
   fetch?: typeof fetch;
+  // OAuth 2.1 resource-server discovery (RFC 9728). When set, the server
+  // advertises the WorkOS authorization server so interactive MCP clients
+  // (Claude, Cursor, ChatGPT) can run the OAuth 2.1 / PKCE flow. `fak_` API
+  // keys continue to work unchanged for non-interactive service use.
+  resourceUrl?: string;
+  authorizationServer?: string;
 };
+
+const PROTECTED_RESOURCE_PATH = "/.well-known/oauth-protected-resource";
 
 export function serveHttp(options: HttpServerOptions) {
   const server = createServer(async (request, response) => {
-    if (!isAuthorized(request)) {
-      response.writeHead(401, { "content-type": "application/json" });
-      response.end(JSON.stringify({ error: "missing bearer API key" }));
+    const path = request.url?.split("?")[0] ?? "";
+
+    // Public OAuth discovery document — served without auth so an interactive
+    // client can bootstrap the flow before it holds a token.
+    if (request.method === "GET" && path === PROTECTED_RESOURCE_PATH) {
+      if (!options.authorizationServer) {
+        response.writeHead(404, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "oauth_not_configured" }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          resource: options.resourceUrl ?? "",
+          authorization_servers: [options.authorizationServer],
+          bearer_methods_supported: ["header"],
+        }),
+      );
       return;
     }
-    if (request.method !== "POST" || !["/mcp", "/"].includes(request.url?.split("?")[0] ?? "")) {
+
+    if (!isAuthorized(request)) {
+      response.writeHead(401, {
+        "content-type": "application/json",
+        "www-authenticate": wwwAuthenticate(options),
+      });
+      response.end(JSON.stringify({ error: "missing or invalid bearer token" }));
+      return;
+    }
+    if (request.method !== "POST" || !["/mcp", "/"].includes(path)) {
       response.writeHead(405, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: "method not allowed" }));
       return;
     }
 
-    const apiKey = request.headers.authorization?.slice("Bearer ".length) ?? "";
+    const bearer = request.headers.authorization?.slice("Bearer ".length).trim() ?? "";
     const mcp = createFacilityMcpServer({
       apiUrl: options.apiUrl,
-      apiKey,
+      apiKey: bearer,
       confirmationSecret: options.confirmationSecret,
       fetch: options.fetch,
     });
@@ -45,9 +77,19 @@ export function serveHttp(options: HttpServerOptions) {
   return server;
 }
 
+// Accept any non-empty Bearer credential — a `fak_` API key OR a WorkOS OAuth
+// 2.1 access token (JWT). The control plane validates which kind it is and
+// rejects invalid ones; the MCP server only forwards the credential.
 function isAuthorized(request: IncomingMessage): boolean {
   const header = request.headers.authorization;
-  return typeof header === "string" && /^Bearer fak_[A-Za-z0-9]+/.test(header);
+  return typeof header === "string" && /^Bearer\s+\S+/.test(header);
+}
+
+function wwwAuthenticate(options: HttpServerOptions): string {
+  if (options.authorizationServer && options.resourceUrl) {
+    return `Bearer resource_metadata="${options.resourceUrl}${PROTECTED_RESOURCE_PATH}"`;
+  }
+  return "Bearer";
 }
 
 function writeError(response: ServerResponse, error: unknown) {
