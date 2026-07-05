@@ -94,14 +94,14 @@ function wwwAuthenticate(options: HttpServerOptions): string {
 
 function writeError(response: ServerResponse, error: unknown) {
   if (response.headersSent) return;
+  // Log server-side; return a generic JSON-RPC error so upstream/config detail
+  // is never leaked to the client.
+  console.error("mcp http error", error);
   response.writeHead(500, { "content-type": "application/json" });
   response.end(
     JSON.stringify({
       jsonrpc: "2.0",
-      error: {
-        code: -32603,
-        message: error instanceof Error ? error.message : "Internal server error",
-      },
+      error: { code: -32603, message: "Internal server error" },
       id: null,
     }),
   );

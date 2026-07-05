@@ -27,6 +27,9 @@ Edit `playground.tfvars`:
 - Set `acm_certificate_arn` for HTTPS, or leave it empty for HTTP-only testing.
 - Set `route53_zone_id` if Terraform should create alias records.
 - Set image tags matching the images you push.
+- Set `mcp_oauth_audience` (with the WorkOS secrets) to enable interactive-client
+  MCP OAuth 2.1, or leave it empty for `fak_`-key-only MCP; tune
+  `envelope_retention_days` for your data-retention policy.
 
 No secret values belong in tfvars.
 

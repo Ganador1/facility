@@ -257,10 +257,15 @@ function checkAuthConfig(config: AppConfig): DoctorCheck {
     );
   }
   if (!workosConfigured) {
-    return warn(
+    // Production (dev-login disabled) has no other interactive auth, so treat
+    // missing WorkOS as a hard readiness failure; in insecure-dev it's a warning.
+    const level = config.facilityInsecureDev ? warn : fail;
+    return level(
       "auth_config",
       "Authentication configuration",
-      "WorkOS SSO is not fully configured (session + dev-login still work).",
+      config.facilityInsecureDev
+        ? "WorkOS SSO is not fully configured (session + dev-login still work)."
+        : "WorkOS SSO is not configured and dev-login is disabled — production authentication is unavailable.",
       "Set WORKOS_API_KEY, WORKOS_CLIENT_ID, and WORKOS_AUTHKIT_DOMAIN for production SSO.",
     );
   }

@@ -19,6 +19,13 @@ database_backup_retention_days = 7
 enable_deletion_protection = true
 force_destroy_bucket       = false
 
+# Interactive-client MCP OAuth 2.1: set (together with the WORKOS_AUTHKIT_DOMAIN
+# secret) to enable WorkOS access-token auth on the MCP resource server; empty
+# leaves remote MCP on fak_ API keys only. envelope_retention_days bounds how
+# long stored LLM request/response envelopes are kept.
+mcp_oauth_audience      = ""
+envelope_retention_days = 90
+
 container_image_tags = {
   api     = "replace-with-git-sha"
   worker  = "replace-with-git-sha"

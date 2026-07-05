@@ -5,26 +5,26 @@
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
 
-## Current state (round 9, 2026-07-05)
+## Current state (round 12, 2026-07-05)
 
-The platform was driven through nine independent GPT-5.5 (xhigh) verification
+The platform was driven through twelve independent GPT-5.5 (xhigh) verification
 rounds — six adversarial verifiers per full round, one per aspect — each round
 followed by fixes to the named findings, re-verified against primary evidence
 (diff review + a re-run full suite) before commit. Latest per-aspect scores:
 
-| aspect | round 1 | round 9 |
+| aspect | round 1 | round 12 |
 |---|---:|---:|
-| Implementation & architecture | 56 | **90** |
-| Security & privacy | 58 | **91** |
+| Implementation & architecture | 56 | **93** |
+| Security & privacy | 58 | **94** |
 | UI/UX | 76 | 88 |
-| Feature completeness & product fit | 58 | **86** |
-| Optimization | 58 | 90 |
-| Docs, DX, operability | 56 | **89** |
-| **average** | **~59** | **~89** |
+| Feature completeness & product fit | 58 | **90** |
+| Optimization | 58 | **91** |
+| Docs, DX, operability | 56 | 84 |
+| **average** | **~59** | **~90** |
 
-~145 tests green (real Postgres), Biome clean, web + docs build, `tsc` green
-across packages except one known `@facility/mcp` dispatcher-typing issue (below).
-Recent hardening (rounds 4–9): SSRF guard on BYO provider URLs, real MCP
+~165 tests green (real Postgres), Biome clean, web + docs build, and
+`tsc --noEmit` green across **all** packages (including `@facility/mcp`).
+Recent hardening (rounds 4–12): SSRF guard on BYO provider URLs, real MCP
 human-gate (write tools create HITL proposals a *separate* principal approves),
 the `v1.ts` god-router split into per-domain routers, run-steer cockpit + guided
 kickstart, penny-accurate budget reservation, idempotent metering, a
@@ -38,12 +38,11 @@ resource server** — remote MCP now accepts WorkOS-issued access-token JWTs
 9728 protected-resource discovery.
 
 **Remaining non-owner-gated work** (all minor):
-- **SDK route contract** is hand-maintained (not generated from the API schemas);
-  its broad template-literal id segments (`/v1/projects/${string}`) can still
-  typecheck a wrong nested path — a known TypeScript limitation, low real risk
-  because the typed convenience methods construct paths safely. (`@facility/mcp`
-  now strict-typechecks clean, and a real write-route response-typing bug was
-  fixed.)
+- **SDK route contract** is hand-maintained rather than generated from the API's
+  OpenAPI, and its GET union omits some non-core routes (issues/KB/tasks). Wrong
+  nested paths now resolve to `never` (id-segment guard), `@facility/mcp`
+  strict-typechecks clean, and a real write-route response-typing bug was fixed —
+  the remaining work is generating the map from the Fastify/OpenAPI source.
 - A few non-core v1 endpoints still return loose `AnyObject` response schemas.
 
 **Owner-gated ceiling**: "tam-os operates 100% on the platform" requires the
@@ -202,11 +201,10 @@ Prior versions of this doc overstated a few things; setting the record straight:
 
 ## Known follow-ups (tracked, non-blocking)
 
-- **Generated, type-tested SDK route contract** — the client route map is
-  hand-maintained (broad template paths can typecheck a wrong nested route);
-  generate it from the API schemas and add type-regression tests. Related: the
-  `@facility/mcp` tool dispatcher types requests as `path: string`, so strict
-  `tsc` on that package fails (build + tests pass).
+- **Generated SDK route contract** — the client route map is hand-maintained and
+  its GET union omits some non-core routes; generate it from the API's OpenAPI so
+  it can't drift. (Wrong nested paths already resolve to `never`, `@facility/mcp`
+  strict-typechecks clean, and the SDK has behavioural + type tests.)
 - A few non-core v1 endpoints still return loose `AnyObject` response schemas.
 - **tam-os production migration** run end-to-end (owner-gated).
 - `cost_cents` is integer — fine for real runs; sub-cent precision only if

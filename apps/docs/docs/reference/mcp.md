@@ -30,7 +30,10 @@ Remote: streamable HTTP at `https://<mcp-host>/mcp` with `Authorization: Bearer 
 Two credential kinds are accepted: a `fak_…` API key (for non-interactive services) or a WorkOS
 OAuth 2.1 access token (for interactive clients like Claude, Cursor, and ChatGPT). Interactive
 clients discover the flow from `/.well-known/oauth-protected-resource` (advertised on a `401` via
-`WWW-Authenticate`); the control plane validates the token against WorkOS's JWKS.
+`WWW-Authenticate`); the control plane validates the token against WorkOS's JWKS. OAuth is enabled
+only when `MCP_OAUTH_AUDIENCE` and `WORKOS_AUTHKIT_DOMAIN` are set on the control plane, and
+`facility-mcp serve` advertises discovery when given `MCP_PUBLIC_URL` and `MCP_AUTHORIZATION_SERVER`
+(defaults to `WORKOS_AUTHKIT_DOMAIN`).
 
 ## Tools
 
