@@ -28,7 +28,7 @@ facility doctor --url http://localhost:4400 --key fak_...
 ```
 
 The command calls `/v1/admin/doctor` and prints the deployment checklist:
-database and migrations, object-store envelope round trip, seed essentials,
+database and migrations, object-store envelope write/read round trip, seed essentials,
 GitHub App configuration, and audit hash-chain verification.
 
 ## What's running
@@ -41,6 +41,11 @@ GitHub App configuration, and audit hash-chain verification.
 | worker | — | queues + crons (same image as api) |
 | postgres | 5461 | the database |
 | minio | 9000 | envelope/transcript storage |
+
+The compose stack uses MinIO for envelopes and auto-creates the configured
+bucket (`S3_BUCKET`, default `facility`) during startup. API and gateway sign
+object-store requests with AWS SigV4, so the same settings work with MinIO,
+AWS S3, R2, and other S3-compatible endpoints.
 
 ## First real steps
 

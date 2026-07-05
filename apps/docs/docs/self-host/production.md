@@ -13,6 +13,8 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
 - **Postgres 16+** (managed recommended). One database; the platform runs its
   own migrations at deploy (`@facility/db migrate`).
 - **S3-compatible object storage** — AWS S3, GCS (S3 mode), MinIO, R2.
+  Facility signs envelope reads/writes with AWS SigV4 for both AWS S3 and
+  configured `S3_ENDPOINT` stores.
 - **Secrets**: `SECRET_MASTER_KEY` (32-byte base64 — everything sealed at
   rest derives from it; store it in your secret manager, rotate = re-seal),
   WorkOS credentials, GitHub App credentials.
@@ -23,8 +25,9 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
 1. Build and publish immutable images for `api`, `worker`, `gateway`, and
    `web`.
 2. Provision Postgres and object storage. Set `DATABASE_URL`, `S3_BUCKET`,
-   and either `S3_ENDPOINT` for S3-compatible stores or `AWS_REGION` for AWS
-   S3.
+   `AWS_REGION`, and `S3_ENDPOINT` when using a non-AWS S3-compatible store.
+   The development compose stack auto-creates its MinIO bucket; external
+   stores should be provisioned by your infrastructure.
 3. Load secrets into the runtime: `SECRET_MASTER_KEY`, WorkOS variables, and
    the GitHub App variables when repo automation is enabled.
 4. Run migrations once, before app traffic:
@@ -51,7 +54,7 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
 
    Production is ready only when the doctor reports no `FAIL` checks. The
    command verifies database connectivity and migrations, object-store
-   envelope write/read, seed essentials, GitHub App env completeness when
+   envelope write/read with SigV4, seed essentials, GitHub App env completeness when
    enabled, and the org audit hash chain.
 
 ## WorkOS SSO

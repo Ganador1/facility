@@ -15,7 +15,9 @@
       "!**/.docusaurus",
       "!**/build",
       "!**/node_modules",
-      "!**/*.css"
+      "!**/*.css",
+      "!packages/sdk/openapi.json",
+      "!packages/sdk/src/schema.d.ts"
     ]
   },
   "formatter": {

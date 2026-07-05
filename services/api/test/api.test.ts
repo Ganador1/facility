@@ -1179,8 +1179,14 @@ describe("api", async () => {
     if (!address || typeof address === "string") throw new Error("test server did not bind");
     const previousBucket = config.s3Bucket;
     const previousEndpoint = config.s3Endpoint;
+    const previousAccessKey = config.s3AccessKey;
+    const previousSecretKey = config.s3SecretKey;
+    const previousRegion = config.awsRegion;
     config.s3Bucket = "facility-test";
     config.s3Endpoint = `http://127.0.0.1:${address.port}`;
+    config.s3AccessKey = "test";
+    config.s3SecretKey = "test";
+    config.awsRegion = "us-east-1";
     try {
       const requestId = newId("evt");
       await db.insert(llmRequests).values({
@@ -1212,6 +1218,9 @@ describe("api", async () => {
     } finally {
       config.s3Bucket = previousBucket;
       config.s3Endpoint = previousEndpoint;
+      config.s3AccessKey = previousAccessKey;
+      config.s3SecretKey = previousSecretKey;
+      config.awsRegion = previousRegion;
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -1248,6 +1257,7 @@ describe("api", async () => {
       s3Endpoint: config.s3Endpoint,
       s3AccessKey: config.s3AccessKey,
       s3SecretKey: config.s3SecretKey,
+      awsRegion: config.awsRegion,
       githubAppId: config.githubAppId,
       githubAppPrivateKey: config.githubAppPrivateKey,
       githubAppWebhookSecret: config.githubAppWebhookSecret,
@@ -1257,6 +1267,7 @@ describe("api", async () => {
     config.s3Endpoint = `http://127.0.0.1:${address.port}`;
     config.s3AccessKey = "test";
     config.s3SecretKey = "test";
+    config.awsRegion = "us-east-1";
     config.githubAppId = "1";
     config.githubAppPrivateKey = "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----";
     config.githubAppWebhookSecret = "secret";

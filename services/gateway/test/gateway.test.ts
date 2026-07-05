@@ -14,7 +14,7 @@ import {
 import { and, eq, ne, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
 import postgres from "postgres";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearAuthCaches } from "../src/auth.js";
 import { applicableBudgets } from "../src/budgets.js";
 import { buildApp, MemoryEnvelopeStore } from "../src/index.js";
@@ -351,6 +351,7 @@ describe("gateway", async () => {
     await writeMetering(
       db,
       envelopes,
+      gateway.log,
       {
         requestId,
         provider: "anthropic",
@@ -375,6 +376,7 @@ describe("gateway", async () => {
     await writeMetering(
       db,
       envelopes,
+      gateway.log,
       {
         requestId,
         provider: "anthropic",
@@ -407,6 +409,64 @@ describe("gateway", async () => {
       await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
     )[0];
     expect(counter?.spentCents).toBe(1800);
+  });
+
+  it("6d3. logs envelope storage failures but keeps the metering row", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+      budgetLimitCents: 100_000,
+    });
+    const key = {
+      id: setup.keyId,
+      orgId,
+      projectId: setup.projectId,
+      runId: null,
+      taskId: null,
+      allowedModels: null,
+      budgetId: setup.budgetId,
+      agentDefId: null,
+    };
+    const logger = { ...gateway.log, warn: vi.fn() } as typeof gateway.log;
+    const requestId = newId("evt");
+    await writeMetering(
+      db,
+      {
+        putEnvelope: async () => {
+          throw new Error("bucket unavailable");
+        },
+      },
+      logger,
+      {
+        requestId,
+        provider: "anthropic",
+        model: "claude-fable-5",
+        status: "ok",
+        statusCode: 200,
+        startedAt: Date.now(),
+        key,
+        usage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+        priced: true,
+        requestBody: { messages: [] },
+        responseBody: { id: "response" },
+        budgets: [],
+      },
+      new Date("2026-07-05T00:00:00.000Z"),
+    );
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ requestId, err: expect.any(Error) }),
+      "gateway envelope storage failed; recording metering without envelope URI",
+    );
+    const row = (await db.select().from(llmRequests).where(eq(llmRequests.id, requestId)))[0];
+    expect(row?.requestUri).toBeNull();
+    expect(row?.responseUri).toBeNull();
+    expect(row?.costCents).toBeGreaterThan(0);
   });
 
   it("6e. hard budget reservation includes input exposure before upstream", async () => {

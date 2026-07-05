@@ -28,7 +28,7 @@ async function writeMeteringWithRetry(
   for (const delay of delays) {
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
     try {
-      await writeMetering(db, store, record, now);
+      await writeMetering(db, store, logger, record, now);
       return;
     } catch (error) {
       lastError = error;
@@ -44,6 +44,7 @@ async function writeMeteringWithRetry(
 export async function writeMetering(
   db: FacilityDb,
   store: EnvelopeStore,
+  logger: FastifyBaseLogger,
   record: RequestRecord,
   now: Date,
 ) {
@@ -78,7 +79,11 @@ export async function writeMetering(
         },
       },
     });
-  } catch {
+  } catch (error) {
+    logger.warn(
+      { err: error, requestId: record.requestId },
+      "gateway envelope storage failed; recording metering without envelope URI",
+    );
     envelopeUri = null;
   }
 
