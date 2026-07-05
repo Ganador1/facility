@@ -1,8 +1,13 @@
 import { App } from "@octokit/app";
 import type { AppConfig } from "../types.js";
 
-type Octokit = {
+export type Octokit = {
   rest: {
+    apps?: {
+      createInstallationAccessToken: (args: Record<string, unknown>) => Promise<{
+        data: { token: string; expires_at?: string; permissions?: Record<string, string> };
+      }>;
+    };
     git: {
       getRef: (args: Record<string, unknown>) => Promise<{ data: { object: { sha: string } } }>;
       getCommit: (
@@ -18,6 +23,9 @@ type Octokit = {
       }>;
     };
     repos: {
+      createInOrg?: (args: Record<string, unknown>) => Promise<{
+        data: { name: string; owner?: { login?: string }; default_branch?: string };
+      }>;
       getContent: (args: Record<string, unknown>) => Promise<{ data: unknown }>;
       getBranch: (args: Record<string, unknown>) => Promise<{ data: { commit: { sha: string } } }>;
       getCollaboratorPermissionLevel: (
@@ -48,6 +56,11 @@ type Octokit = {
 };
 
 export type GithubClientFactory = (installationId: number) => Promise<Octokit>;
+export type GithubInstallationTokenFactory = (input: {
+  installationId: number;
+  owner: string;
+  repo: string;
+}) => Promise<string>;
 
 export function createGithubClientFactory(config: AppConfig): GithubClientFactory {
   if (!config.githubAppId || !config.githubAppPrivateKey) {
@@ -59,6 +72,35 @@ export function createGithubClientFactory(config: AppConfig): GithubClientFactor
   });
   return async (installationId: number) =>
     (await app.getInstallationOctokit(installationId)) as unknown as Octokit;
+}
+
+export function createGithubInstallationTokenFactory(
+  config: AppConfig,
+): GithubInstallationTokenFactory {
+  if (!config.githubAppId || !config.githubAppPrivateKey) {
+    throw new Error("GitHub App credentials are not configured");
+  }
+  const app = new App({
+    appId: config.githubAppId,
+    privateKey: config.githubAppPrivateKey,
+  });
+  return async ({
+    installationId,
+    repo,
+  }: {
+    installationId: number;
+    owner: string;
+    repo: string;
+  }) => {
+    const response = await app.octokit.request(
+      "POST /app/installations/{installation_id}/access_tokens",
+      {
+        installation_id: installationId,
+        repositories: [repo],
+      },
+    );
+    return response.data.token;
+  };
 }
 
 export type RepoRef = {

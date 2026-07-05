@@ -1,9 +1,18 @@
 import { newId } from "@facility/core";
-import { agentDefs, projects, registryItems, repos, sandboxProfiles, withOrg } from "@facility/db";
-import { and, asc, eq } from "drizzle-orm";
+import {
+  agentDefs,
+  githubInstallations,
+  projects,
+  registryItems,
+  repos,
+  sandboxProfiles,
+  withOrg,
+} from "@facility/db";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
+import { createGithubClientFactory } from "../../github/client.js";
 import { projectHealth } from "../../watchtower/health.js";
 import {
   AnyObject,
@@ -193,6 +202,11 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
           owner: z.string(),
           name: z.string(),
           defaultBranch: z.string().default("main"),
+          mode: z.enum(["connect", "create"]).optional(),
+          create: z.boolean().optional(),
+          private: z.boolean().default(true),
+          description: z.string().optional(),
+          autoInit: z.boolean().default(true),
         }),
         response: { 200: AnyObject },
       },
@@ -200,7 +214,28 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
-      const body = request.body as { owner: string; name: string; defaultBranch: string };
+      const body = request.body as {
+        owner: string;
+        name: string;
+        defaultBranch: string;
+        mode?: "connect" | "create";
+        create?: boolean;
+        private: boolean;
+        description?: string;
+        autoInit: boolean;
+      };
+      const creation = body.create === true || body.mode === "create";
+      const installation = creation ? await loadGithubInstallation(p.orgId, body.owner) : undefined;
+      const githubRepo = installation
+        ? await createGithubRepository({
+            installationId: installation.installationId,
+            owner: body.owner,
+            name: body.name,
+            description: body.description,
+            private: body.private,
+            autoInit: body.autoInit,
+          })
+        : null;
       return (
         await db
           .insert(repos)
@@ -208,14 +243,70 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
             id: newId("repo"),
             orgId: p.orgId,
             projectId,
+            installationId: installation?.id,
             owner: body.owner,
             name: body.name,
-            defaultBranch: body.defaultBranch,
+            defaultBranch: githubRepo?.defaultBranch ?? body.defaultBranch,
           })
           .returning()
       )[0];
     },
   );
+
+  async function loadGithubInstallation(orgId: string, owner: string) {
+    const installation = (
+      await db
+        .select()
+        .from(githubInstallations)
+        .where(
+          and(
+            eq(githubInstallations.orgId, orgId),
+            eq(githubInstallations.accountLogin, owner),
+            isNull(githubInstallations.suspendedAt),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!installation) {
+      throw new ApiError(
+        400,
+        "github_installation_required",
+        "A GitHub App installation for this owner is required to create repositories",
+      );
+    }
+    return installation;
+  }
+
+  async function createGithubRepository(input: {
+    installationId: number;
+    owner: string;
+    name: string;
+    description?: string;
+    private: boolean;
+    autoInit: boolean;
+  }) {
+    const factory = app.githubClientFactory ?? createGithubClientFactory(context.config);
+    const octokit = await factory(input.installationId);
+    if (!octokit.rest.repos.createInOrg) {
+      throw new ApiError(
+        500,
+        "github_create_unavailable",
+        "GitHub repository creation unavailable",
+      );
+    }
+    const response = await octokit.rest.repos.createInOrg({
+      org: input.owner,
+      name: input.name,
+      private: input.private,
+      description: input.description,
+      auto_init: input.autoInit,
+    });
+    return {
+      owner: response.data.owner?.login ?? input.owner,
+      name: response.data.name,
+      defaultBranch: response.data.default_branch ?? "main",
+    };
+  }
 
   app.delete(
     "/v1/projects/:projectId/repos/:repoId",

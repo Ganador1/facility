@@ -1,12 +1,18 @@
 import { open, verifyKey } from "@facility/core";
-import { runs, steerMessages } from "@facility/db";
+import { githubInstallations, runs, steerMessages } from "@facility/db";
 import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../errors.js";
+import { createGithubInstallationTokenFactory } from "../github/client.js";
 import { signedBundleToken, verifyBundleToken } from "../sandbox/bundle-url.js";
 import { finishRun } from "../sandbox/orchestrator.js";
-import { appendRunEvents, readSandbox, terminalStatus } from "../sandbox/state.js";
+import {
+  appendRunEvents,
+  type RunSandboxState,
+  readSandbox,
+  terminalStatus,
+} from "../sandbox/state.js";
 import type { AppConfig } from "../types.js";
 
 const Params = z.object({ runId: z.string() });
@@ -83,7 +89,7 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         // Short-lived clone credential for private repos. In production this is
         // a per-run GitHub App installation token; here it falls back to a
         // configured token for self-host / validation.
-        repoToken: config.githubCloneToken ?? null,
+        repoToken: await repoTokenForRun(sandbox),
         gatewayUrls: sandbox.bundle.gatewayUrls,
       };
     },
@@ -210,9 +216,41 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
       return (await finishRun(db, run, body)) as unknown as Record<string, unknown>;
     },
   );
+
+  async function repoTokenForRun(sandbox: RunSandboxState): Promise<string | null> {
+    const repo = sandbox.bundle?.repo;
+    if (!repo?.installationTokenRef || !repo.cloneUrl) return config.githubCloneToken ?? null;
+    const installation = (
+      await db
+        .select()
+        .from(githubInstallations)
+        .where(eq(githubInstallations.id, repo.installationTokenRef))
+        .limit(1)
+    )[0];
+    if (!installation) return config.githubCloneToken ?? null;
+    const parsed = parseGithubCloneUrl(repo.cloneUrl);
+    if (!parsed) return config.githubCloneToken ?? null;
+    const tokenFactory =
+      app.githubInstallationTokenFactory ??
+      (config.githubAppId && config.githubAppPrivateKey
+        ? createGithubInstallationTokenFactory(config)
+        : null);
+    if (!tokenFactory) return config.githubCloneToken ?? null;
+    return tokenFactory({
+      installationId: installation.installationId,
+      owner: parsed.owner,
+      repo: parsed.repo,
+    });
+  }
 }
 
 function bearer(value: string | undefined) {
   if (!value?.startsWith("Bearer ")) return null;
   return value.slice("Bearer ".length);
+}
+
+function parseGithubCloneUrl(value: string): { owner: string; repo: string } | null {
+  const match = value.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (!match?.[1] || !match[2]) return null;
+  return { owner: match[1], repo: match[2] };
 }

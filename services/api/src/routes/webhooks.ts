@@ -1,8 +1,13 @@
-import { inboundEvents } from "@facility/db";
+import { createHmac, timingSafeEqual } from "node:crypto";
+import { newId, open } from "@facility/core";
+import { inboundEvents, integrations } from "@facility/db";
+import { and, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { ApiError } from "../errors.js";
 import { resolveGithubIntegration } from "../github/processor.js";
 import { parseGithubJson, verifyGithubSignature } from "../github/webhook.js";
+import { processGenericInboundEvent } from "../integrations/inbound.js";
 import type { AppConfig } from "../types.js";
 
 const Ok = z.object({ ok: z.boolean(), replayed: z.boolean().optional() });
@@ -66,5 +71,103 @@ export async function registerWebhookRoutes(app: FastifyInstance, config: AppCon
         return reply.status(202).send({ ok: true });
       },
     );
+
+    webhookApp.post(
+      "/webhooks/inbound/:integrationId",
+      {
+        config: { public: true },
+        schema: {
+          params: z.object({ integrationId: z.string() }),
+          response: { 202: Ok, 401: Ok },
+        },
+      },
+      async (request, reply) => {
+        const { integrationId } = request.params as { integrationId: string };
+        const integration = (
+          await app.facilityDb
+            .select()
+            .from(integrations)
+            .where(
+              and(
+                eq(integrations.id, integrationId),
+                eq(integrations.enabled, true),
+                eq(integrations.kind, "generic_inbound"),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!integration?.sealedSecret) return reply.status(401).send({ ok: false });
+        const rawBody = Buffer.isBuffer(request.body) ? request.body : Buffer.from("");
+        const signature = request.headers["x-facility-signature"];
+        const secret = await open(integration.sealedSecret, config.secretMasterKey);
+        if (
+          !verifyInboundSignature(
+            rawBody,
+            Array.isArray(signature) ? signature[0] : signature,
+            secret,
+          )
+        ) {
+          return reply.status(401).send({ ok: false });
+        }
+        const payload = parseJson(rawBody);
+        const delivery = request.headers["x-facility-delivery"];
+        const deliveryId = Array.isArray(delivery) ? delivery[0] : delivery;
+        const eventType =
+          headerString(request.headers["x-facility-event"]) ??
+          stringField(payload, "eventType") ??
+          stringField(payload, "type") ??
+          "generic";
+        const id = deliveryId ? `in_${deliveryId}` : newId("evt");
+        const inserted = await app.facilityDb
+          .insert(inboundEvents)
+          .values({
+            id,
+            orgId: integration.orgId,
+            integrationId: integration.id,
+            verified: true,
+            eventType,
+            payload,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (inserted.length === 0) return reply.status(202).send({ ok: true, replayed: true });
+        await processGenericInboundEvent(app.facilityDb, id, app.enqueue);
+        return reply.status(202).send({ ok: true });
+      },
+    );
   });
+}
+
+function verifyInboundSignature(
+  body: Buffer,
+  signature: string | undefined,
+  secret: string,
+): boolean {
+  if (!signature?.startsWith("sha256=")) return false;
+  const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  const left = Buffer.from(signature);
+  const right = Buffer.from(expected);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function parseJson(body: Buffer): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.toString("utf8")) as unknown;
+  } catch {
+    throw new ApiError(400, "bad_request", "Invalid JSON payload");
+  }
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : {};
+}
+
+function headerString(value: string | string[] | undefined): string | undefined {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === "string" && raw.trim() ? raw : undefined;
+}
+
+function stringField(value: Record<string, unknown>, key: string): string | undefined {
+  const raw = value[key];
+  return typeof raw === "string" && raw.trim() ? raw : undefined;
 }

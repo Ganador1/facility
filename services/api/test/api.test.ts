@@ -1,17 +1,22 @@
+import { createHmac } from "node:crypto";
 import { createServer } from "node:http";
 import { gzipSync } from "node:zlib";
-import { newId } from "@facility/core";
+import { newId, seal } from "@facility/core";
 import {
   actionTypes,
   agentDefs,
   auditEvents,
   budgets,
   createDb,
+  githubInstallations,
+  inboundEvents,
   insertAuditEvent,
+  integrations,
   llmRequests,
   migrate,
   orgMembers,
   orgs,
+  platformIssues,
   poTasks,
   projects,
   proposalEvents,
@@ -1820,6 +1825,149 @@ describe("api", async () => {
     });
     expect(run.statusCode).toBe(400);
     expect(run.json().error.code).toBe("agent_not_in_project");
+  });
+
+  it("creates a greenfield GitHub repo through the App and connects the repo row", async () => {
+    const project = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Greenfield", slug: `greenfield-${Date.now()}` },
+    });
+    expect(project.statusCode).toBe(200);
+    const installationId = Date.now();
+    const owner = `octo-${installationId}`;
+    const installation = (
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId,
+          installationId,
+          accountLogin: owner,
+          targetType: "Organization",
+        })
+        .returning()
+    )[0];
+    if (!installation) throw new Error("installation fixture missing");
+    let createArgs: Record<string, unknown> | undefined;
+    app.githubClientFactory = async (actualInstallationId) => {
+      expect(actualInstallationId).toBe(installationId);
+      return {
+        rest: {
+          repos: {
+            createInOrg: async (args: Record<string, unknown>) => {
+              createArgs = args;
+              return {
+                data: {
+                  name: String(args.name),
+                  owner: { login: String(args.org) },
+                  default_branch: "main",
+                },
+              };
+            },
+          },
+        },
+      } as never;
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${project.json().id}/repos`,
+      headers: { cookie },
+      payload: {
+        owner,
+        name: "created-repo",
+        defaultBranch: "main",
+        mode: "create",
+        private: true,
+        autoInit: false,
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(createArgs).toEqual({
+      org: owner,
+      name: "created-repo",
+      private: true,
+      description: undefined,
+      auto_init: false,
+    });
+    const repo = (
+      await db.select().from(repos).where(eq(repos.id, response.json().id)).limit(1)
+    )[0];
+    expect(repo?.installationId).toBe(installation.id);
+    expect(repo?.owner).toBe(owner);
+    expect(repo?.name).toBe("created-repo");
+    app.githubClientFactory = undefined;
+  });
+
+  it("accepts signed generic inbound payloads and rejects bad signatures", async () => {
+    const secret = "generic-inbound-secret";
+    const fingerprint = `generic:${Date.now()}`;
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({
+          id: newId("int"),
+          orgId,
+          projectId,
+          kind: "generic_inbound",
+          name: "Generic Inbound",
+          config: { projectId },
+          sealedSecret: await seal(secret, masterKey),
+        })
+        .returning()
+    )[0];
+    if (!integration) throw new Error("integration fixture missing");
+    const payload = Buffer.from(
+      JSON.stringify({
+        eventType: "alert",
+        title: "Generic alert",
+        bodyMd: "Generic alert body",
+        severity: "error",
+        fingerprint,
+      }),
+    );
+    const bad = await app.inject({
+      method: "POST",
+      url: `/webhooks/inbound/${integration.id}`,
+      headers: {
+        "content-type": "application/json",
+        "x-facility-signature": "sha256=bad",
+      },
+      payload,
+    });
+    expect(bad.statusCode).toBe(401);
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+    const valid = await app.inject({
+      method: "POST",
+      url: `/webhooks/inbound/${integration.id}`,
+      headers: {
+        "content-type": "application/json",
+        "x-facility-delivery": newId("evt"),
+        "x-facility-signature": signature,
+      },
+      payload,
+    });
+    expect(valid.statusCode).toBe(202);
+    const events = await db
+      .select()
+      .from(inboundEvents)
+      .where(eq(inboundEvents.integrationId, integration.id));
+    expect(events).toHaveLength(1);
+    expect(events[0]?.verified).toBe(true);
+    expect(events[0]?.processedAt).toBeTruthy();
+    const issue = (
+      await db
+        .select()
+        .from(platformIssues)
+        .where(eq(platformIssues.fingerprint, fingerprint))
+        .limit(1)
+    )[0];
+    expect(issue?.projectId).toBe(projectId);
+    expect(issue?.title).toBe("Generic alert");
+    expect(issue?.severity).toBe("error");
   });
 
   it("refuses steering a finished run", async () => {

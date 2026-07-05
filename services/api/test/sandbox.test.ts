@@ -1,5 +1,14 @@
-import { hashKey, newId } from "@facility/core";
-import { auditEvents, createDb, migrate, projects, runs, seed } from "@facility/db";
+import { hashKey, newId, seal } from "@facility/core";
+import {
+  auditEvents,
+  createDb,
+  githubInstallations,
+  migrate,
+  projects,
+  repos,
+  runs,
+  seed,
+} from "@facility/db";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -145,6 +154,77 @@ describe("sandbox api", async () => {
     expect(body).toContain("notify delivered");
   }, 10_000);
 
+  it("returns a per-installation repo token for runner clone credentials", async () => {
+    const token = "frt_clone";
+    const installationNumber = Date.now();
+    const owner = `octo-${installationNumber}`;
+    const installation = (
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId,
+          installationId: installationNumber,
+          accountLogin: owner,
+          targetType: "Organization",
+        })
+        .returning()
+    )[0];
+    if (!installation) throw new Error("failed to insert installation");
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId,
+      installationId: installation.id,
+      owner,
+      name: "private-repo",
+      defaultBranch: "main",
+    });
+    const runId = newId("run");
+    const run = await insertRunnerRun(token, "provisioning", runId, {
+      runnerTokenHash: await hashKey(token),
+      sealedVirtualKey: await seal("fvk_test", masterKey),
+      bundle: {
+        runId,
+        mode: "builder",
+        engine: "byo",
+        contract: "contract",
+        skills: [],
+        engineConfig: {},
+        repo: {
+          cloneUrl: `https://github.com/${owner}/private-repo.git`,
+          branch: "main",
+          installationTokenRef: installation.id,
+        },
+        provisionCmd: null,
+        checkCmds: [],
+        gatewayUrls: { anthropic: "http://gateway/anthropic", openai: "http://gateway/openai" },
+        scope: {},
+        timeoutMin: 60,
+      },
+    });
+    let tokenInput: Record<string, unknown> | undefined;
+    app.githubInstallationTokenFactory = async (input) => {
+      tokenInput = input;
+      return "installation-token";
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/runs/${run.id}/hello`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().repoToken).toBe("installation-token");
+    expect(tokenInput).toEqual({
+      installationId: installationNumber,
+      owner,
+      repo: "private-repo",
+    });
+    app.githubInstallationTokenFactory = undefined;
+  });
+
   it("launches, stops, and destroys a docker sleep container when Docker is reachable", async () => {
     if (!(await dockerReachable())) {
       console.warn("Docker socket is not reachable from this sandbox; skipping docker driver test");
@@ -189,19 +269,25 @@ describe("sandbox api", async () => {
     expect(await driver.status(launched.ref)).toBe("lost");
   }, 60_000);
 
-  async function insertRunnerRun(token: string, status: string) {
+  async function insertRunnerRun(
+    token: string,
+    status: string,
+    runId = newId("run"),
+    sandbox?: Record<string, unknown>,
+  ) {
+    const sandboxState = sandbox ?? { runnerTokenHash: await hashKey(token) };
     const row = (
       await db
         .insert(runs)
         .values({
-          id: newId("run"),
+          id: runId,
           orgId,
           projectId,
           mode: "builder",
           engine: "byo",
           status,
           trigger: {},
-          sandbox: { runnerTokenHash: await hashKey(token) },
+          sandbox: sandboxState,
           createdBy: { type: "user", id: "test" },
         })
         .returning()

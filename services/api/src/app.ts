@@ -57,6 +57,8 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
   const routeRecords: RouteRecord[] = [];
   const { db, client } = createDb(config.databaseUrl);
   app.decorate("facilityDb", db);
+  app.decorate("githubClientFactory", undefined);
+  app.decorate("githubInstallationTokenFactory", undefined);
 
   // Producer-only pg-boss handle: routes enqueue, the worker consumes.
   const boss = new PgBoss({ connectionString: config.databaseUrl });

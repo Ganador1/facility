@@ -1,4 +1,5 @@
 import type { AuditInsert, FacilityDb } from "@facility/db";
+import type { GithubClientFactory, GithubInstallationTokenFactory } from "./github/client.js";
 
 export type Principal = {
   type: "user" | "key";
@@ -45,6 +46,8 @@ declare module "fastify" {
   interface FastifyInstance {
     facilityDb: FacilityDb;
     enqueue: (queue: string, data: Record<string, unknown>) => Promise<string | null>;
+    githubClientFactory?: GithubClientFactory;
+    githubInstallationTokenFactory?: GithubInstallationTokenFactory;
   }
   interface FastifyRequest {
     principal?: Principal;

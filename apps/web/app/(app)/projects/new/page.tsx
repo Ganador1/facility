@@ -232,7 +232,19 @@ export default function NewProjectPage() {
         match ??
         (await apiJson<ProjectRepo>(`/v1/projects/${project.id}/repos`, {
           method: "POST",
-          body: JSON.stringify({ owner, name: repoName, defaultBranch }),
+          body: JSON.stringify({
+            owner,
+            name: repoName,
+            defaultBranch,
+            ...(mode === "greenfield"
+              ? {
+                  mode: "create",
+                  create: true,
+                  private: true,
+                  description: description.trim() || undefined,
+                }
+              : {}),
+          }),
         }));
       setRepo(connected);
       setDefaultBranch(connected.defaultBranch);
@@ -454,8 +466,8 @@ export default function NewProjectPage() {
               </span>
             </div>
             <p className="text-[13px] leading-relaxed text-(--mut)">
-              The web flow registers projects and repos, previews generated assets, and opens the
-              PR. It does not create GitHub repositories.
+              The greenfield path creates a private GitHub repo through the App installation before
+              preview. Existing mode only connects a repo row.
             </p>
           </aside>
         </form>
@@ -470,8 +482,8 @@ export default function NewProjectPage() {
                 <p className="font-mono text-[15px] text-(--ink)">{project?.slug}</p>
                 <p className="text-sm leading-relaxed text-(--mut)">
                   Next, provide the GitHub owner/name. If it is already connected to this project,
-                  Facility will reuse that repo id; otherwise it will register the repo row with the
-                  existing API.
+                  Facility will reuse that repo id. Greenfield mode creates the repo first, then
+                  connects it to this project.
                 </p>
               </div>
             </div>
@@ -508,7 +520,13 @@ export default function NewProjectPage() {
                 tone="agent"
                 disabled={!project || !owner || !repoName || busy === "connect"}
               >
-                {busy === "connect" ? "connecting..." : "connect repo"}
+                {busy === "connect"
+                  ? mode === "greenfield"
+                    ? "creating..."
+                    : "connecting..."
+                  : mode === "greenfield"
+                    ? "create repo"
+                    : "connect repo"}
               </Button>
             </div>
           </div>
