@@ -51,6 +51,8 @@ export type RequestRecord = {
   responseBody: unknown;
   budgets: BudgetState[];
   reservations?: Array<{ budget: BudgetState; estimatedCents: number }>;
+  estimatedCents?: number;
+  providerMayHaveCharged?: boolean;
 };
 
 export type BudgetState = {

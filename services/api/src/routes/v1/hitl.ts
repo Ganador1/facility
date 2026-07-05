@@ -4,7 +4,7 @@ import { and, asc, desc, eq, gt, isNull, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
-import { executeApprovedProposal } from "../../executors.js";
+import { executeApprovedProposal, resolveMcpToolTargetProject } from "../../executors.js";
 import type { Principal } from "../../types.js";
 import {
   AnyObject,
@@ -138,9 +138,26 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
         );
       }
       await assertProjectInOrg(p, body.projectId);
+      const targetProjectId = await resolveMcpToolTargetProject(
+        db,
+        p.orgId,
+        body.toolName,
+        body.args,
+      );
+      if (body.projectId && targetProjectId !== null && targetProjectId !== body.projectId) {
+        throw new ApiError(
+          400,
+          "mcp_target_project_mismatch",
+          "MCP tool target does not match the proposal project",
+        );
+      }
+      if (p.projectId && targetProjectId !== p.projectId) {
+        throw new ApiError(404, "not_found", "Project not found");
+      }
+      await assertProjectInOrg(p, targetProjectId, 404);
       const actionType = await ensureMcpActionType(p.orgId);
       if (!actionType) throw new ApiError(500, "insert_failed", "Could not create MCP action type");
-      const projectId = p.projectId ?? body.projectId;
+      const projectId = targetProjectId ?? body.projectId;
       const proposal = (
         await db
           .insert(proposals)
@@ -154,6 +171,8 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
               toolName: body.toolName,
               permission: body.permission,
               args: body.args,
+              targetProjectId,
+              target: { projectId: targetProjectId },
               requestedBy: { type: p.type, id: p.id },
             },
             contextMd: [

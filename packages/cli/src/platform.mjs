@@ -45,6 +45,8 @@ export async function runPlatformCommand(command, args, options = {}) {
         return await upgrade(rest, authed, flags);
       case "keys":
         return await keys(rest, authed, flags);
+      case "llm-requests":
+        return await llmRequests(rest, authed, flags);
       default:
         throw new CliError(`Unknown platform command: ${group}`, 1);
     }
@@ -238,6 +240,38 @@ async function keys(args, ctx, flags) {
     return 0;
   }
   throw new CliError("Usage: facility keys issue|revoke|list");
+}
+
+async function llmRequests(args, ctx, flags) {
+  const sub = args[0] || "list";
+  if (sub !== "list") throw new CliError("Usage: facility llm-requests list [--project <id>] [--limit <n>]");
+  const result = await api(ctx, "GET", "/v1/llm-requests", {
+    query: {
+      projectId: flags.project,
+      from: flags.from,
+      to: flags.to,
+      limit: flags.limit,
+      cursor: flags.cursor,
+    },
+  });
+  const rows = asArray(result?.items ?? result);
+  if (ctx.json) writeJson(ctx, result);
+  else {
+    table(
+      ctx,
+      ["id", "project", "model", "status", "cost", "latency"],
+      rows.map((row) => [
+        row.id,
+        row.projectId,
+        row.model,
+        row.status,
+        row.costCents ?? row.cost_cents,
+        row.latencyMs ?? row.latency_ms,
+      ]),
+    );
+    if (result?.nextCursor) ctx.stdout.write(`  ${dim(`next cursor: ${result.nextCursor}`)}\n`);
+  }
+  return 0;
 }
 
 function clientContext(ctx) {

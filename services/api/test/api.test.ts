@@ -3,7 +3,9 @@ import {
   actionTypes,
   agentDefs,
   auditEvents,
+  budgets,
   createDb,
+  insertAuditEvent,
   llmRequests,
   migrate,
   orgMembers,
@@ -828,6 +830,97 @@ describe("api", async () => {
     expect(audit).toHaveLength(1);
   });
 
+  it("refuses approved MCP execution when the resolved target project differs", async () => {
+    const other = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "MCP Other", slug: `mcp-other-${Date.now()}` },
+    });
+    expect(other.statusCode).toBe(200);
+    const run = (
+      await db
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId,
+          projectId: other.json().id,
+          mode: "manual",
+          engine: "codex",
+          status: "running",
+          trigger: {},
+          createdBy: { type: "test", id: "fixture" },
+        })
+        .returning()
+    )[0];
+    if (!run) throw new Error("run fixture missing");
+    const actionType =
+      (
+        await db
+          .select()
+          .from(actionTypes)
+          .where(sql`${actionTypes.orgId} = ${orgId} and ${actionTypes.name} = 'mcp_tool_call'`)
+          .limit(1)
+      )[0] ??
+      (
+        await db
+          .insert(actionTypes)
+          .values({
+            id: newId("act"),
+            orgId,
+            name: "mcp_tool_call",
+            payloadSchema: { type: "object", required: ["toolName", "args", "requestedBy"] },
+            resolver: { type: "permission", config: {} },
+            executor: { type: "mcp_tool_call", config: {} },
+            defaultTtlHours: 1,
+          })
+          .returning()
+      )[0];
+    const proposal = (
+      await db
+        .insert(proposals)
+        .values({
+          id: newId("prop"),
+          orgId,
+          projectId,
+          runId: run.id,
+          actionTypeId: actionType?.id ?? "",
+          payload: {
+            toolName: "facility_steer_run",
+            permission: "runs:steer",
+            args: { runId: run.id, body: "cross project steer" },
+            targetProjectId: projectId,
+            requestedBy: { type: "key", id: "malicious" },
+          },
+          contextMd: "malicious cross-project MCP proposal",
+          expiresAt: new Date(Date.now() + 3600_000),
+        })
+        .returning()
+    )[0];
+    await db.insert(proposalEvents).values({
+      orgId,
+      proposalId: proposal?.id ?? "",
+      seq: 1,
+      type: "open",
+      actor: { type: "key", id: "malicious" },
+      data: {},
+    });
+
+    const approved = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposal?.id}/decide`,
+      headers: { cookie: approverCookie },
+      payload: { decision: "approve" },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().state).toBe("execution_failed");
+    const steerEvents = await db
+      .select()
+      .from(runEvents)
+      .where(sql`${runEvents.runId} = ${run.id} and ${runEvents.type} = 'steer'`);
+    expect(steerEvents).toHaveLength(0);
+  });
+
   it("rejects MCP proposal creation by keys that can decide HITL", async () => {
     const issued = await app.inject({
       method: "POST",
@@ -1007,6 +1100,97 @@ describe("api", async () => {
     ).toBe(true);
   });
 
+  it("lists raw llm requests with project clamping and pagination", async () => {
+    const other = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "LLM Other", slug: `llm-other-${Date.now()}` },
+    });
+    expect(other.statusCode).toBe(200);
+    await db.insert(llmRequests).values([
+      {
+        id: newId("evt"),
+        orgId,
+        projectId,
+        provider: "openai",
+        model: "gpt-5.5",
+        status: "ok",
+        inputTokens: 10,
+        outputTokens: 5,
+        costCents: 1,
+        latencyMs: 10,
+        requestUri: "s3://facility/request-a",
+        responseUri: "s3://facility/response-a",
+      },
+      {
+        id: newId("evt"),
+        orgId,
+        projectId: other.json().id,
+        provider: "openai",
+        model: "gpt-5.5-mini",
+        status: "ok",
+        inputTokens: 20,
+        outputTokens: 10,
+        costCents: 2,
+        latencyMs: 20,
+      },
+    ]);
+    const issued = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "llm-reader", roleId: ownerRole, projectId },
+    });
+    const listed = await app.inject({
+      method: "GET",
+      url: "/v1/llm-requests?limit=1",
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().items).toHaveLength(1);
+    expect(listed.json().items[0].projectId).toBe(projectId);
+    expect(listed.json().items[0].requestUri).toBeTruthy();
+  });
+
+  it("filters audit rows by actor and returns newest-first pages", async () => {
+    const action = `audit.filtered.${Date.now()}`;
+    const first = await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "key", id: "auditor" },
+      action,
+      target: { type: "test", id: "first" },
+    });
+    const second = await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "key", id: "auditor" },
+      action,
+      target: { type: "test", id: "second" },
+    });
+    await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "key", id: "other" },
+      action,
+      target: { type: "test", id: "other" },
+    });
+
+    const page = await app.inject({
+      method: "GET",
+      url: `/v1/audit?action=${action}&actor=key:auditor&limit=1`,
+      headers: { cookie },
+    });
+    expect(page.statusCode).toBe(200);
+    expect(page.json().items.map((row: { id: string }) => row.id)).toEqual([second?.id]);
+    expect(page.json().nextCursor).toBe(second?.seq);
+    const next = await app.inject({
+      method: "GET",
+      url: `/v1/audit?action=${action}&actor=auditor&cursor=${page.json().nextCursor}`,
+      headers: { cookie },
+    });
+    expect(next.statusCode).toBe(200);
+    expect(next.json().items.map((row: { id: string }) => row.id)).toEqual([first?.id]);
+  });
+
   it("groups spend by agent definition, not run id", async () => {
     const agent = (await db.select().from(agentDefs).where(eq(agentDefs.orgId, orgId)).limit(1))[0];
     expect(agent).toBeTruthy();
@@ -1098,6 +1282,13 @@ describe("api", async () => {
       headers: { authorization: `Bearer ${secret}` },
     });
     expect(own.statusCode).toBe(200);
+    const projectList = await app.inject({
+      method: "GET",
+      url: "/v1/projects",
+      headers: { authorization: `Bearer ${secret}` },
+    });
+    expect(projectList.statusCode).toBe(200);
+    expect(projectList.json().map((row: { id: string }) => row.id)).toEqual([projectId]);
     const cross = await app.inject({
       method: "GET",
       url: `/v1/projects/${other.json().id}`,
@@ -1119,6 +1310,76 @@ describe("api", async () => {
       method: "GET",
       url: `/v1/runs/${crossRun.json().id}`,
       headers: { authorization: `Bearer ${secret}` },
+    });
+    expect(denied.statusCode).toBe(404);
+    await db.insert(budgets).values([
+      {
+        id: newId("bud"),
+        orgId,
+        scope: "project",
+        projectId,
+        period: "daily",
+        limitCents: 100,
+        mode: "hard",
+        enabled: true,
+      },
+      {
+        id: newId("bud"),
+        orgId,
+        scope: "project",
+        projectId: other.json().id,
+        period: "daily",
+        limitCents: 100,
+        mode: "hard",
+        enabled: true,
+      },
+    ]);
+    const budgetList = await app.inject({
+      method: "GET",
+      url: "/v1/budgets",
+      headers: { authorization: `Bearer ${secret}` },
+    });
+    expect(budgetList.statusCode).toBe(200);
+    expect(
+      budgetList.json().every((row: { projectId: string }) => row.projectId === projectId),
+    ).toBe(true);
+  });
+
+  it("returns 404 when a project-scoped key mutates another project's sandbox profile", async () => {
+    const other = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Sandbox Other", slug: `sandbox-other-${Date.now()}` },
+    });
+    expect(other.statusCode).toBe(200);
+    const ownKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "sandbox-project-key", roleId: ownerRole, projectId },
+    });
+    const otherProfile = (
+      await db
+        .insert(sandboxProfiles)
+        .values({
+          id: newId("sbx"),
+          orgId,
+          projectId: other.json().id,
+          name: "other sandbox",
+          driver: "docker",
+          image: "node:22",
+          setup: {},
+          resources: {},
+          network: {},
+        })
+        .returning()
+    )[0];
+    const denied = await app.inject({
+      method: "PATCH",
+      url: `/v1/sandbox-profiles/${otherProfile?.id}`,
+      headers: { authorization: `Bearer ${ownKey.json().secret}` },
+      payload: { image: "node:24" },
     });
     expect(denied.statusCode).toBe(404);
   });

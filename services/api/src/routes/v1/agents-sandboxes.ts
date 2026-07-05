@@ -5,7 +5,14 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError } from "../../errors.js";
 import type { Principal } from "../../types.js";
-import { AnyObject, IdParams, Ok, principal, type V1RouteContext } from "./shared.js";
+import {
+  AnyObject,
+  assertBareRowProjectScope,
+  IdParams,
+  Ok,
+  principal,
+  type V1RouteContext,
+} from "./shared.js";
 
 export async function registerAgentsSandboxesRoutes(
   app: FastifyInstance,
@@ -83,6 +90,21 @@ function registerCrud(
         .limit(1)
     )[0];
     if (!project) throw new ApiError(404, "not_found", "Project not found");
+  }
+
+  async function loadCrudRowForMutation(p: Principal, id: string) {
+    const row = (
+      await app.facilityDb
+        .select()
+        .from(table)
+        .where(and(eq(table.orgId, p.orgId), eq(table.id, id)))
+        .limit(1)
+    )[0];
+    if (!row) throw new ApiError(404, "not_found", "Resource not found");
+    if (table.projectId) {
+      assertBareRowProjectScope(p, row.projectId, "Resource not found");
+    }
+    return row;
   }
 
   async function assertAgentReferences(
@@ -171,6 +193,8 @@ function registerCrud(
       const p = principal(request);
       const params = request.params as { projectId?: string };
       await assertCrudProject(p, params.projectId);
+      const rowProjectId = params.projectId ?? (prefix === "sbx" ? p.projectId : undefined);
+      if (rowProjectId) await assertCrudProject(p, rowProjectId);
       if (prefix === "agent") {
         const body = request.body as {
           name: string;
@@ -189,7 +213,7 @@ function registerCrud(
             .values({
               id: newId(prefix),
               orgId: p.orgId,
-              projectId: params.projectId,
+              projectId: rowProjectId,
               name: body.name,
               engine: body.engine,
               model: body.model,
@@ -216,7 +240,7 @@ function registerCrud(
           .values({
             id: newId(prefix),
             orgId: p.orgId,
-            projectId: params.projectId,
+            projectId: rowProjectId,
             name: body.name,
             driver: body.driver,
             image: body.image,
@@ -245,6 +269,10 @@ function registerCrud(
       const p = principal(request);
       const { projectId, id } = request.params as { projectId?: string; id: string };
       await assertCrudProject(p, projectId);
+      const existing = await loadCrudRowForMutation(p, id);
+      if (projectId && table.projectId && existing.projectId !== projectId) {
+        throw new ApiError(404, "not_found", "Resource not found");
+      }
       const clauses = [eq(table.orgId, p.orgId), eq(table.id, id)];
       if (projectId && table.projectId) clauses.push(eq(table.projectId, projectId));
       if (prefix === "agent") {
@@ -305,6 +333,10 @@ function registerCrud(
       const p = principal(request);
       const { projectId, id } = request.params as { projectId?: string; id: string };
       await assertCrudProject(p, projectId);
+      const existing = await loadCrudRowForMutation(p, id);
+      if (projectId && table.projectId && existing.projectId !== projectId) {
+        throw new ApiError(404, "not_found", "Resource not found");
+      }
       const clauses = [eq(table.orgId, p.orgId), eq(table.id, id)];
       if (projectId && table.projectId) clauses.push(eq(table.projectId, projectId));
       await app.facilityDb.delete(table).where(and(...clauses));

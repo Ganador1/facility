@@ -29,7 +29,13 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
     async (request) => {
       const p = principal(request);
       const query = request.query as { status?: string };
-      return withOrg(db, p.orgId).projects.list(query);
+      const clauses = [eq(projects.orgId, p.orgId)];
+      if (query.status) clauses.push(eq(projects.status, query.status));
+      if (p.projectId) clauses.push(eq(projects.id, p.projectId));
+      return db
+        .select()
+        .from(projects)
+        .where(and(...clauses));
     },
   );
 

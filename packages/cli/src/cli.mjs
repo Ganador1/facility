@@ -41,6 +41,7 @@ function help() {
   item(`${bold("npx @theam/facility doctor")}          check the install and list what's left`);
   item(`${bold("npx @theam/facility login")}           connect to the Facility platform API`);
   item(`${bold("npx @theam/facility status")}          show platform runs, inbox, spend, and issues`);
+  item(`${bold("npx @theam/facility llm-requests list")} inspect raw metering rows for data mining`);
   console.log("");
   item(dim("init flags: --yes --force --dir=<path> --branch=<name> --provision=<cmd>"));
   item(dim('            --checks="cmd1, cmd2" --model=<id> --org=<org> --project=<n> --modules="a, b"'));

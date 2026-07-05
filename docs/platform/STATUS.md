@@ -24,7 +24,7 @@ projects.
 | Watchtower | `@facility/api` watchtower | outcomes/health/canary/analytics, monitor-independent, incident issues · **tested** |
 | HITL inbox | control plane + web | action types + resolvers + append-only ledger (AUTO-202) · **tested** |
 | Knowledge / PO / learning | `@facility/harness` | Limina-style chains, write-time validation, PO + learning contracts (bundled), task propose→approve→issue, no auto-apply · **tested** |
-| MCP + CLI | `@facility/mcp`, `@theam/facility` | confirmation-gated tools (stdio + HTTP), platform CLI commands · **tested** |
+| MCP + CLI | `@facility/mcp`, `@theam/facility` | HITL-gated tools (stdio + HTTP), platform CLI commands · **tested** |
 | Web | `@facility/web` (Next 16) | TAM-50 design system, all surfaces (overview, projects+kickstart, runs+live steer, inbox, registry, analytics, audit, settings mgmt), responsive · **verified in browser** |
 | Docs | `@facility/docs` (Docusaurus) | concepts, self-host, guides, reference — TAM-50 skinned · **builds + verified** |
 | Infra | `infra/` | Dockerfiles (build + run verified), docker-compose self-host, AWS Terraform · **plan-validated on the live account** |
@@ -161,8 +161,8 @@ Prior versions of this doc overstated a few things; setting the record straight:
   deferred a split into per-domain routers (large, purely-structural refactor);
   functional behavior is covered by tests.
 - **Deeper UX**: the run-steering "cockpit" (structured phase/tool state,
-  abort/retry) and a guided kickstart repo-onboarding flow are product-design
-  work, not yet built.
+  abort/retry) remains product-design work; guided kickstart repo onboarding
+  is built in the web/API flow.
 - **tam-os production migration** run end-to-end (owner-gated).
 - `cost_cents` is integer — fine for real runs; sub-cent precision only if
   fine-grained tiny-call attribution is needed.

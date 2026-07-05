@@ -13,20 +13,32 @@ export function enqueueMetering(
   record: RequestRecord,
   now: Date,
 ) {
-  const run = () => writeMetering(db, store, record, now);
-  setImmediate(() => {
-    run().catch((error) => {
+  return writeMeteringWithRetry(db, store, logger, record, now);
+}
+
+async function writeMeteringWithRetry(
+  db: FacilityDb,
+  store: EnvelopeStore,
+  logger: FastifyBaseLogger,
+  record: RequestRecord,
+  now: Date,
+) {
+  const delays = [0, 25, 100, 250];
+  let lastError: unknown;
+  for (const delay of delays) {
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    try {
+      await writeMetering(db, store, record, now);
+      return;
+    } catch (error) {
+      lastError = error;
       logger.warn({ err: error, requestId: record.requestId }, "gateway metering write failed");
-      setTimeout(() => {
-        run().catch((retryError) =>
-          logger.error(
-            { err: retryError, requestId: record.requestId },
-            "gateway metering retry failed",
-          ),
-        );
-      }, 10);
-    });
-  });
+    }
+  }
+  logger.error(
+    { err: lastError, requestId: record.requestId, reservations: record.reservations },
+    "gateway metering permanently failed; reservation reconciliation may require operator repair",
+  );
 }
 
 export async function writeMetering(
@@ -42,7 +54,11 @@ export async function writeMetering(
     cacheReadTokens: record.usage.cacheReadTokens,
     cacheWriteTokens: record.usage.cacheWriteTokens,
   });
-  const cost = record.priced ? computedCost : 0;
+  const measuredCost = record.priced ? (computedCost ?? 0) : 0;
+  const cost =
+    record.status === "error" && record.providerMayHaveCharged && measuredCost === 0
+      ? (record.estimatedCents ?? 0)
+      : measuredCost;
   let envelopeUri: string | null = null;
   try {
     envelopeUri = await store.putEnvelope({
@@ -90,7 +106,7 @@ export async function writeMetering(
   });
 
   const reservations = record.reservations ?? [];
-  if (cost !== null && record.status === "ok") {
+  if (record.status === "ok" || (record.status === "error" && record.providerMayHaveCharged)) {
     const reservedBudgetIds = new Set(reservations.map((reservation) => reservation.budget.id));
     for (const budget of record.budgets) {
       if (!reservedBudgetIds.has(budget.id)) await addBudgetSpend(db, budget, record.key, cost);

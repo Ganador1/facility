@@ -123,6 +123,55 @@ describe("@facility/mcp", () => {
     await server.close();
   });
 
+  test("audit and llm request read tools pass pagination filters", async () => {
+    const calls: unknown[] = [];
+    const { client, server } = await connect({
+      request: async (...args) => {
+        calls.push(args);
+        return { items: [], nextCursor: null };
+      },
+    });
+    await client.callTool({
+      name: "facility_audit_tail",
+      arguments: { limit: 10, actor: "key:auditor", action: "mcp.tool.executed", cursor: 12 },
+    });
+    await client.callTool({
+      name: "facility_llm_requests",
+      arguments: { projectId: "proj_1", limit: 5, cursor: "2026-07-05T00:00:00.000Z" },
+    });
+    expect(calls).toEqual([
+      [
+        "GET",
+        "/v1/audit",
+        {
+          body: undefined,
+          query: {
+            limit: 10,
+            actor: "key:auditor",
+            action: "mcp.tool.executed",
+            cursor: 12,
+          },
+        },
+      ],
+      [
+        "GET",
+        "/v1/llm-requests",
+        {
+          body: undefined,
+          query: {
+            projectId: "proj_1",
+            from: undefined,
+            to: undefined,
+            limit: 5,
+            cursor: "2026-07-05T00:00:00.000Z",
+          },
+        },
+      ],
+    ]);
+    await client.close();
+    await server.close();
+  });
+
   test("same MCP caller cannot self-replay a write into direct execution", async () => {
     const calls: unknown[] = [];
     const { client, server } = await connect({

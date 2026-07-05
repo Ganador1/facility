@@ -89,6 +89,32 @@ test("runs and inbox render stub fetch fixtures", async () => {
   assert.ok(inboxOut.text.includes("prop_1"));
 });
 
+test("llm-requests list calls raw metering endpoint", async () => {
+  const stdout = sink();
+  const calls = [];
+  const exit = await runPlatformCommand(
+    "llm-requests",
+    ["list", "--project", "proj_1", "--limit", "5", "--json"],
+    {
+      config: config(),
+      stdout,
+      fetch: async (url) => {
+        calls.push(String(url));
+        return json({
+          items: [{ id: "evt_1", projectId: "proj_1", model: "gpt-5.5", status: "ok" }],
+          nextCursor: null,
+        });
+      },
+    },
+  );
+
+  assert.equal(exit, 0);
+  assert.equal(new URL(calls[0]).pathname, "/v1/llm-requests");
+  assert.equal(new URL(calls[0]).searchParams.get("projectId"), "proj_1");
+  assert.equal(new URL(calls[0]).searchParams.get("limit"), "5");
+  assert.equal(JSON.parse(stdout.text).items[0].id, "evt_1");
+});
+
 test("steer and decide send exact request bodies", async () => {
   const calls = [];
   const fetch = async (url, init = {}) => {

@@ -1,5 +1,5 @@
-import { auditEvents, platformIssues, verifyAuditChain } from "@facility/db";
-import { and, asc, eq, gte, lte } from "drizzle-orm";
+import { auditEvents, llmRequests, platformIssues, verifyAuditChain } from "@facility/db";
+import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { notFound } from "../../errors.js";
@@ -122,23 +122,95 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
           to: z.coerce.number().optional(),
           actor: z.string().optional(),
           action: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(500).default(200),
+          cursor: z.coerce.number().optional(),
         }),
-        response: { 200: z.array(AnyObject) },
+        response: { 200: AnyObject },
       },
     },
     async (request) => {
       const p = principal(request);
-      const q = request.query as { from?: number; to?: number; action?: string };
+      const q = request.query as {
+        from?: number;
+        to?: number;
+        actor?: string;
+        action?: string;
+        limit?: number;
+        cursor?: number;
+      };
+      const limit = Math.min(Math.max(Number(q.limit ?? 200), 1), 500);
       const clauses = [eq(auditEvents.orgId, p.orgId)];
       if (q.from) clauses.push(gte(auditEvents.seq, q.from));
       if (q.to) clauses.push(lte(auditEvents.seq, q.to));
+      if (q.cursor) clauses.push(lt(auditEvents.seq, q.cursor));
       if (q.action) clauses.push(eq(auditEvents.action, q.action));
-      return db
+      if (q.actor) {
+        const [actorType, actorId] = q.actor.includes(":") ? q.actor.split(":", 2) : [];
+        if (actorType && actorId) {
+          clauses.push(
+            sql`${auditEvents.actor}->>'type' = ${actorType} AND ${auditEvents.actor}->>'id' = ${actorId}`,
+          );
+        } else {
+          clauses.push(sql`${auditEvents.actor}->>'id' = ${q.actor}`);
+        }
+      }
+      const rows = await db
         .select()
         .from(auditEvents)
         .where(and(...clauses))
-        .orderBy(asc(auditEvents.seq))
-        .limit(200);
+        .orderBy(desc(auditEvents.seq))
+        .limit(limit + 1);
+      const items = rows.slice(0, limit);
+      return {
+        items,
+        nextCursor: rows.length > limit ? (items.at(-1)?.seq ?? null) : null,
+      };
+    },
+  );
+
+  app.get(
+    "/v1/llm-requests",
+    {
+      config: { permission: "spend:read" },
+      schema: {
+        querystring: z.object({
+          projectId: z.string().optional(),
+          from: z.string().optional(),
+          to: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(500).default(100),
+          cursor: z.string().optional(),
+        }),
+        response: { 200: AnyObject },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const q = request.query as {
+        projectId?: string;
+        from?: string;
+        to?: string;
+        limit?: number;
+        cursor?: string;
+      };
+      assertProjectScope(p, q.projectId);
+      const projectId = p.projectId ?? q.projectId;
+      const limit = Math.min(Math.max(Number(q.limit ?? 100), 1), 500);
+      const clauses = [eq(llmRequests.orgId, p.orgId)];
+      if (projectId) clauses.push(eq(llmRequests.projectId, projectId));
+      if (q.from) clauses.push(gte(llmRequests.createdAt, new Date(q.from)));
+      if (q.to) clauses.push(lte(llmRequests.createdAt, new Date(q.to)));
+      if (q.cursor) clauses.push(lt(llmRequests.createdAt, new Date(q.cursor)));
+      const rows = await db
+        .select()
+        .from(llmRequests)
+        .where(and(...clauses))
+        .orderBy(desc(llmRequests.createdAt))
+        .limit(limit + 1);
+      const items = rows.slice(0, limit);
+      return {
+        items,
+        nextCursor: rows.length > limit ? (items.at(-1)?.createdAt?.toISOString() ?? null) : null,
+      };
     },
   );
 

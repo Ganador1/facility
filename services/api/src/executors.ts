@@ -136,6 +136,16 @@ async function executeMcpToolCall(
   const toolName = stringField(payload.toolName);
   const args = objectOrEmpty(payload.args);
   if (!toolName) throw new Error("mcp_tool_missing_name");
+  const targetProjectId = await resolveMcpToolTargetProject(db, proposal.orgId, toolName, args);
+  const proposalProjectId = proposal.projectId ?? null;
+  const proposedTargetProjectId =
+    stringField(objectOrEmpty(payload.target).projectId) ?? stringField(payload.targetProjectId);
+  if (targetProjectId !== proposalProjectId) {
+    throw new Error("mcp_target_project_mismatch");
+  }
+  if (proposedTargetProjectId !== undefined && proposedTargetProjectId !== proposalProjectId) {
+    throw new Error("mcp_target_project_changed");
+  }
   const result = await executeKnownMcpTool(db, proposal.orgId, actor, toolName, args, options);
   await insertAuditEvent(db, {
     orgId: proposal.orgId,
@@ -366,6 +376,68 @@ async function executeKnownMcpTool(
     });
   }
 
+  throw new Error(`mcp_tool_not_allowed:${toolName}`);
+}
+
+export async function resolveMcpToolTargetProject(
+  db: Db,
+  orgId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Promise<string | null> {
+  if (toolName === "facility_create_project") return null;
+  if (
+    toolName === "facility_trigger_run" ||
+    toolName === "facility_create_agent" ||
+    toolName === "facility_kickstart" ||
+    toolName === "facility_upgrade_project"
+  ) {
+    const projectId = requiredString(args.projectId, "projectId");
+    await assertMcpProjectInOrg(db, orgId, projectId);
+    return projectId;
+  }
+  if (toolName === "facility_cancel_run" || toolName === "facility_steer_run") {
+    const runId = requiredString(args.runId, "runId");
+    const run = (
+      await db
+        .select({ projectId: runs.projectId })
+        .from(runs)
+        .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
+        .limit(1)
+    )[0];
+    if (!run) throw new Error("run_not_found");
+    return run.projectId;
+  }
+  if (toolName === "facility_set_budget") {
+    const budgetId = optionalString(args.budgetId);
+    if (!budgetId) {
+      const projectId = optionalString(args.projectId) ?? null;
+      await assertMcpProjectInOrg(db, orgId, projectId);
+      return projectId;
+    }
+    const budget = (
+      await db
+        .select({ projectId: budgets.projectId })
+        .from(budgets)
+        .where(and(eq(budgets.orgId, orgId), eq(budgets.id, budgetId)))
+        .limit(1)
+    )[0];
+    if (!budget) throw new Error("budget_not_found");
+    return budget.projectId;
+  }
+  if (toolName === "facility_publish_registry_version") {
+    const versionId = requiredString(args.versionId, "versionId");
+    const version = (
+      await db
+        .select({ projectId: registryItems.projectId })
+        .from(registryVersions)
+        .innerJoin(registryItems, eq(registryItems.id, registryVersions.itemId))
+        .where(and(eq(registryVersions.orgId, orgId), eq(registryVersions.id, versionId)))
+        .limit(1)
+    )[0];
+    if (!version) throw new Error("registry_version_not_found");
+    return version.projectId;
+  }
   throw new Error(`mcp_tool_not_allowed:${toolName}`);
 }
 

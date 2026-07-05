@@ -374,6 +374,10 @@ describe("gateway", async () => {
       await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
     )[0];
     expect(row?.status).toBe("error");
+    const counter = (
+      await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
+    )[0];
+    expect(counter?.spentCents).toBeGreaterThan(0);
   });
 
   it("9. Client abort aborts upstream and records partial usage", async () => {
@@ -401,6 +405,10 @@ describe("gateway", async () => {
       await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
     )[0];
     expect(row?.outputTokens).toBe(333);
+    const counter = (
+      await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
+    )[0];
+    expect(counter?.spentCents).toBeGreaterThan(0);
   });
 
   it("9b. rejects private BYO provider base URLs before upstream fetch", async () => {
@@ -420,6 +428,32 @@ describe("gateway", async () => {
     )[0];
     expect(row?.status).toBe("error");
     expect(row?.error).toBe("upstream fetch failed");
+    const counter = (
+      await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
+    )[0];
+    expect(counter?.spentCents ?? 0).toBe(0);
+  });
+
+  it("9c. hard budget reservation includes cache read/write exposure", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+      budgetMode: "hard",
+      budgetLimitCents: 1_000,
+    });
+    const response = await postAnthropic(setup.secret, {
+      model: "claude-fable-5",
+      max_tokens: 1,
+      estimated_cache_write_tokens: 1_000_000,
+      messages: [],
+    });
+    expect(response.status).toBe(402);
+    expect(stubState.anthropicCalls).toBe(0);
+    await waitForRequestCount(1);
+    const row = (
+      await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
+    )[0];
+    expect(row?.status).toBe("blocked_budget");
   });
 
   it("10. Stub p95 latency overhead stays below 50ms", async () => {

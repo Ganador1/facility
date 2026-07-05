@@ -142,7 +142,7 @@ async function handleProvider(
       budgets,
       error: "model not priced",
     });
-    enqueueMetering(db, envelopeStore, request.log, record, now());
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(402).send(responseBody);
   }
 
@@ -173,7 +173,7 @@ async function handleProvider(
       budgets,
       error: `hard budget ${hardBlock.id} exceeded`,
     });
-    enqueueMetering(db, envelopeStore, request.log, record, now());
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(402).send(responseBody);
   }
 
@@ -197,7 +197,7 @@ async function handleProvider(
       budgets,
       error: "allowed_models violation",
     });
-    enqueueMetering(db, envelopeStore, request.log, record, now());
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(403).send(responseBody);
   }
 
@@ -227,7 +227,7 @@ async function handleProvider(
       budgets,
       error: `hard budget ${reservation.budget.id} exceeded`,
     });
-    enqueueMetering(db, envelopeStore, request.log, record, now());
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(402).send(responseBody);
   }
   const controller = new AbortController();
@@ -268,9 +268,11 @@ async function handleProvider(
       responseBody: { error: error instanceof Error ? error.message : "upstream fetch failed" },
       budgets,
       reservations: reservation.reservations,
+      estimatedCents,
+      providerMayHaveCharged: false,
       error: "upstream fetch failed",
     });
-    enqueueMetering(db, envelopeStore, request.log, record, now());
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     throw new GatewayError(502, "provider_error", "Upstream provider request failed", provider);
   }
 
@@ -311,9 +313,11 @@ async function handleProvider(
       responseBody,
       budgets,
       reservations: reservation.reservations,
+      estimatedCents,
+      providerMayHaveCharged: true,
       error,
     });
-    enqueueMetering(db, envelopeStore, request.log, record, now());
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
   }
 }
 
@@ -350,8 +354,14 @@ function estimatedCostCents(
   if (price.input <= 0 && price.output <= 0) return 0;
   const maxTokens = maxOutputTokens(body) ?? 4096;
   const inputTokens = inputTokensEstimate(body, rawBytes);
+  const cacheReadTokens = declaredCacheReadTokens(body) ?? 0;
+  const cacheWriteTokens = declaredCacheWriteTokens(body) ?? 0;
   const cents =
-    ((inputTokens / 1_000_000) * price.input + (maxTokens / 1_000_000) * price.output) * 100;
+    ((inputTokens / 1_000_000) * price.input +
+      (maxTokens / 1_000_000) * price.output +
+      (cacheReadTokens / 1_000_000) * (price.cacheRead ?? 0) +
+      (cacheWriteTokens / 1_000_000) * (price.cacheWrite ?? 0)) *
+    100;
   return Math.round(cents * 1_000_000) / 1_000_000;
 }
 
@@ -382,6 +392,39 @@ function declaredInputTokens(body: unknown): number | null {
   if (usage && typeof usage === "object" && !Array.isArray(usage)) {
     const value = (usage as Record<string, unknown>).input_tokens;
     if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.ceil(value);
+  }
+  return null;
+}
+
+function declaredCacheReadTokens(body: unknown): number | null {
+  return declaredTokenCount(body, [
+    "cache_read_tokens",
+    "cache_read_input_tokens",
+    "estimated_cache_read_tokens",
+  ]);
+}
+
+function declaredCacheWriteTokens(body: unknown): number | null {
+  return declaredTokenCount(body, [
+    "cache_write_tokens",
+    "cache_creation_input_tokens",
+    "estimated_cache_write_tokens",
+  ]);
+}
+
+function declaredTokenCount(body: unknown, keys: string[]): number | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const row = body as Record<string, unknown>;
+  for (const key of keys) {
+    const value = row[key];
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.ceil(value);
+  }
+  const usage = row.usage;
+  if (usage && typeof usage === "object" && !Array.isArray(usage)) {
+    for (const key of keys) {
+      const value = (usage as Record<string, unknown>)[key];
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.ceil(value);
+    }
   }
   return null;
 }

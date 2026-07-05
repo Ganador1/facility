@@ -190,8 +190,44 @@ const readTools: ToolDefinition[] = [
         .max(100)
         .default(25)
         .describe("Maximum audit events to return, max 100."),
+      actor: optionalString.describe("Actor id or type:id filter."),
+      action: optionalString.describe("Audit action filter."),
+      cursor: z.number().int().optional().describe("Pagination cursor from the previous page."),
     },
-    request: () => ({ method: "GET", path: "/v1/audit" }),
+    request: (args) => ({
+      method: "GET",
+      path: "/v1/audit",
+      query: {
+        limit: Math.min(Number(args.limit ?? 25), 100),
+        actor: str(args.actor),
+        action: str(args.action),
+        cursor: typeof args.cursor === "number" ? args.cursor : undefined,
+      },
+    }),
+  },
+  {
+    name: "facility_llm_requests",
+    permission: "spend:read",
+    description:
+      "Fetch raw LLM request rows for data mining, including tokens, cost, latency, status, and envelope URIs. Needs spend:read.",
+    inputSchema: {
+      projectId: optionalString.describe("Facility project id."),
+      from: optionalString.describe("Inclusive ISO timestamp lower bound."),
+      to: optionalString.describe("Inclusive ISO timestamp upper bound."),
+      limit: z.number().int().min(1).max(100).default(25).describe("Page size, max 100."),
+      cursor: optionalString.describe("Pagination cursor from the previous page."),
+    },
+    request: (args) => ({
+      method: "GET",
+      path: "/v1/llm-requests",
+      query: {
+        projectId: str(args.projectId),
+        from: str(args.from),
+        to: str(args.to),
+        limit: Math.min(Number(args.limit ?? 25), 100),
+        cursor: str(args.cursor),
+      },
+    }),
   },
   {
     name: "facility_list_budgets",
@@ -563,8 +599,8 @@ async function dispatchTool(tool: ToolDefinition, args: Args, api: ApiClient): P
     return { ...asRecord(run), events };
   }
   if (tool.name === "facility_audit_tail") {
-    const rows = await api.request("GET", "/v1/audit");
-    return Array.isArray(rows) ? rows.slice(-Math.min(Number(args.limit ?? 25), 100)) : rows;
+    const request = await tool.request(args);
+    return api.request(request.method, request.path, { query: request.query, body: request.body });
   }
   const request = await tool.request(args);
   return api.request(request.method, request.path, { query: request.query, body: request.body });

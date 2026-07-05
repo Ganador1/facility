@@ -207,11 +207,15 @@ export async function registerProvidersBudgetsSpendRoutes(
   app.get(
     "/v1/budgets",
     { config: { permission: "budgets:read" }, schema: { response: { 200: z.array(AnyObject) } } },
-    async (request) =>
-      db
+    async (request) => {
+      const p = principal(request);
+      const clauses = [eq(budgets.orgId, p.orgId)];
+      if (p.projectId) clauses.push(eq(budgets.projectId, p.projectId));
+      return db
         .select()
         .from(budgets)
-        .where(eq(budgets.orgId, principal(request).orgId)),
+        .where(and(...clauses));
+    },
   );
   app.post(
     "/v1/budgets",
