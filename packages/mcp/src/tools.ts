@@ -1,6 +1,7 @@
 import {
   FacilityClient,
   type FacilityRouteBody,
+  type FacilityRoutePath,
   type FacilityRouteResponse,
   type McpToolProposalRequest,
   type Project,
@@ -22,7 +23,7 @@ type ApiRequest = {
   body?: unknown;
 };
 type ApiClient = {
-  request<RequestMethod extends Method, Path extends string>(
+  request<RequestMethod extends Method, Path extends FacilityRoutePath<RequestMethod>>(
     method: RequestMethod,
     path: Path,
     options?: {
@@ -630,10 +631,18 @@ async function dispatchTool(tool: ToolDefinition, args: Args, api: ApiClient): P
   }
   if (tool.name === "facility_audit_tail") {
     const request = await tool.request(args);
-    return api.request(request.method, request.path, { query: request.query, body: request.body });
+    // The path is built dynamically from the tool spec, so dispatch through the
+    // untyped client surface; the control plane validates the concrete route.
+    return (api as ApiClientLike).request(request.method, request.path, {
+      query: request.query,
+      body: request.body,
+    });
   }
   const request = await tool.request(args);
-  return api.request(request.method, request.path, { query: request.query, body: request.body });
+  return (api as ApiClientLike).request(request.method, request.path, {
+    query: request.query,
+    body: request.body,
+  });
 }
 
 async function proposeWrite(tool: ToolDefinition, args: Args, api: ApiClient): Promise<unknown> {

@@ -481,7 +481,10 @@ export type FacilityRouteResponse<
   ? Path extends FacilityGetRoutePath
     ? FacilityGetRouteResponse<Path>
     : never
-  : FacilityRouteSpec<Method, Path> extends Route<infer Response, never> | Route<infer Response>
+  : // Extract the response regardless of whether the route carries a body — a
+    // `Route<R, Body>` match against `Route<_, never>` would wrongly resolve
+    // body-carrying write routes to `never`.
+    FacilityRouteSpec<Method, Path> extends { response: infer Response }
     ? Response
     : never;
 
