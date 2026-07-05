@@ -12,7 +12,9 @@ Read first: control-plane.md (routes + permissions), discovery/tam-os.md (§MCP 
 
 Tools (names `facility_*`; JSON Schema inputs via zod-to-json-schema; every description written for an operator LLM — concise, states permissions needed):
 
-Read: `facility_me`, `facility_list_projects`, `facility_get_project`, `facility_list_runs` {projectId?, status?}, `facility_get_run` (+ last N events inline, N≤50), `facility_list_inbox`, `facility_get_proposal`, `facility_spend` {projectId?, groupBy}, `facility_list_registry` {kind?}, `facility_get_registry_item` (+active version content), `facility_list_issues`, `facility_audit_tail` {limit≤100}, `facility_list_budgets`, `facility_kickstart_preview` {projectId, repoId}.
+Read: `facility_me`, `facility_list_projects`, `facility_get_project`, `facility_list_runs` {projectId?, status?}, `facility_get_run` (+ last N events inline, N≤50), `facility_list_inbox`, `facility_get_proposal`, `facility_spend` {projectId?, groupBy}, `facility_list_registry` {kind?}, `facility_get_registry_item` (+active version content), `facility_list_issues`, `facility_audit_tail` {limit≤100}, `facility_llm_requests` {projectId?, from?, to?, limit?, cursor?}, `facility_llm_request_envelope` {requestId}, `facility_list_budgets`, `facility_kickstart_preview` {projectId, repoId}.
+
+Raw metering corpus: `/v1/llm-requests` lists durable LLM request rows for data mining. `/v1/llm-requests/:requestId/envelope` returns the stored request/response envelope for one row, scoped to the caller's org and project. The envelope endpoint accepts `spend:read` or `audit:read`; project-scoped keys get 404 for another project's request.
 
 Write (ALL require confirmation tokens — the tam-os pattern via core.mintConfirmation, TTL 5min): `facility_trigger_run` {projectId, agentName, input}, `facility_cancel_run`, `facility_steer_run` {runId, body}, `facility_decide_proposal` {proposalId, decision, note?}, `facility_create_project`, `facility_kickstart` {projectId, repoId, answers}, `facility_upgrade_project`, `facility_set_budget`, `facility_publish_registry_version`, `facility_create_agent` {projectId, name, engine, model, contractItemId|contractContent, triggers, sandboxProfileId?}.
 
@@ -33,6 +35,8 @@ New commands (zero-dep rule stays — use global fetch; no SDK dep here to keep 
 - `facility kickstart <project> --repo owner/name [--yes]` — remote kickstart (answers via flags/prompts, preview table, confirm)
 - `facility upgrade <project> [--to <version>]`
 - `facility keys issue|revoke|list`
+- `facility llm-requests list [--project <id>] [--from <iso>] [--to <iso>] [--limit <n>] [--cursor <iso>]`
+- `facility llm-requests get <id>` — export the stored request/response envelope; use `--json` to include row metadata and envelope together.
 - Existing `init|add|doctor` untouched (vendored lane).
 Output: human tables by default (respect the existing ui.mjs aesthetic — mono, accent for agent-live rows), `--json` for machines on every command. Exit codes: 0 ok, 1 error, 2 auth.
 

@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { gzipSync } from "node:zlib";
 import { newId } from "@facility/core";
 import {
   actionTypes,
@@ -1153,6 +1155,61 @@ describe("api", async () => {
     expect(listed.json().items[0].requestUri).toBeTruthy();
   });
 
+  it("reads a stored llm request envelope through the API", async () => {
+    const envelope = { request: { body: { model: "gpt-5.5" } }, response: { id: "resp_1" } };
+    const server = createServer((request, response) => {
+      if (request.url === "/facility-test/envelopes/org/evt.json.gz") {
+        response.writeHead(200, {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+        });
+        response.end(gzipSync(Buffer.from(JSON.stringify(envelope))));
+        return;
+      }
+      response.writeHead(404).end();
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const previousBucket = config.s3Bucket;
+    const previousEndpoint = config.s3Endpoint;
+    config.s3Bucket = "facility-test";
+    config.s3Endpoint = `http://127.0.0.1:${address.port}`;
+    try {
+      const requestId = newId("evt");
+      await db.insert(llmRequests).values({
+        id: requestId,
+        orgId,
+        projectId,
+        provider: "openai",
+        model: "gpt-5.5",
+        status: "ok",
+        costCents: 123,
+        latencyMs: 10,
+        requestUri: "s3://facility-test/envelopes/org/evt.json.gz",
+        responseUri: "s3://facility-test/envelopes/org/evt.json.gz",
+      });
+      const issued = await app.inject({
+        method: "POST",
+        url: "/v1/keys",
+        headers: { cookie },
+        payload: { name: "envelope-reader", roleId: ownerRole, projectId },
+      });
+      const response = await app.inject({
+        method: "GET",
+        url: `/v1/llm-requests/${requestId}/envelope`,
+        headers: { authorization: `Bearer ${issued.json().secret}` },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().llmRequest.id).toBe(requestId);
+      expect(response.json().envelope).toEqual(envelope);
+    } finally {
+      config.s3Bucket = previousBucket;
+      config.s3Endpoint = previousEndpoint;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("filters audit rows by actor and returns newest-first pages", async () => {
     const action = `audit.filtered.${Date.now()}`;
     const first = await insertAuditEvent(db, {
@@ -1508,6 +1565,12 @@ describe("api", async () => {
       headers: { cookie },
       payload: { name: "other-project-owner", roleId: ownerRole, projectId: otherProjectId },
     });
+    const orgKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "org-owner", roleId: ownerRole },
+    });
     const type = (
       await db
         .insert(actionTypes)
@@ -1569,6 +1632,12 @@ describe("api", async () => {
       headers: auth,
     });
     expect(revokeKey.statusCode).toBe(404);
+    const revokeOrgKey = await app.inject({
+      method: "DELETE",
+      url: `/v1/keys/${orgKey.json().id}`,
+      headers: auth,
+    });
+    expect(revokeOrgKey.statusCode).toBe(404);
     const budget = await app.inject({
       method: "POST",
       url: "/v1/budgets",
@@ -1640,6 +1709,21 @@ describe("api", async () => {
       headers: auth,
     });
     expect(deprecateRegistry.statusCode).toBe(404);
+  });
+
+  it("returns 403 when project-scoped keys call org-admin endpoints", async () => {
+    const issued = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "project-admin-denied", roleId: ownerRole, projectId },
+    });
+    const auth = { authorization: `Bearer ${issued.json().secret}` };
+    for (const url of ["/v1/org", "/v1/members", "/v1/roles", "/v1/providers"]) {
+      const response = await app.inject({ method: "GET", url, headers: auth });
+      expect(response.statusCode).toBe(403);
+      expect(response.json().error.code).toBe("project_scope_forbidden");
+    }
   });
 
   it("returns 409 for an already-approved proposal without re-executing it", async () => {

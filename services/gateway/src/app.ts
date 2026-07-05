@@ -11,16 +11,11 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { uuidv7 } from "uuidv7";
 import { authenticateVirtualKey, providerCredential, virtualKeyFromHeaders } from "./auth.js";
 import { modelFrom, prepareOpenAiBody, readJsonBody, sanitizedRequest } from "./body.js";
-import {
-  applicableBudgets,
-  emitSoftBudgetIssues,
-  hardBudgetBlock,
-  reserveHardBudgets,
-} from "./budgets.js";
+import { applicableBudgets, emitSoftBudgetIssues, hardBudgetBlock } from "./budgets.js";
 import { readConfig } from "./config.js";
 import { createEnvelopeStore } from "./envelope-store.js";
 import { GatewayError, providerEnvelope, sendProviderError } from "./errors.js";
-import { enqueueMetering } from "./metering.js";
+import { enqueueMetering, reserveHardBudgetsAndRecordPending } from "./metering.js";
 import type { GatewayConfig, GatewayDeps, Provider, RequestRecord, Usage } from "./types.js";
 import { emptyUsage, UsageTee, usageFromJson } from "./usage.js";
 
@@ -203,9 +198,24 @@ async function handleProvider(
 
   await emitSoftBudgetIssues(db, budgets, key);
   const upstreamBody = provider === "openai" ? prepareOpenAiBody(parsed.json).raw : parsed.raw;
+  const pendingRecord = baseRecord({
+    requestId,
+    provider,
+    model,
+    priced,
+    status: "ok",
+    statusCode: 0,
+    startedAt,
+    key,
+    requestBody,
+    responseBody: null,
+    budgets,
+    estimatedCents,
+    providerMayHaveCharged: true,
+  });
   const reservation =
     estimatedCents > 0
-      ? await reserveHardBudgets(db, budgets, key, estimatedCents)
+      ? await reserveHardBudgetsAndRecordPending(db, budgets, key, estimatedCents, pendingRecord)
       : { ok: true as const, reservations: [] };
   if (!reservation.ok) {
     const responseBody = providerEnvelope(

@@ -139,6 +139,10 @@ describe("@facility/mcp", () => {
       name: "facility_llm_requests",
       arguments: { projectId: "proj_1", limit: 5, cursor: "2026-07-05T00:00:00.000Z" },
     });
+    await client.callTool({
+      name: "facility_llm_request_envelope",
+      arguments: { requestId: "evt_1" },
+    });
     expect(calls).toEqual([
       [
         "GET",
@@ -167,6 +171,7 @@ describe("@facility/mcp", () => {
           },
         },
       ],
+      ["GET", "/v1/llm-requests/evt_1/envelope", { body: undefined, query: undefined }],
     ]);
     await client.close();
     await server.close();

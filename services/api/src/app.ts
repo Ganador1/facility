@@ -42,7 +42,12 @@ const publicRoutes = new Set([
 ]);
 const publicPrefixes = ["/docs"];
 
-type RouteRecord = { method: string; url: string; permission?: string; public?: boolean };
+type RouteRecord = {
+  method: string;
+  url: string;
+  permission?: string | string[];
+  public?: boolean;
+};
 
 export async function buildApp(config: AppConfig = readConfig()): Promise<FastifyInstance> {
   const app = Fastify({
@@ -74,7 +79,7 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
       routeRecords.push({
         method,
         url: route.url,
-        permission: route.config?.permission as string | undefined,
+        permission: route.config?.permission as string | string[] | undefined,
         public: route.config?.public as boolean | undefined,
       });
     }
@@ -124,12 +129,19 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
 
   app.addHook("preHandler", async (request) => {
     request.principal = await resolvePrincipal(request, db, config);
-    const permission = request.routeOptions.config?.permission as string | undefined;
+    const permission = request.routeOptions.config?.permission as string | string[] | undefined;
     const isPublic = request.routeOptions.config?.public === true;
     if (!permission && isPublic) return;
     if (!permission) return;
     if (!request.principal) {
       throw new ApiError(401, "unauthorized", "Authentication required");
+    }
+    if (request.routeOptions.config?.orgAdmin === true && request.principal.projectId) {
+      throw new ApiError(
+        403,
+        "project_scope_forbidden",
+        "Project-scoped keys cannot access organization admin endpoints",
+      );
     }
     const projectId = (request.params as Record<string, string | undefined>)?.projectId;
     if (projectId) {
@@ -149,8 +161,13 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
         throw new ApiError(404, "not_found", "Project not found");
       }
     }
-    if (!can(request.principal.permissions, permission)) {
-      throw new ApiError(403, "forbidden", "Permission denied", { needed: permission });
+    const allowedPermissions = Array.isArray(permission) ? permission : [permission];
+    if (
+      !allowedPermissions.some((candidate) => can(request.principal?.permissions ?? [], candidate))
+    ) {
+      throw new ApiError(403, "forbidden", "Permission denied", {
+        needed: Array.isArray(permission) ? allowedPermissions : permission,
+      });
     }
   });
 

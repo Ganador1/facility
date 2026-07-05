@@ -29,6 +29,7 @@ import { readSandbox } from "../../sandbox/state.js";
 import type { Principal } from "../../types.js";
 import {
   AnyObject,
+  assertBareRowProjectScope,
   assertProjectScope,
   bearer,
   definedFields,
@@ -432,7 +433,7 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         .limit(1)
     )[0];
     if (!row) throw notFound("KB entry not found");
-    assertProjectScope(p, row.space.projectId);
+    assertBareRowProjectScope(p, row.space.projectId, "KB entry not found");
     return row.entry;
   }
 
@@ -593,7 +594,7 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
           .limit(1)
       )[0];
       if (!task) throw notFound("Task not found");
-      assertProjectScope(p, task.projectId);
+      assertBareRowProjectScope(p, task.projectId, "Task not found");
       return (
         await db
           .update(poTasks)
@@ -627,7 +628,7 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
           .limit(1)
       )[0];
       if (!task) throw notFound("Task not found");
-      assertProjectScope(p, task.projectId);
+      assertBareRowProjectScope(p, task.projectId, "Task not found");
       const actionType = await actionTypeByName(p.orgId, "task_creation");
       if (!actionType) throw notFound("Action type not found");
       const repo = (

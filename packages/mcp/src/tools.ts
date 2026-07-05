@@ -230,6 +230,19 @@ const readTools: ToolDefinition[] = [
     }),
   },
   {
+    name: "facility_llm_request_envelope",
+    permission: "spend:read",
+    description:
+      "Fetch the stored request/response envelope for one LLM request id. Needs spend:read or audit:read.",
+    inputSchema: {
+      requestId: z.string().min(1).describe("llm_requests.id to fetch."),
+    },
+    request: (args) => ({
+      method: "GET",
+      path: `/v1/llm-requests/${str(args.requestId)}/envelope`,
+    }),
+  },
+  {
     name: "facility_list_budgets",
     permission: "budgets:read",
     description:

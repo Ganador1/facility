@@ -55,8 +55,9 @@ declare module "fastify" {
     ) => Promise<void>;
   }
   interface FastifyContextConfig {
-    permission?: string;
+    permission?: string | string[];
     auditAction?: string;
     public?: boolean;
+    orgAdmin?: boolean;
   }
 }

@@ -244,7 +244,19 @@ async function keys(args, ctx, flags) {
 
 async function llmRequests(args, ctx, flags) {
   const sub = args[0] || "list";
-  if (sub !== "list") throw new CliError("Usage: facility llm-requests list [--project <id>] [--limit <n>]");
+  if (sub === "get" || sub === "envelope" || sub === "export") {
+    const requestId = args[1];
+    if (!requestId) throw new CliError("Usage: facility llm-requests get <id> [--json]");
+    const result = await api(ctx, "GET", `/v1/llm-requests/${requestId}/envelope`);
+    if (ctx.json) writeJson(ctx, result);
+    else writeJson(ctx, result.envelope ?? result);
+    return 0;
+  }
+  if (sub !== "list") {
+    throw new CliError(
+      "Usage: facility llm-requests list [--project <id>] [--limit <n>] | get <id>",
+    );
+  }
   const result = await api(ctx, "GET", "/v1/llm-requests", {
     query: {
       projectId: flags.project,

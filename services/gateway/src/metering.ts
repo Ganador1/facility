@@ -1,10 +1,10 @@
 import { costCents } from "@facility/core";
 import type { FacilityDb } from "@facility/db";
 import { llmRequests, virtualKeys } from "@facility/db";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { FastifyBaseLogger } from "fastify";
-import { addBudgetSpend, reconcileBudgetReservations } from "./budgets.js";
-import type { EnvelopeStore, RequestRecord } from "./types.js";
+import { addBudgetSpend, reconcileBudgetReservations, reserveHardBudgets } from "./budgets.js";
+import type { AuthedKey, BudgetState, EnvelopeStore, RequestRecord } from "./types.js";
 
 export function enqueueMetering(
   db: FacilityDb,
@@ -82,7 +82,7 @@ export async function writeMetering(
     envelopeUri = null;
   }
 
-  await db.insert(llmRequests).values({
+  const values = {
     id: record.requestId,
     orgId: record.key.orgId,
     projectId: record.key.projectId,
@@ -103,21 +103,97 @@ export async function writeMetering(
     requestUri: envelopeUri,
     responseUri: envelopeUri,
     error: record.error,
-  });
+  };
 
   const reservations = record.reservations ?? [];
-  if (record.status === "ok" || (record.status === "error" && record.providerMayHaveCharged)) {
-    const reservedBudgetIds = new Set(reservations.map((reservation) => reservation.budget.id));
-    for (const budget of record.budgets) {
-      if (!reservedBudgetIds.has(budget.id)) await addBudgetSpend(db, budget, record.key, cost);
-    }
-    await reconcileBudgetReservations(db, reservations, cost);
-  } else {
-    await reconcileBudgetReservations(db, reservations, 0);
-  }
+  await db.transaction(async (tx) => {
+    const updatedReserved = (
+      await tx
+        .update(llmRequests)
+        .set(values)
+        .where(and(eq(llmRequests.id, record.requestId), eq(llmRequests.status, "reserved")))
+        .returning({ id: llmRequests.id })
+    )[0];
+    const inserted = updatedReserved
+      ? updatedReserved
+      : (
+          await tx
+            .insert(llmRequests)
+            .values(values)
+            .onConflictDoNothing()
+            .returning({ id: llmRequests.id })
+        )[0];
 
-  await db
-    .update(virtualKeys)
-    .set({ updatedAt: new Date() })
-    .where(eq(virtualKeys.id, record.key.id));
+    if (!inserted) return;
+
+    if (record.status === "ok" || (record.status === "error" && record.providerMayHaveCharged)) {
+      const reservedBudgetIds = new Set(reservations.map((reservation) => reservation.budget.id));
+      for (const budget of record.budgets) {
+        if (!reservedBudgetIds.has(budget.id)) {
+          await addBudgetSpend(tx as unknown as FacilityDb, budget, record.key, cost);
+        }
+      }
+      await reconcileBudgetReservations(tx as unknown as FacilityDb, reservations, cost);
+    } else {
+      await reconcileBudgetReservations(tx as unknown as FacilityDb, reservations, 0);
+    }
+
+    await tx
+      .update(virtualKeys)
+      .set({ updatedAt: new Date() })
+      .where(eq(virtualKeys.id, record.key.id));
+  });
+}
+
+export async function reserveHardBudgetsAndRecordPending(
+  db: FacilityDb,
+  states: BudgetState[],
+  key: AuthedKey,
+  estimatedCents: number,
+  record: RequestRecord,
+): Promise<
+  | { ok: true; reservations: NonNullable<RequestRecord["reservations"]> }
+  | { ok: false; budget: BudgetState }
+> {
+  return db.transaction(async (tx) => {
+    const pending = (
+      await tx
+        .insert(llmRequests)
+        .values({
+          id: record.requestId,
+          orgId: key.orgId,
+          projectId: key.projectId,
+          runId: key.runId,
+          taskId: key.taskId,
+          agentDefId: key.agentDefId,
+          virtualKeyId: key.id,
+          provider: record.provider,
+          model: record.model,
+          status: "reserved",
+          inputTokens: record.usage.inputTokens,
+          outputTokens: record.usage.outputTokens,
+          cacheRead: record.usage.cacheReadTokens,
+          cacheWrite: record.usage.cacheWriteTokens,
+          costCents: estimatedCents,
+          priced: record.priced,
+          latencyMs: Date.now() - record.startedAt,
+          error: "budget reservation pending final metering",
+        })
+        .onConflictDoNothing()
+        .returning({ id: llmRequests.id })
+    )[0];
+    if (!pending) return { ok: true, reservations: [] };
+
+    const reservation = await reserveHardBudgets(
+      tx as unknown as FacilityDb,
+      states,
+      key,
+      estimatedCents,
+    );
+    if (!reservation.ok) {
+      await tx.delete(llmRequests).where(eq(llmRequests.id, record.requestId));
+      return reservation;
+    }
+    return reservation;
+  });
 }

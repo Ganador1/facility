@@ -11,12 +11,14 @@ import {
   spendCounters,
   virtualKeys,
 } from "@facility/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, ne, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { clearAuthCaches } from "../src/auth.js";
+import { applicableBudgets } from "../src/budgets.js";
 import { buildApp, MemoryEnvelopeStore } from "../src/index.js";
+import { writeMetering } from "../src/metering.js";
 import type { GatewayConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -124,7 +126,13 @@ describe("gateway", async () => {
     const counter = (
       await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
     )[0];
-    expect(counter?.spentCents).toBe(1800);
+    const charged = (
+      await db
+        .select()
+        .from(llmRequests)
+        .where(and(eq(llmRequests.virtualKeyId, setup.keyId), eq(llmRequests.status, "ok")))
+    )[0];
+    expect(counter?.spentCents).toBeCloseTo(charged?.costCents ?? 0, 6);
   });
 
   it("2. Anthropic SSE chunks pass through byte-exact and store an envelope", async () => {
@@ -319,6 +327,86 @@ describe("gateway", async () => {
       await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
     )[0];
     expect(counter?.spentCents).toBeCloseTo(0.045, 6);
+  });
+
+  it("6d2. duplicate metering for one request id does not double-charge or erase charged cost", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+      budgetLimitCents: 100_000,
+    });
+    const key = {
+      id: setup.keyId,
+      orgId,
+      projectId: setup.projectId,
+      runId: null,
+      taskId: null,
+      allowedModels: null,
+      budgetId: setup.budgetId,
+      agentDefId: null,
+    };
+    const meteringNow = new Date("2026-07-05T00:00:00.000Z");
+    const budgetStates = await applicableBudgets(db, key, meteringNow);
+    const requestId = newId("evt");
+    await writeMetering(
+      db,
+      envelopes,
+      {
+        requestId,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        status: "ok",
+        statusCode: 200,
+        startedAt: Date.now(),
+        key,
+        usage: {
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+        priced: true,
+        requestBody: { messages: [] },
+        responseBody: { usage: "charged" },
+        budgets: budgetStates,
+      },
+      meteringNow,
+    );
+    await writeMetering(
+      db,
+      envelopes,
+      {
+        requestId,
+        provider: "anthropic",
+        model: "claude-sonnet-5",
+        status: "error",
+        statusCode: 500,
+        startedAt: Date.now(),
+        key,
+        usage: {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+        priced: true,
+        requestBody: { messages: [] },
+        responseBody: { error: "duplicate retry" },
+        budgets: budgetStates,
+        estimatedCents: 10,
+        providerMayHaveCharged: true,
+      },
+      meteringNow,
+    );
+
+    const rows = await db.select().from(llmRequests).where(eq(llmRequests.id, requestId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("ok");
+    expect(rows[0]?.costCents).toBe(1800);
+    const counter = (
+      await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
+    )[0];
+    expect(counter?.spentCents).toBe(1800);
   });
 
   it("6e. hard budget reservation includes input exposure before upstream", async () => {
@@ -528,7 +616,7 @@ describe("gateway", async () => {
       budgetId: budget?.id,
       revokedAt: input.revoked ? new Date() : null,
     });
-    return { secret: key.secret, keyId: key.id, budgetId: budget?.id ?? "" };
+    return { secret: key.secret, keyId: key.id, budgetId: budget?.id ?? "", projectId: project.id };
   }
 
   async function postAnthropic(secret: string, body: unknown) {
@@ -556,7 +644,7 @@ describe("gateway", async () => {
       const rows = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(llmRequests)
-        .where(eq(llmRequests.orgId, orgId));
+        .where(and(eq(llmRequests.orgId, orgId), ne(llmRequests.status, "reserved")));
       return (rows[0]?.count ?? 0) >= count;
     });
   }

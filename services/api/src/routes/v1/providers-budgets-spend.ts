@@ -31,7 +31,10 @@ export async function registerProvidersBudgetsSpendRoutes(
   ) => sharedAssertProjectInOrg(db, p, projectId, statusCode);
   app.get(
     "/v1/providers",
-    { config: { permission: "providers:read" }, schema: { response: { 200: z.array(AnyObject) } } },
+    {
+      config: { permission: "providers:read", orgAdmin: true },
+      schema: { response: { 200: z.array(AnyObject) } },
+    },
     async (request) => {
       const p = principal(request);
       return (
@@ -49,7 +52,7 @@ export async function registerProvidersBudgetsSpendRoutes(
   app.post(
     "/v1/providers",
     {
-      config: { permission: "providers:write", auditAction: "provider.created" },
+      config: { permission: "providers:write", auditAction: "provider.created", orgAdmin: true },
       schema: {
         body: z.object({
           provider: z.string(),
@@ -101,7 +104,7 @@ export async function registerProvidersBudgetsSpendRoutes(
   app.delete(
     "/v1/providers/:providerId",
     {
-      config: { permission: "providers:write", auditAction: "provider.deleted" },
+      config: { permission: "providers:write", auditAction: "provider.deleted", orgAdmin: true },
       schema: { params: z.object({ providerId: z.string() }), response: { 200: Ok } },
     },
     async (request) => {

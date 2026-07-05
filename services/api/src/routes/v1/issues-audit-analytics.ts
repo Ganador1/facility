@@ -2,10 +2,12 @@ import { auditEvents, llmRequests, platformIssues, verifyAuditChain } from "@fac
 import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { readEnvelopeObject } from "../../envelopes.js";
 import { notFound } from "../../errors.js";
 import { analyticsOverview, queryAnalytics } from "../../watchtower/analytics.js";
 import {
   AnyObject,
+  assertBareRowProjectScope,
   assertProjectScope,
   IdParams,
   principal,
@@ -100,7 +102,7 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
             .limit(1)
         )[0];
         if (!issue) throw notFound("Issue not found");
-        assertProjectScope(p, issue.projectId);
+        assertBareRowProjectScope(p, issue.projectId, "Issue not found");
         return (
           await db
             .update(platformIssues)
@@ -210,6 +212,31 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
       return {
         items,
         nextCursor: rows.length > limit ? (items.at(-1)?.createdAt?.toISOString() ?? null) : null,
+      };
+    },
+  );
+
+  app.get(
+    "/v1/llm-requests/:requestId/envelope",
+    {
+      config: { permission: ["spend:read", "audit:read"] },
+      schema: { params: z.object({ requestId: z.string() }), response: { 200: AnyObject } },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { requestId } = request.params as { requestId: string };
+      const row = (
+        await db
+          .select()
+          .from(llmRequests)
+          .where(and(eq(llmRequests.orgId, p.orgId), eq(llmRequests.id, requestId)))
+          .limit(1)
+      )[0];
+      if (!row) throw notFound("LLM request not found");
+      assertBareRowProjectScope(p, row.projectId, "LLM request not found");
+      return {
+        llmRequest: row,
+        envelope: await readEnvelopeObject(context.config, row.responseUri ?? row.requestUri),
       };
     },
   );

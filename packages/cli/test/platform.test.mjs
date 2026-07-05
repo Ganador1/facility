@@ -115,6 +115,24 @@ test("llm-requests list calls raw metering endpoint", async () => {
   assert.equal(JSON.parse(stdout.text).items[0].id, "evt_1");
 });
 
+test("llm-requests get calls envelope endpoint", async () => {
+  const stdout = sink();
+  const calls = [];
+  const exit = await runPlatformCommand("llm-requests", ["get", "evt_1", "--json"], {
+    config: config(),
+    stdout,
+    fetch: async (url) => {
+      calls.push(String(url));
+      return json({ llmRequest: { id: "evt_1" }, envelope: { response: { id: "resp_1" } } });
+    },
+  });
+
+  assert.equal(exit, 0);
+  assert.equal(new URL(calls[0]).pathname, "/v1/llm-requests/evt_1/envelope");
+  assert.equal(JSON.parse(stdout.text).envelope.response.id, "resp_1");
+});
+
+
 test("steer and decide send exact request bodies", async () => {
   const calls = [];
   const fetch = async (url, init = {}) => {

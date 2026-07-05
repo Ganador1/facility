@@ -8,7 +8,7 @@ import { executeApprovedProposal, resolveMcpToolTargetProject } from "../../exec
 import type { Principal } from "../../types.js";
 import {
   AnyObject,
-  assertProjectScope,
+  assertBareRowProjectScope,
   IdParams,
   principal,
   assertProjectInOrg as sharedAssertProjectInOrg,
@@ -80,7 +80,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
           .limit(1)
       )[0];
       if (!proposal) throw notFound("Proposal not found");
-      assertProjectScope(p, proposal.projectId);
+      assertBareRowProjectScope(p, proposal.projectId, "Proposal not found");
       const events = await db
         .select()
         .from(proposalEvents)
@@ -335,7 +335,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
             .returning()
         )[0];
         if (!updated) throw new ApiError(409, "not_open", "Proposal is not open");
-        assertProjectScope(p, updated.projectId);
+        assertBareRowProjectScope(p, updated.projectId, "Proposal not found");
         const current = await tx
           .select()
           .from(proposalEvents)
@@ -388,7 +388,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
           .limit(1)
       )[0];
       if (!proposal) throw notFound("Proposal not found");
-      assertProjectScope(p, proposal.projectId);
+      assertBareRowProjectScope(p, proposal.projectId, "Proposal not found");
       if (proposal.state !== "execution_failed" && proposal.state !== "approved") {
         throw new ApiError(409, "not_executable", "Proposal is not pending execution");
       }

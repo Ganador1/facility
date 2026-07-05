@@ -7,8 +7,8 @@ import { ApiError, notFound } from "../../errors.js";
 import type { Principal } from "../../types.js";
 import {
   AnyObject,
+  assertBareRowProjectScope,
   assertPermissionsGrantable,
-  assertProjectScope,
   assertRoleAssignable,
   definedFields,
   IdParams,
@@ -46,7 +46,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.get(
     "/v1/org",
     {
-      config: { permission: "org:read" },
+      config: { permission: "org:read", orgAdmin: true },
       schema: { response: { 200: AnyObject } },
     },
     async (request) => {
@@ -58,7 +58,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.patch(
     "/v1/org",
     {
-      config: { permission: "org:write", auditAction: "org.updated" },
+      config: { permission: "org:write", auditAction: "org.updated", orgAdmin: true },
       schema: {
         body: z.object({ name: z.string().optional(), settings: AnyObject.optional() }),
         response: { 200: AnyObject },
@@ -79,7 +79,10 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
 
   app.get(
     "/v1/members",
-    { config: { permission: "members:read" }, schema: { response: { 200: z.array(AnyObject) } } },
+    {
+      config: { permission: "members:read", orgAdmin: true },
+      schema: { response: { 200: z.array(AnyObject) } },
+    },
     async (request) => {
       const p = principal(request);
       return db
@@ -94,7 +97,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.post(
     "/v1/members",
     {
-      config: { permission: "members:write", auditAction: "member.added" },
+      config: { permission: "members:write", auditAction: "member.added", orgAdmin: true },
       schema: {
         body: z.object({ email: z.string().email(), roleId: z.string() }),
         response: { 200: AnyObject },
@@ -133,7 +136,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.patch(
     "/v1/members/:userId",
     {
-      config: { permission: "members:write", auditAction: "member.updated" },
+      config: { permission: "members:write", auditAction: "member.updated", orgAdmin: true },
       schema: {
         params: IdParams,
         body: z.object({ roleId: z.string() }),
@@ -161,7 +164,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.delete(
     "/v1/members/:userId",
     {
-      config: { permission: "members:write", auditAction: "member.removed" },
+      config: { permission: "members:write", auditAction: "member.removed", orgAdmin: true },
       schema: { params: IdParams, response: { 200: Ok } },
     },
     async (request) => {
@@ -176,7 +179,10 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
 
   app.get(
     "/v1/roles",
-    { config: { permission: "roles:read" }, schema: { response: { 200: z.array(AnyObject) } } },
+    {
+      config: { permission: "roles:read", orgAdmin: true },
+      schema: { response: { 200: z.array(AnyObject) } },
+    },
     async (request) => {
       const p = principal(request);
       return db
@@ -189,7 +195,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.post(
     "/v1/roles",
     {
-      config: { permission: "roles:write", auditAction: "role.created" },
+      config: { permission: "roles:write", auditAction: "role.created", orgAdmin: true },
       schema: {
         body: z.object({
           name: z.string(),
@@ -221,7 +227,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.patch(
     "/v1/roles/:roleId",
     {
-      config: { permission: "roles:write", auditAction: "role.updated" },
+      config: { permission: "roles:write", auditAction: "role.updated", orgAdmin: true },
       schema: {
         params: IdParams,
         body: z.object({
@@ -258,7 +264,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
   app.delete(
     "/v1/roles/:roleId",
     {
-      config: { permission: "roles:write", auditAction: "role.deleted" },
+      config: { permission: "roles:write", auditAction: "role.deleted", orgAdmin: true },
       schema: { params: IdParams, response: { 200: Ok } },
     },
     async (request) => {
@@ -347,7 +353,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
           .limit(1)
       )[0];
       if (!key) throw notFound("Key not found");
-      assertProjectScope(p, key.projectId);
+      assertBareRowProjectScope(p, key.projectId, "Key not found");
       await db
         .update(apiKeys)
         .set({ revokedAt: new Date() })

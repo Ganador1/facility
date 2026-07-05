@@ -75,6 +75,7 @@ export async function main(argv) {
     case "kickstart":
     case "upgrade":
     case "keys":
+    case "llm-requests":
       return runPlatformCommand(command, rest);
     case "--version":
     case "-v":
