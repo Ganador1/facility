@@ -248,6 +248,6 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0007_audit_project_id.sql");
+    ).toBe("0008_analytics_rollup_window_indexes.sql");
   });
 });

@@ -345,6 +345,45 @@ describe("watchtower", async () => {
     expect(overview.json().spendMtdCents).toBeGreaterThanOrEqual(55);
   });
 
+  it("incremental rollup rebuilds only the trailing window and preserves older days", async () => {
+    const project = await insertProject();
+    const agent = await insertAgent(project.id, "Windowed");
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600_000);
+    const oldDay = thirtyDaysAgo.toISOString().slice(0, 10);
+    await db.insert(runs).values({
+      id: newId("run"),
+      orgId,
+      projectId: project.id,
+      agentDefId: agent.id,
+      mode: "builder",
+      engine: "codex",
+      status: "succeeded",
+      trigger: {},
+      createdBy: { type: "system", name: "test" },
+      queuedAt: thirtyDaysAgo,
+      createdAt: thirtyDaysAgo,
+    });
+
+    // A full backfill materializes the 30-day-old day.
+    await rollupAnalytics(db, { sinceDays: 3650 });
+    const afterFull = await db
+      .select()
+      .from(analyticsDaily)
+      .where(and(eq(analyticsDaily.projectId, project.id), eq(analyticsDaily.day, oldDay)));
+    expect(afterFull.length).toBeGreaterThan(0);
+    expect(afterFull[0]?.runsStarted).toBe(1);
+
+    // The default narrow window must neither delete nor rebuild that old day —
+    // its predicate range excludes anything older than a few days.
+    await rollupAnalytics(db, { sinceDays: 3 });
+    const afterNarrow = await db
+      .select()
+      .from(analyticsDaily)
+      .where(and(eq(analyticsDaily.projectId, project.id), eq(analyticsDaily.day, oldDay)));
+    expect(afterNarrow.length).toBe(afterFull.length);
+    expect(afterNarrow[0]?.runsStarted).toBe(1);
+  });
+
   it("surfaces error issues in inbox while keeping items as proposals", async () => {
     const project = await insertProject();
     const type = (

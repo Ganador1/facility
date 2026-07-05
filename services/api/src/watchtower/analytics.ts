@@ -4,19 +4,38 @@ import type { AppConfig } from "../types.js";
 
 export type AnalyticsGroupBy = "day" | "agent" | "model";
 
-export async function runAnalyticsRollup(config: AppConfig) {
+// The scheduled rollup runs hourly. runs/llm_requests/outcomes are all
+// append-at-now (created_at / terminal_at are set at insert and never
+// backdated), so a day's bucket stops changing once that day passes — an
+// hourly full 90-day rebuild is pure waste. Rebuild only the trailing window,
+// which is index-supported (runs.created_at / outcomes.terminal_at). Widen it
+// (e.g. sinceDays: 3650) for a one-time backfill on imported/restored data.
+const DEFAULT_ROLLUP_WINDOW_DAYS = 3;
+
+function resolveWindowDays(raw: string | undefined): number {
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : DEFAULT_ROLLUP_WINDOW_DAYS;
+}
+
+export async function runAnalyticsRollup(config: AppConfig, options: { sinceDays?: number } = {}) {
   const { db, client } = createDb(config.databaseUrl);
   try {
-    await rollupAnalytics(db);
+    await rollupAnalytics(db, {
+      sinceDays: options.sinceDays ?? resolveWindowDays(process.env.ANALYTICS_ROLLUP_WINDOW_DAYS),
+    });
   } finally {
     await client.end();
   }
 }
 
-export async function rollupAnalytics(db: FacilityDb) {
+export async function rollupAnalytics(db: FacilityDb, options: { sinceDays?: number } = {}) {
+  const sinceDays = Math.max(1, Math.floor(options.sinceDays ?? DEFAULT_ROLLUP_WINDOW_DAYS));
+  // One bound reused across the DELETE and all three INSERT predicates so the
+  // deleted window and the rebuilt window are always identical.
+  const since = sql`(current_date - make_interval(days => ${sinceDays}::int))`;
   await db.execute(sql`
     delete from analytics_daily
-    where day >= (current_date - interval '90 days')::date
+    where day >= ${since}::date
   `);
   await db.execute(sql`
     insert into analytics_daily (
@@ -59,7 +78,7 @@ export async function rollupAnalytics(db: FacilityDb) {
         0::int as outcomes_one_shot
       from runs r
       left join agent_defs ad on ad.id = r.agent_def_id
-      where r.created_at >= (current_date - interval '90 days')::timestamptz
+      where r.created_at >= ${since}::timestamptz
       group by 1, 2, 3, 4, 5
 
       union all
@@ -83,7 +102,7 @@ export async function rollupAnalytics(db: FacilityDb) {
         0::int
       from llm_requests lr
       left join runs r on r.id = lr.run_id
-      where lr.created_at >= (current_date - interval '90 days')::timestamptz
+      where lr.created_at >= ${since}::timestamptz
       group by 1, 2, 3, 4, 5
 
       union all
@@ -108,7 +127,7 @@ export async function rollupAnalytics(db: FacilityDb) {
           where o.fate = 'merged' and o.review_rounds = 0 and o.fixup_commits = 0
         )::int
       from outcomes o
-      where o.terminal_at >= (current_date - interval '90 days')::timestamptz
+      where o.terminal_at >= ${since}::timestamptz
       group by 1, 2, 3, 4, 5
     ),
     grouped as (
