@@ -56,6 +56,7 @@ export async function runReadinessDoctor(input: {
     checkObjectStorage(input.config, input.orgId, now),
     checkSeedEssentials(input.db, input.orgId),
     checkGithubApp(input.config),
+    checkAuthConfig(input.config),
     checkAuditHashChain(input.db, input.orgId),
   ]);
   return {
@@ -237,6 +238,45 @@ function checkGithubApp(config: AppConfig): DoctorCheck {
     );
   }
   return pass("github_app", "GitHub App configuration", "Required GitHub App values are set.");
+}
+
+function checkAuthConfig(config: AppConfig): DoctorCheck {
+  const domain = Boolean(config.workosAuthkitDomain);
+  const audience = Boolean(config.mcpOauthAudience);
+  const workosConfigured = Boolean(
+    config.workosApiKey && config.workosClientId && config.workosAuthkitDomain,
+  );
+  // A half-configured OAuth resource server fails closed at runtime (JWT auth
+  // stays off), so surface it rather than reporting a false "ready".
+  if (audience && !domain) {
+    return fail(
+      "auth_config",
+      "Authentication configuration",
+      "MCP_OAUTH_AUDIENCE is set but WORKOS_AUTHKIT_DOMAIN is missing — OAuth JWT auth will not enable.",
+      "Set WORKOS_AUTHKIT_DOMAIN (the WorkOS AuthKit issuer) alongside MCP_OAUTH_AUDIENCE.",
+    );
+  }
+  if (!workosConfigured) {
+    return warn(
+      "auth_config",
+      "Authentication configuration",
+      "WorkOS SSO is not fully configured (session + dev-login still work).",
+      "Set WORKOS_API_KEY, WORKOS_CLIENT_ID, and WORKOS_AUTHKIT_DOMAIN for production SSO.",
+    );
+  }
+  if (!audience) {
+    return warn(
+      "auth_config",
+      "Authentication configuration",
+      "WorkOS AuthKit is configured but MCP_OAUTH_AUDIENCE is unset — interactive MCP OAuth is disabled (fak_ keys only).",
+      "Set MCP_OAUTH_AUDIENCE to enable OAuth 2.1 access-token auth for interactive MCP clients.",
+    );
+  }
+  return pass(
+    "auth_config",
+    "Authentication configuration",
+    "WorkOS SSO and the MCP OAuth audience are configured.",
+  );
 }
 
 async function checkAuditHashChain(db: Db, orgId: string): Promise<DoctorCheck> {
