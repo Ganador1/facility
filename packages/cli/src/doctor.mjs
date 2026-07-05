@@ -4,6 +4,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { getProfile, loadConfig } from "./platform-config.mjs";
 import { banner, fail, heading, item, ok, warn, dim } from "./ui.mjs";
 
 const REQUIRED = [
@@ -34,7 +35,14 @@ const REQUIRED = [
   "guards/run.mjs",
 ];
 
-export async function doctor(flags, version) {
+export async function doctor(flags, version, options = {}) {
+  const platform = platformTarget(flags, options);
+  if (!flags.local && platform) return platformDoctor(flags, version, platform, options);
+  if ((flags.url || flags.key || flags.profile) && !platform) {
+    console.log("facility doctor needs both --url and --key, or a saved login profile.");
+    return 2;
+  }
+
   const dir = flags.dir || process.cwd();
   banner(version);
 
@@ -104,4 +112,69 @@ export async function doctor(flags, version) {
   else item(`${dim(`${problems} problem${problems === 1 ? "" : "s"} found.`)}`);
   console.log("");
   return problems === 0 ? 0 : 1;
+}
+
+function platformTarget(flags, options) {
+  if (flags.url || flags.key) {
+    if (!flags.url || !flags.key) return null;
+    return { url: stripSlash(flags.url), key: flags.key, profileName: flags.profile || "adhoc" };
+  }
+  const config = options.config || loadConfig(options.configPath);
+  const { name, value } = getProfile(config, flags.profile);
+  if (!value?.url || !value?.key) return null;
+  return { url: stripSlash(value.url), key: value.key, profileName: name };
+}
+
+async function platformDoctor(flags, version, target, options) {
+  const stdout = options.stdout || process.stdout;
+  const fetchImpl = options.fetch || fetch;
+  const write = (line = "") => stdout.write(`${line}\n`);
+  if (!flags.json) {
+    write("");
+    write(`  facility v${version} — deployment readiness doctor`);
+    write("");
+    write(`Profile: ${target.profileName}`);
+    write(`API: ${target.url}`);
+    write("");
+  }
+  try {
+    const payload = await requestDoctor(fetchImpl, target);
+    if (flags.json) {
+      write(JSON.stringify(payload));
+      return payload.ok ? 0 : 1;
+    }
+    write("Readiness");
+    for (const check of payload.checks || []) {
+      const marker =
+        check.status === "pass" ? "PASS" : check.status === "warn" ? "WARN" : "FAIL";
+      write(`  [${marker}] ${check.label}`);
+      write(`         ${check.message}`);
+      if (check.remediation) write(`         Fix: ${check.remediation}`);
+    }
+    write("");
+    write(payload.ok ? "Ready for production traffic." : "Not ready for production traffic.");
+    write("");
+    return payload.ok ? 0 : 1;
+  } catch (error) {
+    write(error.message || "facility doctor failed");
+    return error.status === 401 ? 2 : 1;
+  }
+}
+
+async function requestDoctor(fetchImpl, target) {
+  const response = await fetchImpl(new URL(`${target.url}/v1/admin/doctor`), {
+    method: "GET",
+    headers: { authorization: `Bearer ${target.key}` },
+  });
+  const payload = await response.json().catch(() => undefined);
+  if (!response.ok) {
+    const error = new Error(payload?.error?.message || `Facility API returned ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+function stripSlash(value) {
+  return String(value).replace(/\/$/, "");
 }

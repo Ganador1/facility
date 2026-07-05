@@ -102,6 +102,7 @@ export class DockerSandboxDriver implements SandboxDriver {
       // container is on its way out — destroy is idempotent.
       if (!isDockerNotFound(error) && !isRemovalInProgress(error)) throw error;
     }
+    await this.waitForRemoval(ref);
   }
 
   async listFacilityContainers(): Promise<Array<{ ref: string; runId: string }>> {
@@ -127,6 +128,24 @@ export class DockerSandboxDriver implements SandboxDriver {
       this.docker.modem.followProgress(stream, (error) => (error ? reject(error) : resolve()));
     });
   }
+
+  private async waitForRemoval(ref: string) {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      try {
+        await this.docker.getContainer(ref).inspect();
+      } catch (error) {
+        if (isDockerNotFound(error)) return;
+        throw error;
+      }
+      await sleep(100);
+    }
+    throw new Error(`Docker container ${ref} was not removed before timeout`);
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function dockerNetworkMode(network: Record<string, unknown> | undefined): {

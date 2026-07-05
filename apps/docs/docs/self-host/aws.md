@@ -28,3 +28,11 @@ Any-cloud note: nothing in the services is AWS-specific — this module is a
 reference, not a requirement. The sandbox driver seam (`docker` | `aws`) is
 where compute specifics live; a Kubernetes Job driver is the documented
 extension point.
+
+After the ECS services roll, run:
+
+```bash
+facility doctor --url https://<api-host> --key fak_...
+```
+
+Do not send production traffic until the doctor reports no `FAIL` checks.

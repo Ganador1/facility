@@ -7,6 +7,8 @@ import type {
   CreateRegistryItemRequest,
   DecideProposalRequest,
   FacilityRouteBody,
+  FacilityRouteMethod,
+  FacilityRoutePath,
   FacilityRouteResponse,
   InboxResponse,
   LlmRequestPage,
@@ -30,7 +32,10 @@ import type {
 
 export type * from "./contracts.js";
 
-type HttpMethod = "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
+type RouteOptions<Method extends FacilityRouteMethod, Path extends FacilityRoutePath<Method>> = {
+  body?: FacilityRouteBody<Method, Path>;
+  query?: QueryParams;
+};
 
 export type FacilityClientOptions = {
   baseUrl: string;
@@ -49,19 +54,19 @@ export class FacilityClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
-  request<Method extends HttpMethod, Path extends string>(
+  request<Method extends FacilityRouteMethod, Path extends FacilityRoutePath<Method>>(
     method: Method,
     path: Path,
-    options: { body?: FacilityRouteBody<Method, Path>; query?: QueryParams } = {},
+    options: RouteOptions<Method, Path> = {},
   ): Promise<FacilityRouteResponse<Method, Path>> {
     return this.send(method, path, options);
   }
 
-  get<Path extends string>(path: Path, query?: QueryParams) {
+  get<Path extends FacilityRoutePath<"GET">>(path: Path, query?: QueryParams) {
     return this.send<undefined, FacilityRouteResponse<"GET", Path>>("GET", path, { query });
   }
 
-  post<Path extends string>(path: Path, body?: FacilityRouteBody<"POST", Path>) {
+  post<Path extends FacilityRoutePath<"POST">>(path: Path, body?: FacilityRouteBody<"POST", Path>) {
     return this.send<FacilityRouteBody<"POST", Path>, FacilityRouteResponse<"POST", Path>>(
       "POST",
       path,
@@ -69,7 +74,10 @@ export class FacilityClient {
     );
   }
 
-  patch<Path extends string>(path: Path, body: FacilityRouteBody<"PATCH", Path>) {
+  patch<Path extends FacilityRoutePath<"PATCH">>(
+    path: Path,
+    body: FacilityRouteBody<"PATCH", Path>,
+  ) {
     return this.send<FacilityRouteBody<"PATCH", Path>, FacilityRouteResponse<"PATCH", Path>>(
       "PATCH",
       path,
@@ -77,11 +85,7 @@ export class FacilityClient {
     );
   }
 
-  put<Path extends string, Body = unknown, Response = unknown>(path: Path, body: Body) {
-    return this.send<Body, Response>("PUT", path, { body });
-  }
-
-  delete<Path extends string>(path: Path) {
+  delete<Path extends FacilityRoutePath<"DELETE">>(path: Path) {
     return this.send<undefined, FacilityRouteResponse<"DELETE", Path>>("DELETE", path);
   }
 
@@ -207,7 +211,7 @@ export class FacilityClient {
   }
 
   private async send<Body, Response>(
-    method: HttpMethod,
+    method: FacilityRouteMethod,
     path: string,
     options: { body?: Body; query?: QueryParams } = {},
   ): Promise<Response> {

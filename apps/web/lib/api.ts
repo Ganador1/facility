@@ -1,23 +1,17 @@
 import type {
-  ApiKey,
   AuditEvent,
-  AuditTail,
-  Budget,
   ConnectProjectRepoRequest,
   CreateProjectRequest,
-  InboxResponse,
-  Me,
-  MemberRow,
-  Project,
-  ProjectRepo,
+  FacilityRouteBody,
+  FacilityRouteMethod,
+  FacilityRoutePath,
+  FacilityRouteResponse,
+  KickstartAnswers,
   Proposal,
-  Provider,
-  RegistryItem,
-  Role,
-  Run,
-  RunEvent,
+  QueryParams,
   SpendRow,
 } from "@facility/sdk";
+import { FacilityClient } from "@facility/sdk";
 import { cookies } from "next/headers";
 
 export type {
@@ -26,6 +20,9 @@ export type {
   Budget,
   ConnectProjectRepoRequest,
   CreateProjectRequest,
+  KickstartAnswers,
+  KickstartPreview,
+  KickstartResult,
   Me,
   Member,
   MemberRow,
@@ -48,146 +45,90 @@ export type {
 const API_URL = process.env.FACILITY_API_URL ?? "http://localhost:4400";
 export const SESSION_COOKIE = "facility_session";
 
-export type KickstartAnswers = {
-  defaultBranch?: string;
-  provisionCmd?: string;
-  checkCmds?: string[];
-  modules?: string[];
-  modelTier?: string;
-  board?: { org: string; project: string | number } | null;
-  execution_lane?: Record<string, "repo" | "platform">;
-};
-
-export type KickstartPreview = {
-  detection?: {
-    defaultBranch?: string;
-    packageManager?: "pnpm" | "yarn" | "npm" | "none";
-    checks?: string[];
-    provision?: string;
-    org?: string;
-    workflowNames?: string[];
-    suggestedModules?: string[];
-    existing?: {
-      agentsMd?: boolean;
-      claudeMd?: boolean;
-      claudeSettings?: boolean;
-      standard?: boolean;
-    };
-  };
-  files: Array<{
-    path: string;
-    size: number;
-    sha256: string;
-    mode?: string;
-    action?: "create" | "update" | string;
-  }>;
-  skipped?: string[];
-};
-
-export type KickstartResult = {
-  branch?: string;
-  commitSha?: string;
-  pr?: { number?: number; url?: string; html_url?: string; title?: string };
-  files?: Array<{ path: string; content?: string; mode?: string }>;
-  manifest?: Record<string, unknown>;
-};
-
-export type AgentDef = {
-  id: string;
-  projectId: string;
-  name: string;
-  engine: string;
-  enabled: boolean;
-};
-
 export type ApiResult<T> =
   | { ok: true; data: T }
   | { ok: false; status: number; offline: boolean; message: string };
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<T>> {
+async function apiFetch<Method extends FacilityRouteMethod, Path extends FacilityRoutePath<Method>>(
+  method: Method,
+  path: Path,
+  options: { body?: FacilityRouteBody<Method, Path>; query?: QueryParams } = {},
+): Promise<ApiResult<FacilityRouteResponse<Method, Path>>> {
   const jar = await cookies();
   const session = jar.get(SESSION_COOKIE);
+  const client = new FacilityClient({
+    baseUrl: API_URL,
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      if (session) headers.set("cookie", `${SESSION_COOKIE}=${session.value}`);
+      return fetch(input, { ...init, headers, cache: "no-store" });
+    },
+  });
   try {
-    const res = await fetch(`${API_URL}${path}`, {
-      ...init,
-      headers: {
-        "content-type": "application/json",
-        ...(session ? { cookie: `${SESSION_COOKIE}=${session.value}` } : {}),
-        ...init?.headers,
-      },
-      cache: "no-store",
-    });
-    if (!res.ok) {
-      let message = res.statusText;
-      try {
-        const body = (await res.json()) as { error?: { message?: string } };
-        message = body.error?.message ?? message;
-      } catch {
-        // non-JSON error body — keep statusText
-      }
-      return { ok: false, status: res.status, offline: false, message };
-    }
-    return { ok: true, data: (await res.json()) as T };
-  } catch {
-    return { ok: false, status: 0, offline: true, message: "control plane unreachable" };
+    const data = await client.request(method, path, options);
+    return { ok: true, data };
+  } catch (error) {
+    const status =
+      typeof (error as { status?: unknown }).status === "number"
+        ? (error as { status: number }).status
+        : 0;
+    return {
+      ok: false,
+      status,
+      offline: status === 0,
+      message: error instanceof Error ? error.message : "control plane unreachable",
+    };
   }
+}
+
+function queryFromParams(params = ""): QueryParams {
+  const query = new URLSearchParams(params.startsWith("?") ? params.slice(1) : params);
+  return Object.fromEntries(query.entries());
 }
 
 // The control plane returns bare arrays for list endpoints (and {bucket,
 // cost_cents} rows for spend). This client mirrors those shapes exactly.
 export const api = {
-  me: () => apiFetch<Me>("/v1/me"),
-  projects: () => apiFetch<Project[]>("/v1/projects"),
-  createProject: (body: CreateProjectRequest) =>
-    apiFetch<Project>("/v1/projects", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  project: (id: string) => apiFetch<Project>(`/v1/projects/${id}`),
-  projectRepos: (projectId: string) => apiFetch<ProjectRepo[]>(`/v1/projects/${projectId}/repos`),
+  me: () => apiFetch("GET", "/v1/me"),
+  projects: () => apiFetch("GET", "/v1/projects"),
+  createProject: (body: CreateProjectRequest) => apiFetch("POST", "/v1/projects", { body }),
+  project: (id: string) => apiFetch("GET", `/v1/projects/${id}`),
+  projectRepos: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/repos`),
   connectProjectRepo: (projectId: string, body: ConnectProjectRepoRequest) =>
-    apiFetch<ProjectRepo>(`/v1/projects/${projectId}/repos`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+    apiFetch("POST", `/v1/projects/${projectId}/repos`, { body }),
   kickstartPreview: (projectId: string, repoId: string) =>
-    apiFetch<KickstartPreview>(
-      `/v1/projects/${projectId}/kickstart/preview?repoId=${encodeURIComponent(repoId)}`,
-    ),
+    apiFetch("GET", `/v1/projects/${projectId}/kickstart/preview`, { query: { repoId } }),
   kickstart: (projectId: string, body: { repoId: string; answers: KickstartAnswers; mode: "pr" }) =>
-    apiFetch<KickstartResult>(`/v1/projects/${projectId}/kickstart`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  projectAgents: (projectId: string) => apiFetch<AgentDef[]>(`/v1/projects/${projectId}/agents`),
+    apiFetch("POST", `/v1/projects/${projectId}/kickstart`, { body }),
+  projectAgents: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/agents`),
   runs: (projectId: string, params = "") =>
-    apiFetch<Run[]>(`/v1/projects/${projectId}/runs${params}`),
-  allRuns: (params = "") =>
-    apiFetch<(Run & { project: Pick<Project, "id" | "name" | "slug"> })[]>(`/v1/runs${params}`),
-  run: (id: string) => apiFetch<Run>(`/v1/runs/${id}`),
+    apiFetch("GET", `/v1/projects/${projectId}/runs`, { query: queryFromParams(params) }),
+  allRuns: (params = "") => apiFetch("GET", "/v1/runs", { query: queryFromParams(params) }),
+  run: (id: string) => apiFetch("GET", `/v1/runs/${id}`),
   runEvents: (id: string, afterSeq = 0) =>
-    apiFetch<RunEvent[]>(`/v1/runs/${id}/events?afterSeq=${afterSeq}`),
+    apiFetch("GET", `/v1/runs/${id}/events`, { query: { afterSeq } }),
   // GET /v1/inbox returns { items, proposals, issues } — unwrap to the
   // proposals array both consumers expect (guarded so a bare array also works).
   inbox: async (): Promise<ApiResult<Proposal[]>> => {
-    const res = await apiFetch<Proposal[] | InboxResponse>("/v1/inbox?state=open");
+    const res = await apiFetch("GET", "/v1/inbox", { query: { state: "open" } });
     if (!res.ok) return res;
     const d = res.data;
     return { ok: true, data: Array.isArray(d) ? d : (d.proposals ?? d.items ?? []) };
   },
-  proposal: (id: string) => apiFetch<Proposal & { events?: unknown[] }>(`/v1/proposals/${id}`),
+  proposal: (id: string) => apiFetch("GET", `/v1/proposals/${id}`),
   audit: async (params = ""): Promise<ApiResult<AuditEvent[]>> => {
-    const res = await apiFetch<AuditEvent[] | AuditTail>(`/v1/audit${params}`);
+    const res = await apiFetch("GET", "/v1/audit", { query: queryFromParams(params) });
     if (!res.ok) return res;
     return { ok: true, data: Array.isArray(res.data) ? res.data : res.data.items };
   },
-  registry: (params = "") => apiFetch<RegistryItem[]>(`/v1/registry/items${params}`),
-  spend: (params = "") => apiFetch<SpendRow[]>(`/v1/spend${params}`),
-  members: () => apiFetch<MemberRow[]>("/v1/members"),
-  roles: () => apiFetch<Role[]>("/v1/roles"),
-  keys: () => apiFetch<ApiKey[]>("/v1/keys"),
-  providers: () => apiFetch<Provider[]>("/v1/providers"),
-  budgets: () => apiFetch<Budget[]>("/v1/budgets"),
+  registry: (params = "") =>
+    apiFetch("GET", "/v1/registry/items", { query: queryFromParams(params) }),
+  spend: (params = "") => apiFetch("GET", "/v1/spend", { query: queryFromParams(params) }),
+  members: () => apiFetch("GET", "/v1/members"),
+  roles: () => apiFetch("GET", "/v1/roles"),
+  keys: () => apiFetch("GET", "/v1/keys"),
+  providers: () => apiFetch("GET", "/v1/providers"),
+  budgets: () => apiFetch("GET", "/v1/budgets"),
 };
 
 /** Sum + descending groups from the spend endpoint's raw rows. */

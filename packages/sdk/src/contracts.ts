@@ -1,4 +1,5 @@
 import type {
+  agentDefs,
   apiKeys,
   auditEvents,
   budgets,
@@ -15,6 +16,7 @@ import type {
   roles,
   runEvents,
   runs,
+  sandboxProfiles,
   users,
 } from "@facility/db";
 
@@ -60,6 +62,8 @@ type ProviderRow = typeof providerCredentials.$inferSelect;
 type AuditEventRow = typeof auditEvents.$inferSelect;
 type LlmRequestRow = typeof llmRequests.$inferSelect;
 type OrgRow = typeof orgs.$inferSelect;
+type AgentDefRow = typeof agentDefs.$inferSelect;
+type SandboxProfileRow = typeof sandboxProfiles.$inferSelect;
 
 export type ProjectStatus = "active" | "archived" | string;
 export type RunStatus =
@@ -150,6 +154,20 @@ export type ApiKey = Serialized<Omit<ApiKeyRow, "hash">> & {
 export type Provider = Serialized<
   Pick<ProviderRow, "id" | "provider" | "name" | "baseUrl" | "createdAt">
 >;
+
+export type AgentDef = Serialized<Omit<AgentDefRow, "model" | "triggers" | "permissions">> & {
+  model: JsonObject;
+  triggers: JsonObject[];
+  permissions: string[];
+};
+
+export type SandboxProfile = Serialized<
+  Omit<SandboxProfileRow, "setup" | "resources" | "network">
+> & {
+  setup: JsonObject;
+  resources: JsonObject;
+  network: JsonObject;
+};
 
 export type AuditActor = { type: string; id: string; name?: string };
 export type AuditTarget = { type: string; id: string } | null;
@@ -268,53 +286,144 @@ export type InboxResponse = {
 export type AuditTail = { items: AuditEvent[]; nextCursor: number | null };
 export type LlmRequestPage = { items: LlmRequest[]; nextCursor: string | null };
 export type LlmRequestEnvelope = { llmRequest: LlmRequest; envelope: unknown };
-
-export type FacilityGetRoutes = {
-  "/v1/me": Me;
-  "/v1/projects": Project[];
-  "/v1/runs": RunWithProject[];
-  "/v1/inbox": InboxResponse;
-  "/v1/audit": AuditTail;
-  "/v1/registry/items": RegistryItem[];
-  "/v1/spend": SpendRow[];
-  "/v1/members": MemberRow[];
-  "/v1/roles": Role[];
-  "/v1/keys": ApiKey[];
-  "/v1/providers": Provider[];
-  "/v1/budgets": Budget[];
-  "/v1/llm-requests": LlmRequestPage;
+export type DoctorCheck = {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail";
+  ok: boolean;
+  message: string;
+  remediation?: string;
 };
+export type DoctorResponse = { ok: boolean; generatedAt: string; checks: DoctorCheck[] };
+
+type Route<Response, Body = never> = { response: Response; body: Body };
+
+export type FacilityGetRoutePath =
+  | "/v1/me"
+  | "/v1/org"
+  | "/v1/projects"
+  | `/v1/projects/${string}`
+  | `/v1/projects/${string}/repos`
+  | `/v1/projects/${string}/kickstart/preview`
+  | `/v1/projects/${string}/agents`
+  | `/v1/projects/${string}/runs`
+  | "/v1/runs"
+  | `/v1/runs/${string}`
+  | `/v1/runs/${string}/events`
+  | "/v1/inbox"
+  | `/v1/proposals/${string}`
+  | "/v1/audit"
+  | "/v1/audit/verify"
+  | "/v1/admin/doctor"
+  | "/v1/registry/items"
+  | `/v1/registry/items/${string}`
+  | "/v1/spend"
+  | "/v1/members"
+  | "/v1/roles"
+  | "/v1/keys"
+  | "/v1/providers"
+  | "/v1/budgets"
+  | `/v1/budgets/${string}`
+  | "/v1/llm-requests"
+  | `/v1/llm-requests/${string}/envelope`
+  | "/v1/sandbox-profiles";
+
+export type FacilityGetRouteResponse<Path extends FacilityGetRoutePath> = Path extends "/v1/me"
+  ? Me
+  : Path extends "/v1/org"
+    ? Org | null
+    : Path extends "/v1/projects"
+      ? Project[]
+      : Path extends `/v1/projects/${string}/repos`
+        ? ProjectRepo[]
+        : Path extends `/v1/projects/${string}/kickstart/preview`
+          ? KickstartPreview
+          : Path extends `/v1/projects/${string}/agents`
+            ? AgentDef[]
+            : Path extends `/v1/projects/${string}/runs`
+              ? Run[]
+              : Path extends `/v1/projects/${string}`
+                ? Project
+                : Path extends "/v1/runs"
+                  ? RunWithProject[]
+                  : Path extends `/v1/runs/${string}/events`
+                    ? RunEvent[]
+                    : Path extends `/v1/runs/${string}`
+                      ? Run
+                      : Path extends "/v1/inbox"
+                        ? InboxResponse
+                        : Path extends `/v1/proposals/${string}`
+                          ? ProposalWithEvents
+                          : Path extends "/v1/audit"
+                            ? AuditTail
+                            : Path extends "/v1/audit/verify"
+                              ? { ok: boolean; firstBreakSeq: number | null }
+                              : Path extends "/v1/admin/doctor"
+                                ? DoctorResponse
+                                : Path extends "/v1/registry/items"
+                                  ? RegistryItem[]
+                                  : Path extends `/v1/registry/items/${string}`
+                                    ? RegistryItemWithVersions
+                                    : Path extends "/v1/spend"
+                                      ? SpendRow[]
+                                      : Path extends "/v1/members"
+                                        ? MemberRow[]
+                                        : Path extends "/v1/roles"
+                                          ? Role[]
+                                          : Path extends "/v1/keys"
+                                            ? ApiKey[]
+                                            : Path extends "/v1/providers"
+                                              ? Provider[]
+                                              : Path extends "/v1/budgets"
+                                                ? Budget[]
+                                                : Path extends `/v1/budgets/${string}`
+                                                  ? Budget
+                                                  : Path extends "/v1/llm-requests"
+                                                    ? LlmRequestPage
+                                                    : Path extends `/v1/llm-requests/${string}/envelope`
+                                                      ? LlmRequestEnvelope
+                                                      : Path extends "/v1/sandbox-profiles"
+                                                        ? SandboxProfile[]
+                                                        : never;
 
 export type FacilityPostRoutes = {
-  "/v1/projects": { body: CreateProjectRequest; response: Project };
+  "/v1/projects": Route<Project, CreateProjectRequest>;
   [path: `/v1/projects/${string}/repos`]: {
     body: ConnectProjectRepoRequest;
     response: ProjectRepo;
   };
-  [path: `/v1/projects/${string}/runs`]: { body: TriggerRunRequest; response: Run };
-  [path: `/v1/runs/${string}/cancel`]: { body: undefined; response: Run };
-  [path: `/v1/runs/${string}/steer`]: { body: SteerRunRequest; response: unknown };
-  "/v1/proposals": { body: CreateProposalRequest; response: Proposal };
-  "/v1/mcp/tool-proposals": { body: McpToolProposalRequest; response: Proposal };
+  [path: `/v1/projects/${string}/kickstart`]: Route<
+    KickstartResult,
+    { repoId: string; answers: KickstartAnswers; mode: "pr" }
+  >;
+  [path: `/v1/projects/${string}/upgrade`]: Route<
+    JsonObject,
+    { repoId: string; toVersion?: string }
+  >;
+  [path: `/v1/projects/${string}/runs`]: Route<Run, TriggerRunRequest>;
+  [path: `/v1/runs/${string}/cancel`]: Route<Run, undefined>;
+  [path: `/v1/runs/${string}/steer`]: Route<unknown, SteerRunRequest>;
+  "/v1/proposals": Route<Proposal, CreateProposalRequest>;
+  "/v1/mcp/tool-proposals": Route<Proposal, McpToolProposalRequest>;
   [path: `/v1/proposals/${string}/decide`]: {
     body: DecideProposalRequest;
     response: Proposal;
   };
-  "/v1/budgets": { body: CreateBudgetRequest; response: Budget };
-  "/v1/registry/items": { body: CreateRegistryItemRequest; response: RegistryItemWithVersions };
+  "/v1/budgets": Route<Budget, CreateBudgetRequest>;
+  "/v1/registry/items": Route<RegistryItemWithVersions, CreateRegistryItemRequest>;
   [path: `/v1/registry/items/${string}/versions`]: {
     body: CreateRegistryVersionRequest;
     response: RegistryVersion;
   };
-  [path: `/v1/registry/versions/${string}/publish`]: { body: undefined; response: RegistryVersion };
+  [path: `/v1/registry/versions/${string}/publish`]: Route<RegistryVersion, undefined>;
   [path: `/v1/registry/versions/${string}/deprecate`]: {
     body: undefined;
     response: RegistryVersion;
   };
-  "/v1/members": { body: AddMemberRequest; response: Serialized<OrgMemberRow> };
-  "/v1/roles": { body: CreateRoleRequest; response: Role };
-  "/v1/keys": { body: CreateApiKeyRequest; response: ApiKey };
-  "/v1/providers": { body: CreateProviderRequest; response: Provider | null };
+  "/v1/members": Route<Serialized<OrgMemberRow>, AddMemberRequest>;
+  "/v1/roles": Route<Role, CreateRoleRequest>;
+  "/v1/keys": Route<ApiKey, CreateApiKeyRequest>;
+  "/v1/providers": Route<Provider | null, CreateProviderRequest>;
 };
 
 export type FacilityPatchRoutes = {
@@ -328,58 +437,89 @@ export type FacilityPatchRoutes = {
 };
 
 export type FacilityDeleteRoutes = {
-  [path: `/v1/projects/${string}`]: { ok: boolean };
-  [path: `/v1/budgets/${string}`]: { ok: boolean };
-  [path: `/v1/members/${string}`]: { ok: boolean };
-  [path: `/v1/roles/${string}`]: { ok: boolean };
-  [path: `/v1/keys/${string}`]: { ok: boolean };
-  [path: `/v1/providers/${string}`]: { ok: boolean };
+  [path: `/v1/projects/${string}`]: Route<{ ok: boolean }>;
+  [path: `/v1/budgets/${string}`]: Route<{ ok: boolean }>;
+  [path: `/v1/members/${string}`]: Route<{ ok: boolean }>;
+  [path: `/v1/roles/${string}`]: Route<{ ok: boolean }>;
+  [path: `/v1/keys/${string}`]: Route<{ ok: boolean }>;
+  [path: `/v1/providers/${string}`]: Route<{ ok: boolean }>;
 };
 
-export type FacilityGetRouteResponse<Path extends string> = Path extends keyof FacilityGetRoutes
-  ? FacilityGetRoutes[Path]
-  : Path extends `/v1/projects/${string}/repos`
-    ? ProjectRepo[]
-    : Path extends `/v1/projects/${string}/runs`
-      ? Run[]
-      : Path extends `/v1/projects/${string}`
-        ? Project
-        : Path extends `/v1/runs/${string}/events`
-          ? RunEvent[]
-          : Path extends `/v1/runs/${string}`
-            ? Run
-            : Path extends `/v1/proposals/${string}`
-              ? ProposalWithEvents
-              : Path extends `/v1/registry/items/${string}`
-                ? RegistryItemWithVersions
-                : Path extends `/v1/budgets/${string}`
-                  ? Budget
-                  : Path extends `/v1/llm-requests/${string}/envelope`
-                    ? LlmRequestEnvelope
-                    : unknown;
+export type FacilityRouteMap = {
+  GET: never;
+  POST: FacilityPostRoutes;
+  PATCH: FacilityPatchRoutes;
+  DELETE: FacilityDeleteRoutes;
+};
 
-export type FacilityRouteResponse<Method extends string, Path extends string> = Method extends "GET"
-  ? FacilityGetRouteResponse<Path>
-  : Method extends "POST"
-    ? Path extends keyof FacilityPostRoutes
-      ? FacilityPostRoutes[Path]["response"]
-      : unknown
-    : Method extends "PATCH"
-      ? Path extends keyof FacilityPatchRoutes
-        ? FacilityPatchRoutes[Path]["response"]
-        : unknown
-      : Method extends "DELETE"
-        ? Path extends keyof FacilityDeleteRoutes
-          ? FacilityDeleteRoutes[Path]
-          : unknown
-        : unknown;
+export type FacilityRouteMethod = keyof FacilityRouteMap;
+export type FacilityRoutePath<Method extends FacilityRouteMethod> = Method extends "GET"
+  ? FacilityGetRoutePath
+  : Extract<keyof FacilityRouteMap[Method], string>;
 
-export type FacilityRouteBody<Method extends string, Path extends string> = Method extends "POST"
+type FacilityRouteSpec<
+  Method extends FacilityRouteMethod,
+  Path extends FacilityRoutePath<Method>,
+> = Method extends "POST"
   ? Path extends keyof FacilityPostRoutes
-    ? FacilityPostRoutes[Path]["body"]
-    : unknown
+    ? FacilityPostRoutes[Path]
+    : never
   : Method extends "PATCH"
     ? Path extends keyof FacilityPatchRoutes
-      ? FacilityPatchRoutes[Path]["body"]
-      : unknown
-    : unknown;
+      ? FacilityPatchRoutes[Path]
+      : never
+    : Method extends "DELETE"
+      ? Path extends keyof FacilityDeleteRoutes
+        ? FacilityDeleteRoutes[Path]
+        : never
+      : never;
+
+export type FacilityRouteResponse<
+  Method extends FacilityRouteMethod,
+  Path extends FacilityRoutePath<Method>,
+> = Method extends "GET"
+  ? Path extends FacilityGetRoutePath
+    ? FacilityGetRouteResponse<Path>
+    : never
+  : FacilityRouteSpec<Method, Path> extends Route<infer Response, never> | Route<infer Response>
+    ? Response
+    : never;
+
+export type FacilityRouteBody<
+  Method extends FacilityRouteMethod,
+  Path extends FacilityRoutePath<Method>,
+> = Method extends "GET"
+  ? never
+  : FacilityRouteSpec<Method, Path> extends Route<unknown, infer Body>
+    ? Body
+    : never;
+
+export type KickstartAnswers = {
+  defaultBranch?: string;
+  provisionCmd?: string;
+  checkCmds?: string[];
+  modules?: string[];
+  modelTier?: string;
+  board?: { org: string; project: string | number } | null;
+  execution_lane?: Record<string, "repo" | "platform">;
+};
+
+export type KickstartPreview = {
+  detection?: JsonObject;
+  files: Array<{
+    path: string;
+    size: number;
+    sha256: string;
+    mode?: string;
+    action?: string;
+  }>;
+  skipped?: string[];
+};
+
+export type KickstartResult = {
+  branch?: string;
+  commitSha?: string;
+  pr?: { number?: number; url?: string; html_url?: string; title?: string };
+  files?: Array<{ path: string; content?: string; mode?: string }>;
+  manifest?: JsonObject;
+};

@@ -21,6 +21,16 @@ Open `http://localhost:3400`, sign in with **dev sign in** (enabled by
 `FACILITY_INSECURE_DEV=1` — refused in production builds), and you're in the
 seeded organization.
 
+For a production-like check, issue an owner/admin API key and run:
+
+```bash
+facility doctor --url http://localhost:4400 --key fak_...
+```
+
+The command calls `/v1/admin/doctor` and prints the deployment checklist:
+database and migrations, object-store envelope round trip, seed essentials,
+GitHub App configuration, and audit hash-chain verification.
+
 ## What's running
 
 | service | port | role |

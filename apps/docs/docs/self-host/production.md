@@ -18,6 +18,42 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
   WorkOS credentials, GitHub App credentials.
 - **TLS + a public URL** for the api (webhooks, OAuth callbacks) and web.
 
+## Production deploy sequence
+
+1. Build and publish immutable images for `api`, `worker`, `gateway`, and
+   `web`.
+2. Provision Postgres and object storage. Set `DATABASE_URL`, `S3_BUCKET`,
+   and either `S3_ENDPOINT` for S3-compatible stores or `AWS_REGION` for AWS
+   S3.
+3. Load secrets into the runtime: `SECRET_MASTER_KEY`, WorkOS variables, and
+   the GitHub App variables when repo automation is enabled.
+4. Run migrations once, before app traffic:
+
+   ```bash
+   pnpm --filter @facility/db migrate
+   ```
+
+5. Seed bundled roles, action types, registry essentials, and the default
+   sandbox profile:
+
+   ```bash
+   FACILITY_SEED_DEMO=0 pnpm --filter @facility/db seed
+   ```
+
+6. Start or roll the services in this order: `api`, `worker`, `gateway`,
+   `web`.
+7. Issue an owner/admin API key from the web settings page or bootstrap
+   channel, then run the go/no-go check:
+
+   ```bash
+   facility doctor --url https://<api-host> --key fak_...
+   ```
+
+   Production is ready only when the doctor reports no `FAIL` checks. The
+   command verifies database connectivity and migrations, object-store
+   envelope write/read, seed essentials, GitHub App env completeness when
+   enabled, and the org audit hash chain.
+
 ## WorkOS SSO
 
 Production authentication is WorkOS AuthKit (the dev-login path refuses to
@@ -50,4 +86,5 @@ environment** — no third-party App trust required):
 - Sandboxes on an isolated network segment; egress per profile.
 - Backups: Postgres PITR + object-store lifecycle; audit retention per your
   compliance window.
-- Run `facility doctor` (CLI) against the deployment for the wired-up check.
+- Keep `facility doctor --url https://<api-host> --key fak_...` in the release
+  checklist after every deploy and migration.

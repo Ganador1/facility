@@ -1,5 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { AppConfig } from "../types.js";
+import { registerAdminDoctorRoutes } from "./v1/admin-doctor.js";
 import { registerAgentsSandboxesRoutes } from "./v1/agents-sandboxes.js";
 import { registerHitlRoutes } from "./v1/hitl.js";
 import { registerAnalyticsRoutes, registerIssuesAuditRoutes } from "./v1/issues-audit-analytics.js";
@@ -31,4 +32,5 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
   await registerIssuesAuditRoutes(app, context);
   await registerKbTasksRoutes(app, context);
   await registerAgentsSandboxesRoutes(app, context);
+  await registerAdminDoctorRoutes(app, context);
 }

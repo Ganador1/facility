@@ -1,10 +1,11 @@
 import { createHash, createHmac } from "node:crypto";
 import { promisify } from "node:util";
-import { gunzip } from "node:zlib";
+import { gunzip, gzip } from "node:zlib";
 import { ApiError } from "./errors.js";
 import type { AppConfig } from "./types.js";
 
 const gunzipAsync = promisify(gunzip);
+const gzipAsync = promisify(gzip);
 const EMPTY_SHA256 = sha256Hex("");
 
 type S3Ref = {
@@ -31,6 +32,39 @@ export async function readEnvelopeObject(config: AppConfig, uri: string | null |
       ? await maybeGunzip(buffer)
       : buffer;
   return JSON.parse(body.toString("utf8")) as unknown;
+}
+
+export async function writeEnvelopeObject(input: {
+  config: AppConfig;
+  orgId: string;
+  requestId: string;
+  payload: unknown;
+  now?: Date;
+}) {
+  if (!input.config.s3Bucket) {
+    throw new ApiError(500, "envelope_store_unconfigured", "S3_BUCKET is required");
+  }
+  const key = envelopeKey(input.orgId, input.now ?? new Date(), input.requestId);
+  const body = await gzipAsync(Buffer.from(JSON.stringify(input.payload)));
+  const response = input.config.s3Endpoint
+    ? await putEndpointObject(input.config, key, body)
+    : await putAwsObject(input.config, key, body);
+  if (!response.ok) {
+    throw new ApiError(502, "envelope_write_failed", `Envelope store returned ${response.status}`);
+  }
+  return `s3://${input.config.s3Bucket}/${key}`;
+}
+
+export async function verifyEnvelopeRoundTrip(input: {
+  config: AppConfig;
+  orgId: string;
+  requestId: string;
+  payload: unknown;
+  now?: Date;
+}) {
+  const uri = await writeEnvelopeObject(input);
+  const loaded = await readEnvelopeObject(input.config, uri);
+  return { uri, loaded };
 }
 
 async function maybeGunzip(buffer: Buffer) {
@@ -66,6 +100,18 @@ async function getEndpointObject(config: AppConfig, ref: S3Ref) {
   return fetch(url, { method: "GET", headers });
 }
 
+async function putEndpointObject(config: AppConfig, key: string, body: Buffer) {
+  const endpoint = config.s3Endpoint?.replace(/\/$/, "");
+  const url = `${endpoint}/${config.s3Bucket}/${encodeS3Path(key)}`;
+  const headers: Record<string, string> = envelopeHeaders();
+  if (config.s3AccessKey && config.s3SecretKey) {
+    headers.authorization = `Basic ${Buffer.from(
+      `${config.s3AccessKey}:${config.s3SecretKey}`,
+    ).toString("base64")}`;
+  }
+  return fetch(url, { method: "PUT", headers, body });
+}
+
 async function getAwsObject(config: AppConfig, ref: S3Ref) {
   const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
   if (!region) throw new ApiError(500, "envelope_store_unconfigured", "AWS_REGION is required");
@@ -74,6 +120,23 @@ async function getAwsObject(config: AppConfig, ref: S3Ref) {
   const path = `/${encodeS3Path(`${ref.bucket}/${ref.key}`)}`;
   const headers = signedAwsHeaders({ host, path, region, credentials });
   return fetch(`https://${host}${path}`, { method: "GET", headers });
+}
+
+async function putAwsObject(config: AppConfig, key: string, body: Buffer) {
+  const region = process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION;
+  if (!region) throw new ApiError(500, "envelope_store_unconfigured", "AWS_REGION is required");
+  const credentials = await awsCredentials(config);
+  const host = `s3.${region}.amazonaws.com`;
+  const path = `/${encodeS3Path(`${config.s3Bucket}/${key}`)}`;
+  const headers = signedAwsHeaders({ method: "PUT", host, path, region, body, credentials });
+  return fetch(`https://${host}${path}`, { method: "PUT", headers, body });
+}
+
+function envelopeHeaders() {
+  return {
+    "content-type": "application/json",
+    "content-encoding": "gzip",
+  };
 }
 
 type AwsCredentials = {
@@ -96,17 +159,21 @@ async function awsCredentials(config: AppConfig): Promise<AwsCredentials> {
 }
 
 function signedAwsHeaders(input: {
+  method?: string;
   host: string;
   path: string;
   region: string;
+  body?: Buffer;
   credentials: AwsCredentials;
 }) {
   const now = new Date();
   const dateStamp = now.toISOString().slice(0, 10).replaceAll("-", "");
   const amzDate = `${dateStamp}T${now.toISOString().slice(11, 19).replaceAll(":", "")}Z`;
+  const payloadHash = input.body ? sha256Hex(input.body) : EMPTY_SHA256;
   const headers: Record<string, string> = {
+    ...(input.body ? envelopeHeaders() : {}),
     host: input.host,
-    "x-amz-content-sha256": EMPTY_SHA256,
+    "x-amz-content-sha256": payloadHash,
     "x-amz-date": amzDate,
   };
   if (input.credentials.sessionToken)
@@ -119,12 +186,12 @@ function signedAwsHeaders(input: {
     .join("\n");
   const signedHeaders = signedHeaderNames.join(";");
   const canonicalRequest = [
-    "GET",
+    input.method ?? "GET",
     input.path,
     "",
     `${canonicalHeaders}\n`,
     signedHeaders,
-    EMPTY_SHA256,
+    payloadHash,
   ].join("\n");
   const credentialScope = `${dateStamp}/${input.region}/s3/aws4_request`;
   const stringToSign = [
@@ -169,4 +236,9 @@ function encodeS3Path(path: string) {
     .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/");
+}
+
+function envelopeKey(orgId: string, now: Date, requestId: string): string {
+  const yyyyMm = now.toISOString().slice(0, 7);
+  return `envelopes/${orgId}/${yyyyMm}/${requestId}.json.gz`;
 }

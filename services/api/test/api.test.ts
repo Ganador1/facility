@@ -1044,6 +1044,7 @@ describe("api", async () => {
       headers: { cookie },
     });
     expect(broken.json().ok).toBe(false);
+    await db.update(auditEvents).set({ payload: last.payload }).where(eq(auditEvents.id, last.id));
   });
 
   it("enforces KB parent DAG rule and writes bidirectional links", async () => {
@@ -1211,6 +1212,97 @@ describe("api", async () => {
     } finally {
       config.s3Bucket = previousBucket;
       config.s3Endpoint = previousEndpoint;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("runs the admin readiness doctor with object-store and audit-chain checks", async () => {
+    const objects = new Map<string, Buffer>();
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      request.on("end", () => {
+        const key = request.url ?? "";
+        if (request.method === "PUT") {
+          objects.set(key, Buffer.concat(chunks));
+          response.writeHead(200).end();
+          return;
+        }
+        const body = objects.get(key);
+        if (request.method === "GET" && body) {
+          response.writeHead(200, {
+            "content-type": "application/json",
+            "content-encoding": "gzip",
+          });
+          response.end(body);
+          return;
+        }
+        response.writeHead(404).end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind");
+    const previous = {
+      s3Bucket: config.s3Bucket,
+      s3Endpoint: config.s3Endpoint,
+      s3AccessKey: config.s3AccessKey,
+      s3SecretKey: config.s3SecretKey,
+      githubAppId: config.githubAppId,
+      githubAppPrivateKey: config.githubAppPrivateKey,
+      githubAppWebhookSecret: config.githubAppWebhookSecret,
+      githubAppSlug: config.githubAppSlug,
+    };
+    config.s3Bucket = "facility-test";
+    config.s3Endpoint = `http://127.0.0.1:${address.port}`;
+    config.s3AccessKey = "test";
+    config.s3SecretKey = "test";
+    config.githubAppId = "1";
+    config.githubAppPrivateKey = "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----";
+    config.githubAppWebhookSecret = "secret";
+    config.githubAppSlug = "facility-test";
+    const first = await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "system", id: "doctor-test" },
+      action: "doctor.audit.first",
+      target: { type: "org", id: orgId },
+    });
+    const second = await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "system", id: "doctor-test" },
+      action: "doctor.audit.second",
+      target: { type: "org", id: orgId },
+    });
+    if (!first || !second) throw new Error("audit fixture setup failed");
+    try {
+      const healthy = await app.inject({
+        method: "GET",
+        url: "/v1/admin/doctor",
+        headers: { cookie },
+      });
+      expect(healthy.statusCode).toBe(200);
+      expect(healthy.json().ok).toBe(true);
+      expect(checkStatus(healthy.json(), "object_storage")).toBe("pass");
+      expect(checkStatus(healthy.json(), "audit_hash_chain")).toBe("pass");
+      expect([...objects.keys()].some((key) => key.includes("/facility-test/envelopes/"))).toBe(
+        true,
+      );
+
+      await db.update(auditEvents).set({ hash: "broken" }).where(eq(auditEvents.id, second.id));
+      const broken = await app.inject({
+        method: "GET",
+        url: "/v1/admin/doctor",
+        headers: { cookie },
+      });
+      expect(broken.statusCode).toBe(200);
+      expect(broken.json().ok).toBe(false);
+      expect(checkStatus(broken.json(), "audit_hash_chain")).toBe("fail");
+    } finally {
+      await db
+        .update(auditEvents)
+        .set({ hash: second.hash, prevHash: first.hash })
+        .where(eq(auditEvents.id, second.id));
+      Object.assign(config, previous);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
@@ -1992,3 +2084,7 @@ describe("api", async () => {
     expect(steer.statusCode).toBe(409);
   });
 });
+
+function checkStatus(payload: { checks: Array<{ id: string; status: string }> }, id: string) {
+  return payload.checks.find((check) => check.id === id)?.status;
+}

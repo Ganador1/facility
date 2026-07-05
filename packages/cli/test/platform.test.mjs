@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { doctor } from "../src/doctor.mjs";
 import { runPlatformCommand } from "../src/platform.mjs";
 
 function sink() {
@@ -217,4 +218,49 @@ test("401 maps to auth exit 2", async () => {
 
   assert.equal(exit, 2);
   assert.equal(stdout.text, "bad key\n");
+});
+
+test("doctor calls platform readiness endpoint and renders remediation", async () => {
+  const stdout = sink();
+  const calls = [];
+  const exit = await doctor(
+    { url: "http://facility.test/", key: "fak_secret" },
+    "0.3.0",
+    {
+      stdout,
+      fetch: async (url, init) => {
+        calls.push({ url: String(url), auth: init.headers.authorization });
+        return json({
+          ok: false,
+          generatedAt: "2026-07-05T00:00:00.000Z",
+          checks: [
+            {
+              id: "database",
+              label: "Database connectivity and migrations",
+              status: "pass",
+              ok: true,
+              message: "Database is reachable; 6 migration(s) applied.",
+            },
+            {
+              id: "object_storage",
+              label: "Object storage envelope round trip",
+              status: "fail",
+              ok: false,
+              message: "Object storage not configured: S3_BUCKET is empty.",
+              remediation: "Set S3_BUCKET.",
+            },
+          ],
+        });
+      },
+    },
+  );
+
+  assert.equal(exit, 1);
+  assert.deepEqual(calls, [
+    { url: "http://facility.test/v1/admin/doctor", auth: "Bearer fak_secret" },
+  ]);
+  assert.ok(stdout.text.includes("[PASS] Database connectivity and migrations"));
+  assert.ok(stdout.text.includes("Fix: Set S3_BUCKET."));
+  assert.ok(stdout.text.includes("Not ready for production traffic."));
+  assert.ok(!stdout.text.includes("fak_secret"), "doctor must not log API keys");
 });
