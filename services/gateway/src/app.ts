@@ -41,10 +41,13 @@ export async function buildApp(
   const envelopeStore = deps.envelopeStore ?? createEnvelopeStore(config);
   const now = deps.now ?? (() => new Date());
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof GatewayError) return sendProviderError(reply, error);
-    const message = error instanceof Error ? error.message : "Internal error";
-    return reply.status(500).send({ error: { code: "internal_error", message } });
+    // Don't leak internal error detail — log it, return a generic message.
+    request.log.error({ err: error }, "unhandled gateway error");
+    return reply
+      .status(500)
+      .send({ error: { code: "internal_error", message: "Internal server error" } });
   });
 
   app.get("/health", async () => {

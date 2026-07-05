@@ -93,14 +93,21 @@ export async function buildApp(
     }
   });
 
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     const err = error as Error & { statusCode?: number };
     if (error instanceof ApiError) {
       return sendError(reply, error);
     }
     const status = typeof err.statusCode === "number" ? err.statusCode : 500;
+    // Never leak internal error detail on 5xx — log it, return a generic message.
+    if (status >= 500) {
+      request.log.error({ err }, "unhandled server error");
+      return reply
+        .status(status)
+        .send({ error: { code: "internal_error", message: "Internal server error" } });
+    }
     return reply.status(status).send({
-      error: { code: status === 400 ? "bad_request" : "internal_error", message: err.message },
+      error: { code: status === 400 ? "bad_request" : "error", message: err.message },
     });
   });
 

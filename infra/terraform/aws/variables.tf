@@ -179,3 +179,9 @@ variable "task_memory" {
     migrate = 1024
   }
 }
+
+variable "mcp_oauth_audience" {
+  type        = string
+  default     = ""
+  description = "Expected `aud` for WorkOS OAuth access tokens. Set (with WORKOS_AUTHKIT_DOMAIN) to enable interactive-client OAuth 2.1 on the MCP resource server; empty leaves MCP on fak_ API keys only."
+}

@@ -42,6 +42,7 @@ locals {
     { name = "LOG_LEVEL", value = "info" },
     { name = "S3_BUCKET", value = aws_s3_bucket.objects.bucket },
     { name = "AWS_REGION", value = var.aws_region },
+    { name = "MCP_OAUTH_AUDIENCE", value = var.mcp_oauth_audience },
   ]
 
   aws_sandbox_environment = [
