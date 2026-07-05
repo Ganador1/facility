@@ -13,6 +13,9 @@ import {
   assertProjectScope,
   IdParams,
   principal,
+  RunEventSchema,
+  RunSchema,
+  RunWithProjectSchema,
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
 } from "./shared.js";
@@ -94,7 +97,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
           limit: z.coerce.number().int().min(1).max(200).default(50),
           offset: z.coerce.number().int().min(0).default(0),
         }),
-        response: { 200: z.array(AnyObject) },
+        response: { 200: z.array(RunSchema) },
       },
     },
     async (request) => {
@@ -126,7 +129,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
           agentDefId: z.string().optional(),
           agent: z.string().optional(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: RunSchema },
       },
     },
     async (request) => {
@@ -189,7 +192,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
           limit: z.coerce.number().int().min(1).max(200).default(50),
           offset: z.coerce.number().int().min(0).default(0),
         }),
-        response: { 200: z.array(AnyObject) },
+        response: { 200: z.array(RunWithProjectSchema) },
       },
     },
     async (request) => {
@@ -227,7 +230,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
     "/v1/runs/:runId",
     {
       config: { permission: "runs:read" },
-      schema: { params: IdParams, response: { 200: AnyObject } },
+      schema: { params: IdParams, response: { 200: RunSchema } },
     },
     async (request) => {
       const p = principal(request);
@@ -240,7 +243,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
     "/v1/runs/:runId/cancel",
     {
       config: { permission: "runs:write", auditAction: "run.canceled" },
-      schema: { params: IdParams, response: { 200: AnyObject } },
+      schema: { params: IdParams, response: { 200: RunSchema } },
     },
     async (request) => {
       const p = principal(request);
@@ -266,7 +269,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
       schema: {
         params: IdParams,
         querystring: z.object({ afterSeq: z.coerce.number().optional() }),
-        response: { 200: z.array(AnyObject) },
+        response: { 200: z.array(RunEventSchema) },
       },
     },
     async (request) => {

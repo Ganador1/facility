@@ -3,19 +3,12 @@ import { Offline } from "@/components/offline";
 import { BudgetsManager } from "@/components/settings/budgets-manager";
 import { KeysManager } from "@/components/settings/keys-manager";
 import { MembersList } from "@/components/settings/members-list";
-import { api, type Member } from "@/lib/api";
+import { api, type Member, type MemberRow } from "@/lib/api";
 
 export const metadata = { title: "settings" };
 
-// The members endpoint returns a {member,user,role} join — flatten it.
-type MemberRow = {
-  member: { userId: string; roleId: string };
-  user: { email: string; name?: string | null };
-  role: { name: string };
-};
-function flattenMembers(rows: unknown): Member[] {
-  if (!Array.isArray(rows)) return [];
-  return (rows as MemberRow[]).map((r) => ({
+function flattenMembers(rows: MemberRow[]): Member[] {
+  return rows.map((r) => ({
     userId: r.member.userId,
     email: r.user.email,
     name: r.user.name,
@@ -44,7 +37,7 @@ export default async function SettingsPage() {
       <div className="flex flex-col gap-2">
         <Eyebrow>settings</Eyebrow>
         <h1 className="text-[clamp(24px,3.6vw,40px)] font-semibold leading-[1.08] tracking-[-0.02em]">
-          {me.data.org.name}
+          {me.data.org?.name ?? "Facility"}
         </h1>
       </div>
 
@@ -53,7 +46,7 @@ export default async function SettingsPage() {
         <div className="flex flex-col gap-3 border border-(--line) p-6">
           <div className="flex items-center justify-between">
             <span className="text-sm text-(--mut)">signed in as</span>
-            <span className="font-mono text-[13px] text-(--ink)">{me.data.email}</span>
+            <span className="font-mono text-[13px] text-(--ink)">{me.data.principal.email}</span>
           </div>
           <div className="flex items-start justify-between gap-6">
             <span className="text-sm text-(--mut)">permissions</span>

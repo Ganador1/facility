@@ -16,26 +16,10 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useMemo, useState } from "react";
+import type { Project, ProjectRepo } from "@/lib/api";
 
 type FlowMode = "greenfield" | "existing";
 type Step = "project" | "connect" | "preview" | "confirm";
-
-type Project = {
-  id: string;
-  name: string;
-  slug: string;
-  description?: string | null;
-};
-
-type ProjectRepo = {
-  id: string;
-  projectId: string;
-  owner: string;
-  name: string;
-  defaultBranch: string;
-  installationId?: string | null;
-  fingerprintStatus?: string | null;
-};
 
 type KickstartPreview = {
   detection?: {

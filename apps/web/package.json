@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@facility/sdk": "workspace:*",
     "@facility/ui": "workspace:*",
     "framer-motion": "^12.42.2",
     "next": "^16.1.6",

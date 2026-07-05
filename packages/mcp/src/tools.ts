@@ -1,4 +1,13 @@
-import { FacilityClient } from "@facility/sdk";
+import {
+  FacilityClient,
+  type FacilityRouteBody,
+  type FacilityRouteResponse,
+  type McpToolProposalRequest,
+  type Project,
+  type QueryParams,
+  type Run,
+  type RunEvent,
+} from "@facility/sdk";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import * as z from "zod/v4";
@@ -9,14 +18,24 @@ type Args = Record<string, unknown>;
 type ApiRequest = {
   method: Method;
   path: string;
-  query?: Record<string, string | number | boolean | undefined>;
+  query?: QueryParams;
   body?: unknown;
 };
 type ApiClient = {
+  request<RequestMethod extends Method, Path extends string>(
+    method: RequestMethod,
+    path: Path,
+    options?: {
+      query?: QueryParams;
+      body?: FacilityRouteBody<RequestMethod, Path>;
+    },
+  ): Promise<FacilityRouteResponse<RequestMethod, Path>>;
+};
+type ApiClientLike = {
   request(
-    method: Method,
+    method: string,
     path: string,
-    options?: { query?: ApiRequest["query"]; body?: unknown },
+    options?: { query?: QueryParams; body?: unknown },
   ): Promise<unknown>;
 };
 
@@ -26,7 +45,7 @@ export type FacilityMcpOptions = {
   apiKey: string;
   confirmationSecret?: string;
   fetch?: typeof fetch;
-  client?: ApiClient;
+  client?: ApiClientLike;
   clientId?: string;
 };
 
@@ -590,11 +609,9 @@ export function createFacilityMcpServer(options: FacilityMcpOptions): McpServer 
 async function dispatchTool(tool: ToolDefinition, args: Args, api: ApiClient): Promise<unknown> {
   if (tool.name === "facility_list_runs" && !args.projectId) {
     const projects = await api.request("GET", "/v1/projects", { query: { status: "active" } });
-    const rows = Array.isArray(projects) ? projects : [];
     const runs = await Promise.all(
-      rows.map(async (project) => {
-        const id =
-          typeof project === "object" && project && "id" in project ? String(project.id) : "";
+      projects.map(async (project: Project) => {
+        const id = project.id;
         return id
           ? api.request("GET", `/v1/projects/${id}/runs`, { query: { status: str(args.status) } })
           : [];
@@ -603,13 +620,13 @@ async function dispatchTool(tool: ToolDefinition, args: Args, api: ApiClient): P
     return runs.flat();
   }
   if (tool.name === "facility_get_run") {
-    const run = await api.request("GET", `/v1/runs/${str(args.runId)}`);
-    const allEvents = await api.request("GET", `/v1/runs/${str(args.runId)}/events`, {
+    const runId = str(args.runId) ?? "";
+    const run: Run = await api.request("GET", `/v1/runs/${runId}`);
+    const allEvents: RunEvent[] = await api.request("GET", `/v1/runs/${runId}/events`, {
       query: { afterSeq: 0 },
     });
     const max = Math.min(Number(args.lastEvents ?? 25), 50);
-    const events = Array.isArray(allEvents) ? allEvents.slice(-max) : [];
-    return { ...asRecord(run), events };
+    return { ...run, events: allEvents.slice(-max) };
   }
   if (tool.name === "facility_audit_tail") {
     const request = await tool.request(args);
@@ -622,18 +639,16 @@ async function dispatchTool(tool: ToolDefinition, args: Args, api: ApiClient): P
 async function proposeWrite(tool: ToolDefinition, args: Args, api: ApiClient): Promise<unknown> {
   const cleanArgs = omit(args, ["confirm_token"]);
   const summary = tool.summarize?.(cleanArgs) ?? `Run ${tool.name}.`;
-  const proposal = asRecord(
-    await api.request("POST", "/v1/mcp/tool-proposals", {
-      body: {
-        toolName: tool.name,
-        permission: tool.permission,
-        args: cleanArgs,
-        summary,
-        projectId: str(cleanArgs.projectId),
-        runId: str(cleanArgs.runId),
-      },
-    }),
-  );
+  const proposal = await api.request("POST", "/v1/mcp/tool-proposals", {
+    body: {
+      toolName: tool.name,
+      permission: tool.permission,
+      args: cleanArgs,
+      summary,
+      projectId: str(cleanArgs.projectId),
+      runId: str(cleanArgs.runId),
+    } satisfies McpToolProposalRequest,
+  });
   return {
     pending_human_approval: true,
     proposal_id: proposal.id,
@@ -654,12 +669,6 @@ function jsonResult(value: unknown): CallToolResult {
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : { value };
 }
 
 function omit(record: Args, keys: string[]): Args {

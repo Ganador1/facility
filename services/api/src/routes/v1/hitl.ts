@@ -10,6 +10,8 @@ import {
   AnyObject,
   assertBareRowProjectScope,
   IdParams,
+  ProposalEventSchema,
+  ProposalSchema,
   principal,
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
@@ -30,8 +32,8 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
         querystring: z.object({ state: z.string().optional() }),
         response: {
           200: z.object({
-            items: z.array(AnyObject),
-            proposals: z.array(AnyObject),
+            items: z.array(ProposalSchema),
+            proposals: z.array(ProposalSchema),
             issues: z.array(AnyObject),
           }),
         },
@@ -67,7 +69,10 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
     "/v1/proposals/:proposalId",
     {
       config: { permission: "hitl:read" },
-      schema: { params: IdParams, response: { 200: AnyObject } },
+      schema: {
+        params: IdParams,
+        response: { 200: ProposalSchema.extend({ events: z.array(ProposalEventSchema) }) },
+      },
     },
     async (request) => {
       const p = principal(request);
@@ -103,7 +108,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
           projectId: z.string().optional(),
           runId: z.string().optional(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: ProposalSchema },
       },
     },
     async (request) => {
@@ -214,7 +219,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
           contextMd: z.string(),
           expiresAt: z.string().optional(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: ProposalSchema },
       },
     },
     async (request) => {
@@ -280,7 +285,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
       schema: {
         params: IdParams,
         body: z.object({ decision: z.enum(["approve", "reject"]), note: z.string().optional() }),
-        response: { 200: AnyObject },
+        response: { 200: ProposalSchema },
       },
     },
     async (request) => {

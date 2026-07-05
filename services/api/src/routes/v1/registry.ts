@@ -6,10 +6,12 @@ import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import type { Principal } from "../../types.js";
 import {
-  AnyObject,
   assertBareRowProjectScope,
   IdParams,
   principal,
+  RegistryItemSchema,
+  RegistryItemWithVersionsSchema,
+  RegistryVersionSchema,
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
 } from "./shared.js";
@@ -31,7 +33,7 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
           scope: z.string().optional(),
           projectId: z.string().optional(),
         }),
-        response: { 200: z.array(AnyObject) },
+        response: { 200: z.array(RegistryItemSchema) },
       },
     },
     async (request) => {
@@ -90,7 +92,7 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
     "/v1/registry/items/:itemId",
     {
       config: { permission: "registry:read" },
-      schema: { params: IdParams, response: { 200: AnyObject } },
+      schema: { params: IdParams, response: { 200: RegistryItemWithVersionsSchema } },
     },
     async (request) => {
       const p = principal(request);
@@ -118,7 +120,7 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
           description: z.string().optional(),
           content: z.string(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: RegistryItemWithVersionsSchema },
       },
     },
     async (request) => {
@@ -187,7 +189,7 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
       schema: {
         params: IdParams,
         body: z.object({ content: z.string(), changelog: z.string().optional() }),
-        response: { 200: AnyObject },
+        response: { 200: RegistryVersionSchema },
       },
     },
     async (request) => {
@@ -218,7 +220,7 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
     "/v1/registry/versions/:versionId/publish",
     {
       config: { permission: "registry:publish", auditAction: "registry.published" },
-      schema: { params: IdParams, response: { 200: AnyObject } },
+      schema: { params: IdParams, response: { 200: RegistryVersionSchema } },
     },
     async (request) => {
       const p = principal(request);
@@ -251,7 +253,7 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
     "/v1/registry/versions/:versionId/deprecate",
     {
       config: { permission: "registry:publish", auditAction: "registry.deprecated" },
-      schema: { params: IdParams, response: { 200: AnyObject } },
+      schema: { params: IdParams, response: { 200: RegistryVersionSchema } },
     },
     async (request) => {
       const p = principal(request);

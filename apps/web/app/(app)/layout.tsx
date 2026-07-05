@@ -23,7 +23,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <Sidebar />
       <div className="min-w-0 flex-1">
         <MobileNav />
-        <Topbar principal={me.data} />
+        <Topbar me={me.data} />
         <main className="px-5 py-8 sm:px-8 lg:px-10">{children}</main>
       </div>
     </div>

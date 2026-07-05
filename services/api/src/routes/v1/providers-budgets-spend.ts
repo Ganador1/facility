@@ -9,11 +9,14 @@ import {
   AnyObject,
   assertBareRowProjectScope,
   assertProjectScope,
+  BudgetSchema,
   definedFields,
   IdParams,
   Ok,
+  ProviderPublicSchema,
   principal,
   publicRow,
+  SpendRowSchema,
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
   validateApiProviderBaseUrl,
@@ -33,7 +36,7 @@ export async function registerProvidersBudgetsSpendRoutes(
     "/v1/providers",
     {
       config: { permission: "providers:read", orgAdmin: true },
-      schema: { response: { 200: z.array(AnyObject) } },
+      schema: { response: { 200: z.array(ProviderPublicSchema) } },
     },
     async (request) => {
       const p = principal(request);
@@ -60,7 +63,7 @@ export async function registerProvidersBudgetsSpendRoutes(
           baseUrl: z.string().optional(),
           secret: z.string(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: ProviderPublicSchema.nullable() },
       },
     },
     async (request) => {
@@ -209,7 +212,10 @@ export async function registerProvidersBudgetsSpendRoutes(
 
   app.get(
     "/v1/budgets",
-    { config: { permission: "budgets:read" }, schema: { response: { 200: z.array(AnyObject) } } },
+    {
+      config: { permission: "budgets:read" },
+      schema: { response: { 200: z.array(BudgetSchema) } },
+    },
     async (request) => {
       const p = principal(request);
       const clauses = [eq(budgets.orgId, p.orgId)];
@@ -234,7 +240,7 @@ export async function registerProvidersBudgetsSpendRoutes(
           mode: z.string(),
           enabled: z.boolean().default(true),
         }),
-        response: { 200: AnyObject },
+        response: { 200: BudgetSchema },
       },
     },
     async (request) => {
@@ -286,7 +292,7 @@ export async function registerProvidersBudgetsSpendRoutes(
     "/v1/budgets/:budgetId",
     {
       config: { permission: "budgets:read" },
-      schema: { params: z.object({ budgetId: z.string() }), response: { 200: AnyObject } },
+      schema: { params: z.object({ budgetId: z.string() }), response: { 200: BudgetSchema } },
     },
     async (request) => {
       const p = principal(request);
@@ -309,7 +315,7 @@ export async function registerProvidersBudgetsSpendRoutes(
           mode: z.string().optional(),
           enabled: z.boolean().optional(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: BudgetSchema },
       },
     },
     async (request) => {
@@ -372,7 +378,7 @@ export async function registerProvidersBudgetsSpendRoutes(
           to: z.string().optional(),
           groupBy: z.enum(["model", "agent", "task", "day"]).optional(),
         }),
-        response: { 200: z.array(AnyObject) },
+        response: { 200: z.array(SpendRowSchema) },
       },
     },
     async (request) => {

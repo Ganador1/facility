@@ -20,6 +20,8 @@ import {
   definedFields,
   IdParams,
   Ok,
+  ProjectRepoSchema,
+  ProjectSchema,
   principal,
   type V1RouteContext,
 } from "./shared.js";
@@ -32,7 +34,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       config: { permission: "projects:read" },
       schema: {
         querystring: z.object({ status: z.string().optional() }),
-        response: { 200: z.array(AnyObject) },
+        response: { 200: z.array(ProjectSchema) },
       },
     },
     async (request) => {
@@ -59,7 +61,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
           description: z.string().optional(),
           settings: AnyObject.optional(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: ProjectSchema },
       },
     },
     async (request) => {
@@ -93,7 +95,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
     "/v1/projects/:projectId",
     {
       config: { permission: "projects:read" },
-      schema: { params: IdParams, response: { 200: AnyObject } },
+      schema: { params: IdParams, response: { 200: ProjectSchema } },
     },
     async (request) => {
       const p = principal(request);
@@ -137,7 +139,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
           status: z.string().optional(),
           settings: AnyObject.optional(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: ProjectSchema },
       },
     },
     async (request) => {
@@ -183,7 +185,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
     "/v1/projects/:projectId/repos",
     {
       config: { permission: "repos:read" },
-      schema: { params: IdParams, response: { 200: z.array(AnyObject) } },
+      schema: { params: IdParams, response: { 200: z.array(ProjectRepoSchema) } },
     },
     async (request) => {
       const p = principal(request);
@@ -208,7 +210,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
           description: z.string().optional(),
           autoInit: z.boolean().default(true),
         }),
-        response: { 200: AnyObject },
+        response: { 200: ProjectRepoSchema },
       },
     },
     async (request) => {

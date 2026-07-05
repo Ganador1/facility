@@ -7,9 +7,11 @@ import { notFound } from "../../errors.js";
 import { analyticsOverview, queryAnalytics } from "../../watchtower/analytics.js";
 import {
   AnyObject,
+  AuditEventSchema,
   assertBareRowProjectScope,
   assertProjectScope,
   IdParams,
+  LlmRequestSchema,
   principal,
   type V1RouteContext,
 } from "./shared.js";
@@ -127,7 +129,9 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
           limit: z.coerce.number().int().min(1).max(500).default(200),
           cursor: z.coerce.number().optional(),
         }),
-        response: { 200: AnyObject },
+        response: {
+          200: z.object({ items: z.array(AuditEventSchema), nextCursor: z.number().nullable() }),
+        },
       },
     },
     async (request) => {
@@ -182,7 +186,9 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
           limit: z.coerce.number().int().min(1).max(500).default(100),
           cursor: z.string().optional(),
         }),
-        response: { 200: AnyObject },
+        response: {
+          200: z.object({ items: z.array(LlmRequestSchema), nextCursor: z.string().nullable() }),
+        },
       },
     },
     async (request) => {
@@ -220,7 +226,10 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
     "/v1/llm-requests/:requestId/envelope",
     {
       config: { permission: ["spend:read", "audit:read"] },
-      schema: { params: z.object({ requestId: z.string() }), response: { 200: AnyObject } },
+      schema: {
+        params: z.object({ requestId: z.string() }),
+        response: { 200: z.object({ llmRequest: LlmRequestSchema, envelope: z.unknown() }) },
+      },
     },
     async (request) => {
       const p = principal(request);

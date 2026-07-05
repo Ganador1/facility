@@ -1,44 +1,52 @@
+import type {
+  ApiKey,
+  AuditEvent,
+  AuditTail,
+  Budget,
+  ConnectProjectRepoRequest,
+  CreateProjectRequest,
+  InboxResponse,
+  Me,
+  MemberRow,
+  Project,
+  ProjectRepo,
+  Proposal,
+  Provider,
+  RegistryItem,
+  Role,
+  Run,
+  RunEvent,
+  SpendRow,
+} from "@facility/sdk";
 import { cookies } from "next/headers";
 
+export type {
+  ApiKey,
+  AuditEvent,
+  Budget,
+  ConnectProjectRepoRequest,
+  CreateProjectRequest,
+  Me,
+  Member,
+  MemberRow,
+  Project,
+  ProjectRepo,
+  Proposal,
+  Provider,
+  RegistryItem,
+  Role,
+  Run,
+  RunEvent,
+  SpendRow,
+} from "@facility/sdk";
+
 /**
- * Server-side client for the control plane. Typed against the v1 API
- * (docs/platform/specs/control-plane.md); replaced by @facility/sdk once the
- * generated client lands — keep this surface minimal.
+ * Server-side client for the control plane. The fetch wrapper stays here so
+ * Next can forward the session cookie; domain contracts live in @facility/sdk.
  */
 
 const API_URL = process.env.FACILITY_API_URL ?? "http://localhost:4400";
 export const SESSION_COOKIE = "facility_session";
-
-export type Principal = {
-  type: "user" | "key";
-  userId?: string;
-  name?: string;
-  email?: string;
-  org: { id: string; name: string; slug: string };
-  permissions: string[];
-};
-
-export type Project = {
-  id: string;
-  name: string;
-  slug: string;
-  description?: string | null;
-  systemVersion?: string | null;
-  status: "active" | "archived";
-  settings?: Record<string, unknown>;
-  createdAt: string;
-};
-
-export type ProjectRepo = {
-  id: string;
-  projectId: string;
-  owner: string;
-  name: string;
-  defaultBranch: string;
-  installationId?: string | null;
-  fingerprintStatus?: string | null;
-  createdAt?: string;
-};
 
 export type KickstartAnswers = {
   defaultBranch?: string;
@@ -84,120 +92,11 @@ export type KickstartResult = {
   manifest?: Record<string, unknown>;
 };
 
-export type Run = {
-  id: string;
-  projectId: string;
-  agentDefId?: string | null;
-  mode: string;
-  engine: string;
-  status:
-    | "queued"
-    | "provisioning"
-    | "running"
-    | "awaiting_human"
-    | "succeeded"
-    | "failed"
-    | "canceled";
-  trigger?: Record<string, unknown>;
-  receipt?: {
-    usage?: { input_tokens?: number; output_tokens?: number; cost_cents?: number };
-  } | null;
-  gh?: { issue?: string; pr?: string } | null;
-  error?: string | null;
-  queuedAt?: string;
-  startedAt?: string | null;
-  endedAt?: string | null;
-};
-
-export type RunEvent = {
-  runId: string;
-  seq: number;
-  ts: string;
-  type: string;
-  data: Record<string, unknown>;
-};
-
-export type Proposal = {
-  id: string;
-  projectId?: string | null;
-  runId?: string | null;
-  actionType: string;
-  payload: Record<string, unknown>;
-  contextMd: string;
-  state: "draft" | "open" | "approved" | "rejected" | "cancelled" | "expired";
-  expiresAt?: string | null;
-  createdAt: string;
-};
-
-export type AuditEvent = {
-  seq: number;
-  actor: { type: string; id: string; name?: string };
-  action: string;
-  target?: { type: string; id: string } | null;
-  createdAt: string;
-};
-
-export type RegistryItem = {
-  id: string;
-  scope: "bundled" | "org" | "project";
-  kind: string;
-  name: string;
-  description?: string | null;
-  latestVersion: number;
-};
-
 export type AgentDef = {
   id: string;
   projectId: string;
   name: string;
   engine: string;
-  enabled: boolean;
-};
-
-export type Member = {
-  userId: string;
-  email: string;
-  name?: string | null;
-  roleId: string;
-  roleName?: string;
-};
-
-export type Role = {
-  id: string;
-  orgId?: string | null;
-  name: string;
-  description?: string | null;
-  permissions: string[];
-};
-
-export type ApiKey = {
-  id: string;
-  name: string;
-  prefix: string;
-  last4: string;
-  scopeType: "org" | "project";
-  projectId?: string | null;
-  createdAt: string;
-  lastUsedAt?: string | null;
-  revokedAt?: string | null;
-};
-
-export type Provider = {
-  id: string;
-  provider: "anthropic" | "openai" | "byo";
-  name: string;
-  baseUrl?: string | null;
-  createdAt: string;
-};
-
-export type Budget = {
-  id: string;
-  scope: "org" | "project" | "agent_def";
-  projectId?: string | null;
-  agentDefId?: string | null;
-  period: "daily" | "weekly" | "monthly";
-  limitCents: number;
-  mode: "soft" | "hard";
   enabled: boolean;
 };
 
@@ -234,29 +133,19 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<ApiResult<
   }
 }
 
-export type SpendRow = { bucket: string; cost_cents: number };
-
 // The control plane returns bare arrays for list endpoints (and {bucket,
 // cost_cents} rows for spend). This client mirrors those shapes exactly.
 export const api = {
-  me: () => apiFetch<Principal>("/v1/me"),
+  me: () => apiFetch<Me>("/v1/me"),
   projects: () => apiFetch<Project[]>("/v1/projects"),
-  createProject: (body: {
-    name: string;
-    slug: string;
-    description?: string;
-    settings?: Record<string, unknown>;
-  }) =>
+  createProject: (body: CreateProjectRequest) =>
     apiFetch<Project>("/v1/projects", {
       method: "POST",
       body: JSON.stringify(body),
     }),
   project: (id: string) => apiFetch<Project>(`/v1/projects/${id}`),
   projectRepos: (projectId: string) => apiFetch<ProjectRepo[]>(`/v1/projects/${projectId}/repos`),
-  connectProjectRepo: (
-    projectId: string,
-    body: { owner: string; name: string; defaultBranch?: string },
-  ) =>
+  connectProjectRepo: (projectId: string, body: ConnectProjectRepoRequest) =>
     apiFetch<ProjectRepo>(`/v1/projects/${projectId}/repos`, {
       method: "POST",
       body: JSON.stringify(body),
@@ -281,18 +170,20 @@ export const api = {
   // GET /v1/inbox returns { items, proposals, issues } — unwrap to the
   // proposals array both consumers expect (guarded so a bare array also works).
   inbox: async (): Promise<ApiResult<Proposal[]>> => {
-    const res = await apiFetch<Proposal[] | { proposals?: Proposal[]; items?: Proposal[] }>(
-      "/v1/inbox?state=open",
-    );
+    const res = await apiFetch<Proposal[] | InboxResponse>("/v1/inbox?state=open");
     if (!res.ok) return res;
     const d = res.data;
     return { ok: true, data: Array.isArray(d) ? d : (d.proposals ?? d.items ?? []) };
   },
   proposal: (id: string) => apiFetch<Proposal & { events?: unknown[] }>(`/v1/proposals/${id}`),
-  audit: (params = "") => apiFetch<AuditEvent[]>(`/v1/audit${params}`),
+  audit: async (params = ""): Promise<ApiResult<AuditEvent[]>> => {
+    const res = await apiFetch<AuditEvent[] | AuditTail>(`/v1/audit${params}`);
+    if (!res.ok) return res;
+    return { ok: true, data: Array.isArray(res.data) ? res.data : res.data.items };
+  },
   registry: (params = "") => apiFetch<RegistryItem[]>(`/v1/registry/items${params}`),
   spend: (params = "") => apiFetch<SpendRow[]>(`/v1/spend${params}`),
-  members: () => apiFetch<Member[]>("/v1/members"),
+  members: () => apiFetch<MemberRow[]>("/v1/members"),
   roles: () => apiFetch<Role[]>("/v1/roles"),
   keys: () => apiFetch<ApiKey[]>("/v1/keys"),
   providers: () => apiFetch<Provider[]>("/v1/providers"),

@@ -1,14 +1,14 @@
 import { PillTag } from "@facility/ui";
-import type { Principal } from "@/lib/api";
+import type { Me } from "@/lib/api";
 
-export function Topbar({ principal }: { principal: Principal }) {
+export function Topbar({ me }: { me: Me }) {
   return (
     <header className="hidden items-center justify-between border-b border-(--line) px-8 py-4 lg:flex">
       <div className="flex items-center gap-3">
-        <PillTag>{principal.org.name}</PillTag>
+        <PillTag>{me.org?.name ?? "Facility"}</PillTag>
       </div>
       <div className="flex items-center gap-4">
-        <span className="font-mono text-[11px] text-(--dim)">{principal.email}</span>
+        <span className="font-mono text-[11px] text-(--dim)">{me.principal.email}</span>
         <form action="/api/auth/logout" method="post">
           <button
             type="submit"

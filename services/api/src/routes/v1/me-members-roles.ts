@@ -7,14 +7,19 @@ import { ApiError, notFound } from "../../errors.js";
 import type { Principal } from "../../types.js";
 import {
   AnyObject,
+  ApiKeyPublicSchema,
   assertBareRowProjectScope,
   assertPermissionsGrantable,
   assertRoleAssignable,
   definedFields,
   IdParams,
+  MemberRowSchema,
+  MeSchema,
   Ok,
+  OrgMemberSchema,
   principal,
   publicRow,
+  RoleSchema,
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
 } from "./shared.js";
@@ -32,7 +37,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
       config: { permission: "org:read" },
       schema: {
         response: {
-          200: z.object({ principal: AnyObject, org: AnyObject, permissions: z.array(z.string()) }),
+          200: MeSchema,
         },
       },
     },
@@ -81,7 +86,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
     "/v1/members",
     {
       config: { permission: "members:read", orgAdmin: true },
-      schema: { response: { 200: z.array(AnyObject) } },
+      schema: { response: { 200: z.array(MemberRowSchema) } },
     },
     async (request) => {
       const p = principal(request);
@@ -100,7 +105,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
       config: { permission: "members:write", auditAction: "member.added", orgAdmin: true },
       schema: {
         body: z.object({ email: z.string().email(), roleId: z.string() }),
-        response: { 200: AnyObject },
+        response: { 200: OrgMemberSchema },
       },
     },
     async (request) => {
@@ -140,7 +145,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
       schema: {
         params: IdParams,
         body: z.object({ roleId: z.string() }),
-        response: { 200: AnyObject },
+        response: { 200: OrgMemberSchema },
       },
     },
     async (request) => {
@@ -181,7 +186,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
     "/v1/roles",
     {
       config: { permission: "roles:read", orgAdmin: true },
-      schema: { response: { 200: z.array(AnyObject) } },
+      schema: { response: { 200: z.array(RoleSchema) } },
     },
     async (request) => {
       const p = principal(request);
@@ -202,7 +207,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
           description: z.string().optional(),
           permissions: z.array(z.string()),
         }),
-        response: { 200: AnyObject },
+        response: { 200: RoleSchema },
       },
     },
     async (request) => {
@@ -234,7 +239,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
           description: z.string().optional(),
           permissions: z.array(z.string()).optional(),
         }),
-        response: { 200: AnyObject },
+        response: { 200: RoleSchema },
       },
     },
     async (request) => {
@@ -280,7 +285,10 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
 
   app.get(
     "/v1/keys",
-    { config: { permission: "keys:issue" }, schema: { response: { 200: z.array(AnyObject) } } },
+    {
+      config: { permission: "keys:issue" },
+      schema: { response: { 200: z.array(ApiKeyPublicSchema) } },
+    },
     async (request) => {
       const p = principal(request);
       const clauses = [eq(apiKeys.orgId, p.orgId)];
@@ -300,7 +308,7 @@ export async function registerMeMembersRolesRoutes(app: FastifyInstance, context
       config: { permission: "keys:issue", auditAction: "key.issued" },
       schema: {
         body: z.object({ name: z.string(), roleId: z.string(), projectId: z.string().optional() }),
-        response: { 200: AnyObject },
+        response: { 200: ApiKeyPublicSchema },
       },
     },
     async (request) => {

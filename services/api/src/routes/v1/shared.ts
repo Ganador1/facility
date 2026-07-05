@@ -12,6 +12,8 @@ export type V1RouteContext = {
 };
 
 export const AnyObject = z.record(z.string(), z.unknown());
+export const JsonValue = z.unknown();
+export const DateValue = z.date();
 export const Ok = z.object({ ok: z.boolean() });
 export const IdParams = z.object({
   projectId: z.string().optional(),
@@ -25,6 +27,269 @@ export const IdParams = z.object({
   keyId: z.string().optional(),
   userId: z.string().optional(),
   roleId: z.string().optional(),
+});
+
+export const OrgSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  settings: JsonValue,
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const PrincipalSchema = z.object({
+  type: z.enum(["user", "key"]),
+  id: z.string(),
+  orgId: z.string(),
+  userId: z.string().optional(),
+  email: z.string().optional(),
+  name: z.string().optional(),
+  projectId: z.string().nullable().optional(),
+  permissions: z.array(z.string()),
+});
+
+export const MeSchema = z.object({
+  principal: PrincipalSchema,
+  org: OrgSchema.nullable().optional(),
+  permissions: z.array(z.string()),
+});
+
+export const ProjectSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  description: z.string().nullable(),
+  systemVersion: z.string(),
+  settings: JsonValue,
+  status: z.string(),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const ProjectRepoSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  projectId: z.string(),
+  installationId: z.string().nullable(),
+  owner: z.string(),
+  name: z.string(),
+  defaultBranch: z.string(),
+  fingerprintStatus: z.string(),
+  fingerprint: JsonValue.nullable(),
+  fingerprintVerifiedAt: DateValue.nullable(),
+  renderAnswers: JsonValue.nullable(),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const RunSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  projectId: z.string(),
+  agentDefId: z.string().nullable(),
+  mode: z.string(),
+  engine: z.string(),
+  status: z.string(),
+  trigger: JsonValue,
+  sandbox: JsonValue,
+  receipt: JsonValue.nullable(),
+  gh: JsonValue,
+  error: z.string().nullable(),
+  queuedAt: DateValue,
+  startedAt: DateValue.nullable(),
+  endedAt: DateValue.nullable(),
+  createdBy: JsonValue,
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const RunWithProjectSchema = RunSchema.extend({
+  project: z.object({ id: z.string(), name: z.string(), slug: z.string() }),
+});
+
+export const RunEventSchema = z.object({
+  orgId: z.string(),
+  runId: z.string(),
+  seq: z.number(),
+  ts: DateValue,
+  type: z.string(),
+  data: JsonValue,
+});
+
+export const ProposalSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  projectId: z.string().nullable(),
+  runId: z.string().nullable(),
+  actionTypeId: z.string(),
+  payload: JsonValue,
+  contextMd: z.string(),
+  state: z.string(),
+  decidedBy: z.string().nullable(),
+  decidedAt: DateValue.nullable(),
+  expiresAt: DateValue,
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const ProposalEventSchema = z.object({
+  orgId: z.string(),
+  proposalId: z.string(),
+  seq: z.number(),
+  ts: DateValue,
+  type: z.string(),
+  actor: JsonValue,
+  data: JsonValue,
+});
+
+export const BudgetSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  scope: z.string(),
+  projectId: z.string().nullable(),
+  agentDefId: z.string().nullable(),
+  period: z.string(),
+  limitCents: z.number(),
+  mode: z.string(),
+  enabled: z.boolean(),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const RegistryItemSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  scope: z.string(),
+  projectId: z.string().nullable(),
+  kind: z.string(),
+  name: z.string(),
+  description: z.string().nullable(),
+  latestVersion: z.number(),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const RegistryVersionSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  itemId: z.string(),
+  version: z.number(),
+  content: z.string(),
+  contentHash: z.string(),
+  changelog: z.string().nullable(),
+  status: z.string(),
+  createdBy: z.string().nullable(),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const RegistryItemWithVersionsSchema = RegistryItemSchema.extend({
+  versions: z.array(RegistryVersionSchema),
+});
+
+export const RoleSchema = z.object({
+  id: z.string(),
+  orgId: z.string().nullable(),
+  name: z.string(),
+  description: z.string().nullable(),
+  permissions: z.array(z.string()),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const OrgMemberSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  userId: z.string(),
+  roleId: z.string(),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+});
+
+export const MemberRowSchema = z.object({
+  member: OrgMemberSchema,
+  user: z.object({
+    id: z.string(),
+    workosUserId: z.string().nullable(),
+    email: z.string(),
+    name: z.string().nullable(),
+    avatarUrl: z.string().nullable(),
+    status: z.string(),
+    createdAt: DateValue,
+    updatedAt: DateValue,
+  }),
+  role: RoleSchema,
+});
+
+export const ApiKeyPublicSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  name: z.string(),
+  prefix: z.string(),
+  last4: z.string(),
+  scopeType: z.string(),
+  projectId: z.string().nullable(),
+  roleId: z.string(),
+  createdBy: z.string().nullable(),
+  lastUsedAt: DateValue.nullable(),
+  revokedAt: DateValue.nullable(),
+  createdAt: DateValue,
+  updatedAt: DateValue,
+  secret: z.string().optional(),
+});
+
+export const ProviderPublicSchema = z.object({
+  id: z.string(),
+  provider: z.string(),
+  name: z.string(),
+  baseUrl: z.string().nullable(),
+  createdAt: DateValue,
+});
+
+export const AuditEventSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  seq: z.number(),
+  actor: JsonValue,
+  action: z.string(),
+  target: JsonValue,
+  payload: JsonValue,
+  ip: z.string().nullable(),
+  userAgent: z.string().nullable(),
+  prevHash: z.string().nullable(),
+  hash: z.string(),
+  createdAt: DateValue,
+});
+
+export const LlmRequestSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  projectId: z.string(),
+  runId: z.string().nullable(),
+  taskId: z.string().nullable(),
+  agentDefId: z.string().nullable(),
+  virtualKeyId: z.string().nullable(),
+  provider: z.string(),
+  model: z.string(),
+  status: z.string(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+  costCents: z.number().nullable(),
+  priced: z.boolean(),
+  latencyMs: z.number(),
+  requestUri: z.string().nullable(),
+  responseUri: z.string().nullable(),
+  error: z.string().nullable(),
+  createdAt: DateValue,
+});
+
+export const SpendRowSchema = z.object({
+  bucket: z.string(),
+  cost_cents: z.number(),
 });
 
 export function principal(request: { principal?: Principal }) {
