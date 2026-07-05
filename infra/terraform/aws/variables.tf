@@ -185,3 +185,9 @@ variable "mcp_oauth_audience" {
   default     = ""
   description = "Expected `aud` for WorkOS OAuth access tokens. Set (with WORKOS_AUTHKIT_DOMAIN) to enable interactive-client OAuth 2.1 on the MCP resource server; empty leaves MCP on fak_ API keys only."
 }
+
+variable "envelope_retention_days" {
+  type        = number
+  default     = 90
+  description = "Days to retain stored LLM request/response envelopes (the objects bucket `envelopes/` prefix) before S3 expires them — bounds raw-body retention for privacy/compliance while preserving recent data-mining."
+}

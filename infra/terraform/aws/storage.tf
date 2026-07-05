@@ -50,6 +50,25 @@ resource "aws_s3_bucket_lifecycle_configuration" "objects" {
       days_after_initiation = 7
     }
   }
+
+  # Retention for stored LLM request/response envelopes: "store everything" is
+  # bounded by a configurable window so raw bodies are not kept indefinitely.
+  rule {
+    id     = "expire-envelopes"
+    status = "Enabled"
+
+    filter {
+      prefix = "envelopes/"
+    }
+
+    expiration {
+      days = var.envelope_retention_days
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = var.envelope_retention_days
+    }
+  }
 }
 
 resource "aws_ecr_repository" "service" {
