@@ -1460,8 +1460,11 @@ describe("api", async () => {
 
   it("reads a stored llm request envelope through the API", async () => {
     const envelope = { request: { body: { model: "gpt-5.5" } }, response: { id: "resp_1" } };
+    // Envelopes are keyed under the owning org's prefix; the read path enforces
+    // that the stored URI stays within envelopes/<orgId>/.
+    const envelopeKey = `envelopes/${orgId}/evt.json.gz`;
     const server = createServer((request, response) => {
-      if (request.url === "/facility-test/envelopes/org/evt.json.gz") {
+      if (request.url === `/facility-test/${envelopeKey}`) {
         response.writeHead(200, {
           "content-type": "application/json",
           "content-encoding": "gzip",
@@ -1495,8 +1498,8 @@ describe("api", async () => {
         status: "ok",
         costCents: 123,
         latencyMs: 10,
-        requestUri: "s3://facility-test/envelopes/org/evt.json.gz",
-        responseUri: "s3://facility-test/envelopes/org/evt.json.gz",
+        requestUri: `s3://facility-test/${envelopeKey}`,
+        responseUri: `s3://facility-test/${envelopeKey}`,
       });
       const issued = await app.inject({
         method: "POST",

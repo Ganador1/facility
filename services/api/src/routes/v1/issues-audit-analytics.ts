@@ -246,7 +246,11 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
       assertBareRowProjectScope(p, row.projectId, "LLM request not found");
       return {
         llmRequest: row,
-        envelope: await readEnvelopeObject(context.config, row.responseUri ?? row.requestUri),
+        envelope: await readEnvelopeObject(
+          context.config,
+          row.responseUri ?? row.requestUri,
+          row.orgId,
+        ),
       };
     },
   );

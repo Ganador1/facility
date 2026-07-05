@@ -45,7 +45,10 @@ export type ObjectStore = {
     payload: unknown;
     now?: Date;
   }) => Promise<string>;
-  getObject: (uri: string) => Promise<unknown>;
+  // `expectedKeyPrefix` binds the read to a known key namespace (e.g. one org's
+  // envelope prefix): if the stored URI's key does not start with it, the read
+  // fails as not-found instead of trusting the URI alone.
+  getObject: (uri: string, options?: { expectedKeyPrefix?: string }) => Promise<unknown>;
   verifyRoundTrip: (input: {
     orgId: string;
     requestId: string;
@@ -114,9 +117,14 @@ export function createObjectStore(
       }
       return envelopeUri(bucket, key);
     },
-    getObject: async (uri) => {
+    getObject: async (uri, options) => {
       const bucket = requiredBucket(config);
       const ref = parseConfiguredS3Uri(uri, bucket);
+      if (options?.expectedKeyPrefix && !ref.key.startsWith(options.expectedKeyPrefix)) {
+        // The URI is well-formed for this bucket but points outside the caller's
+        // key namespace — treat as not-found rather than reading another tenant.
+        throw new ObjectStoreNotFoundError();
+      }
       const response = await signedFetch({
         config,
         fetchImpl,

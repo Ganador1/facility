@@ -7,11 +7,20 @@ import {
 import { ApiError } from "./errors.js";
 import type { AppConfig } from "./types.js";
 
-export async function readEnvelopeObject(config: AppConfig, uri: string | null | undefined) {
+export async function readEnvelopeObject(
+  config: AppConfig,
+  uri: string | null | undefined,
+  orgId: string,
+) {
   if (!uri) throw envelopeNotFound();
   if (!config.s3Bucket) throw envelopeNotFound();
   try {
-    return await createObjectStore(config).getObject(uri);
+    // Bind the read to the owning org's envelope prefix (envelopes/<orgId>/…) so
+    // a row whose stored URI was mis-set to another same-bucket object cannot be
+    // read cross-tenant — the row scope check alone would not catch that.
+    return await createObjectStore(config).getObject(uri, {
+      expectedKeyPrefix: `envelopes/${orgId}/`,
+    });
   } catch (error) {
     throw mapObjectStoreReadError(error);
   }
@@ -47,7 +56,7 @@ export async function verifyEnvelopeRoundTrip(input: {
   now?: Date;
 }) {
   const uri = await writeEnvelopeObject(input);
-  const loaded = await readEnvelopeObject(input.config, uri);
+  const loaded = await readEnvelopeObject(input.config, uri, input.orgId);
   return { uri, loaded };
 }
 
