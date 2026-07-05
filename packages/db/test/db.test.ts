@@ -170,6 +170,7 @@ describe("db", async () => {
       "kb_amendment",
       "kickstart_review",
       "learning_validation",
+      "mcp_tool_call",
       "plan_acceptance",
       "rule_proposal",
       "skill_proposal",
