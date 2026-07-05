@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Terminal, type TerminalLine, TextInput } from "@facility/ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import type { RunEvent } from "@/lib/api";
 
 function toLine(event: RunEvent): TerminalLine {
@@ -31,68 +31,20 @@ function toLine(event: RunEvent): TerminalLine {
   }
 }
 
-/**
- * Live session view: streams run events over SSE (fallback: polling) and
- * lets an engineer steer a stuck agent. Steering is audited server-side.
- */
 export function RunTranscript({
   runId,
+  events,
   live,
   canSteer,
 }: {
   runId: string;
+  events: RunEvent[];
   live: boolean;
   canSteer: boolean;
 }) {
-  const [events, setEvents] = useState<RunEvent[]>([]);
   const [steer, setSteer] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const lastSeq = useRef(0);
-
-  const pull = useCallback(async () => {
-    const res = await fetch(`/api/v1/runs/${runId}/events?afterSeq=${lastSeq.current}`, {
-      cache: "no-store",
-    });
-    if (!res.ok) return;
-    // GET /events returns a bare array of run events (not { items }).
-    const body = (await res.json()) as RunEvent[];
-    if (body.length) {
-      lastSeq.current = body[body.length - 1]?.seq ?? lastSeq.current;
-      setEvents((prev) => [...prev, ...body]);
-    }
-  }, [runId]);
-
-  useEffect(() => {
-    void pull();
-    if (!live) return;
-
-    const source = new EventSource(`/api/v1/runs/${runId}/stream`);
-    // The server emits named `run_event` frames (plus `heartbeat`); the default
-    // `message` handler never fires for named events.
-    source.addEventListener("run_event", (msg) => {
-      try {
-        const event = JSON.parse(msg.data) as RunEvent;
-        if (event.seq > lastSeq.current) {
-          lastSeq.current = event.seq;
-          setEvents((prev) => [...prev, event]);
-        }
-      } catch {
-        // heartbeat or malformed frame — ignore
-      }
-    });
-    source.onerror = () => {
-      // SSE dropped — fall back to polling until it reconnects
-      void pull();
-    };
-    const poll = setInterval(() => {
-      if (source.readyState === EventSource.CLOSED) void pull();
-    }, 3000);
-    return () => {
-      source.close();
-      clearInterval(poll);
-    };
-  }, [runId, live, pull]);
 
   async function sendSteer(e: React.FormEvent) {
     e.preventDefault();

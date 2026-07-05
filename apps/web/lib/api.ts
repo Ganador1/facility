@@ -91,6 +91,14 @@ export type RegistryItem = {
   latestVersion: number;
 };
 
+export type AgentDef = {
+  id: string;
+  projectId: string;
+  name: string;
+  engine: string;
+  enabled: boolean;
+};
+
 export type Member = {
   userId: string;
   email: string;
@@ -179,6 +187,7 @@ export const api = {
   me: () => apiFetch<Principal>("/v1/me"),
   projects: () => apiFetch<Project[]>("/v1/projects"),
   project: (id: string) => apiFetch<Project>(`/v1/projects/${id}`),
+  projectAgents: (projectId: string) => apiFetch<AgentDef[]>(`/v1/projects/${projectId}/agents`),
   runs: (projectId: string, params = "") =>
     apiFetch<Run[]>(`/v1/projects/${projectId}/runs${params}`),
   allRuns: (params = "") =>
