@@ -33,8 +33,8 @@ Remote: streamable HTTP at `https://<mcp-host>/mcp` with
 
 Reads: `facility_me`, `facility_list_projects`, `facility_list_runs`,
 `facility_get_run`, `facility_list_inbox`, `facility_spend`,
-`facility_llm_requests`, `facility_list_registry`, `facility_list_issues`,
-`facility_audit_tail`, …
+`facility_llm_requests`, `facility_llm_request_envelope`,
+`facility_list_registry`, `facility_list_issues`, `facility_audit_tail`, …
 
 Writes — **all HITL-gated**: `facility_trigger_run`,
 `facility_steer_run`, `facility_decide_proposal`, `facility_kickstart`,

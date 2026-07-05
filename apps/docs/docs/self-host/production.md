@@ -25,9 +25,14 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
 1. Build and publish immutable images for `api`, `worker`, `gateway`, and
    `web`.
 2. Provision Postgres and object storage. Set `DATABASE_URL`, `S3_BUCKET`,
-   `AWS_REGION`, and `S3_ENDPOINT` when using a non-AWS S3-compatible store.
-   The development compose stack auto-creates its MinIO bucket; external
-   stores should be provisioned by your infrastructure.
+   and `AWS_REGION` for AWS S3. Credentials must come from static
+   `S3_ACCESS_KEY`/`S3_SECRET_KEY`, standard AWS env credentials
+   (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`), or ECS/container
+   credentials. For non-AWS S3-compatible stores, also set `S3_ENDPOINT` and
+   use static `S3_ACCESS_KEY`/`S3_SECRET_KEY` unless that runtime supplies
+   AWS-compatible credentials. The development compose stack auto-creates its
+   MinIO bucket; external stores should be provisioned by your
+   infrastructure.
 3. Load secrets into the runtime: `SECRET_MASTER_KEY`, WorkOS variables, and
    the GitHub App variables when repo automation is enabled.
 4. Run migrations once, before app traffic:
@@ -56,6 +61,13 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
    command verifies database connectivity and migrations, object-store
    envelope write/read with SigV4, seed essentials, GitHub App env completeness when
    enabled, and the org audit hash chain.
+
+   The doctor runs through the API task's object-store configuration. Give
+   the API and gateway identical `S3_*` and `AWS_REGION` env so the API-side
+   round trip is a valid readiness proxy for gateway envelope writes.
+   Envelope capture is best-effort with fail-loud logging: if a configured
+   bucket rejects a write, the failure is logged and the metering row is still
+   recorded.
 
 ## WorkOS SSO
 

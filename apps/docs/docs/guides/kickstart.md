@@ -6,8 +6,8 @@ title: Kickstart a project
 
 From zero to a working factory:
 
-1. **Create the project** (web → Projects → kickstart, or
-   `facility projects create`). Name, slug, description.
+1. **Create the project** in the web app or through the API. The CLI can list
+   and get projects, but it does not create them.
 2. **Connect the repo.** Install your GitHub App on the repository; it
    appears in the project's repo picker.
 3. **Answer the six questions.** Default branch, provision command, check

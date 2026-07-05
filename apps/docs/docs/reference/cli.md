@@ -30,6 +30,7 @@ npx @theam/facility <command>
 | `inbox` / `inbox decide` | the human gates, scriptable |
 | `kickstart` / `upgrade` | remote kickstart and upgrade PRs |
 | `keys issue\|list\|revoke` | machine access |
+| `llm-requests list\|get\|export` | list metered LLM requests and export a stored request/response envelope |
 
 Every platform command takes `--json` for automation. Exit codes: `0` ok,
 `1` error, `2` auth.

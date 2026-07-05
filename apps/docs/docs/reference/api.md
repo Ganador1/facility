@@ -33,6 +33,7 @@ client is `@facility/sdk`.
 `/cancel`) · `/v1/registry` · `/v1/sandbox-profiles` · `/v1/providers` ·
 `/v1/virtual-keys` · `/v1/budgets` · `/v1/spend` · `/v1/inbox` ·
 `/v1/proposals` · `/v1/issues` · `/v1/analytics` · `/v1/audit` ·
+`/v1/llm-requests` (+`/:requestId/envelope`) · `/v1/admin/doctor` ·
 `/webhooks/github`.
 
 The generated OpenAPI document is the authoritative, always-current
