@@ -22,24 +22,29 @@ followed by fixes to the named findings, re-verified against primary evidence
 | Docs, DX, operability | 56 | **89** |
 | **average** | **~59** | **~89** |
 
-~134 tests green (real Postgres), Biome clean, `tsc` green across packages, web
-+ docs build. Recent hardening (rounds 4–9): SSRF guard on BYO provider URLs,
-real MCP human-gate (write tools create HITL proposals a *separate* principal
-approves), the `v1.ts` god-router split into per-domain routers, run-steer
-cockpit + guided kickstart, penny-accurate budget reservation, idempotent
-metering, a deployment-readiness `facility doctor` (DB/migrations, object-store
-round-trip, seed, GitHub App, audit-chain), a contract-typed web client, one
-shared SigV4 S3 object store for API+gateway (MinIO-turnkey), **project-scoped
-audit isolation with complete per-producer attribution**, and HITL GitHub issue
-creation that **fails closed** instead of fabricating URLs.
+~145 tests green (real Postgres), Biome clean, web + docs build, `tsc` green
+across packages except one known `@facility/mcp` dispatcher-typing issue (below).
+Recent hardening (rounds 4–9): SSRF guard on BYO provider URLs, real MCP
+human-gate (write tools create HITL proposals a *separate* principal approves),
+the `v1.ts` god-router split into per-domain routers, run-steer cockpit + guided
+kickstart, penny-accurate budget reservation, idempotent metering, a
+deployment-readiness `facility doctor` (DB/migrations, object-store round-trip,
+seed, GitHub App, audit-chain), a contract-typed web client with real SDK tests,
+one shared SigV4 S3 object store for API+gateway (MinIO-turnkey), **project-scoped
+audit isolation with complete per-producer attribution**, HITL GitHub issue
+creation that **fails closed** instead of fabricating URLs, and an **OAuth 2.1
+resource server** — remote MCP now accepts WorkOS-issued access-token JWTs
+(JWKS/RS256, issuer+expiry+audience validated) alongside `fak_` keys, with RFC
+9728 protected-resource discovery.
 
-**Remaining non-owner-gated work** (the honest gap to a higher score):
-- **Remote MCP auth** is still Facility API-key bearer only; GOAL/architecture
-  call for a tam-os-style OAuth 2.1 / PKCE / JWKS protected-resource flow for
-  interactive MCP clients (keep API keys for service use). Largest remaining item.
-- **SDK route contract** is hand-maintained (not generated from the API schemas)
-  and has no type/behavioural tests; broad template-literal paths can typecheck a
-  wrong nested path.
+**Remaining non-owner-gated work** (all minor now that OAuth has shipped):
+- **`@facility/mcp` strict typecheck**: the MCP tool dispatcher models requests
+  as `path: string`, so `pnpm --filter @facility/mcp exec tsc --noEmit` reports
+  errors (the build via tsup and the tests both pass). Fix: constrain the
+  dispatcher generic to `FacilityRoutePath<Method>`.
+- **SDK route contract** is hand-maintained (not generated from the API schemas);
+  broad template-literal paths can typecheck a wrong nested path (behavioural +
+  type tests now exist).
 - A few non-core v1 endpoints still return loose `AnyObject` response schemas.
 
 **Owner-gated ceiling**: "tam-os operates 100% on the platform" requires the
