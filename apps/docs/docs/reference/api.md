@@ -21,8 +21,8 @@ client is `@facility/sdk`.
 - Base path `/v1`. JSON in, JSON out.
 - Errors: `{ "error": { "code", "message", "details?" } }` with meaningful
   status codes; `403` includes the permission you lacked.
-- Every mutation is audited (append-only, hash-chained; verify a window with
-  `GET /v1/audit/verify`).
+- Every mutation is audited (append-only, hash-chained; verify the org's audit
+  hash chain with `GET /v1/audit/verify`).
 - Streams (run events) are SSE: `GET /v1/runs/:id/stream`.
 
 ## Resource map

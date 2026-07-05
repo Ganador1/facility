@@ -303,6 +303,7 @@ export async function adoptFingerprints(args: {
     .where(eq(repos.id, args.repo.id));
   await insertAuditEvent(args.db, {
     orgId: args.repo.orgId,
+    projectId: args.repo.projectId,
     actor: { type: args.principal.type, id: args.principal.id },
     action: "fingerprints.adopted",
     target: { type: "repo", id: args.repo.id },
@@ -392,6 +393,7 @@ async function auditGithub(
 ) {
   await insertAuditEvent(db, {
     orgId,
+    projectId: repo.projectId,
     actor: { type: "system", name: "github-app" },
     action,
     target: { type: "repo", id: repo.id },

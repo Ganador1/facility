@@ -200,6 +200,7 @@ export async function finishRun(
   await appendRunEvents(db, run.orgId, run.id, [{ type: "result", data: { status, error } }]);
   await insertAuditEvent(db, {
     orgId: run.orgId,
+    projectId: run.projectId,
     actor: { type: "agent", id: run.id },
     action: "run.finished",
     target: { type: "run", id: run.id },

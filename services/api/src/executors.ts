@@ -133,6 +133,7 @@ async function executeMcpToolCall(
   const result = await executeKnownMcpTool(db, proposal.orgId, actor, toolName, args, options);
   await insertAuditEvent(db, {
     orgId: proposal.orgId,
+    projectId: targetProjectId ?? proposalProjectId,
     actor: { type: auditActorType(actor.type), id: actor.id },
     action: "mcp.tool.executed",
     target: { type: "proposal", id: proposal.id },

@@ -256,7 +256,7 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
     {
       config: { permission: "audit:read" },
       schema: {
-        querystring: z.object({ from: z.string().optional(), to: z.string().optional() }),
+        querystring: z.object({}),
         response: { 200: z.object({ ok: z.boolean(), firstBreakSeq: z.number().nullable() }) },
       },
     },

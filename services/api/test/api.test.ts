@@ -975,6 +975,60 @@ describe("api", async () => {
       .from(auditEvents)
       .where(sql`${auditEvents.orgId} = ${orgId} and ${auditEvents.action} = 'mcp.tool.executed'`);
     expect(audit).toHaveLength(1);
+    expect(audit[0]?.projectId).toBe(projectId);
+
+    const otherProject = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "MCP Audit Other", slug: `mcp-audit-other-${Date.now()}` },
+    });
+    expect(otherProject.statusCode).toBe(200);
+    const projectAuditKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: `mcp-audit-reader-${Date.now()}`, roleId: ownerRole, projectId },
+    });
+    expect(projectAuditKey.statusCode).toBe(200);
+    const otherAuditKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: {
+        name: `mcp-audit-other-reader-${Date.now()}`,
+        roleId: ownerRole,
+        projectId: otherProject.json().id,
+      },
+    });
+    expect(otherAuditKey.statusCode).toBe(200);
+
+    type AuditRow = { projectId?: string | null; target: { id?: string }; action: string };
+    const projectAudit = await app.inject({
+      method: "GET",
+      url: "/v1/audit?action=mcp.tool.executed&limit=500",
+      headers: { authorization: `Bearer ${projectAuditKey.json().secret}` },
+    });
+    expect(projectAudit.statusCode).toBe(200);
+    const projectAuditItems = projectAudit.json().items as AuditRow[];
+    expect(projectAuditItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "mcp.tool.executed",
+          projectId,
+          target: expect.objectContaining({ id: proposed.json().id }),
+        }),
+      ]),
+    );
+
+    const otherAudit = await app.inject({
+      method: "GET",
+      url: "/v1/audit?action=mcp.tool.executed&limit=500",
+      headers: { authorization: `Bearer ${otherAuditKey.json().secret}` },
+    });
+    expect(otherAudit.statusCode).toBe(200);
+    const otherAuditItems = otherAudit.json().items as AuditRow[];
+    expect(otherAuditItems.some((row) => row.target.id === proposed.json().id)).toBe(false);
   });
 
   it("refuses approved MCP execution when the resolved target project differs", async () => {

@@ -366,6 +366,7 @@ async function auditGithub(
 ) {
   await insertAuditEvent(db, {
     orgId,
+    projectId: repo.projectId,
     actor: { type: "system", name: "github-app" },
     action,
     target: { type: "repo", id: repo.id },

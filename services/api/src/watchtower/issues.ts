@@ -68,6 +68,7 @@ export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
   if (wasResolved) {
     await insertAuditEvent(db, {
       orgId: input.orgId,
+      projectId: updated?.projectId ?? input.projectId ?? existing.projectId ?? null,
       actor: { type: "system", name: "watchtower" },
       action: "issue.reopened",
       target: { type: "issue", id: existing.id },
