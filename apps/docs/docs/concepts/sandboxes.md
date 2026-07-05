@@ -11,10 +11,20 @@ the control plane, never on your laptop.
 
 A sandbox profile declares the world an agent wakes up in: base image,
 dependencies, provision command, resource limits, network posture. Profiles
-are versioned and reusable; the default profile runs the platform's runner
-image with your project's provision command. The provisioned-site rule is
-enforced: if provisioning fails, the agent never starts — a partial
+are versioned and reusable; the seeded default profile runs the platform's
+runner image with your project's provision command. The provisioned-site rule
+is enforced: if provisioning fails, the agent never starts — a partial
 environment produces hedging, not work.
+
+:::note The runner image
+A **platform-lane** run (Claude Code, Codex) needs an image whose entrypoint is
+the Facility runner — a bare base image like `node:22-bookworm` only supports
+**BYO-command** runs. Build it with `docker build -t facility-runner:dev runner/`
+and set `FACILITY_RUNNER_IMAGE` (default `facility-runner:dev`) so the seeded
+default profile points at it; in the cloud, set it to your pushed runner image
+tag. `facility doctor` fails its `sandbox_runner` check if no profile can run
+the runner, so a false-ready deployment surfaces before the first run.
+:::
 
 ## Drivers
 

@@ -103,6 +103,7 @@ describe("api", async () => {
     publicUrl: "http://localhost:4400",
     sandboxApiUrl: "http://localhost:4400",
     sandboxGatewayUrl: "http://localhost:4410",
+    sandboxRunnerImage: "facility-runner:dev",
     webUrl: "http://localhost:3000",
     facilityInsecureDev: true,
     logLevel: "silent",
@@ -1591,6 +1592,9 @@ describe("api", async () => {
       expect(healthy.json().ok).toBe(true);
       expect(checkStatus(healthy.json(), "object_storage")).toBe("pass");
       expect(checkStatus(healthy.json(), "audit_hash_chain")).toBe("pass");
+      // The seeded default profile runs the configured runner image, so the
+      // platform-lane readiness check passes.
+      expect(checkStatus(healthy.json(), "sandbox_runner")).toBe("pass");
       expect([...objects.keys()].some((key) => key.includes("/facility-test/envelopes/"))).toBe(
         true,
       );

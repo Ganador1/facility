@@ -176,7 +176,7 @@ describe("db", async () => {
       "skill_proposal",
       "task_creation",
     ]);
-    expect(seededProfiles.map((profile) => profile.name)).toEqual(["Default Docker Node 22"]);
+    expect(seededProfiles.map((profile) => profile.name)).toEqual(["Default runner (docker)"]);
     expect(seededProjects).toHaveLength(0);
 
     await seed(databaseUrl, { includeDemoData: false });

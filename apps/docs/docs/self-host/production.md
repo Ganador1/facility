@@ -42,10 +42,13 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
    ```
 
 5. Seed bundled roles, action types, registry essentials, and the default
-   sandbox profile:
+   sandbox profile. Set `FACILITY_RUNNER_IMAGE` first (build/push the runner
+   image from `runner/`) so the default profile can run platform-lane agents —
+   otherwise `facility doctor` flags `sandbox_runner` and platform-lane runs
+   never start:
 
    ```bash
-   FACILITY_SEED_DEMO=0 pnpm --filter @facility/db seed
+   FACILITY_RUNNER_IMAGE=<your-runner-image> FACILITY_SEED_DEMO=0 pnpm --filter @facility/db seed
    ```
 
 6. Start or roll the services in this order: `api`, `worker`, `gateway`,

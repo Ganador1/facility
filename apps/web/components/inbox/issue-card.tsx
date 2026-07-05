@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, cx, Eyebrow } from "@facility/ui";
+import { Button, Eyebrow } from "@facility/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { Issue } from "@/lib/api";

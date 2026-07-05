@@ -55,6 +55,7 @@ export async function runReadinessDoctor(input: {
     checkDatabase(input.db),
     checkObjectStorage(input.config, input.orgId, now),
     checkSeedEssentials(input.db, input.orgId),
+    checkSandboxRunner(input.db, input.config, input.orgId),
     checkGithubApp(input.config),
     checkAuthConfig(input.config),
     checkAuditHashChain(input.db, input.orgId),
@@ -205,6 +206,52 @@ async function checkSeedEssentials(db: Db, orgId: string): Promise<DoctorCheck> 
       "seed_essentials",
       "Bundled seed essentials",
       error instanceof Error ? error.message : "Seed readiness check failed.",
+      "Run database migrations, then seed the deployment.",
+    );
+  }
+}
+
+// A sandbox profile can run a platform-lane agent (Claude Code, Codex) only if
+// its image ships the Facility runner as its entrypoint. A bare base image like
+// node:22-bookworm silently only supports BYO-command runs — that is the
+// false-ready trap this check closes.
+async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Promise<DoctorCheck> {
+  try {
+    const profiles = await db
+      .select({ image: sandboxProfiles.image })
+      .from(sandboxProfiles)
+      .where(eq(sandboxProfiles.orgId, orgId));
+    if (profiles.length === 0) {
+      // Absence of any profile is already reported by checkSeedEssentials.
+      return warn(
+        "sandbox_runner",
+        "Sandbox runner image",
+        "No sandbox profiles exist, so platform-lane runs cannot start.",
+        "Seed the deployment, then set FACILITY_RUNNER_IMAGE to your runner image.",
+      );
+    }
+    const runnerImage = config.sandboxRunnerImage;
+    const canRunRunner = profiles.some(
+      (profile) => profile.image === runnerImage || /runner/i.test(profile.image),
+    );
+    if (!canRunRunner) {
+      return warn(
+        "sandbox_runner",
+        "Sandbox runner image",
+        `No sandbox profile uses the Facility runner image (expected ${runnerImage}); platform-lane runs (Claude Code, Codex) will not start — only BYO-command runs would.`,
+        "Point a sandbox profile at your runner image, or set FACILITY_RUNNER_IMAGE and re-seed.",
+      );
+    }
+    return pass(
+      "sandbox_runner",
+      "Sandbox runner image",
+      `A sandbox profile runs the Facility runner (${runnerImage}).`,
+    );
+  } catch (error) {
+    return fail(
+      "sandbox_runner",
+      "Sandbox runner image",
+      error instanceof Error ? error.message : "Sandbox runner readiness check failed.",
       "Run database migrations, then seed the deployment.",
     );
   }

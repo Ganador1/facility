@@ -35,6 +35,13 @@ function defaultSandboxProfileId(orgId: string): string {
   return orgId === "org_dev_the_agile_monkeys" ? "sbx_dev_default" : `sbx_default_${orgId}`;
 }
 
+// The default sandbox profile must run the Facility runner (its ENTRYPOINT), or
+// platform-lane runs never start. A bare base image like node:22-bookworm only
+// works for BYO-command runs. Keep this in sync with config.sandboxRunnerImage.
+function defaultRunnerImage(): string {
+  return process.env.FACILITY_RUNNER_IMAGE ?? "facility-runner:dev";
+}
+
 function actionTypeExecutor(name: string) {
   return {
     type: [
@@ -247,9 +254,9 @@ async function seedOrgEssentialsSql(sql: postgres.Sql, orgId: string): Promise<v
     VALUES (
       ${defaultSandboxProfileId(orgId)},
       ${orgId},
-      'Default Docker Node 22',
+      'Default runner (docker)',
       'docker',
-      'node:22-bookworm',
+      ${defaultRunnerImage()},
       '{"deps":[]}'::jsonb,
       '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
       '{"egress":"restricted"}'::jsonb
@@ -292,9 +299,9 @@ async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void>
     VALUES (
       ${defaultSandboxProfileId(orgId)},
       ${orgId},
-      'Default Docker Node 22',
+      'Default runner (docker)',
       'docker',
-      'node:22-bookworm',
+      ${defaultRunnerImage()},
       '{"deps":[]}'::jsonb,
       '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
       '{"egress":"restricted"}'::jsonb

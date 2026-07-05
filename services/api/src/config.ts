@@ -17,6 +17,9 @@ const EnvSchema = z
     SANDBOX_API_URL: z.string().url().optional(),
     GATEWAY_URL: z.string().url().default("http://localhost:4410"),
     SANDBOX_GATEWAY_URL: z.string().url().optional(),
+    // Container image that runs the Facility runner for platform-lane runs. The
+    // seeded default sandbox profile and `facility doctor` both key off this.
+    FACILITY_RUNNER_IMAGE: z.string().default("facility-runner:dev"),
     WORKOS_API_KEY: z.string().optional(),
     WORKOS_CLIENT_ID: z.string().optional(),
     WORKOS_COOKIE_PASSWORD: z.string().optional(),
@@ -61,6 +64,7 @@ export function readConfig(env = process.env): AppConfig {
     webUrl: parsed.WEB_URL,
     sandboxApiUrl: parsed.SANDBOX_API_URL ?? parsed.PUBLIC_URL,
     sandboxGatewayUrl: parsed.SANDBOX_GATEWAY_URL ?? parsed.GATEWAY_URL,
+    sandboxRunnerImage: parsed.FACILITY_RUNNER_IMAGE,
     workosApiKey: parsed.WORKOS_API_KEY,
     workosClientId: parsed.WORKOS_CLIENT_ID,
     workosCookiePassword: parsed.WORKOS_COOKIE_PASSWORD,

@@ -57,6 +57,7 @@ describe("sandbox api", async () => {
     publicUrl: "http://127.0.0.1:0",
     sandboxApiUrl: "http://127.0.0.1:0",
     sandboxGatewayUrl: "http://127.0.0.1:0",
+    sandboxRunnerImage: "facility-runner:dev",
     webUrl: "http://localhost:3000",
     facilityInsecureDev: true,
     logLevel: "silent",

@@ -23,6 +23,8 @@ export type AppConfig = {
   // URLs; override (e.g. host.docker.internal) for the local docker driver.
   sandboxApiUrl: string;
   sandboxGatewayUrl: string;
+  // Image the seeded default sandbox profile uses to run the platform runner.
+  sandboxRunnerImage: string;
   workosApiKey?: string;
   workosAuthkitDomain?: string;
   workosRedirectUri?: string;
