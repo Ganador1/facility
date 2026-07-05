@@ -29,6 +29,61 @@ export type Project = {
   createdAt: string;
 };
 
+export type ProjectRepo = {
+  id: string;
+  projectId: string;
+  owner: string;
+  name: string;
+  defaultBranch: string;
+  installationId?: string | null;
+  fingerprintStatus?: string | null;
+  createdAt?: string;
+};
+
+export type KickstartAnswers = {
+  defaultBranch?: string;
+  provisionCmd?: string;
+  checkCmds?: string[];
+  modules?: string[];
+  modelTier?: string;
+  board?: { org: string; project: string | number } | null;
+  execution_lane?: Record<string, "repo" | "platform">;
+};
+
+export type KickstartPreview = {
+  detection?: {
+    defaultBranch?: string;
+    packageManager?: "pnpm" | "yarn" | "npm" | "none";
+    checks?: string[];
+    provision?: string;
+    org?: string;
+    workflowNames?: string[];
+    suggestedModules?: string[];
+    existing?: {
+      agentsMd?: boolean;
+      claudeMd?: boolean;
+      claudeSettings?: boolean;
+      standard?: boolean;
+    };
+  };
+  files: Array<{
+    path: string;
+    size: number;
+    sha256: string;
+    mode?: string;
+    action?: "create" | "update" | string;
+  }>;
+  skipped?: string[];
+};
+
+export type KickstartResult = {
+  branch?: string;
+  commitSha?: string;
+  pr?: { number?: number; url?: string; html_url?: string; title?: string };
+  files?: Array<{ path: string; content?: string; mode?: string }>;
+  manifest?: Record<string, unknown>;
+};
+
 export type Run = {
   id: string;
   projectId: string;
@@ -186,7 +241,35 @@ export type SpendRow = { bucket: string; cost_cents: number };
 export const api = {
   me: () => apiFetch<Principal>("/v1/me"),
   projects: () => apiFetch<Project[]>("/v1/projects"),
+  createProject: (body: {
+    name: string;
+    slug: string;
+    description?: string;
+    settings?: Record<string, unknown>;
+  }) =>
+    apiFetch<Project>("/v1/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   project: (id: string) => apiFetch<Project>(`/v1/projects/${id}`),
+  projectRepos: (projectId: string) => apiFetch<ProjectRepo[]>(`/v1/projects/${projectId}/repos`),
+  connectProjectRepo: (
+    projectId: string,
+    body: { owner: string; name: string; defaultBranch?: string },
+  ) =>
+    apiFetch<ProjectRepo>(`/v1/projects/${projectId}/repos`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  kickstartPreview: (projectId: string, repoId: string) =>
+    apiFetch<KickstartPreview>(
+      `/v1/projects/${projectId}/kickstart/preview?repoId=${encodeURIComponent(repoId)}`,
+    ),
+  kickstart: (projectId: string, body: { repoId: string; answers: KickstartAnswers; mode: "pr" }) =>
+    apiFetch<KickstartResult>(`/v1/projects/${projectId}/kickstart`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   projectAgents: (projectId: string) => apiFetch<AgentDef[]>(`/v1/projects/${projectId}/agents`),
   runs: (projectId: string, params = "") =>
     apiFetch<Run[]>(`/v1/projects/${projectId}/runs${params}`),
