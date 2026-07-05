@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as processStdin, stdout as processStdout } from "node:process";
 import { loadConfig, saveConfig, getProfile } from "./platform-config.mjs";
-import { accent, bold, dim } from "./ui.mjs";
+import { accent, bold, dim, green, yellow } from "./ui.mjs";
 
 class CliError extends Error {
   constructor(message, exitCode = 1) {
@@ -236,7 +236,18 @@ async function keys(args, ctx, flags) {
     const roleId = flags.role || flags.roleId;
     if (!roleId) throw new CliError("facility keys issue requires --role <roleId>");
     const result = await api(ctx, "POST", "/v1/keys", { body: { name, roleId, projectId: flags.project } });
-    output(ctx, result, () => `  ${bold("issued")} ${result.id} ${dim(`last4 ${result.last4}`)}\n`);
+    // The plaintext secret is returned exactly once; surface it prominently in
+    // human output (JSON mode already includes it) or it is lost for good.
+    output(ctx, result, () => {
+      const lines = [`  ${bold("issued")} ${result.id} ${dim(`· ${result.name} · last4 ${result.last4}`)}`];
+      if (result.secret) {
+        lines.push(
+          `  ${green(result.secret)}`,
+          `  ${yellow("!")} ${dim("copy this secret now — it is shown once and cannot be retrieved later")}`,
+        );
+      }
+      return `${lines.join("\n")}\n`;
+    });
     return 0;
   }
   throw new CliError("Usage: facility keys issue|revoke|list");

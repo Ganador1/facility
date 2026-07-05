@@ -264,3 +264,33 @@ test("doctor calls platform readiness endpoint and renders remediation", async (
   assert.ok(stdout.text.includes("Not ready for production traffic."));
   assert.ok(!stdout.text.includes("fak_secret"), "doctor must not log API keys");
 });
+
+test("keys issue surfaces the one-time secret in human output", async () => {
+  const stdout = sink();
+  const calls = [];
+  const exit = await runPlatformCommand("keys", ["issue", "ci-key", "--role", "role_admin"], {
+    config: config(),
+    stdout,
+    fetch: async (url, init) => {
+      calls.push({ url: String(url), method: init?.method });
+      return json({ id: "key_1", name: "ci-key", last4: "ab12", secret: "fak_live_supersecret" });
+    },
+  });
+
+  assert.equal(exit, 0);
+  assert.equal(calls[0].method, "POST");
+  assert.ok(stdout.text.includes("fak_live_supersecret"), "the secret must be printed once");
+  assert.ok(stdout.text.includes("shown once"), "must warn the secret is not retrievable later");
+});
+
+test("keys issue --json includes the secret for scripting", async () => {
+  const stdout = sink();
+  const exit = await runPlatformCommand("keys", ["issue", "ci-key", "--role", "role_admin", "--json"], {
+    config: config(),
+    stdout,
+    fetch: async () => json({ id: "key_1", name: "ci-key", last4: "ab12", secret: "fak_live_supersecret" }),
+  });
+
+  assert.equal(exit, 0);
+  assert.equal(JSON.parse(stdout.text).secret, "fak_live_supersecret");
+});
