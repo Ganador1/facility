@@ -1,4 +1,4 @@
-import { newId } from "@facility/core";
+import { can, newId } from "@facility/core";
 import { actionTypes, platformIssues, proposalEvents, proposals } from "@facility/db";
 import { and, asc, desc, eq, gt, isNull, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -91,6 +91,98 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
   );
 
   app.post(
+    "/v1/mcp/tool-proposals",
+    {
+      config: { permission: "org:read", auditAction: "hitl.proposed" },
+      schema: {
+        body: z.object({
+          toolName: z.string().min(1),
+          permission: z.string().min(1),
+          args: AnyObject,
+          summary: z.string().min(1),
+          projectId: z.string().optional(),
+          runId: z.string().optional(),
+        }),
+        response: { 200: AnyObject },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const body = request.body as {
+        toolName: string;
+        permission: string;
+        args: Record<string, unknown>;
+        summary: string;
+        projectId?: string;
+        runId?: string;
+      };
+      const expectedPermission = MCP_TOOL_PERMISSIONS[body.toolName];
+      if (!expectedPermission) {
+        throw new ApiError(400, "mcp_tool_not_allowed", "MCP tool is not approval-gated");
+      }
+      if (body.permission !== expectedPermission) {
+        throw new ApiError(
+          400,
+          "mcp_permission_mismatch",
+          "MCP tool permission does not match the server allowlist",
+        );
+      }
+      if (!can(p.permissions, body.permission)) {
+        throw new ApiError(403, "forbidden", "Permission denied", { needed: body.permission });
+      }
+      if (can(p.permissions, "hitl:decide")) {
+        throw new ApiError(
+          403,
+          "mcp_key_can_decide",
+          "MCP write keys must not carry hitl:decide; approval must come from a separate human principal",
+        );
+      }
+      await assertProjectInOrg(p, body.projectId);
+      const actionType = await ensureMcpActionType(p.orgId);
+      if (!actionType) throw new ApiError(500, "insert_failed", "Could not create MCP action type");
+      const projectId = p.projectId ?? body.projectId;
+      const proposal = (
+        await db
+          .insert(proposals)
+          .values({
+            id: newId("prop"),
+            orgId: p.orgId,
+            projectId,
+            runId: body.runId,
+            actionTypeId: actionType.id,
+            payload: {
+              toolName: body.toolName,
+              permission: body.permission,
+              args: body.args,
+              requestedBy: { type: p.type, id: p.id },
+            },
+            contextMd: [
+              `MCP write request: ${body.summary}`,
+              "",
+              `Tool: ${body.toolName}`,
+              `Requested by: ${p.type}:${p.id}`,
+              "",
+              "Approval requires hitl:decide and must be made by a different principal.",
+            ].join("\n"),
+            expiresAt: new Date(Date.now() + actionType.defaultTtlHours * 3600_000),
+          })
+          .returning()
+      )[0];
+      if (proposal) {
+        await db.insert(proposalEvents).values({
+          orgId: p.orgId,
+          proposalId: proposal.id,
+          seq: 1,
+          type: "open",
+          actor: { type: p.type, id: p.id },
+          data: { source: "mcp", toolName: body.toolName, permission: body.permission },
+        });
+      }
+      return proposal;
+    },
+  );
+
+  app.post(
     "/v1/proposals",
     {
       config: { permission: "hitl:write", auditAction: "hitl.proposed" },
@@ -178,6 +270,37 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
       const body = request.body as { decision: "approve" | "reject"; note?: string };
       const state = body.decision === "approve" ? "approved" : "rejected";
       const row = await db.transaction(async (tx) => {
+        const proposal = (
+          await tx
+            .select({ proposal: proposals, actionType: actionTypes })
+            .from(proposals)
+            .innerJoin(actionTypes, eq(actionTypes.id, proposals.actionTypeId))
+            .where(and(eq(proposals.orgId, p.orgId), eq(proposals.id, proposalId)))
+            .limit(1)
+        )[0];
+        if (!proposal) throw new ApiError(409, "not_open", "Proposal is not open");
+        if (proposal.actionType.name === "mcp_tool_call") {
+          const opener = (
+            await tx
+              .select()
+              .from(proposalEvents)
+              .where(
+                and(
+                  eq(proposalEvents.orgId, p.orgId),
+                  eq(proposalEvents.proposalId, proposalId),
+                  eq(proposalEvents.seq, 1),
+                ),
+              )
+              .limit(1)
+          )[0];
+          if (sameActor(opener?.actor, { type: p.type, id: p.id })) {
+            throw new ApiError(
+              403,
+              "same_principal_approval_denied",
+              "MCP write proposals must be approved by a different human principal",
+            );
+          }
+        }
         const updated = (
           await tx
             .update(proposals)
@@ -211,7 +334,12 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
         return updated;
       });
       if (row && state === "approved") {
-        await executeApprovedProposal(db, row, { type: p.type, id: p.id }, { config });
+        await executeApprovedProposal(
+          db,
+          row,
+          { type: p.type, id: p.id },
+          { config, enqueue: app.enqueue },
+        );
         return (
           await db
             .select()
@@ -255,4 +383,60 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
       )[0];
     },
   );
+
+  async function ensureMcpActionType(orgId: string) {
+    const existing = (
+      await db
+        .select()
+        .from(actionTypes)
+        .where(and(eq(actionTypes.orgId, orgId), eq(actionTypes.name, "mcp_tool_call")))
+        .limit(1)
+    )[0];
+    if (existing) return existing;
+    return (
+      await db
+        .insert(actionTypes)
+        .values({
+          id: `act_${orgId}_mcp_tool_call`,
+          orgId,
+          name: "mcp_tool_call",
+          payloadSchema: { type: "object", required: ["toolName", "args", "requestedBy"] },
+          resolver: { type: "permission", config: { permission: "hitl:decide" } },
+          executor: { type: "mcp", config: {} },
+          defaultTtlHours: 72,
+        })
+        .onConflictDoUpdate({
+          target: [actionTypes.orgId, actionTypes.name],
+          set: {
+            payloadSchema: { type: "object", required: ["toolName", "args", "requestedBy"] },
+            resolver: { type: "permission", config: { permission: "hitl:decide" } },
+            executor: { type: "mcp", config: {} },
+            defaultTtlHours: 72,
+            updatedAt: new Date(),
+          },
+        })
+        .returning()
+    )[0];
+  }
 }
+
+function sameActor(left: unknown, right: { type: string; id: string }) {
+  return (
+    typeof left === "object" &&
+    left !== null &&
+    (left as { type?: unknown }).type === right.type &&
+    (left as { id?: unknown }).id === right.id
+  );
+}
+
+const MCP_TOOL_PERMISSIONS: Record<string, string> = {
+  facility_trigger_run: "runs:trigger",
+  facility_cancel_run: "runs:write",
+  facility_steer_run: "runs:steer",
+  facility_create_project: "projects:write",
+  facility_kickstart: "projects:kickstart",
+  facility_upgrade_project: "projects:write",
+  facility_set_budget: "budgets:write",
+  facility_publish_registry_version: "registry:publish",
+  facility_create_agent: "agents:write",
+};

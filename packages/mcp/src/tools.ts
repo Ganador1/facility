@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { mintConfirmation, verifyConfirmation } from "@facility/core";
 import { FacilityClient } from "@facility/sdk";
 import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -23,12 +21,6 @@ type ApiClient = {
 };
 
 const optionalString = z.string().min(1).optional();
-const confirmToken = z
-  .string()
-  .min(1)
-  .optional()
-  .describe("Confirmation token returned by the first call.");
-
 export type FacilityMcpOptions = {
   apiUrl: string;
   apiKey: string;
@@ -337,6 +329,7 @@ const writeTools: ToolDefinition[] = [
     write: true,
     inputSchema: {
       projectId: z.string().min(1).describe("Facility project id."),
+      repoId: z.string().min(1).describe("Facility repo id or owner/name."),
       toVersion: optionalString.describe("Target Facility system/template version."),
     },
     summarize: (args) =>
@@ -344,7 +337,7 @@ const writeTools: ToolDefinition[] = [
     request: (args) => ({
       method: "POST",
       path: `/v1/projects/${str(args.projectId)}/upgrade`,
-      body: { toVersion: args.toVersion },
+      body: { repoId: args.repoId, toVersion: args.toVersion },
     }),
   },
   {
@@ -422,13 +415,9 @@ export function createFacilityMcpServer(options: FacilityMcpOptions): McpServer 
     options.client ??
     new FacilityClient({ baseUrl: options.apiUrl, apiKey: options.apiKey, fetch: options.fetch });
   const api = client as ApiClient;
-  const confirmationSecret = options.confirmationSecret ?? options.apiKey;
-  const clientId = options.clientId ?? "facility-mcp";
 
   for (const tool of toolDefinitions) {
-    const inputSchema = tool.write
-      ? { ...(tool.inputSchema ?? {}), confirm_token: confirmToken }
-      : tool.inputSchema;
+    const inputSchema = tool.inputSchema;
     server.registerTool(
       tool.name,
       {
@@ -441,8 +430,7 @@ export function createFacilityMcpServer(options: FacilityMcpOptions): McpServer 
       async (args) => {
         const recordArgs = (args ?? {}) as Args;
         if (tool.write) {
-          const confirmation = confirmWrite(tool, recordArgs, confirmationSecret, clientId);
-          if (confirmation) return jsonResult(confirmation);
+          return jsonResult(await proposeWrite(tool, recordArgs, api));
         }
         return jsonResult(await dispatchTool(tool, recordArgs, api));
       },
@@ -582,42 +570,29 @@ async function dispatchTool(tool: ToolDefinition, args: Args, api: ApiClient): P
   return api.request(request.method, request.path, { query: request.query, body: request.body });
 }
 
-function confirmWrite(
-  tool: ToolDefinition,
-  args: Args,
-  secret: string,
-  clientId: string,
-): unknown | null {
+async function proposeWrite(tool: ToolDefinition, args: Args, api: ApiClient): Promise<unknown> {
   const cleanArgs = omit(args, ["confirm_token"]);
-  const argsHash = hashArgs(cleanArgs);
-  const token = typeof args.confirm_token === "string" ? args.confirm_token : undefined;
-  if (!token) {
-    const summary = tool.summarize?.(cleanArgs) ?? `Run ${tool.name}.`;
-    return {
-      requires_confirmation: true,
-      token: mintConfirmation({
-        secret,
-        userId: "api-key",
-        clientId,
+  const summary = tool.summarize?.(cleanArgs) ?? `Run ${tool.name}.`;
+  const proposal = asRecord(
+    await api.request("POST", "/v1/mcp/tool-proposals", {
+      body: {
         toolName: tool.name,
-        argsHash,
+        permission: tool.permission,
+        args: cleanArgs,
         summary,
-        ttlMs: 300_000,
-      }),
-      summary,
-      expires_in_s: 300,
-    };
-  }
-  const verified = verifyConfirmation(token, secret);
-  if (
-    !verified ||
-    verified.toolName !== tool.name ||
-    verified.argsHash !== argsHash ||
-    verified.clientId !== clientId
-  ) {
-    throw new Error("Confirmation token is invalid, expired, or bound to different arguments.");
-  }
-  return null;
+        projectId: str(cleanArgs.projectId),
+        runId: str(cleanArgs.runId),
+      },
+    }),
+  );
+  return {
+    pending_human_approval: true,
+    proposal_id: proposal.id,
+    inbox: proposal.id ? `/v1/proposals/${String(proposal.id)}` : "/v1/inbox",
+    summary,
+    message:
+      "Pending human approval. A different principal with hitl:decide must approve this proposal from the HITL inbox; the MCP caller cannot complete it alone.",
+  };
 }
 
 function jsonResult(value: unknown): CallToolResult {
@@ -641,19 +616,4 @@ function asRecord(value: unknown): Record<string, unknown> {
 function omit(record: Args, keys: string[]): Args {
   const blocked = new Set(keys);
   return Object.fromEntries(Object.entries(record).filter(([key]) => !blocked.has(key)));
-}
-
-function hashArgs(args: Args): string {
-  return createHash("sha256").update(stableStringify(args)).digest("hex");
-}
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value);
 }

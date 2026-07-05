@@ -28,6 +28,7 @@ const BUNDLED_ACTION_TYPES = [
   { name: "rule_proposal", required: ["name", "content", "evidence_refs"] },
   { name: "guard_candidate", required: ["title", "content", "evidence_refs"] },
   { name: "kb_amendment", required: ["type", "slug", "bodyMd", "evidence_refs"] },
+  { name: "mcp_tool_call", required: ["toolName", "args", "requestedBy"] },
 ];
 
 function defaultSandboxProfileId(orgId: string): string {
@@ -44,7 +45,9 @@ function actionTypeExecutor(name: string) {
       "kb_amendment",
     ].includes(name)
       ? "internal"
-      : "none",
+      : name === "mcp_tool_call"
+        ? "mcp"
+        : "none",
     config: {},
   };
 }

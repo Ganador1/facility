@@ -48,7 +48,6 @@ async function connect(stub: {
   const server = createFacilityMcpServer({
     apiUrl: "http://facility.test",
     apiKey: "fak_test",
-    confirmationSecret: "test-secret",
     client: stub,
   });
   const client = new Client({ name: "mcp-test", version: "1.0.0" });
@@ -64,7 +63,7 @@ describe("@facility/mcp", () => {
     expect(result.tools.map((tool) => tool.name)).toEqual(toolDefinitions.map((tool) => tool.name));
     const trigger = result.tools.find((tool) => tool.name === "facility_trigger_run");
     expect(trigger?.description).toContain("Needs runs:trigger");
-    expect(trigger?.inputSchema.properties).toHaveProperty("confirm_token");
+    expect(trigger?.inputSchema.properties).not.toHaveProperty("confirm_token");
     expect(trigger?.inputSchema.properties).toHaveProperty("projectId");
     await client.close();
     await server.close();
@@ -87,12 +86,12 @@ describe("@facility/mcp", () => {
     await server.close();
   });
 
-  test("write tool without token requires confirmation and performs no API call", async () => {
+  test("write tool creates a HITL proposal instead of executing directly", async () => {
     const calls: unknown[] = [];
     const { client, server } = await connect({
       request: async (...args) => {
         calls.push(args);
-        return { shouldNot: "happen" };
+        return { id: "prop_1", state: "open" };
       },
     });
     const result = await client.callTool({
@@ -100,54 +99,48 @@ describe("@facility/mcp", () => {
       arguments: { runId: "run_1", body: "continue after tests pass" },
     });
     const payload = JSON.parse(textPayload(result));
-    expect(payload.requires_confirmation).toBe(true);
+    expect(payload.pending_human_approval).toBe(true);
+    expect(payload.proposal_id).toBe("prop_1");
     expect(payload.summary).toContain("Steer run run_1");
-    expect(calls).toEqual([]);
+    expect(calls).toEqual([
+      [
+        "POST",
+        "/v1/mcp/tool-proposals",
+        {
+          body: {
+            toolName: "facility_steer_run",
+            permission: "runs:steer",
+            args: { runId: "run_1", body: "continue after tests pass" },
+            summary: "Steer run run_1 with a human-authored message.",
+            projectId: undefined,
+            runId: "run_1",
+          },
+          query: undefined,
+        },
+      ],
+    ]);
     await client.close();
     await server.close();
   });
 
-  test("write tool rejects a token bound to different arguments", async () => {
-    const { client, server } = await connect({
-      request: async () => {
-        throw new Error("must not execute");
-      },
-    });
-    const first = await client.callTool({
-      name: "facility_cancel_run",
-      arguments: { runId: "run_1" },
-    });
-    const token = JSON.parse(textPayload(first)).token;
-    const tampered = await client.callTool({
-      name: "facility_cancel_run",
-      arguments: { runId: "run_2", confirm_token: token },
-    });
-    expect(tampered.isError).toBe(true);
-    expect(textPayload(tampered)).toContain("Confirmation token is invalid");
-    await client.close();
-    await server.close();
-  });
-
-  test("write tool with valid token executes exact API request", async () => {
+  test("same MCP caller cannot self-replay a write into direct execution", async () => {
     const calls: unknown[] = [];
     const { client, server } = await connect({
       request: async (...args) => {
         calls.push(args);
-        return { id: "evt_1", body: "ship it" };
+        return { id: `prop_${calls.length}`, state: "open" };
       },
     });
-    const first = await client.callTool({
+    await client.callTool({
       name: "facility_steer_run",
       arguments: { runId: "run_1", body: "ship it" },
     });
-    const token = JSON.parse(textPayload(first)).token;
     await client.callTool({
       name: "facility_steer_run",
-      arguments: { runId: "run_1", body: "ship it", confirm_token: token },
+      arguments: { runId: "run_1", body: "ship it", confirm_token: "old-self-replay-token" },
     });
-    expect(calls).toEqual([
-      ["POST", "/v1/runs/run_1/steer", { body: { body: "ship it" }, query: undefined }],
-    ]);
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => (call as unknown[])[1] === "/v1/mcp/tool-proposals")).toBe(true);
     await client.close();
     await server.close();
   });
@@ -156,7 +149,6 @@ describe("@facility/mcp", () => {
     const server = serveHttp({
       apiUrl: "http://facility.test",
       port: 0,
-      confirmationSecret: "test-secret",
     });
     await once(server, "listening");
     const port = (server.address() as AddressInfo).port;

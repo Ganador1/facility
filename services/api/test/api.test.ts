@@ -17,6 +17,7 @@ import {
   registryVersions,
   repos,
   roles,
+  runEvents,
   runs,
   sandboxProfiles,
   seed,
@@ -67,6 +68,7 @@ describe("api", async () => {
   const { db, client } = createDb(databaseUrl);
   const app = await buildApp(config);
   let cookie = "";
+  let approverCookie = "";
   let orgId = "";
   const ownerRole = "role_bundled_owner";
   const viewerRole = "role_bundled_viewer";
@@ -84,6 +86,13 @@ describe("api", async () => {
     expect(login.statusCode).toBe(200);
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
     orgId = login.json().orgId;
+    const approverLogin = await app.inject({
+      method: "POST",
+      url: "/auth/dev-login",
+      payload: { email: `api-approver-${Date.now()}@example.com` },
+    });
+    expect(approverLogin.statusCode).toBe(200);
+    approverCookie = approverLogin.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
     await db.delete(auditEvents).where(eq(auditEvents.orgId, orgId));
     const setupProject = (
       await db
@@ -712,6 +721,135 @@ describe("api", async () => {
       headers: { cookie },
     });
     expect(loaded.json().events.map((event: { seq: number }) => event.seq)).toEqual([1, 2]);
+  });
+
+  it("gates MCP writes behind a separate human HITL approval", async () => {
+    const role = await app.inject({
+      method: "POST",
+      url: "/v1/roles",
+      headers: { cookie },
+      payload: {
+        name: `mcp-steer-${Date.now()}`,
+        description: "MCP key without approval permission",
+        permissions: ["org:read", "runs:steer"],
+      },
+    });
+    expect(role.statusCode).toBe(200);
+    const issued = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "mcp-steer", roleId: role.json().id },
+    });
+    expect(issued.statusCode).toBe(200);
+    const run = (
+      await db
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId,
+          projectId,
+          mode: "manual",
+          engine: "codex",
+          status: "running",
+          trigger: {},
+          createdBy: { type: "test", id: "fixture" },
+        })
+        .returning()
+    )[0];
+    if (!run) throw new Error("run fixture missing");
+    await db.insert(runEvents).values({
+      orgId,
+      runId: run.id,
+      seq: 1,
+      type: "started",
+      data: {},
+    });
+
+    const mismatched = await app.inject({
+      method: "POST",
+      url: "/v1/mcp/tool-proposals",
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+      payload: {
+        toolName: "facility_publish_registry_version",
+        permission: "runs:steer",
+        args: { versionId: "ver_unsafe" },
+        summary: "attempt confused-deputy publish",
+      },
+    });
+    expect(mismatched.statusCode).toBe(400);
+    expect(mismatched.json().error.code).toBe("mcp_permission_mismatch");
+
+    const proposed = await app.inject({
+      method: "POST",
+      url: "/v1/mcp/tool-proposals",
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+      payload: {
+        toolName: "facility_steer_run",
+        permission: "runs:steer",
+        args: { runId: run.id, body: "continue after tests pass" },
+        summary: `Steer run ${run.id}`,
+        runId: run.id,
+      },
+    });
+    expect(proposed.statusCode).toBe(200);
+    expect(proposed.json().state).toBe("open");
+
+    const selfDecision = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/decide`,
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+      payload: { decision: "approve" },
+    });
+    expect(selfDecision.statusCode).toBe(403);
+    expect(selfDecision.json().error.details.needed).toBe("hitl:decide");
+    const stillOpen = (
+      await db.select().from(proposals).where(eq(proposals.id, proposed.json().id)).limit(1)
+    )[0];
+    expect(stillOpen?.state).toBe("open");
+
+    const approved = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/decide`,
+      headers: { cookie: approverCookie },
+      payload: { decision: "approve", note: "approved by human" },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().state).toBe("executed");
+    const steerEvents = await db
+      .select()
+      .from(runEvents)
+      .where(sql`${runEvents.runId} = ${run.id} and ${runEvents.type} = 'steer'`);
+    expect(steerEvents).toHaveLength(1);
+    const audit = await db
+      .select()
+      .from(auditEvents)
+      .where(sql`${auditEvents.orgId} = ${orgId} and ${auditEvents.action} = 'mcp.tool.executed'`);
+    expect(audit).toHaveLength(1);
+  });
+
+  it("rejects MCP proposal creation by keys that can decide HITL", async () => {
+    const issued = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "mcp-owner", roleId: ownerRole },
+    });
+    expect(issued.statusCode).toBe(200);
+    const proposed = await app.inject({
+      method: "POST",
+      url: "/v1/mcp/tool-proposals",
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+      payload: {
+        toolName: "facility_steer_run",
+        permission: "runs:steer",
+        args: { runId: "run_any", body: "do it" },
+        summary: "unsafe owner-key proposal",
+        runId: "run_any",
+      },
+    });
+    expect(proposed.statusCode).toBe(403);
+    expect(proposed.json().error.code).toBe("mcp_key_can_decide");
   });
 
   it("marks failed HITL execution explicitly and can retry it", async () => {

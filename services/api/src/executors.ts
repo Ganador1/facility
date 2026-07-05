@@ -3,25 +3,34 @@ import { newId } from "@facility/core";
 import type { createDb } from "@facility/db";
 import {
   actionTypes,
+  agentDefs,
+  budgets,
   githubInstallations,
+  insertAuditEvent,
   kbEntries,
   kbLinks,
   kbSpaces,
   platformIssues,
   poTasks,
+  projects,
   proposalEvents,
   proposals,
   registryItems,
   registryVersions,
   repos,
+  runEvents,
+  runs,
+  sandboxProfiles,
+  steerMessages,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import {
   createGithubClientFactory,
   FacilityGithubClient,
   type GithubClientFactory,
 } from "./github/client.js";
+import { type KickstartAnswers, kickstartRepo, upgradeRepo } from "./github/kickstart.js";
 import {
   ensureActive,
   ensureLinks,
@@ -30,6 +39,8 @@ import {
   toHarnessEntry,
   toHarnessSpace,
 } from "./harness.js";
+import { cancelRun } from "./sandbox/orchestrator.js";
+import { notifyRunEvent } from "./sandbox/state.js";
 import type { AppConfig } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -64,6 +75,7 @@ type ExecuteApprovedProposalOptions = {
   config?: AppConfig;
   github?: GitHubIssueClient;
   githubFactory?: GithubClientFactory;
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<string | null>;
 };
 
 export async function executeApprovedProposal(
@@ -92,6 +104,8 @@ export async function executeApprovedProposal(
       await executeGuardCandidate(db, proposal);
     } else if (actionType.name === "kb_amendment") {
       await executeKbAmendment(db, proposal);
+    } else if (actionType.name === "mcp_tool_call") {
+      await executeMcpToolCall(db, proposal, actor, executionOptions);
     } else {
       return;
     }
@@ -109,6 +123,394 @@ export async function executeApprovedProposal(
       actionType: actionType.name,
       error: error instanceof Error ? error.message : String(error),
     });
+  }
+}
+
+async function executeMcpToolCall(
+  db: Db,
+  proposal: typeof proposals.$inferSelect,
+  actor: { type: string; id: string },
+  options: ExecuteApprovedProposalOptions,
+) {
+  const payload = objectOrEmpty(proposal.payload);
+  const toolName = stringField(payload.toolName);
+  const args = objectOrEmpty(payload.args);
+  if (!toolName) throw new Error("mcp_tool_missing_name");
+  const result = await executeKnownMcpTool(db, proposal.orgId, actor, toolName, args, options);
+  await insertAuditEvent(db, {
+    orgId: proposal.orgId,
+    actor: { type: auditActorType(actor.type), id: actor.id },
+    action: "mcp.tool.executed",
+    target: { type: "proposal", id: proposal.id },
+    payload: { toolName, result },
+  });
+}
+
+async function executeKnownMcpTool(
+  db: Db,
+  orgId: string,
+  actor: { type: string; id: string },
+  toolName: string,
+  args: Record<string, unknown>,
+  options: ExecuteApprovedProposalOptions,
+) {
+  if (toolName === "facility_create_project") {
+    const project = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: requiredString(args.name, "name"),
+          slug: requiredString(args.slug, "slug"),
+          description: optionalString(args.description),
+          settings: { default_branch: "main", check_cmds: [] },
+        })
+        .returning()
+    )[0];
+    return { projectId: project?.id };
+  }
+
+  if (toolName === "facility_trigger_run") {
+    const projectId = requiredString(args.projectId, "projectId");
+    const agentName = requiredString(args.agentName, "agentName");
+    const agent = await resolveAgentForMcpRun(db, orgId, projectId, agentName);
+    const run = (
+      await db
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId,
+          projectId,
+          agentDefId: agent.id,
+          mode: "manual",
+          engine: "codex",
+          trigger: { source: "mcp", agentName, input: args.input },
+          createdBy: actor,
+        })
+        .returning()
+    )[0];
+    if (run) {
+      await db.insert(runEvents).values({
+        orgId,
+        runId: run.id,
+        seq: 1,
+        type: "queued",
+        data: { queue: "runs.dispatch" },
+      });
+      await options.enqueue?.("runs.dispatch", { runId: run.id, orgId });
+    }
+    return { runId: run?.id };
+  }
+
+  if (toolName === "facility_cancel_run") {
+    const runId = requiredString(args.runId, "runId");
+    const row = (
+      await db
+        .update(runs)
+        .set({ status: "canceled", endedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
+        .returning()
+    )[0];
+    if (!row) throw new Error("run_not_found");
+    if (options.config) await cancelRun(options.config, row);
+    return { runId };
+  }
+
+  if (toolName === "facility_steer_run") {
+    const runId = requiredString(args.runId, "runId");
+    const body = requiredString(args.body, "body");
+    const run = (
+      await db
+        .select()
+        .from(runs)
+        .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
+        .limit(1)
+    )[0];
+    if (!run) throw new Error("run_not_found");
+    if (["succeeded", "failed", "canceled"].includes(run.status)) throw new Error("run_terminal");
+    const message = (
+      await db
+        .insert(steerMessages)
+        .values({ id: newId("evt"), orgId, runId, body })
+        .returning()
+    )[0];
+    const event = (
+      await db
+        .insert(runEvents)
+        .values({
+          orgId,
+          runId,
+          seq: await nextRunEventSeq(db, runId),
+          type: "steer",
+          data: { text: body, author: actor.id },
+        })
+        .returning()
+    )[0];
+    if (event) await notifyRunEvent(db, runId, event);
+    return { messageId: message?.id };
+  }
+
+  if (toolName === "facility_set_budget") {
+    const budgetId = optionalString(args.budgetId);
+    const projectId = optionalString(args.projectId);
+    await assertMcpProjectInOrg(db, orgId, projectId);
+    const values = {
+      scope: requiredString(args.scope, "scope"),
+      projectId,
+      agentDefId: optionalString(args.agentDefId),
+      period: requiredString(args.period, "period"),
+      limitCents: requiredNumber(args.limitCents, "limitCents"),
+      mode: requiredString(args.mode, "mode"),
+      enabled: typeof args.enabled === "boolean" ? args.enabled : true,
+      updatedAt: new Date(),
+    };
+    const row = budgetId
+      ? (
+          await db
+            .update(budgets)
+            .set(values)
+            .where(and(eq(budgets.orgId, orgId), eq(budgets.id, budgetId)))
+            .returning()
+        )[0]
+      : (
+          await db
+            .insert(budgets)
+            .values({ id: newId("bud"), orgId, ...values })
+            .returning()
+        )[0];
+    if (!row) throw new Error("budget_not_found");
+    return { budgetId: row.id };
+  }
+
+  if (toolName === "facility_publish_registry_version") {
+    const versionId = requiredString(args.versionId, "versionId");
+    const version = (
+      await db
+        .update(registryVersions)
+        .set({ status: "active", updatedAt: new Date() })
+        .where(
+          and(
+            eq(registryVersions.orgId, orgId),
+            eq(registryVersions.id, versionId),
+            eq(registryVersions.status, "draft"),
+          ),
+        )
+        .returning()
+    )[0];
+    if (!version) throw new Error("registry_version_not_publishable");
+    await db
+      .update(registryItems)
+      .set({ latestVersion: version.version, updatedAt: new Date() })
+      .where(and(eq(registryItems.orgId, orgId), eq(registryItems.id, version.itemId)));
+    return { versionId };
+  }
+
+  if (toolName === "facility_create_agent") {
+    const projectId = requiredString(args.projectId, "projectId");
+    await assertMcpProjectInOrg(db, orgId, projectId);
+    await assertMcpRegistryReference(
+      db,
+      orgId,
+      projectId,
+      requiredString(args.contractItemId, "contractItemId"),
+    );
+    await assertMcpRegistryReference(db, orgId, projectId, optionalString(args.harnessItemId));
+    await assertMcpSandboxReference(db, orgId, projectId, optionalString(args.sandboxProfileId));
+    const agent = (
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name: requiredString(args.name, "name"),
+          engine: requiredString(args.engine, "engine"),
+          model: args.model ?? {},
+          contractItemId: requiredString(args.contractItemId, "contractItemId"),
+          harnessItemId: optionalString(args.harnessItemId),
+          triggers: Array.isArray(args.triggers) ? args.triggers : [],
+          sandboxProfileId: optionalString(args.sandboxProfileId),
+          enabled: true,
+        })
+        .returning()
+    )[0];
+    return { agentId: agent?.id };
+  }
+
+  if (toolName === "facility_kickstart") {
+    const config = requireConfig(options);
+    const projectId = requiredString(args.projectId, "projectId");
+    const repo = await loadMcpRepo(db, orgId, projectId, requiredString(args.repoId, "repoId"));
+    return kickstartRepo({
+      db,
+      factory: createGithubClientFactory(config),
+      config,
+      principal: { type: "user", id: actor.id, orgId, permissions: ["hitl:decide"] },
+      projectId,
+      repo,
+      answers: objectOrEmpty(args.answers) as KickstartAnswers,
+    });
+  }
+
+  if (toolName === "facility_upgrade_project") {
+    const config = requireConfig(options);
+    const projectId = requiredString(args.projectId, "projectId");
+    const repoId = requiredString(args.repoId, "repoId");
+    const repo = await loadMcpRepo(db, orgId, projectId, repoId);
+    return upgradeRepo({
+      db,
+      factory: createGithubClientFactory(config),
+      repo,
+      toVersion: optionalString(args.toVersion),
+    });
+  }
+
+  throw new Error(`mcp_tool_not_allowed:${toolName}`);
+}
+
+function requiredString(value: unknown, field: string) {
+  if (typeof value === "string" && value.trim()) return value;
+  throw new Error(`mcp_tool_missing_${field}`);
+}
+
+function optionalString(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function requiredNumber(value: unknown, field: string) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  throw new Error(`mcp_tool_missing_${field}`);
+}
+
+function requireConfig(options: ExecuteApprovedProposalOptions) {
+  if (!options.config) throw new Error("mcp_tool_missing_config");
+  return options.config;
+}
+
+function auditActorType(type: string) {
+  return type === "user" || type === "key" || type === "agent" || type === "system"
+    ? type
+    : "system";
+}
+
+async function nextRunEventSeq(db: Db, runId: string) {
+  const rows = await db
+    .select({ max: sql<number>`coalesce(max(seq), 0)` })
+    .from(runEvents)
+    .where(eq(runEvents.runId, runId));
+  return Number(rows[0]?.max ?? 0) + 1;
+}
+
+async function resolveAgentForMcpRun(db: Db, orgId: string, projectId: string, agentName: string) {
+  const candidates = await db
+    .select()
+    .from(agentDefs)
+    .where(
+      and(
+        eq(agentDefs.orgId, orgId),
+        eq(agentDefs.projectId, projectId),
+        eq(agentDefs.enabled, true),
+      ),
+    );
+  const values = new Set([
+    agentName,
+    agentName.startsWith("/") ? agentName.slice(1) : `/${agentName}`,
+  ]);
+  const agent = candidates.find((row) => {
+    if (values.has(row.name)) return true;
+    const triggers = row.triggers as unknown;
+    return Array.isArray(triggers)
+      ? triggers.some((trigger) => {
+          if (!trigger || typeof trigger !== "object") return false;
+          const value =
+            (trigger as { command?: unknown; handle?: unknown }).command ??
+            (trigger as { handle?: unknown }).handle;
+          return typeof value === "string" && values.has(value);
+        })
+      : false;
+  });
+  if (!agent) throw new Error("agent_required");
+  return agent;
+}
+
+async function loadMcpRepo(db: Db, orgId: string, projectId: string, repoId: string) {
+  const byId = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, orgId), eq(repos.projectId, projectId), eq(repos.id, repoId)))
+      .limit(1)
+  )[0];
+  if (byId) return byId;
+  const [owner, name] = repoId.split("/");
+  if (owner && name) {
+    const byName = (
+      await db
+        .select()
+        .from(repos)
+        .where(
+          and(
+            eq(repos.orgId, orgId),
+            eq(repos.projectId, projectId),
+            eq(repos.owner, owner),
+            eq(repos.name, name),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (byName) return byName;
+  }
+  throw new Error("repo_not_found");
+}
+
+async function assertMcpProjectInOrg(db: Db, orgId: string, projectId: string | null | undefined) {
+  if (!projectId) return;
+  const project = (
+    await db
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)))
+      .limit(1)
+  )[0];
+  if (!project) throw new Error("project_not_found");
+}
+
+async function assertMcpRegistryReference(
+  db: Db,
+  orgId: string,
+  projectId: string,
+  itemId: string | undefined,
+) {
+  if (!itemId) return;
+  const item = (
+    await db
+      .select()
+      .from(registryItems)
+      .where(and(eq(registryItems.orgId, orgId), eq(registryItems.id, itemId)))
+      .limit(1)
+  )[0];
+  if (!item || (item.projectId && item.projectId !== projectId)) {
+    throw new Error("registry_reference_not_in_project");
+  }
+}
+
+async function assertMcpSandboxReference(
+  db: Db,
+  orgId: string,
+  projectId: string,
+  sandboxProfileId: string | undefined,
+) {
+  if (!sandboxProfileId) return;
+  const profile = (
+    await db
+      .select()
+      .from(sandboxProfiles)
+      .where(and(eq(sandboxProfiles.orgId, orgId), eq(sandboxProfiles.id, sandboxProfileId)))
+      .limit(1)
+  )[0];
+  if (!profile || (profile.projectId && profile.projectId !== projectId)) {
+    throw new Error("sandbox_reference_not_in_project");
   }
 }
 
