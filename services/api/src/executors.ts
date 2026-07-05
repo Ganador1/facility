@@ -55,22 +55,6 @@ export type GitHubIssueClient = {
   addToBoard?(input: { org: string; number: number; issueUrl: string }): Promise<void>;
 };
 
-export function mockGitHubIssueClient(): GitHubIssueClient {
-  return {
-    async createIssue(input) {
-      const digest = createHash("sha256")
-        .update(`${input.repo.owner}/${input.repo.name}:${input.title}:${input.body}`)
-        .digest("hex")
-        .slice(0, 6);
-      const number = Number.parseInt(digest, 16) % 100_000;
-      return {
-        number,
-        url: `https://github.example/${input.repo.owner}/${input.repo.name}/issues/${number}`,
-      };
-    },
-  };
-}
-
 type ExecuteApprovedProposalOptions = {
   config?: AppConfig;
   github?: GitHubIssueClient;
@@ -669,10 +653,10 @@ async function githubIssueClientForRepo(
 ): Promise<GitHubIssueClient> {
   const config = options.config;
   if (!repo.installationId) {
-    return mockGitHubIssueClient();
+    throw new Error("github_repo_not_installed");
   }
   if (!options.githubFactory && (!config?.githubAppId || !config.githubAppPrivateKey)) {
-    return mockGitHubIssueClient();
+    throw new Error("github_app_not_configured");
   }
   const installation = (
     await db
@@ -681,7 +665,7 @@ async function githubIssueClientForRepo(
       .where(eq(githubInstallations.id, repo.installationId))
       .limit(1)
   )[0];
-  if (!installation) return mockGitHubIssueClient();
+  if (!installation) throw new Error("github_installation_missing");
 
   const factory = options.githubFactory ?? createGithubClientFactory(config as AppConfig);
   const client = new FacilityGithubClient(await factory(installation.installationId), {

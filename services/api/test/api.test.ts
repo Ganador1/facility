@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { gzipSync } from "node:zlib";
 import { newId, seal } from "@facility/core";
@@ -37,6 +38,7 @@ import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import type { GithubClientFactory } from "../src/github/client.js";
 import { ensureWorkosUser } from "../src/routes/auth.js";
 import type { AppConfig } from "../src/types.js";
 
@@ -54,6 +56,36 @@ async function canConnect() {
   } finally {
     await sqlClient.end().catch(() => undefined);
   }
+}
+
+function sourceFilesContaining(root: URL, text: string): string[] {
+  const matches: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const child = new URL(entry.isDirectory() ? `${entry.name}/` : entry.name, root);
+    if (entry.isDirectory()) {
+      matches.push(...sourceFilesContaining(child, text));
+    } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      const content = readFileSync(child, "utf8");
+      if (content.includes(text)) matches.push(child.pathname);
+    }
+  }
+  return matches;
+}
+
+// A stand-in GitHub App factory so task_creation executions can be exercised
+// end-to-end without a real installation. Production has no such factory unless
+// GitHub is configured, so unconfigured deployments still fail closed.
+function fakeGithubFactory(): GithubClientFactory {
+  const octokit = {
+    rest: {
+      issues: {
+        create: async () => ({
+          data: { number: 1, html_url: "https://github.com/facility/repo/issues/1" },
+        }),
+      },
+    },
+  };
+  return (async () => octokit) as unknown as GithubClientFactory;
 }
 
 describe("api", async () => {
@@ -733,6 +765,113 @@ describe("api", async () => {
     expect(loaded.json().events.map((event: { seq: number }) => event.seq)).toEqual([1, 2]);
   });
 
+  it("fails closed when executing task creation without a GitHub installation", async () => {
+    const actionType = (
+      await db
+        .select()
+        .from(actionTypes)
+        .where(sql`${actionTypes.orgId} = ${orgId} and ${actionTypes.name} = 'task_creation'`)
+        .limit(1)
+    )[0];
+    if (!actionType) throw new Error("task_creation action type fixture missing");
+    const project = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "GitHub Fail Closed Project",
+          slug: `github-fail-closed-${Date.now()}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    if (!project) throw new Error("project fixture missing");
+    const repo = (
+      await db
+        .insert(repos)
+        .values({
+          id: newId("repo"),
+          orgId,
+          projectId: project.id,
+          owner: `owner-${Date.now()}`,
+          name: "fail-closed",
+          defaultBranch: "main",
+        })
+        .returning()
+    )[0];
+    if (!repo) throw new Error("repo fixture missing");
+    const task = (
+      await db
+        .insert(poTasks)
+        .values({
+          id: newId("task"),
+          orgId,
+          projectId: project.id,
+          title: "Create real issue only",
+          bodyMd: "Do not fabricate a GitHub issue.",
+          wsjf: { costOfDelay: 3, jobSize: 1 },
+        })
+        .returning()
+    )[0];
+    if (!task) throw new Error("task fixture missing");
+    const proposal = (
+      await db
+        .insert(proposals)
+        .values({
+          id: newId("prop"),
+          orgId,
+          projectId: project.id,
+          actionTypeId: actionType.id,
+          payload: {
+            taskId: task.id,
+            title: task.title,
+            bodyMd: task.bodyMd,
+            wsjf: task.wsjf,
+            target: { repo: { owner: repo.owner, name: repo.name } },
+          },
+          contextMd: "Task creation should fail without GitHub installation",
+          expiresAt: new Date(Date.now() + 3600_000),
+        })
+        .returning()
+    )[0];
+    if (!proposal) throw new Error("proposal fixture missing");
+    await db.insert(proposalEvents).values({
+      orgId,
+      proposalId: proposal.id,
+      seq: 1,
+      type: "open",
+      actor: { type: "test", id: "api" },
+      data: {},
+    });
+
+    const decided = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposal.id}/decide`,
+      headers: { cookie },
+      payload: { decision: "approve" },
+    });
+    expect(decided.statusCode).toBe(200);
+    expect(decided.json().state).toBe("execution_failed");
+
+    const events = await db
+      .select()
+      .from(proposalEvents)
+      .where(
+        sql`${proposalEvents.orgId} = ${orgId} and ${proposalEvents.proposalId} = ${proposal.id}`,
+      )
+      .orderBy(sql`${proposalEvents.seq} asc`);
+    const failure = events.find((event) => event.type === "execution_failed");
+    expect(failure?.data).toMatchObject({ error: "github_repo_not_installed" });
+
+    const loadedTask = (await db.select().from(poTasks).where(eq(poTasks.id, task.id)).limit(1))[0];
+    const forbiddenHost = ["github", "example"].join(".");
+    expect(loadedTask?.status).not.toBe("created");
+    expect(loadedTask?.gh).toBeNull();
+    expect(JSON.stringify(loadedTask?.gh ?? {})).not.toContain(forbiddenHost);
+    expect(sourceFilesContaining(new URL("../src/", import.meta.url), forbiddenHost)).toEqual([]);
+  });
+
   it("gates MCP writes behind a separate human HITL approval", async () => {
     const role = await app.inject({
       method: "POST",
@@ -993,28 +1132,47 @@ describe("api", async () => {
       "execution_failed",
     );
 
+    const installation = (
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId,
+          installationId: Math.floor(Math.random() * 2_000_000_000) + 1,
+          accountLogin: `facility-retry-${suffix}`,
+          targetType: "Organization",
+        })
+        .returning()
+    )[0];
     await db.insert(repos).values({
       id: newId("repo"),
       orgId,
       projectId: project.json().id,
+      installationId: installation?.id,
       owner: `facility-retry-${suffix}`,
       name: "repo",
       defaultBranch: "main",
     });
-    const retried = await app.inject({
-      method: "POST",
-      url: `/v1/proposals/${proposed.json().id}/execute`,
-      headers: { cookie },
-    });
-    expect(retried.statusCode).toBe(200);
-    expect(retried.json().state).toBe("executed");
-    const executed = await db
-      .select()
-      .from(proposalEvents)
-      .where(
-        sql`${proposalEvents.proposalId} = ${proposed.json().id} and ${proposalEvents.type} = 'executed'`,
-      );
-    expect(executed).toHaveLength(1);
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = fakeGithubFactory();
+    try {
+      const retried = await app.inject({
+        method: "POST",
+        url: `/v1/proposals/${proposed.json().id}/execute`,
+        headers: { cookie },
+      });
+      expect(retried.statusCode).toBe(200);
+      expect(retried.json().state).toBe("executed");
+      const executed = await db
+        .select()
+        .from(proposalEvents)
+        .where(
+          sql`${proposalEvents.proposalId} = ${proposed.json().id} and ${proposalEvents.type} = 'executed'`,
+        );
+      expect(executed).toHaveLength(1);
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
   });
 
   it("audit verify detects a manually corrupted row", async () => {
@@ -1901,10 +2059,23 @@ describe("api", async () => {
   });
 
   it("returns 409 for an already-approved proposal without re-executing it", async () => {
+    const installation = (
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId,
+          installationId: Math.floor(Math.random() * 2_000_000_000) + 1,
+          accountLogin: `facility-test-${Date.now()}`,
+          targetType: "Organization",
+        })
+        .returning()
+    )[0];
     await db.insert(repos).values({
       id: newId("repo"),
       orgId,
       projectId,
+      installationId: installation?.id,
       owner: `facility-test-${Date.now()}`,
       name: "repo",
       defaultBranch: "main",
@@ -1920,27 +2091,33 @@ describe("api", async () => {
       url: `/v1/tasks/${task.json().id}/propose`,
       headers: { cookie },
     });
-    const approved = await app.inject({
-      method: "POST",
-      url: `/v1/proposals/${proposed.json().id}/decide`,
-      headers: { cookie },
-      payload: { decision: "approve" },
-    });
-    expect(approved.statusCode).toBe(200);
-    const repeated = await app.inject({
-      method: "POST",
-      url: `/v1/proposals/${proposed.json().id}/decide`,
-      headers: { cookie },
-      payload: { decision: "approve" },
-    });
-    expect(repeated.statusCode).toBe(409);
-    const executed = await db
-      .select()
-      .from(proposalEvents)
-      .where(
-        sql`${proposalEvents.proposalId} = ${proposed.json().id} and ${proposalEvents.type} = 'executed'`,
-      );
-    expect(executed).toHaveLength(1);
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = fakeGithubFactory();
+    try {
+      const approved = await app.inject({
+        method: "POST",
+        url: `/v1/proposals/${proposed.json().id}/decide`,
+        headers: { cookie },
+        payload: { decision: "approve" },
+      });
+      expect(approved.statusCode).toBe(200);
+      const repeated = await app.inject({
+        method: "POST",
+        url: `/v1/proposals/${proposed.json().id}/decide`,
+        headers: { cookie },
+        payload: { decision: "approve" },
+      });
+      expect(repeated.statusCode).toBe(409);
+      const executed = await db
+        .select()
+        .from(proposalEvents)
+        .where(
+          sql`${proposalEvents.proposalId} = ${proposed.json().id} and ${proposalEvents.type} = 'executed'`,
+        );
+      expect(executed).toHaveLength(1);
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
   });
 
   it("ignores forbidden projectId and orgId fields on PATCH", async () => {

@@ -219,7 +219,9 @@ describe("watchtower", async () => {
       await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
     )[0];
     expect(issue?.state).toBe("resolved");
-  });
+    // Two full collectGitHubHealth passes over real Postgres; give it headroom
+    // beyond vitest's 5s default so it is not a load-sensitive flake.
+  }, 20_000);
 
   it("handles platform and repo canary paths", async () => {
     const platformProject = await insertProject({

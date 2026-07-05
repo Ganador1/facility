@@ -362,7 +362,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
           db,
           row,
           { type: p.type, id: p.id },
-          { config, enqueue: app.enqueue },
+          { config, enqueue: app.enqueue, githubFactory: app.githubClientFactory },
         );
         return (
           await db
@@ -397,7 +397,15 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
       if (proposal.state !== "execution_failed" && proposal.state !== "approved") {
         throw new ApiError(409, "not_executable", "Proposal is not pending execution");
       }
-      await executeApprovedProposal(db, proposal, { type: p.type, id: p.id }, { config });
+      await executeApprovedProposal(
+        db,
+        proposal,
+        { type: p.type, id: p.id },
+        {
+          config,
+          githubFactory: app.githubClientFactory,
+        },
+      );
       return (
         await db
           .select()
