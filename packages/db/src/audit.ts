@@ -7,6 +7,7 @@ type Db = PostgresJsDatabase<typeof schema>;
 
 export type AuditInsert = {
   orgId: string;
+  projectId?: string | null;
   actor: { type: "user" | "key" | "agent" | "system"; id?: string; name?: string };
   action: string;
   target: { type: string; id?: string };
@@ -39,6 +40,7 @@ export async function insertAuditEvent(db: Db, input: AuditInsert) {
         .values({
           id: newId("evt"),
           orgId: input.orgId,
+          projectId: input.projectId ?? null,
           actor: input.actor,
           action: input.action,
           target: input.target,

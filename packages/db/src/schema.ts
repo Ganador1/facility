@@ -659,6 +659,7 @@ export const auditEvents = pgTable(
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id),
+    projectId: text("project_id").references(() => projects.id),
     seq: bigserial("seq", { mode: "number" }).notNull(),
     actor: jsonb("actor").notNull(),
     action: text("action").notNull(),
@@ -673,6 +674,7 @@ export const auditEvents = pgTable(
   (table) => [
     unique("audit_events_org_seq_uidx").on(table.orgId, table.seq),
     index("audit_events_org_seq_idx").on(table.orgId, table.seq),
+    index("audit_events_org_project_seq_idx").on(table.orgId, table.projectId, table.seq.desc()),
   ],
 );
 

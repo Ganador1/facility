@@ -31,6 +31,7 @@ import {
   sandboxProfiles,
   seed,
   users,
+  verifyAuditChain,
 } from "@facility/db";
 import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
@@ -1354,6 +1355,71 @@ describe("api", async () => {
     });
     expect(next.statusCode).toBe(200);
     expect(next.json().items.map((row: { id: string }) => row.id)).toEqual([first?.id]);
+  });
+
+  it("filters audit rows to a project-scoped key's project and preserves the hash chain", async () => {
+    const suffix = Date.now();
+    const projectA = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Audit Scoped A", slug: `audit-scoped-a-${suffix}` },
+    });
+    expect(projectA.statusCode).toBe(200);
+    const projectB = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Audit Scoped B", slug: `audit-scoped-b-${suffix}` },
+    });
+    expect(projectB.statusCode).toBe(200);
+
+    const issued = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: `audit-reader-${suffix}`, roleId: ownerRole, projectId: projectA.json().id },
+    });
+    expect(issued.statusCode).toBe(200);
+
+    const updateA = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${projectA.json().id}`,
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+      payload: { description: "project A audit event" },
+    });
+    expect(updateA.statusCode).toBe(200);
+    const updateB = await app.inject({
+      method: "PATCH",
+      url: `/v1/projects/${projectB.json().id}`,
+      headers: { cookie },
+      payload: { description: "project B audit event" },
+    });
+    expect(updateB.statusCode).toBe(200);
+
+    await expect(verifyAuditChain(db, orgId)).resolves.toEqual({ ok: true, firstBreakSeq: null });
+
+    type AuditRow = { projectId?: string | null; target: { id?: string } };
+    const scoped = await app.inject({
+      method: "GET",
+      url: "/v1/audit?action=project.updated&limit=500",
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+    });
+    expect(scoped.statusCode).toBe(200);
+    const scopedItems = scoped.json().items as AuditRow[];
+    expect(scopedItems.every((row) => row.projectId === projectA.json().id)).toBe(true);
+    expect(scopedItems.some((row) => row.target.id === projectA.json().id)).toBe(true);
+    expect(scopedItems.some((row) => row.target.id === projectB.json().id)).toBe(false);
+
+    const orgLevel = await app.inject({
+      method: "GET",
+      url: "/v1/audit?action=project.updated&limit=500",
+      headers: { cookie },
+    });
+    expect(orgLevel.statusCode).toBe(200);
+    const orgItems = orgLevel.json().items as AuditRow[];
+    expect(orgItems.some((row) => row.target.id === projectA.json().id)).toBe(true);
+    expect(orgItems.some((row) => row.target.id === projectB.json().id)).toBe(true);
   });
 
   it("groups spend by agent definition, not run id", async () => {

@@ -146,6 +146,7 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
       };
       const limit = Math.min(Math.max(Number(q.limit ?? 200), 1), 500);
       const clauses = [eq(auditEvents.orgId, p.orgId)];
+      if (p.projectId) clauses.push(eq(auditEvents.projectId, p.projectId));
       if (q.from) clauses.push(gte(auditEvents.seq, q.from));
       if (q.to) clauses.push(lte(auditEvents.seq, q.to));
       if (q.cursor) clauses.push(lt(auditEvents.seq, q.cursor));

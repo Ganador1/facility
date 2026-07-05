@@ -117,8 +117,11 @@ export async function buildApp(config: AppConfig = readConfig()): Promise<Fastif
     async function audit(this: FastifyRequest, action: string, target, payload = {}) {
       const principal = this.principal;
       if (!principal) return;
+      const projectId =
+        (target?.type === "project" ? target.id : undefined) ?? this.principal?.projectId ?? null;
       await insertAuditEvent(db, {
         orgId: principal.orgId,
+        projectId,
         actor: { type: principal.type, id: principal.id },
         action,
         target,

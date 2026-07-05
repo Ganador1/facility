@@ -251,6 +251,7 @@ export const ProviderPublicSchema = z.object({
 export const AuditEventSchema = z.object({
   id: z.string(),
   orgId: z.string(),
+  projectId: z.string().nullable().optional(),
   seq: z.number(),
   actor: JsonValue,
   action: z.string(),
