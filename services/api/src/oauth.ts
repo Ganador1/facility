@@ -23,7 +23,8 @@ import type { AppConfig } from "./types.js";
 export type OauthConfig = {
   issuer: string;
   jwksUri: string;
-  audience?: string;
+  // Required: the resource server always validates `aud` (see oauthConfigFromApp).
+  audience: string;
 };
 
 export type AccessTokenClaims = {
@@ -46,6 +47,10 @@ export class AccessTokenError extends Error {
 export function oauthConfigFromApp(config: AppConfig): OauthConfig | null {
   const domain = normalizeAuthkitDomain(config.workosAuthkitDomain);
   if (!domain) return null;
+  // Fail closed: the JWT credential kind is enabled only when an audience is
+  // ALSO configured, so `aud` is always validated and a token minted for a
+  // different resource on the same issuer cannot be replayed here.
+  if (!config.mcpOauthAudience) return null;
   return {
     issuer: domain,
     jwksUri: `${domain}/oauth2/jwks`,
@@ -57,6 +62,9 @@ function normalizeAuthkitDomain(value: string | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed) return null;
   const withScheme = /^https?:\/\//.test(trimmed) ? trimmed : `https://${trimmed}`;
+  // Reject a non-HTTPS issuer/JWKS source — token material and key sets must not
+  // traverse plaintext.
+  if (!withScheme.startsWith("https://")) return null;
   return withScheme.replace(/\/+$/, "");
 }
 
@@ -90,6 +98,8 @@ export async function verifyAccessToken(
       issuer: config.issuer,
       audience: config.audience,
       algorithms: ["RS256"],
+      // Fail closed on non-expiring tokens: a token without `exp` is rejected.
+      requiredClaims: ["exp"],
     });
     const workosUserId = typeof payload.sub === "string" ? payload.sub : "";
     if (!workosUserId) throw new AccessTokenError("Access token has no subject");

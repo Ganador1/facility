@@ -14,6 +14,7 @@ import { buildApp } from "../src/app.js";
 import {
   AccessTokenError,
   looksLikeJwt,
+  type OauthConfig,
   oauthConfigFromApp,
   verifyAccessToken,
 } from "../src/oauth.js";
@@ -23,21 +24,152 @@ const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility";
 const masterKey = Buffer.alloc(32, 7).toString("base64");
 const ISSUER = "https://auth.facility.test";
+const AUDIENCE = "facility-mcp";
 
-const config: AppConfig = {
-  databaseUrl,
-  secretMasterKey: masterKey,
-  port: 4400,
-  publicUrl: "http://localhost:4400",
-  sandboxApiUrl: "http://localhost:4400",
-  sandboxGatewayUrl: "http://localhost:4410",
-  webUrl: "http://localhost:3000",
-  facilityInsecureDev: true,
-  logLevel: "silent",
-  workosApiKey: "sk_test",
-  workosClientId: "client_test",
-  workosAuthkitDomain: ISSUER,
+// Trusted signing keypair + the JWKS the resource server trusts (offline).
+const { privateKey, publicKey } = await generateKeyPair("RS256");
+const publicJwk: JWK = { ...(await exportJWK(publicKey)), kid: "test-key", alg: "RS256" };
+const jwks: JWTVerifyGetKey = createLocalJWKSet({ keys: [publicJwk] });
+const foreign = await generateKeyPair("RS256");
+type SignKey = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
+
+const oauthConfig: OauthConfig = {
+  issuer: ISSUER,
+  jwksUri: `${ISSUER}/oauth2/jwks`,
+  audience: AUDIENCE,
 };
+const subject = `workos_user_${Date.now()}`;
+const email = `${subject}-oauth@example.com`;
+
+async function signToken(
+  o: {
+    sub?: string;
+    issuer?: string;
+    audience?: string | null;
+    alg?: string;
+    key?: SignKey;
+    exp?: string | number | false;
+  } = {},
+) {
+  const jwt = new SignJWT({ email })
+    .setProtectedHeader({ alg: o.alg ?? "RS256", kid: "test-key" })
+    .setIssuer(o.issuer ?? ISSUER)
+    .setSubject(o.sub ?? subject)
+    .setIssuedAt();
+  if (o.audience !== null) jwt.setAudience(o.audience ?? AUDIENCE);
+  if (o.exp !== false) jwt.setExpirationTime(o.exp ?? "1h");
+  return jwt.sign(o.key ?? privateKey);
+}
+
+// --- Pure token verification (no database; never skipped) ---
+
+describe("oauth token verification", () => {
+  it("derives config only when both issuer domain and audience are set, https-only", () => {
+    const base: AppConfig = {
+      databaseUrl,
+      secretMasterKey: masterKey,
+      port: 4400,
+      publicUrl: "http://localhost:4400",
+      sandboxApiUrl: "http://localhost:4400",
+      sandboxGatewayUrl: "http://localhost:4410",
+      facilityInsecureDev: true,
+      logLevel: "silent",
+    };
+    expect(oauthConfigFromApp({ ...base, workosAuthkitDomain: ISSUER })).toBeNull();
+    expect(oauthConfigFromApp({ ...base, mcpOauthAudience: AUDIENCE })).toBeNull();
+    expect(
+      oauthConfigFromApp({
+        ...base,
+        workosAuthkitDomain: "http://auth.facility.test",
+        mcpOauthAudience: AUDIENCE,
+      }),
+    ).toBeNull();
+    const ok = oauthConfigFromApp({
+      ...base,
+      workosAuthkitDomain: ISSUER,
+      mcpOauthAudience: AUDIENCE,
+    });
+    expect(ok?.issuer).toBe(ISSUER);
+    expect(ok?.audience).toBe(AUDIENCE);
+  });
+
+  it("accepts a correctly signed, unexpired, correctly-audienced token", async () => {
+    const claims = await verifyAccessToken(await signToken(), oauthConfig, jwks);
+    expect(claims.workosUserId).toBe(subject);
+    expect(claims.email).toBe(email);
+  });
+
+  it("rejects an expired token", async () => {
+    await expect(
+      verifyAccessToken(
+        await signToken({ exp: Math.floor(Date.now() / 1000) - 60 }),
+        oauthConfig,
+        jwks,
+      ),
+    ).rejects.toBeInstanceOf(AccessTokenError);
+  });
+
+  it("rejects a token with no exp claim (non-expiring)", async () => {
+    await expect(
+      verifyAccessToken(await signToken({ exp: false }), oauthConfig, jwks),
+    ).rejects.toBeInstanceOf(AccessTokenError);
+  });
+
+  it("rejects a token from the wrong issuer", async () => {
+    await expect(
+      verifyAccessToken(await signToken({ issuer: "https://evil.example" }), oauthConfig, jwks),
+    ).rejects.toBeInstanceOf(AccessTokenError);
+  });
+
+  it("rejects a token signed by an untrusted key", async () => {
+    await expect(
+      verifyAccessToken(await signToken({ key: foreign.privateKey }), oauthConfig, jwks),
+    ).rejects.toBeInstanceOf(AccessTokenError);
+  });
+
+  it("rejects a non-RS256 (HS256 alg-confusion) token", async () => {
+    const hs = await new SignJWT({})
+      .setProtectedHeader({ alg: "HS256" })
+      .setIssuer(ISSUER)
+      .setSubject(subject)
+      .setAudience(AUDIENCE)
+      .setExpirationTime("1h")
+      .sign(new TextEncoder().encode("shared-secret"));
+    await expect(verifyAccessToken(hs, oauthConfig, jwks)).rejects.toBeInstanceOf(AccessTokenError);
+  });
+
+  it("rejects a token with the wrong audience", async () => {
+    await expect(
+      verifyAccessToken(await signToken({ audience: "some-other-resource" }), oauthConfig, jwks),
+    ).rejects.toBeInstanceOf(AccessTokenError);
+  });
+
+  it("rejects a token with no audience claim", async () => {
+    await expect(
+      verifyAccessToken(await signToken({ audience: null }), oauthConfig, jwks),
+    ).rejects.toBeInstanceOf(AccessTokenError);
+  });
+
+  it("rejects a token with no subject", async () => {
+    const noSub = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
+      .setIssuer(ISSUER)
+      .setAudience(AUDIENCE)
+      .setExpirationTime("1h")
+      .sign(privateKey);
+    await expect(verifyAccessToken(noSub, oauthConfig, jwks)).rejects.toBeInstanceOf(
+      AccessTokenError,
+    );
+  });
+
+  it("classifies JWT-shaped strings", () => {
+    expect(looksLikeJwt("aaa.bbb.ccc")).toBe(true);
+    expect(looksLikeJwt("fak_abc123")).toBe(false);
+    expect(looksLikeJwt("aaa.bbb")).toBe(false);
+  });
+});
+
+// --- Integration through resolvePrincipal (requires Postgres) ---
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
@@ -51,51 +183,28 @@ async function canConnect() {
   }
 }
 
-describe("oauth resource server", async () => {
+describe("oauth resource server (integration)", async () => {
   const reachable = await canConnect();
   if (!reachable) {
     it.skip("Postgres unreachable; OAuth integration tests skipped", () => undefined);
     return;
   }
 
-  const oauthConfig = oauthConfigFromApp(config);
-  if (!oauthConfig) throw new Error("oauth config should be derivable");
-
-  // A signing keypair + the JWKS the resource server trusts. Injected into the
-  // app so validation runs fully offline against a local key set.
-  const { privateKey, publicKey } = await generateKeyPair("RS256");
-  const publicJwk: JWK = { ...(await exportJWK(publicKey)), kid: "test-key", alg: "RS256" };
-  const jwks: JWTVerifyGetKey = createLocalJWKSet({ keys: [publicJwk] });
-
-  // A second, untrusted keypair — tokens signed with it must be rejected.
-  const foreign = await generateKeyPair("RS256");
-  type SignKey = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
-  // Run-unique WorkOS subject: users.workos_user_id is unique, so a fixed value
-  // would collide on the shared dev database across runs.
-  const subject = `workos_user_${Date.now()}`;
-  // Email is also unique; derive it from the run-unique subject.
-  const email = `${subject}-oauth@example.com`;
-
-  async function signToken(
-    overrides: {
-      sub?: string;
-      issuer?: string;
-      expSeconds?: number;
-      audience?: string;
-      alg?: string;
-      key?: SignKey;
-    } = {},
-  ) {
-    const jwt = new SignJWT({ email })
-      .setProtectedHeader({ alg: overrides.alg ?? "RS256", kid: "test-key" })
-      .setIssuer(overrides.issuer ?? ISSUER)
-      .setSubject(overrides.sub ?? subject)
-      .setIssuedAt()
-      .setExpirationTime(`${overrides.expSeconds ?? 3600}s`);
-    if (overrides.audience) jwt.setAudience(overrides.audience);
-    return jwt.sign(overrides.key ?? privateKey);
-  }
-
+  const config: AppConfig = {
+    databaseUrl,
+    secretMasterKey: masterKey,
+    port: 4400,
+    publicUrl: "http://localhost:4400",
+    sandboxApiUrl: "http://localhost:4400",
+    sandboxGatewayUrl: "http://localhost:4410",
+    webUrl: "http://localhost:3000",
+    facilityInsecureDev: true,
+    logLevel: "silent",
+    workosApiKey: "sk_test",
+    workosClientId: "client_test",
+    workosAuthkitDomain: ISSUER,
+    mcpOauthAudience: AUDIENCE,
+  };
   const app = await buildApp(config, { oauthJwks: jwks });
   const { db, client } = createDb(databaseUrl);
   let orgId = "";
@@ -105,8 +214,6 @@ describe("oauth resource server", async () => {
     await migrate(databaseUrl);
     await seed(databaseUrl);
     await app.ready();
-
-    // An org + an owner session to mint a real API key (for the fak_ path).
     const login = await app.inject({
       method: "POST",
       url: "/auth/dev-login",
@@ -123,9 +230,6 @@ describe("oauth resource server", async () => {
     });
     expect(key.statusCode).toBe(200);
     fakKey = key.json().secret;
-
-    // A WorkOS-authenticated member: users.workos_user_id links the JWT subject
-    // to a platform member.
     const userId = newId("user");
     await db.insert(users).values({
       id: userId,
@@ -147,59 +251,6 @@ describe("oauth resource server", async () => {
     await client.end();
   });
 
-  // --- unit: verifyAccessToken security matrix (offline) ---
-
-  it("accepts a correctly signed, unexpired token from the trusted issuer", async () => {
-    const claims = await verifyAccessToken(await signToken(), oauthConfig, jwks);
-    expect(claims.workosUserId).toBe(subject);
-    expect(claims.email).toBe(email);
-  });
-
-  it("rejects an expired token", async () => {
-    const token = await new SignJWT({})
-      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
-      .setIssuer(ISSUER)
-      .setSubject(subject)
-      .setExpirationTime(Math.floor(Date.now() / 1000) - 60)
-      .sign(privateKey);
-    await expect(verifyAccessToken(token, oauthConfig, jwks)).rejects.toBeInstanceOf(
-      AccessTokenError,
-    );
-  });
-
-  it("rejects a token from the wrong issuer", async () => {
-    await expect(
-      verifyAccessToken(await signToken({ issuer: "https://evil.example" }), oauthConfig, jwks),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a token signed by an untrusted key", async () => {
-    await expect(
-      verifyAccessToken(await signToken({ key: foreign.privateKey }), oauthConfig, jwks),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("enforces audience when configured", async () => {
-    const audienceConfig = { ...oauthConfig, audience: "facility-mcp" };
-    await expect(verifyAccessToken(await signToken(), audienceConfig, jwks)).rejects.toBeInstanceOf(
-      AccessTokenError,
-    );
-    const ok = await verifyAccessToken(
-      await signToken({ audience: "facility-mcp" }),
-      audienceConfig,
-      jwks,
-    );
-    expect(ok.workosUserId).toBe(subject);
-  });
-
-  it("classifies JWT-shaped strings", () => {
-    expect(looksLikeJwt("aaa.bbb.ccc")).toBe(true);
-    expect(looksLikeJwt("fak_abc123")).toBe(false);
-    expect(looksLikeJwt("aaa.bbb")).toBe(false);
-  });
-
-  // --- integration: resolvePrincipal accepts the token end to end ---
-
   it("authenticates an API request with a valid OAuth access token", async () => {
     const me = await app.inject({
       method: "GET",
@@ -212,16 +263,12 @@ describe("oauth resource server", async () => {
   });
 
   it("rejects an expired token at the API with 401", async () => {
-    const token = await new SignJWT({})
-      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
-      .setIssuer(ISSUER)
-      .setSubject(subject)
-      .setExpirationTime(Math.floor(Date.now() / 1000) - 60)
-      .sign(privateKey);
     const me = await app.inject({
       method: "GET",
       url: "/v1/me",
-      headers: { authorization: `Bearer ${token}` },
+      headers: {
+        authorization: `Bearer ${await signToken({ exp: Math.floor(Date.now() / 1000) - 60 })}`,
+      },
     });
     expect(me.statusCode).toBe(401);
   });

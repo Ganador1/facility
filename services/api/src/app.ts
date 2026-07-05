@@ -306,6 +306,10 @@ async function resolvePrincipal(
           .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
           .innerJoin(users, eq(orgMembers.userId, users.id))
           .where(and(eq(users.workosUserId, workosUserId), eq(users.status, "active")))
+          // Deterministic primary org for a multi-membership subject (the token
+          // carries no platform org): the earliest membership wins, not an
+          // arbitrary row.
+          .orderBy(orgMembers.createdAt, orgMembers.orgId)
           .limit(1)
       )[0];
       if (!member) {
