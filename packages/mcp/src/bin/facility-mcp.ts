@@ -13,11 +13,22 @@ if (command === "serve") {
     console.error("FACILITY_API_URL is required.");
     process.exit(2);
   }
+  // OAuth 2.1 discovery is advertised only when an authorization server is
+  // configured; otherwise the server stays API-key-only. WORKOS_AUTHKIT_DOMAIN
+  // is the WorkOS authorization server; MCP_PUBLIC_URL is this resource's URL.
+  const authRaw = process.env.MCP_AUTHORIZATION_SERVER ?? process.env.WORKOS_AUTHKIT_DOMAIN;
+  const authorizationServer = authRaw
+    ? /^https?:\/\//.test(authRaw)
+      ? authRaw.replace(/\/+$/, "")
+      : `https://${authRaw.replace(/\/+$/, "")}`
+    : undefined;
   serveHttp({
     apiUrl,
     port,
     confirmationSecret:
       process.env.FACILITY_MCP_CONFIRMATION_SECRET ?? process.env.MCP_CONFIRMATION_SECRET,
+    resourceUrl: process.env.MCP_PUBLIC_URL?.replace(/\/+$/, ""),
+    authorizationServer,
   });
   console.error(`facility-mcp listening on http://127.0.0.1:${port}/mcp`);
 } else {

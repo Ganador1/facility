@@ -248,7 +248,21 @@ async function executeKnownMcpTool(
 
   if (toolName === "facility_set_budget") {
     const budgetId = optionalString(args.budgetId);
-    const projectId = optionalString(args.projectId);
+    let projectId = optionalString(args.projectId) ?? null;
+    if (budgetId) {
+      // An existing budget's project IS its scope. The HITL proposal was
+      // resolved and approved against that project, so an MCP update must not
+      // move the budget to another project via args.projectId — pin it.
+      const existing = (
+        await db
+          .select({ projectId: budgets.projectId })
+          .from(budgets)
+          .where(and(eq(budgets.orgId, orgId), eq(budgets.id, budgetId)))
+          .limit(1)
+      )[0];
+      if (!existing) throw new Error("budget_not_found");
+      projectId = existing.projectId ?? null;
+    }
     await assertMcpProjectInOrg(db, orgId, projectId);
     const values = {
       scope: requiredString(args.scope, "scope"),

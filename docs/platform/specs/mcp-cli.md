@@ -13,7 +13,9 @@ Read first: control-plane.md (routes + permissions), discovery/tam-os.md (§MCP 
   OAuth 2.1 access-token JWTs (interactive clients — Claude, Cursor, ChatGPT). The server advertises
   the authorization server at `/.well-known/oauth-protected-resource` (RFC 9728) and returns
   `WWW-Authenticate: Bearer resource_metadata=…` on 401; the control plane validates the JWT against
-  WorkOS's JWKS (RS256, issuer + expiry + optional audience). API keys stay supported forever.
+  WorkOS's JWKS (RS256, issuer + expiry + audience). Audience is REQUIRED: OAuth JWT auth is
+  enabled only when `MCP_OAUTH_AUDIENCE` is configured, so `aud` is always validated. API keys stay
+  supported forever.
 
 Tools (names `facility_*`; JSON Schema inputs via zod-to-json-schema; every description written for an operator LLM — concise, states permissions needed):
 

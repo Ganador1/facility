@@ -1122,6 +1122,89 @@ describe("api", async () => {
     expect(steerEvents).toHaveLength(0);
   });
 
+  it("does not move an existing budget across projects on MCP set_budget", async () => {
+    const suffix = `${Date.now()}`;
+    const projectB = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Budget Move B", slug: `budget-move-b-${suffix}` },
+    });
+    expect(projectB.statusCode).toBe(200);
+    const budget = (
+      await db
+        .insert(budgets)
+        .values({
+          id: newId("bud"),
+          orgId,
+          projectId,
+          scope: "project",
+          period: "monthly",
+          limitCents: 1000,
+          mode: "soft",
+        })
+        .returning()
+    )[0];
+    if (!budget) throw new Error("budget fixture missing");
+    const actionType = (
+      await db
+        .select()
+        .from(actionTypes)
+        .where(sql`${actionTypes.orgId} = ${orgId} and ${actionTypes.name} = 'mcp_tool_call'`)
+        .limit(1)
+    )[0];
+    if (!actionType) throw new Error("mcp_tool_call action type missing");
+    const proposal = (
+      await db
+        .insert(proposals)
+        .values({
+          id: newId("prop"),
+          orgId,
+          projectId,
+          actionTypeId: actionType.id,
+          payload: {
+            toolName: "facility_set_budget",
+            permission: "budgets:write",
+            // args tries to move the budget to project B and raise the limit.
+            args: {
+              budgetId: budget.id,
+              scope: "project",
+              projectId: projectB.json().id,
+              period: "monthly",
+              limitCents: 9999,
+              mode: "soft",
+            },
+            targetProjectId: projectId,
+            requestedBy: { type: "key", id: "mover" },
+          },
+          contextMd: "set_budget across projects",
+          expiresAt: new Date(Date.now() + 3600_000),
+        })
+        .returning()
+    )[0];
+    await db.insert(proposalEvents).values({
+      orgId,
+      proposalId: proposal?.id ?? "",
+      seq: 1,
+      type: "open",
+      actor: { type: "key", id: "mover" },
+      data: {},
+    });
+    const approved = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposal?.id}/decide`,
+      headers: { cookie: approverCookie },
+      payload: { decision: "approve" },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().state).toBe("executed");
+    const after = (await db.select().from(budgets).where(eq(budgets.id, budget.id)).limit(1))[0];
+    // Project pinned to its original scope; the non-project fields still update.
+    expect(after?.projectId).toBe(projectId);
+    expect(after?.projectId).not.toBe(projectB.json().id);
+    expect(after?.limitCents).toBe(9999);
+  });
+
   it("rejects MCP proposal creation by keys that can decide HITL", async () => {
     const issued = await app.inject({
       method: "POST",

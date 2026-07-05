@@ -80,6 +80,16 @@ enable in production):
 4. Set `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD` (32+
    random chars), `WORKOS_AUTHKIT_DOMAIN`.
 
+### Remote MCP OAuth 2.1 (interactive clients)
+
+To let interactive MCP clients (Claude, Cursor, ChatGPT) authenticate with WorkOS
+OAuth 2.1 access tokens instead of `fak_` API keys, set **`MCP_OAUTH_AUDIENCE`**
+on the api/worker/gateway runtime — the control plane keeps OAuth JWT auth
+disabled until it is set (so audience is always validated). Run `facility-mcp
+serve` with `MCP_PUBLIC_URL` (this MCP server's public URL) and
+`MCP_AUTHORIZATION_SERVER` (defaults to `WORKOS_AUTHKIT_DOMAIN`) so it advertises
+`/.well-known/oauth-protected-resource`. `fak_` keys keep working for services.
+
 ## GitHub App
 
 Create a GitHub App in your org (the platform is installed **in your

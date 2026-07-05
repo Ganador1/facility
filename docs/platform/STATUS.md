@@ -203,11 +203,12 @@ Prior versions of this doc overstated a few things; setting the record straight:
 
 ## Known follow-ups (tracked, non-blocking)
 
-- **Remote MCP OAuth 2.1 / PKCE / JWKS** — the top remaining non-gated item (see
-  "Current state" above); MCP HTTP is API-key-only today.
 - **Generated, type-tested SDK route contract** — the client route map is
-  hand-maintained and untested; generate it from the API schemas and add
-  type-regression tests that reject wrong path/response pairings.
+  hand-maintained (broad template paths can typecheck a wrong nested route);
+  generate it from the API schemas and add type-regression tests. Related: the
+  `@facility/mcp` tool dispatcher types requests as `path: string`, so strict
+  `tsc` on that package fails (build + tests pass).
+- A few non-core v1 endpoints still return loose `AnyObject` response schemas.
 - **tam-os production migration** run end-to-end (owner-gated).
 - `cost_cents` is integer — fine for real runs; sub-cent precision only if
   fine-grained tiny-call attribution is needed.
@@ -215,4 +216,5 @@ Prior versions of this doc overstated a few things; setting the record straight:
 
 _(Done since earlier drafts: the `v1.ts` god-router is split into per-domain
 routers under `routes/v1/`; the run-steer cockpit and guided kickstart are built;
-audit is project-scoped end to end.)_
+audit is project-scoped end to end; **remote MCP OAuth 2.1 (WorkOS JWT via JWKS)
+has shipped** alongside `fak_` keys — see "Current state".)_
