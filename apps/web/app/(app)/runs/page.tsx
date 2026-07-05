@@ -1,12 +1,12 @@
 import { Eyebrow, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { fetchAllRuns, fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
 
 export const metadata = { title: "runs" };
 
 export default async function RunsPage() {
-  const { offline, runs } = await fetchAllRuns();
+  const { offline, error, runs } = await fetchAllRuns();
   if (offline) return <Offline />;
 
   return (
@@ -18,7 +18,9 @@ export default async function RunsPage() {
         </h1>
       </div>
 
-      {runs.length === 0 ? (
+      {error ? (
+        <ErrorNotice message={`Couldn't load runs — ${error}`} />
+      ) : runs.length === 0 ? (
         <p className="text-sm text-(--dim)">No runs yet.</p>
       ) : (
         <>

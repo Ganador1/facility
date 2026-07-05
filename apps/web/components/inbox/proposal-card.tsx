@@ -115,6 +115,8 @@ export function ProposalCard({ proposal, focused }: { proposal: Proposal; focuse
             reject
           </Button>
           <input
+            name="note"
+            aria-label="Decision note (recorded in the ledger)"
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="note (recorded in the ledger)"

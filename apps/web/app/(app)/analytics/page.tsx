@@ -1,12 +1,14 @@
 import { Cell, Eyebrow, HairlineGrid, Metric } from "@facility/ui";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { api, summarizeSpend } from "@/lib/api";
 import { fetchAllRuns, fmtCost } from "@/lib/runs";
 
 export const metadata = { title: "analytics" };
 
+const DASH = "—";
+
 export default async function AnalyticsPage() {
-  const [{ offline, runs }, spendByModel, spendByAgent] = await Promise.all([
+  const [{ offline, error: runsError, runs }, spendByModel, spendByAgent] = await Promise.all([
     fetchAllRuns(),
     api.spend("?groupBy=model"),
     api.spend("?groupBy=agent"),
@@ -31,27 +33,34 @@ export default async function AnalyticsPage() {
         </p>
       </div>
 
+      {runsError ? <ErrorNotice message={`Couldn't load runs — ${runsError}`} /> : null}
+
       <HairlineGrid cols="grid-cols-2 lg:grid-cols-4">
         <Cell>
-          <Metric label="runs · total" value={runs.length} />
+          <Metric label="runs · total" value={runsError ? DASH : runs.length} />
         </Cell>
         <Cell>
           <Metric
             label="run success"
-            value={successRate == null ? "—" : `${successRate}%`}
-            tone={successRate != null && successRate >= 80 ? "ok" : undefined}
+            value={runsError || successRate == null ? DASH : `${successRate}%`}
+            tone={!runsError && successRate != null && successRate >= 80 ? "ok" : undefined}
             hint={
-              terminal.length
-                ? `${succeeded}/${terminal.length} terminal runs`
-                : "no terminal runs yet"
+              runsError
+                ? "runs didn't load"
+                : terminal.length
+                  ? `${succeeded}/${terminal.length} terminal runs`
+                  : "no terminal runs yet"
             }
           />
         </Cell>
         <Cell>
-          <Metric label="spend" value={totalCents == null ? "—" : fmtCost(totalCents)} />
+          <Metric label="spend" value={totalCents == null ? DASH : fmtCost(totalCents)} />
         </Cell>
         <Cell>
-          <Metric label="projects reporting" value={new Set(runs.map((r) => r.project.id)).size} />
+          <Metric
+            label="projects reporting"
+            value={runsError ? DASH : new Set(runs.map((r) => r.project.id)).size}
+          />
         </Cell>
       </HairlineGrid>
 
@@ -66,7 +75,9 @@ export default async function AnalyticsPage() {
           return (
             <section key={label} className="flex flex-col gap-4">
               <Eyebrow>cost {label}</Eyebrow>
-              {!spend.ok || summary.groups.length === 0 ? (
+              {!spend.ok ? (
+                <ErrorNotice message={`Couldn't load spend — ${spend.message}`} />
+              ) : summary.groups.length === 0 ? (
                 <p className="text-sm text-(--dim)">No gateway traffic yet.</p>
               ) : (
                 <div className="flex flex-col gap-3">

@@ -6,6 +6,7 @@ import type {
   FacilityRouteMethod,
   FacilityRoutePath,
   FacilityRouteResponse,
+  Issue,
   KickstartAnswers,
   Proposal,
   QueryParams,
@@ -20,6 +21,7 @@ export type {
   Budget,
   ConnectProjectRepoRequest,
   CreateProjectRequest,
+  Issue,
   KickstartAnswers,
   KickstartPreview,
   KickstartResult,
@@ -114,6 +116,18 @@ export const api = {
     if (!res.ok) return res;
     const d = res.data;
     return { ok: true, data: Array.isArray(d) ? d : (d.proposals ?? d.items ?? []) };
+  },
+  // Full inbox: proposals (human gates) AND platform issues (watchtower alerts),
+  // so the inbox can surface both instead of silently dropping issues.
+  inboxFull: async (): Promise<ApiResult<{ proposals: Proposal[]; issues: Issue[] }>> => {
+    const res = await apiFetch("GET", "/v1/inbox", { query: { state: "open" } });
+    if (!res.ok) return res;
+    const d = res.data;
+    if (Array.isArray(d)) return { ok: true, data: { proposals: d, issues: [] } };
+    return {
+      ok: true,
+      data: { proposals: d.proposals ?? d.items ?? [], issues: d.issues ?? [] },
+    };
   },
   proposal: (id: string) => apiFetch("GET", `/v1/proposals/${id}`),
   audit: async (params = ""): Promise<ApiResult<AuditEvent[]>> => {

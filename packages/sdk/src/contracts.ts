@@ -6,6 +6,7 @@ import type {
   llmRequests,
   orgMembers,
   orgs,
+  platformIssues,
   projects,
   proposalEvents,
   proposals,
@@ -64,6 +65,7 @@ type LlmRequestRow = typeof llmRequests.$inferSelect;
 type OrgRow = typeof orgs.$inferSelect;
 type AgentDefRow = typeof agentDefs.$inferSelect;
 type SandboxProfileRow = typeof sandboxProfiles.$inferSelect;
+type PlatformIssueRow = typeof platformIssues.$inferSelect;
 
 export type ProjectStatus = "active" | "archived" | string;
 export type RunStatus =
@@ -181,6 +183,13 @@ export type SpendRow = { bucket: string; cost_cents: number };
 
 export type LlmRequest = Serialized<LlmRequestRow>;
 
+export type IssueState = "open" | "acked" | "resolved" | string;
+export type IssueSeverity = "info" | "warn" | "error" | string;
+export type Issue = Serialized<Omit<PlatformIssueRow, "state" | "severity">> & {
+  state: IssueState;
+  severity: IssueSeverity;
+};
+
 export type Principal = {
   type: "user" | "key";
   id: string;
@@ -281,7 +290,7 @@ export type CreateProviderRequest = {
 export type InboxResponse = {
   items: Proposal[];
   proposals: Proposal[];
-  issues: unknown[];
+  issues: Issue[];
 };
 export type AuditTail = { items: AuditEvent[]; nextCursor: number | null };
 export type LlmRequestPage = { items: LlmRequest[]; nextCursor: string | null };

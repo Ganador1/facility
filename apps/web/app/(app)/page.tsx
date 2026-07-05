@@ -1,13 +1,15 @@
 import { Cell, Divider, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { api, summarizeSpend } from "@/lib/api";
 import { fetchAllRuns, fmtAgo, fmtCost, fmtDuration } from "@/lib/runs";
 
 export const metadata = { title: "overview" };
 
+const DASH = "—";
+
 export default async function OverviewPage() {
-  const [{ offline, projects, runs }, inbox, spend] = await Promise.all([
+  const [{ offline, error: runsError, projects, runs }, inbox, spend] = await Promise.all([
     fetchAllRuns(),
     api.inbox(),
     api.spend("?groupBy=day"),
@@ -19,6 +21,9 @@ export default async function OverviewPage() {
   const needsHuman = runs.filter((r) => r.status === "awaiting_human");
   const openProposals = inbox.ok ? inbox.data : [];
   const monthCents = spend.ok ? summarizeSpend(spend.data).totalCents : null;
+  // Only assert "needs you" once both sources that feed it (inbox proposals +
+  // awaiting-human runs) actually loaded — otherwise show "—", never a false 0.
+  const gatesLoaded = inbox.ok && !runsError;
 
   return (
     <div className="flex flex-col gap-10">
@@ -33,20 +38,20 @@ export default async function OverviewPage() {
         <Cell>
           <Metric
             label="agents live"
-            value={live.length}
-            tone={live.length ? "agent" : undefined}
+            value={runsError ? DASH : live.length}
+            tone={!runsError && live.length ? "agent" : undefined}
           />
         </Cell>
         <Cell>
           <Metric
             label="needs you"
-            value={openProposals.length + needsHuman.length}
-            tone={openProposals.length + needsHuman.length ? "human" : undefined}
-            hint="open gates + blocked runs"
+            value={gatesLoaded ? openProposals.length + needsHuman.length : DASH}
+            tone={gatesLoaded && openProposals.length + needsHuman.length ? "human" : undefined}
+            hint={gatesLoaded ? "open gates + blocked runs" : "some sources didn't load"}
           />
         </Cell>
         <Cell>
-          <Metric label="projects" value={projects.length} />
+          <Metric label="projects" value={runsError ? DASH : projects.length} />
         </Cell>
         <Cell>
           <Metric
@@ -67,7 +72,9 @@ export default async function OverviewPage() {
             all runs →
           </Link>
         </div>
-        {live.length === 0 ? (
+        {runsError ? (
+          <ErrorNotice message={`Couldn't load runs — ${runsError}`} />
+        ) : live.length === 0 ? (
           <p className="text-sm text-(--dim)">
             No agent is working right now. Trigger a run from a project, or comment{" "}
             <code className="font-mono text-(--code)">/architect</code> on an issue.
@@ -108,7 +115,9 @@ export default async function OverviewPage() {
             inbox →
           </Link>
         </div>
-        {openProposals.length === 0 ? (
+        {!inbox.ok ? (
+          <ErrorNotice message={`Couldn't load the inbox — ${inbox.message}`} />
+        ) : openProposals.length === 0 ? (
           <p className="text-sm text-(--dim)">Nothing is waiting on you. Both gates are clear.</p>
         ) : (
           <div className="flex flex-col border border-(--line)">
@@ -133,35 +142,39 @@ export default async function OverviewPage() {
 
       <section className="flex flex-col gap-4">
         <Eyebrow>projects</Eyebrow>
-        <HairlineGrid cols="sm:grid-cols-2 lg:grid-cols-3">
-          {projects.map((project) => (
-            <Cell key={project.id} interactive className="p-0">
-              <Link href={`/projects/${project.id}`} className="block h-full w-full p-6 sm:p-8">
-                <div className="flex flex-col gap-3">
-                  <span className="font-mono text-[13px] font-medium text-(--ink)">
-                    {project.slug}
-                  </span>
-                  <span className="line-clamp-2 text-[13px] leading-relaxed text-(--mut)">
-                    {project.description ?? "—"}
-                  </span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
-                    system {project.systemVersion ?? "unpinned"}
-                  </span>
-                </div>
-              </Link>
-            </Cell>
-          ))}
-          {projects.length === 0 ? (
-            <Cell>
-              <p className="text-sm text-(--dim)">
-                No projects yet.{" "}
-                <Link href="/projects" className="text-(--ink) underline underline-offset-4">
-                  Kickstart the first one.
+        {runsError ? (
+          <ErrorNotice message={`Couldn't load projects — ${runsError}`} />
+        ) : (
+          <HairlineGrid cols="sm:grid-cols-2 lg:grid-cols-3">
+            {projects.map((project) => (
+              <Cell key={project.id} interactive className="p-0">
+                <Link href={`/projects/${project.id}`} className="block h-full w-full p-6 sm:p-8">
+                  <div className="flex flex-col gap-3">
+                    <span className="font-mono text-[13px] font-medium text-(--ink)">
+                      {project.slug}
+                    </span>
+                    <span className="line-clamp-2 text-[13px] leading-relaxed text-(--mut)">
+                      {project.description ?? "—"}
+                    </span>
+                    <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
+                      system {project.systemVersion ?? "unpinned"}
+                    </span>
+                  </div>
                 </Link>
-              </p>
-            </Cell>
-          ) : null}
-        </HairlineGrid>
+              </Cell>
+            ))}
+            {projects.length === 0 ? (
+              <Cell>
+                <p className="text-sm text-(--dim)">
+                  No projects yet.{" "}
+                  <Link href="/projects" className="text-(--ink) underline underline-offset-4">
+                    Kickstart the first one.
+                  </Link>
+                </p>
+              </Cell>
+            ) : null}
+          </HairlineGrid>
+        )}
       </section>
     </div>
   );
