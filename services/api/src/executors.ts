@@ -24,7 +24,7 @@ import {
   steerMessages,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, notInArray, sql } from "drizzle-orm";
 import {
   createGithubClientFactory,
   FacilityGithubClient,
@@ -40,7 +40,7 @@ import {
   toHarnessSpace,
 } from "./harness.js";
 import { cancelRun } from "./sandbox/orchestrator.js";
-import { notifyRunEvent } from "./sandbox/state.js";
+import { notifyRunEvent, TERMINAL_RUN_STATUSES } from "./sandbox/state.js";
 import type { AppConfig } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -200,14 +200,31 @@ async function executeKnownMcpTool(
 
   if (toolName === "facility_cancel_run") {
     const runId = requiredString(args.runId, "runId");
+    // Guard the transition so a terminal run isn't reopened to "canceled".
     const row = (
       await db
         .update(runs)
         .set({ status: "canceled", endedAt: new Date(), updatedAt: new Date() })
-        .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
+        .where(
+          and(
+            eq(runs.orgId, orgId),
+            eq(runs.id, runId),
+            notInArray(runs.status, [...TERMINAL_RUN_STATUSES]),
+          ),
+        )
         .returning()
     )[0];
-    if (!row) throw new Error("run_not_found");
+    if (!row) {
+      const current = (
+        await db
+          .select()
+          .from(runs)
+          .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
+          .limit(1)
+      )[0];
+      if (!current) throw new Error("run_not_found");
+      return { runId }; // already terminal — idempotent
+    }
     if (options.config) await cancelRun(options.config, row);
     return { runId };
   }

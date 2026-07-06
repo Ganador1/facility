@@ -1,12 +1,12 @@
 import { newId } from "@facility/core";
 import { agentDefs, projects, runEvents, runs, steerMessages, withOrg } from "@facility/db";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, notInArray, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import { cancelRun } from "../../sandbox/orchestrator.js";
-import { notifyRunEvent } from "../../sandbox/state.js";
+import { notifyRunEvent, TERMINAL_RUN_STATUSES } from "../../sandbox/state.js";
 import type { AppConfig, Principal } from "../../types.js";
 import {
   AnyObject,
@@ -248,15 +248,24 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
     async (request) => {
       const p = principal(request);
       const { runId } = request.params as { runId: string };
-      await loadRun(p, runId);
+      const existing = await loadRun(p, runId);
+      // Only cancel a non-terminal run — never overwrite a run that already
+      // succeeded/failed/canceled. If the guard matches nothing the run is
+      // already terminal, so return it unchanged (idempotent).
       const row = (
         await db
           .update(runs)
           .set({ status: "canceled", endedAt: new Date() })
-          .where(and(eq(runs.orgId, p.orgId), eq(runs.id, runId)))
+          .where(
+            and(
+              eq(runs.orgId, p.orgId),
+              eq(runs.id, runId),
+              notInArray(runs.status, [...TERMINAL_RUN_STATUSES]),
+            ),
+          )
           .returning()
       )[0];
-      if (!row) throw notFound("Run not found");
+      if (!row) return existing;
       await cancelRun(config, row);
       return row;
     },

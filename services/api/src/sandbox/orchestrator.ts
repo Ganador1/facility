@@ -14,7 +14,7 @@ import {
   sandboxProfiles,
   virtualKeys,
 } from "@facility/db";
-import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
 import type { AppConfig } from "../types.js";
 import { raisePlatformIssue } from "../watchtower/issues.js";
@@ -25,7 +25,9 @@ import {
   appendRunEvents,
   type RunBundle,
   type RunnerEngine,
+  type RunSandboxState,
   readSandbox,
+  TERMINAL_RUN_STATUSES,
   terminalStatus,
 } from "./state.js";
 
@@ -38,10 +40,15 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
   try {
     const run = await loadRun(db, job.orgId, job.runId);
     if (run?.status !== "queued") return;
-    await db
+    // Claim the run atomically. If a duplicate queue delivery raced us and
+    // another worker already moved it out of "queued", the update touches no
+    // rows and we must NOT launch a second sandbox for the same run.
+    const claimed = await db
       .update(runs)
       .set({ status: "provisioning", updatedAt: new Date() })
-      .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id), eq(runs.status, "queued")));
+      .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id), eq(runs.status, "queued")))
+      .returning({ id: runs.id });
+    if (claimed.length === 0) return;
     await appendRunEvents(db, run.orgId, run.id, [{ type: "provisioning", data: {} }]);
 
     const { bundle, profile } = await buildRunBundle(db, run, config);
@@ -167,7 +174,7 @@ export async function finishRun(
     },
     events: { count: aggregate.eventCount, checks: aggregate.checkCount },
   };
-  const row = (
+  const claimed = (
     await db
       .update(runs)
       .set({
@@ -178,25 +185,18 @@ export async function finishRun(
         sandbox: { ...sandbox, finishedAt: new Date().toISOString() },
         updatedAt: new Date(),
       })
-      .where(eq(runs.id, run.id))
+      // Claim the terminal transition atomically — if a concurrent finish/cancel
+      // already moved the run to a terminal state, this updates nothing and we
+      // skip the (idempotent-but-wasteful) cleanup.
+      .where(and(eq(runs.id, run.id), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
       .returning()
   )[0];
+  if (!claimed) return run;
   if (sandbox.driver && sandbox.ref) {
     const driver = await sandboxDriver(sandbox.driver);
     await driver.destroy(sandbox.ref).catch(() => undefined);
   }
-  if (sandbox.virtualKeyId) {
-    await db
-      .update(virtualKeys)
-      .set({ revokedAt: new Date() })
-      .where(eq(virtualKeys.id, sandbox.virtualKeyId));
-  }
-  if (sandbox.platformKeyId) {
-    await db
-      .update(apiKeys)
-      .set({ revokedAt: new Date() })
-      .where(eq(apiKeys.id, sandbox.platformKeyId));
-  }
+  await revokeRunKeys(db, sandbox);
   await appendRunEvents(db, run.orgId, run.id, [{ type: "result", data: { status, error } }]);
   await insertAuditEvent(db, {
     orgId: run.orgId,
@@ -206,7 +206,7 @@ export async function finishRun(
     target: { type: "run", id: run.id },
     payload: { status, error },
   });
-  return row ?? run;
+  return claimed;
 }
 
 export async function cancelRun(config: AppConfig, run: RunRow) {
@@ -218,18 +218,7 @@ export async function cancelRun(config: AppConfig, run: RunRow) {
   }
   const { db, client } = createDb(config.databaseUrl);
   try {
-    if (sandbox.virtualKeyId) {
-      await db
-        .update(virtualKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(virtualKeys.id, sandbox.virtualKeyId));
-    }
-    if (sandbox.platformKeyId) {
-      await db
-        .update(apiKeys)
-        .set({ revokedAt: new Date() })
-        .where(eq(apiKeys.id, sandbox.platformKeyId));
-    }
+    await revokeRunKeys(db, sandbox);
   } finally {
     await client.end();
   }
@@ -438,6 +427,19 @@ async function activeSkills(db: ReturnType<typeof createDb>["db"], orgId: string
   ).map((row) => ({ name: row.name, content: row.content }));
 }
 
+// Revoke a run's least-privilege credentials — the run-scoped virtual key (LLM
+// gateway) and platform key (kb/tasks). Shared by every terminal path so a
+// failed/timed-out run never leaves a live key behind.
+async function revokeRunKeys(db: ReturnType<typeof createDb>["db"], sandbox: RunSandboxState) {
+  const now = new Date();
+  if (sandbox.virtualKeyId) {
+    await db.update(virtualKeys).set({ revokedAt: now }).where(eq(virtualKeys.id, sandbox.virtualKeyId));
+  }
+  if (sandbox.platformKeyId) {
+    await db.update(apiKeys).set({ revokedAt: now }).where(eq(apiKeys.id, sandbox.platformKeyId));
+  }
+}
+
 async function failRun(
   db: ReturnType<typeof createDb>["db"],
   orgId: string,
@@ -445,17 +447,23 @@ async function failRun(
   message: string,
   kind: string,
 ) {
+  // Claim the failure atomically: only a non-terminal run transitions, so a
+  // concurrent finish/cancel/fail cannot be clobbered and cleanup runs once.
   const [failed] = await db
     .update(runs)
     .set({ status: "failed", error: message, endedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
-    .returning({ projectId: runs.projectId });
+    .where(and(eq(runs.orgId, orgId), eq(runs.id, runId), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
+    .returning({ projectId: runs.projectId, sandbox: runs.sandbox });
+  if (!failed) return; // already terminal — another path handled it.
+  // Reclaim the run's credentials + sandbox so a failed run can't keep calling
+  // the gateway or the platform API.
+  await revokeRunKeys(db, readSandbox(failed.sandbox));
   // Route through raisePlatformIssue so the run failure is canonical severity,
   // carries its projectId (so it surfaces in project health), and dedups on
   // repeated failures instead of violating the org+fingerprint unique index.
   await raisePlatformIssue(db, {
     orgId,
-    projectId: failed?.projectId ?? null,
+    projectId: failed.projectId ?? null,
     fingerprint: `run_failure:${runId}:${kind}`,
     kind: "run_failure",
     severity: "error",

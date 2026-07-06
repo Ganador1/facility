@@ -118,9 +118,11 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
             `Cannot ${action} an issue in state "${issue.state}".`,
           );
         }
-        // Pin the update to the allowed prior state so a concurrent transition
-        // cannot be clobbered (e.g. ack racing a resolve). 0 rows updated means
-        // the state moved under us — reconcile from the current row.
+        // Pin the update to the allowed prior state (so a concurrent transition
+        // cannot be clobbered — e.g. ack racing a resolve) AND to the project we
+        // just scope-checked (so a concurrent fingerprint-driven project move
+        // can't slip the row out from under the authorization). 0 rows updated
+        // means the row moved under us — reconcile from the current row.
         const [updated] = await db
           .update(platformIssues)
           .set({ state: target, updatedAt: new Date() })
@@ -128,6 +130,7 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
             and(
               eq(platformIssues.orgId, p.orgId),
               eq(platformIssues.id, issueId),
+              issue.projectId ? eq(platformIssues.projectId, issue.projectId) : undefined,
               inArray(platformIssues.state, allowedFrom),
             ),
           )

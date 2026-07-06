@@ -48,8 +48,12 @@ export function readSandbox(value: unknown): RunSandboxState {
     : {};
 }
 
+// Terminal run statuses — the race-safe guard for every lifecycle UPDATE so a
+// stale write can't move a finished run back to an active state.
+export const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "canceled"] as const;
+
 export function terminalStatus(status: string) {
-  return status === "succeeded" || status === "failed" || status === "canceled";
+  return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
 }
 
 export async function nextRunEventSeq(db: FacilityDb, runId: string): Promise<number> {
