@@ -58,16 +58,17 @@ platform owns what has to be centralized to govern an operation:
 |---|---|
 | **Projects & governance** | many projects per org; kickstart a repo to a working factory in minutes; repo **fingerprints** detect drift/corruption; **upgrades** arrive as PRs; the whole method is versioned |
 | **Sandboxes & sessions** | isolated cloud sandboxes for Claude Code / Codex / BYO; **watch any run live and steer a stuck agent**, on the record; driver-based (Docker local, Fargate cloud) |
-| **Gateway & cost** | every model call routes through the LLM proxy — project **virtual keys**, hard **budgets**, cost by model/agent/task, full request audit |
+| **Gateway & cost** | every model call routes through the LLM proxy — project **virtual keys**, hard **budgets**, cost by model/agent/task, and optional full request/response **envelope capture** (when object storage is configured) |
 | **Registry** | skills, rules, agent contracts, harnesses, guards, templates — versioned, bundled, immutable once published; define project-specific agents declaratively via the API/CLI/MCP |
 | **Watchtower** | outcomes, health, the canary — per project, monitor-independent, live numbers never curated |
 | **Inbox** | one place for every decision an agent needs — plan gates, learning validations, budget overrides — approve/reject/steer, fully audited |
 | **Knowledge & the Project Owner** | a Limina-style agent owns the project domain, maintains a validated knowledge base, and turns needs into implementation tasks; **learning mode** proposes new skills and guards nightly, human-validated |
 | **Access** | WorkOS SSO for humans, scoped API keys for machines, one RBAC for web, CLI, **MCP**, and agents — the platform is safely operable from Claude Code, Cowork, and Codex |
 
-Everything is auditable and stored by default. Agents never approve, never
-merge, never touch protected branches — the two gates (accept the plan, sign
-the merge) stay human.
+Privileged actions are hash-chain audited; full request/response envelopes are
+captured when object storage is configured (the store-everything default). Agents
+never approve, never merge, never touch protected branches — the two gates (accept
+the plan, sign the merge) stay human.
 
 ## Architecture
 

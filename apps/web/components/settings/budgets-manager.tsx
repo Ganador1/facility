@@ -16,6 +16,9 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [rowBusyId, setRowBusyId] = useState<string | null>(null);
+  const [removedIds, setRemovedIds] = useState<Set<string>>(() => new Set());
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -48,6 +51,56 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
       setBusy(false);
     }
   }
+
+  async function patch(b: Budget, body: Record<string, unknown>, ok: string) {
+    setRowBusyId(b.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/v1/budgets/${b.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const parsed = (await res.json().catch(() => null)) as {
+          error?: { message?: string };
+        } | null;
+        throw new Error(parsed?.error?.message ?? `failed (${res.status})`);
+      }
+      setNotice(ok);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "failed");
+    } finally {
+      setRowBusyId(null);
+    }
+  }
+
+  async function remove(b: Budget) {
+    setRowBusyId(b.id);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await fetch(`/api/v1/budgets/${b.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const parsed = (await res.json().catch(() => null)) as {
+          error?: { message?: string };
+        } | null;
+        throw new Error(parsed?.error?.message ?? `remove failed (${res.status})`);
+      }
+      setPendingDeleteId(null);
+      setRemovedIds((current) => new Set(current).add(b.id));
+      setNotice(`removed ${money(b.limitCents)} / ${b.period} budget`);
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "remove failed");
+    } finally {
+      setRowBusyId(null);
+    }
+  }
+
+  const live = budgets.filter((b) => !removedIds.has(b.id));
 
   return (
     <div className="flex flex-col gap-5">
@@ -102,28 +155,86 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
         </p>
       ) : null}
 
-      {budgets.length === 0 ? (
+      {live.length === 0 ? (
         <p className="text-sm text-(--dim)">No budgets. Spend is uncapped.</p>
       ) : (
         <div className="flex flex-col border border-(--line)">
-          {budgets.map((b) => (
+          {live.map((b) => (
             <div
               key={b.id}
-              className="flex items-center gap-4 border-b border-(--line) px-4 py-3 last:border-b-0"
+              className={`flex min-w-0 items-center gap-4 border-b border-(--line) px-4 py-3 last:border-b-0 ${
+                b.enabled ? "" : "opacity-55"
+              }`}
             >
-              <span className="tabular font-mono text-[13px] text-(--ink)">
+              <span className="tabular shrink-0 font-mono text-[13px] text-(--ink)">
                 {money(b.limitCents)}
               </span>
-              <span className="font-mono text-[11px] text-(--dim)">/ {b.period}</span>
+              <span className="shrink-0 font-mono text-[11px] text-(--dim)">/ {b.period}</span>
               <span
-                className="font-mono text-[10px] uppercase tracking-[0.16em]"
+                className="shrink-0 font-mono text-[10px] uppercase tracking-[0.16em]"
                 style={{ color: b.mode === "hard" ? "var(--bad)" : "var(--human)" }}
               >
                 {b.mode}
               </span>
-              <span className="ml-auto font-mono text-[10px] uppercase tracking-[0.16em] text-(--dim)">
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.16em] text-(--dim)">
                 {b.scope}
               </span>
+              {b.enabled ? null : (
+                <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.16em] text-(--dim)">
+                  disabled
+                </span>
+              )}
+              {pendingDeleteId === b.id ? (
+                <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+                  <span className="font-mono text-[10.5px] uppercase tracking-[0.16em] text-(--bad)">
+                    remove this budget?
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => remove(b)}
+                    disabled={rowBusyId !== null}
+                    className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--bad) disabled:opacity-50"
+                  >
+                    {rowBusyId === b.id ? "removing…" : "confirm"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPendingDeleteId(null)}
+                    disabled={rowBusyId !== null}
+                    className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--mut) hover:text-(--ink) disabled:opacity-50"
+                  >
+                    cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="ml-auto flex shrink-0 items-center gap-4">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      patch(
+                        b,
+                        { enabled: !b.enabled },
+                        b.enabled ? "budget disabled" : "budget enabled",
+                      )
+                    }
+                    disabled={rowBusyId !== null}
+                    className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--mut) hover:text-(--ink) disabled:opacity-50"
+                  >
+                    {b.enabled ? "disable" : "enable"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError(null);
+                      setNotice(null);
+                      setPendingDeleteId(b.id);
+                    }}
+                    className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--mut) hover:text-(--bad)"
+                  >
+                    remove
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

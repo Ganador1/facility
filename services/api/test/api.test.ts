@@ -662,6 +662,24 @@ describe("api", async () => {
     expect(widened.statusCode).toBe(200);
     expect(widened.json().scope).toBe("org");
     expect(widened.json().projectId).toBeNull();
+
+    // Relational coherence: an agent budget must name an agent def that lives in
+    // the budget's project — a foreign/unknown agent id is rejected.
+    const agentForeign = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: {
+        scope: "agent_def",
+        projectId,
+        agentDefId: newId("agent"),
+        period: "daily",
+        limitCents: 10,
+        mode: "hard",
+      },
+    });
+    expect(agentForeign.statusCode).toBe(400);
+    expect(agentForeign.json().error.code).toBe("agent_not_in_project");
   });
 
   it("rejects agent references outside the agent project", async () => {

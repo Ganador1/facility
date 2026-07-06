@@ -51,7 +51,17 @@ export async function applicableBudgets(
       and(eq(budgets.scope, "project"), eq(budgets.projectId, key.projectId)),
     ];
     if (key.agentDefId) {
-      filters.push(and(eq(budgets.scope, "agent_def"), eq(budgets.agentDefId, key.agentDefId)));
+      // Match agent budgets by BOTH agent def AND project: agent defs are
+      // project-owned, so a budget row carrying a foreign project's id must not be
+      // enforced against this agent's project. (Write-time validation keeps the
+      // stored row coherent; this is the enforcement-side backstop.)
+      filters.push(
+        and(
+          eq(budgets.scope, "agent_def"),
+          eq(budgets.agentDefId, key.agentDefId),
+          eq(budgets.projectId, key.projectId),
+        ),
+      );
     }
     if (key.budgetId) {
       filters.push(eq(budgets.id, key.budgetId));

@@ -3,7 +3,7 @@ import { budgets, providerCredentials, virtualKeys } from "@facility/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { resolveBudgetScope } from "../../budget-scope.js";
+import { assertBudgetAgentInProject, resolveBudgetScope } from "../../budget-scope.js";
 import { notFound } from "../../errors.js";
 import type { Principal } from "../../types.js";
 import {
@@ -300,6 +300,9 @@ export async function registerProvidersBudgetsSpendRoutes(
         principalProjectId: p.projectId ?? null,
       });
       await assertProjectInOrg(p, resolved.projectId);
+      if (resolved.scope === "agent_def" && resolved.projectId && resolved.agentDefId) {
+        await assertBudgetAgentInProject(db, p.orgId, resolved.projectId, resolved.agentDefId);
+      }
       return (
         await db
           .insert(budgets)
@@ -391,6 +394,9 @@ export async function registerProvidersBudgetsSpendRoutes(
               principalProjectId: p.projectId ?? null,
             });
       if (resolved) await assertProjectInOrg(p, resolved.projectId);
+      if (resolved?.scope === "agent_def" && resolved.projectId && resolved.agentDefId) {
+        await assertBudgetAgentInProject(db, p.orgId, resolved.projectId, resolved.agentDefId);
+      }
       return (
         await db
           .update(budgets)
@@ -410,7 +416,17 @@ export async function registerProvidersBudgetsSpendRoutes(
                 }
               : {}),
           })
-          .where(and(eq(budgets.orgId, p.orgId), eq(budgets.id, budgetId)))
+          // The project-scope guard is on the mutation predicate itself (not just
+          // the loadBudget preflight), so a concurrent scope/project change can't
+          // let a project-scoped principal mutate a row that stopped belonging to
+          // its project between the read and the write.
+          .where(
+            and(
+              eq(budgets.orgId, p.orgId),
+              eq(budgets.id, budgetId),
+              p.projectId ? eq(budgets.projectId, p.projectId) : undefined,
+            ),
+          )
           .returning()
       )[0];
     },
@@ -425,7 +441,15 @@ export async function registerProvidersBudgetsSpendRoutes(
       const p = principal(request);
       const { budgetId } = request.params as { budgetId: string };
       await loadBudget(p, budgetId);
-      await db.delete(budgets).where(and(eq(budgets.orgId, p.orgId), eq(budgets.id, budgetId)));
+      await db
+        .delete(budgets)
+        .where(
+          and(
+            eq(budgets.orgId, p.orgId),
+            eq(budgets.id, budgetId),
+            p.projectId ? eq(budgets.projectId, p.projectId) : undefined,
+          ),
+        );
       return { ok: true };
     },
   );

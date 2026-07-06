@@ -1,3 +1,5 @@
+import { agentDefs, type FacilityDb } from "@facility/db";
+import { and, eq } from "drizzle-orm";
 import { ApiError } from "./errors.js";
 
 export const BUDGET_SCOPES = ["org", "project", "agent_def"] as const;
@@ -70,4 +72,39 @@ export function resolveBudgetScope(input: {
     projectId,
     agentDefId: scope === "agent_def" ? (input.agentDefId ?? null) : null,
   };
+}
+
+/**
+ * Relational coherence for an agent-scoped budget: the referenced agent def must
+ * live in the SAME org and project as the budget. Without this a writer could name
+ * a foreign (same-org) agent id, producing a row the gateway would then enforce
+ * against the wrong project. Call this after resolveBudgetScope for agent_def
+ * budgets (it needs a DB lookup, so it can't live in the pure resolver).
+ */
+export async function assertBudgetAgentInProject(
+  db: FacilityDb,
+  orgId: string,
+  projectId: string,
+  agentDefId: string,
+): Promise<void> {
+  const found = (
+    await db
+      .select({ id: agentDefs.id })
+      .from(agentDefs)
+      .where(
+        and(
+          eq(agentDefs.orgId, orgId),
+          eq(agentDefs.id, agentDefId),
+          eq(agentDefs.projectId, projectId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!found) {
+    throw new ApiError(
+      400,
+      "agent_not_in_project",
+      "The agent def is not in this budget's project",
+    );
+  }
 }

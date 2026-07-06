@@ -21,11 +21,11 @@ client is `@facility/sdk`.
 - Base path `/v1`. JSON in, JSON out.
 - Errors: `{ "error": { "code", "message", "details?" } }` with meaningful
   status codes; `403` includes the permission you lacked.
-- Privileged v1 mutations (protected, non-GET routes) are recorded in the
-  append-only, hash-chained audit log; verify the org's chain with
-  `GET /v1/audit/verify`. Webhook deliveries and run-lifecycle events are captured
-  separately in their own event logs (`inbound_events`, `run_events`) — durable
-  evidence, but not part of the audit hash chain.
+- Privileged v1 mutations (protected, non-GET routes that declare an audit action)
+  are recorded in the append-only, hash-chained audit log on success; verify the
+  org's chain with `GET /v1/audit/verify`. Webhook deliveries and run-lifecycle
+  events are captured separately in their own event logs (`inbound_events`,
+  `run_events`) — durable evidence, but not part of the audit hash chain.
 - Streams (run events) are SSE: `GET /v1/runs/:id/stream`.
 
 ## Resource map

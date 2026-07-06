@@ -24,7 +24,7 @@ import {
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
 import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
-import { resolveBudgetScope } from "./budget-scope.js";
+import { assertBudgetAgentInProject, resolveBudgetScope } from "./budget-scope.js";
 import {
   createGithubClientFactory,
   FacilityGithubClient,
@@ -279,6 +279,9 @@ async function executeKnownMcpTool(
       principalProjectId: proposalProjectId,
     });
     await assertMcpProjectInOrg(db, orgId, resolved.projectId);
+    if (resolved.scope === "agent_def" && resolved.projectId && resolved.agentDefId) {
+      await assertBudgetAgentInProject(db, orgId, resolved.projectId, resolved.agentDefId);
+    }
     const values = {
       scope: resolved.scope,
       projectId: resolved.projectId,
