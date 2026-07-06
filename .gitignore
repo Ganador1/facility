@@ -17,3 +17,10 @@ dist/
 
 # TypeScript incremental build cache
 *.tsbuildinfo
+
+# Terraform local provider cache + state (never commit — the provider binary is
+# hundreds of MB; state can hold secrets). The .terraform.lock.hcl IS committed.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
