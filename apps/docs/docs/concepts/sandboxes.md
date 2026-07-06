@@ -29,7 +29,10 @@ A **platform-lane** run (Claude Code, Codex) needs a sandbox profile whose
 
 `facility doctor` **fails** its `sandbox_runner` check when no profile matches
 the deployment's driver (and, for docker, the runner image), so a false-ready
-deployment surfaces before the first run.
+deployment surfaces before the first run. For the docker driver the check also
+probes the Docker daemon — but it runs in the **api** task, so give the **worker**
+(which actually launches sandboxes) the same Docker socket access; the api-side
+probe is a readiness proxy for the worker, exactly as the object-store check is.
 :::
 
 ## Drivers

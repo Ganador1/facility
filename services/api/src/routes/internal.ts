@@ -1,6 +1,6 @@
 import { open, verifyKey } from "@facility/core";
 import { githubInstallations, runs, steerMessages } from "@facility/db";
-import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, notInArray } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../errors.js";
@@ -11,6 +11,7 @@ import {
   appendRunEvents,
   type RunSandboxState,
   readSandbox,
+  TERMINAL_RUN_STATUSES,
   terminalStatus,
 } from "../sandbox/state.js";
 import type { AppConfig } from "../types.js";
@@ -63,7 +64,11 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         throw new ApiError(409, "virtual_key_revealed", "Run credentials were already revealed");
       }
       const updatedSandbox = { ...sandbox, virtualKeyRevealedAt: new Date().toISOString() };
-      await db
+      // Claim the transition to running only if the run is still active. A cancel
+      // that lands between the auth snapshot and here must win — we must not
+      // resurrect a terminal run, and (critically) must not hand its sandbox the
+      // sealed credentials after it was told to stop.
+      const [claimed] = await db
         .update(runs)
         .set({
           status: "running",
@@ -71,7 +76,11 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
           sandbox: updatedSandbox,
           updatedAt: new Date(),
         })
-        .where(eq(runs.id, run.id));
+        .where(and(eq(runs.id, run.id), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
+        .returning({ id: runs.id });
+      if (!claimed) {
+        throw new ApiError(409, "run_terminal", "Run is no longer active");
+      }
       await appendRunEvents(db, run.orgId, run.id, [{ type: "hello", data: {} }]);
       const token = signedBundleToken(run.id, config.secretMasterKey);
       return {

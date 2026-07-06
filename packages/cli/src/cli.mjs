@@ -72,6 +72,7 @@ export async function main(argv) {
     case "projects":
     case "runs":
     case "inbox":
+    case "issues":
     case "kickstart":
     case "upgrade":
     case "keys":

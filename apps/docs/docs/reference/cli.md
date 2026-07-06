@@ -28,6 +28,7 @@ npx @theam/facility <command>
 | `projects list\|get` | project inventory |
 | `runs list\|watch\|trigger\|steer` | run control — `watch` tails the live session in your terminal |
 | `inbox` / `inbox decide` | the human gates, scriptable |
+| `issues list\|ack\|resolve` | watchtower issues: list, acknowledge, resolve |
 | `kickstart` / `upgrade` | remote kickstart and upgrade PRs |
 | `keys issue\|list\|revoke` | machine access |
 | `llm-requests list\|get\|export` | list metered LLM requests and export a stored request/response envelope |

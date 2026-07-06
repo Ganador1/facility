@@ -499,6 +499,10 @@ export type FacilityPatchRoutes = {
   [path: `/v1/sandbox-profiles/${string}`]: Route<JsonObject, JsonObject>;
 };
 
+export type FacilityPutRoutes = {
+  [path: `/v1/projects/${string}/kb/space`]: Route<JsonObject, JsonObject>;
+};
+
 export type FacilityDeleteRoutes = {
   [path: `/v1/projects/${string}`]: Route<{ ok: boolean }>;
   [path: `/v1/budgets/${string}`]: Route<{ ok: boolean }>;
@@ -513,6 +517,7 @@ export type FacilityRouteMap = {
   GET: never;
   POST: FacilityPostRoutes;
   PATCH: FacilityPatchRoutes;
+  PUT: FacilityPutRoutes;
   DELETE: FacilityDeleteRoutes;
 };
 
@@ -532,11 +537,15 @@ type FacilityRouteSpec<
     ? Path extends keyof FacilityPatchRoutes
       ? FacilityPatchRoutes[Path]
       : never
-    : Method extends "DELETE"
-      ? Path extends keyof FacilityDeleteRoutes
-        ? FacilityDeleteRoutes[Path]
+    : Method extends "PUT"
+      ? Path extends keyof FacilityPutRoutes
+        ? FacilityPutRoutes[Path]
         : never
-      : never;
+      : Method extends "DELETE"
+        ? Path extends keyof FacilityDeleteRoutes
+          ? FacilityDeleteRoutes[Path]
+          : never
+        : never;
 
 export type FacilityRouteResponse<
   Method extends FacilityRouteMethod,

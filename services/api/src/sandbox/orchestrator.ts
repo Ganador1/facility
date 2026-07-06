@@ -37,6 +37,10 @@ type RunRow = typeof runs.$inferSelect;
 export async function dispatchRun(config: AppConfig, job: DispatchJob) {
   if (!job.runId || !job.orgId) throw new Error("runs.dispatch requires runId and orgId");
   const { db, client } = createDb(config.databaseUrl);
+  // Track credentials as they are minted so a failure BEFORE they are persisted
+  // into runs.sandbox can still revoke them (failRun revokes by persisted
+  // sandbox, which wouldn't yet carry these ids).
+  const createdKeys: RunSandboxState = {};
   try {
     const run = await loadRun(db, job.orgId, job.runId);
     if (run?.status !== "queued") return;
@@ -84,6 +88,8 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       createdBy: `run:${run.id}`,
     });
 
+    createdKeys.virtualKeyId = virtualKey.id;
+    createdKeys.platformKeyId = platformKey.id;
     const runnerToken = `frt_${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const driverName = normalizeDriver(profile.driver);
     const driver = await sandboxDriver(driverName);
@@ -102,7 +108,10 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       network: objectOrEmpty(profile.network),
     };
     const launched = await driver.launch(launchSpec);
-    await db
+    // Attach the live sandbox only if the run is still active. If a cancel raced
+    // provisioning and already made the run terminal, do NOT hand it a live
+    // sandbox + keys — tear the sandbox down and revoke the credentials.
+    const [attached] = await db
       .update(runs)
       .set({
         sandbox: {
@@ -120,14 +129,23 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
         },
         updatedAt: new Date(),
       })
-      .where(eq(runs.id, run.id));
+      .where(and(eq(runs.id, run.id), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
+      .returning({ id: runs.id });
+    if (!attached) {
+      await driver.destroy(launched.ref).catch(() => undefined);
+      await revokeRunKeys(db, createdKeys);
+      return;
+    }
     await appendRunEvents(db, run.orgId, run.id, [
       { type: "sandbox", data: { driver: driver.name, ref: launched.ref } },
     ]);
   } catch (error) {
+    // failRun revokes by persisted sandbox; also revoke any keys we minted before
+    // persistence so a pre-persist failure can't leak a live fak_/fvk_ key.
     await failRun(db, job.orgId, job.runId, errorMessage(error), "provision_failed").catch(
       () => undefined,
     );
+    await revokeRunKeys(db, createdKeys).catch(() => undefined);
     throw error;
   } finally {
     await client.end();

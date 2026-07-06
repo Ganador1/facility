@@ -6,6 +6,7 @@ import { useState } from "react";
 import type { Issue } from "@/lib/api";
 
 const SEVERITY_TONE: Record<string, string> = {
+  critical: "text-(--bad)",
   error: "text-(--bad)",
   warn: "text-(--human)",
   info: "text-(--mut)",

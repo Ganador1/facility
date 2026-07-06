@@ -71,7 +71,7 @@ projects.
 | Data | `@facility/db` | Drizzle schema (30+ tables), migrations 0001–0004 (ordered runner), org-scoped helpers, hash-chained audit, idempotent seed · **tested** |
 | Control plane | `@facility/api` (Fastify 5) | session + API-key auth, WorkOS AuthKit hooks, RBAC preHandler + startup assertion, auto-audit, 70+ v1 routes, SSE run streams, HITL ledger, KB DAG validation, internal runner API, GitHub webhooks, watchtower + learning workers · **tested** |
 | LLM gateway | `@facility/gateway` | Anthropic/OpenAI/BYO proxy, virtual keys, budgets (soft/hard), zero-copy streaming with usage tee, metering, envelopes · **tested + verified live** |
-| Sandboxes | `@facility/api` sandbox + `runner/` | driver seam (Docker + honest AWS stub), run lifecycle, runner-token internal API, live session streaming + steering, engine parsers (Claude/Codex/BYO) · **tested + docker e2e** |
+| Sandboxes | `@facility/api` sandbox + `runner/` | driver seam (Docker + **real AWS Fargate/ECS** driver), race-safe run lifecycle with credential revocation on every terminal path, runner-token internal API, live session streaming + steering, engine parsers (Claude/Codex/BYO) · **tested + docker e2e** |
 | GitHub App | `@facility/api` github | HMAC webhooks, trigger router, server-side kickstart (byte-compatible render), fingerprints + adopt, upgrade PRs, default-branch-refusing octokit wrapper · **tested** |
 | Registry | control plane | skills/rules/contracts/harnesses/guards/templates, versioned + publish-immutable, bundled seed · **tested** |
 | Watchtower | `@facility/api` watchtower | outcomes/health/canary/analytics, monitor-independent, incident issues · **tested** |
