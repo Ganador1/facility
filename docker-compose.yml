@@ -75,7 +75,12 @@ services:
       WORKOS_API_KEY: ${WORKOS_API_KEY:-}
       WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID:-}
       WORKOS_COOKIE_PASSWORD: ${WORKOS_COOKIE_PASSWORD:-}
+      FACILITY_SANDBOX_DRIVER: docker
+      FACILITY_RUNNER_IMAGE: ${FACILITY_RUNNER_IMAGE:-facility-runner:dev}
     ports: ["4400:4400"]
+    volumes:
+      # doctor's sandbox_runner check probes the Docker daemon for the docker driver.
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migrate: { condition: service_completed_successfully }
       createbuckets: { condition: service_completed_successfully }
@@ -87,6 +92,13 @@ services:
     environment:
       DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility
       SECRET_MASTER_KEY: ${SECRET_MASTER_KEY:?set SECRET_MASTER_KEY}
+      # docker driver → the worker launches sandboxes on the host Docker daemon.
+      FACILITY_SANDBOX_DRIVER: docker
+      FACILITY_RUNNER_IMAGE: ${FACILITY_RUNNER_IMAGE:-facility-runner:dev}
+    volumes:
+      # The worker launches docker-driver sandboxes via the host Docker daemon;
+      # doctor's sandbox_runner probe needs the same access on the api service.
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       migrate: { condition: service_completed_successfully }
 
