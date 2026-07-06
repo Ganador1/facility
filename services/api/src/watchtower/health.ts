@@ -2,7 +2,7 @@ import { createDb, type FacilityDb } from "@facility/db";
 import type { AppConfig } from "../types.js";
 import { createGitHubClient, type GitHubClient } from "./github.js";
 import { collectGitHubHealth } from "./github-health.js";
-import { openIssuesForProject } from "./issues.js";
+import { isActionableSeverity, openIssuesForProject } from "./issues.js";
 import { collectPlatformHealth } from "./platform-health.js";
 
 export async function runWatchtowerHealth(
@@ -24,7 +24,7 @@ export async function collectHealth(db: FacilityDb, github: GitHubClient) {
 
 export async function projectHealth(db: FacilityDb, orgId: string, projectId: string) {
   const issues = await openIssuesForProject(db, orgId, projectId);
-  const status = issues.some((issue) => issue.severity === "error")
+  const status = issues.some((issue) => isActionableSeverity(issue.severity))
     ? "red"
     : issues.length > 0
       ? "warn"

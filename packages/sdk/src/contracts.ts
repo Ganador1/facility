@@ -426,6 +426,8 @@ export type FacilityPostRoutes = {
     body: DecideProposalRequest;
     response: Proposal;
   };
+  [path: `/v1/issues/${string}/ack`]: Route<Issue, undefined>;
+  [path: `/v1/issues/${string}/resolve`]: Route<Issue, undefined>;
   "/v1/budgets": Route<Budget, CreateBudgetRequest>;
   "/v1/registry/items": Route<RegistryItemWithVersions, CreateRegistryItemRequest>;
   [path: `/v1/registry/items/${string}/versions`]: {

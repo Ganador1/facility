@@ -10,7 +10,7 @@ import {
   runs,
 } from "@facility/db";
 import { and, eq } from "drizzle-orm";
-import { type IssueSeverity, raisePlatformIssue } from "../watchtower/issues.js";
+import { type IssueSeverity, normalizeSeverity, raisePlatformIssue } from "../watchtower/issues.js";
 
 type Enqueue = (queue: string, data: Record<string, unknown>) => Promise<unknown>;
 
@@ -193,5 +193,5 @@ function stringField(value: unknown, key: string): string | undefined {
 
 function severityField(value: unknown): IssueSeverity | undefined {
   const raw = stringField(value, "severity");
-  return raw === "warn" || raw === "error" || raw === "high" ? raw : undefined;
+  return raw ? normalizeSeverity(raw) : undefined;
 }

@@ -1,11 +1,12 @@
 import { can, newId } from "@facility/core";
 import { actionTypes, platformIssues, proposalEvents, proposals } from "@facility/db";
-import { and, asc, desc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import { executeApprovedProposal, resolveMcpToolTargetProject } from "../../executors.js";
 import type { Principal } from "../../types.js";
+import { ACTIONABLE_SEVERITIES } from "../../watchtower/issues.js";
 import {
   AnyObject,
   assertBareRowProjectScope,
@@ -49,12 +50,14 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
         .select()
         .from(proposals)
         .where(and(...proposalClauses));
+      // Issues are watchtower alerts, not proposals: the `state` query param
+      // scopes proposals only. Always surface actionable (error/critical) issues
+      // that are still open OR acked, so acknowledging one keeps it visible
+      // until it is actually resolved.
       const issueClauses = [
         eq(platformIssues.orgId, p.orgId),
-        eq(platformIssues.severity, "error"),
-        state
-          ? eq(platformIssues.state, state)
-          : or(eq(platformIssues.state, "open"), eq(platformIssues.state, "acked")),
+        inArray(platformIssues.severity, ACTIONABLE_SEVERITIES),
+        or(eq(platformIssues.state, "open"), eq(platformIssues.state, "acked")),
       ];
       if (p.projectId) issueClauses.push(eq(platformIssues.projectId, p.projectId));
       const issueRows = await db

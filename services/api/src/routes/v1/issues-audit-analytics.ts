@@ -3,7 +3,7 @@ import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { readEnvelopeObject } from "../../envelopes.js";
-import { notFound } from "../../errors.js";
+import { ApiError, notFound } from "../../errors.js";
 import { analyticsOverview, queryAnalytics } from "../../watchtower/analytics.js";
 import {
   AnyObject,
@@ -105,6 +105,14 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
         )[0];
         if (!issue) throw notFound("Issue not found");
         assertBareRowProjectScope(p, issue.projectId, "Issue not found");
+        // Valid transitions: ack moves open → acked only (a resolved issue must
+        // not silently reopen); resolve moves open/acked → resolved. Re-issuing
+        // the same terminal action is idempotent.
+        if (action === "ack" && issue.state !== "open") {
+          if (issue.state === "acked") return issue;
+          throw new ApiError(409, "invalid_transition", "Only an open issue can be acknowledged.");
+        }
+        if (action === "resolve" && issue.state === "resolved") return issue;
         return (
           await db
             .update(platformIssues)

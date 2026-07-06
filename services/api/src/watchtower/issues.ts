@@ -2,7 +2,35 @@ import { newId } from "@facility/core";
 import { type FacilityDb, insertAuditEvent, platformIssues } from "@facility/db";
 import { and, eq, inArray } from "drizzle-orm";
 
-export type IssueSeverity = "warn" | "error" | "high";
+// Canonical severity ladder. Producers historically emitted "high"/"medium",
+// which the inbox and project-health filters (keyed on "error") silently
+// dropped; normalize everything to this set so a run failure stays actionable
+// wherever issues surface.
+export type IssueSeverity = "info" | "warn" | "error" | "critical";
+
+// Severities that demand operator attention — what the inbox shows and what
+// turns project health red.
+export const ACTIONABLE_SEVERITIES: IssueSeverity[] = ["error", "critical"];
+
+export function normalizeSeverity(severity: string): IssueSeverity {
+  switch (severity) {
+    case "critical":
+      return "critical";
+    case "error":
+    case "high":
+      return "error";
+    case "warn":
+    case "warning":
+    case "medium":
+      return "warn";
+    default:
+      return "info";
+  }
+}
+
+export function isActionableSeverity(severity: string): boolean {
+  return ACTIONABLE_SEVERITIES.includes(normalizeSeverity(severity));
+}
 
 export type IssueInput = {
   orgId: string;
@@ -15,6 +43,7 @@ export type IssueInput = {
 };
 
 export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
+  const severity = normalizeSeverity(input.severity);
   const existing = (
     await db
       .select()
@@ -37,7 +66,7 @@ export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
           orgId: input.orgId,
           projectId: input.projectId ?? undefined,
           kind: input.kind,
-          severity: input.severity,
+          severity,
           fingerprint: input.fingerprint,
           title: input.title,
           bodyMd: input.bodyMd,
@@ -54,7 +83,7 @@ export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
       .set({
         projectId: input.projectId ?? existing.projectId,
         kind: input.kind,
-        severity: input.severity,
+        severity,
         title: input.title,
         bodyMd: input.bodyMd,
         state: wasResolved ? "open" : existing.state,

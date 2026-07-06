@@ -373,7 +373,7 @@ async function upsertPlatformIssue(
       orgId: repo.orgId,
       projectId: repo.projectId,
       kind: "fingerprint_drift",
-      severity: kind === "corrupted" ? "high" : "medium",
+      severity: kind === "corrupted" ? "error" : "warn",
       fingerprint,
       title: `Facility managed files drifted in ${repo.owner}/${repo.name}`,
       bodyMd: JSON.stringify(diff, null, 2),

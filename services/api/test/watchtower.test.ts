@@ -29,7 +29,12 @@ import { CANARY_MESSAGE_HASH, collectCanaries } from "../src/watchtower/canary.j
 import type { GitHubClient, WorkflowRun } from "../src/watchtower/github.js";
 import { collectGitHubHealth } from "../src/watchtower/github-health.js";
 import { expireHitlProposals } from "../src/watchtower/hitl.js";
-import { raisePlatformIssue, resolvePlatformIssue } from "../src/watchtower/issues.js";
+import {
+  isActionableSeverity,
+  normalizeSeverity,
+  raisePlatformIssue,
+  resolvePlatformIssue,
+} from "../src/watchtower/issues.js";
 import { collectOutcomes } from "../src/watchtower/outcomes.js";
 
 const databaseUrl =
@@ -447,6 +452,66 @@ describe("watchtower", async () => {
         .limit(1)
     )[0];
     expect(expired?.state).toBe("expired");
+  });
+
+  it("normalizes legacy severities to the canonical actionable ladder", () => {
+    expect(normalizeSeverity("high")).toBe("error");
+    expect(normalizeSeverity("medium")).toBe("warn");
+    expect(normalizeSeverity("critical")).toBe("critical");
+    expect(normalizeSeverity("whatever")).toBe("info");
+    expect(isActionableSeverity("high")).toBe(true);
+    expect(isActionableSeverity("warn")).toBe(false);
+  });
+
+  it("keeps acknowledged issues in the inbox and forbids un-resolving via ack", async () => {
+    const project = await insertProject();
+    await raisePlatformIssue(db, {
+      orgId,
+      projectId: project.id,
+      kind: "canary_failure",
+      severity: "error",
+      fingerprint: `ackflow:${project.id}`,
+      title: "Ack flow",
+      bodyMd: "boom",
+    });
+    const issueId = (
+      await db
+        .select()
+        .from(platformIssues)
+        .where(eq(platformIssues.fingerprint, `ackflow:${project.id}`))
+        .limit(1)
+    )[0]?.id;
+
+    const acked = await app.inject({
+      method: "POST",
+      url: `/v1/issues/${issueId}/ack`,
+      headers: { cookie },
+    });
+    expect(acked.statusCode).toBe(200);
+
+    // Acknowledged but unresolved: still visible in the inbox (state=open query).
+    const inbox = await app.inject({
+      method: "GET",
+      url: "/v1/inbox?state=open",
+      headers: { cookie },
+    });
+    expect(inbox.json().issues.some((i: { id: string; state: string }) => i.id === issueId)).toBe(
+      true,
+    );
+
+    const resolved = await app.inject({
+      method: "POST",
+      url: `/v1/issues/${issueId}/resolve`,
+      headers: { cookie },
+    });
+    expect(resolved.statusCode).toBe(200);
+    // A resolved issue cannot be pushed back to active via ack.
+    const reAck = await app.inject({
+      method: "POST",
+      url: `/v1/issues/${issueId}/ack`,
+      headers: { cookie },
+    });
+    expect(reAck.statusCode).toBe(409);
   });
 
   it("keeps GitHub health collection independent from telemetry reads", async () => {

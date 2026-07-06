@@ -6,7 +6,6 @@ import {
   insertAuditEvent,
   kbSpaces,
   llmRequests,
-  platformIssues,
   registryItems,
   registryVersions,
   repos,
@@ -18,6 +17,7 @@ import {
 import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
 import type { AppConfig } from "../types.js";
+import { raisePlatformIssue } from "../watchtower/issues.js";
 import { DockerSandboxDriver } from "./docker.js";
 import type { LaunchSpec, SandboxDriverName } from "./driver.js";
 import { sandboxDriver } from "./driver.js";
@@ -432,19 +432,22 @@ async function failRun(
   message: string,
   kind: string,
 ) {
-  await db
+  const [failed] = await db
     .update(runs)
     .set({ status: "failed", error: message, endedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)));
-  await db.insert(platformIssues).values({
-    id: newId("iss"),
+    .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)))
+    .returning({ projectId: runs.projectId });
+  // Route through raisePlatformIssue so the run failure is canonical severity,
+  // carries its projectId (so it surfaces in project health), and dedups on
+  // repeated failures instead of violating the org+fingerprint unique index.
+  await raisePlatformIssue(db, {
     orgId,
+    projectId: failed?.projectId ?? null,
     fingerprint: `run_failure:${runId}:${kind}`,
     kind: "run_failure",
-    severity: "high",
+    severity: "error",
     title: kind,
     bodyMd: message,
-    state: "open",
   });
   await appendRunEvents(db, orgId, runId, [
     { type: "result", data: { status: "failed", kind, error: message } },
