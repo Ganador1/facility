@@ -1,28 +1,29 @@
 # Facility Platform — delivery status
 
-**Branch**: `feat/platform-v0.3` (local, unpushed) · **as of** 2026-07-05
+**Branch**: `feat/platform-v0.3` (local, unpushed) · **as of** 2026-07-06
 
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
 
-## Current state (round 12, 2026-07-05)
+## Current state (round 14, 2026-07-06)
 
-The platform was driven through twelve independent GPT-5.5 (xhigh) verification
+The platform was driven through fourteen independent GPT-5.5 (xhigh) verification
 rounds — six adversarial verifiers per full round, one per aspect — each round
 followed by fixes to the named findings, re-verified against primary evidence
-(diff review + a re-run full suite) before commit. Latest per-aspect scores:
+(diff review + a re-run full suite) before commit. Round-14 per-aspect scores
+(a fresh finishing wave is closing the round-14 findings, re-verify pending):
 
-| aspect | round 1 | round 12 |
+| aspect | round 1 | round 14 |
 |---|---:|---:|
-| Implementation & architecture | 56 | **93** |
-| Security & privacy | 58 | **94** |
-| UI/UX | 76 | 88 |
-| Feature completeness & product fit | 58 | **90** |
-| Optimization | 58 | **91** |
-| Docs, DX, operability | 56 | 84 |
+| Implementation & architecture | 56 | **88** |
+| Security & privacy | 58 | **98** |
+| UI/UX | 76 | 87 |
+| Feature completeness & product fit | 58 | **88** |
+| Optimization | 58 | **92** |
+| Docs, DX, operability | 56 | 85 |
 | **average** | **~59** | **~90** |
 
-~165 tests green (real Postgres), Biome clean, web + docs build, and
+~175 tests green (real Postgres), Biome clean, web + docs build, and
 `tsc --noEmit` green across **all** packages (including `@facility/mcp`).
 Recent hardening (rounds 4–12): SSRF guard on BYO provider URLs, real MCP
 human-gate (write tools create HITL proposals a *separate* principal approves),
@@ -37,13 +38,18 @@ resource server** — remote MCP now accepts WorkOS-issued access-token JWTs
 (JWKS/RS256, issuer+expiry+audience validated) alongside `fak_` keys, with RFC
 9728 protected-resource discovery.
 
-**Remaining non-owner-gated work** (all minor):
-- **SDK route contract** is hand-maintained rather than generated from the API's
-  OpenAPI, and its GET union omits some non-core routes (issues/KB/tasks). Wrong
-  nested paths now resolve to `never` (id-segment guard), `@facility/mcp`
-  strict-typechecks clean, and a real write-route response-typing bug was fixed —
-  the remaining work is generating the map from the Fastify/OpenAPI source.
-- A few non-core v1 endpoints still return loose `AnyObject` response schemas.
+**Remaining non-owner-gated work**:
+- **SDK route contract** is hand-maintained, but no longer silently drifts: a
+  runtime manifest (`FACILITY_V1_ROUTES`) is diffed against the Fastify OpenAPI
+  document by a route-coverage test, so an added/removed route fails CI until the
+  map is updated. A few non-core v1 endpoints still return loose `AnyObject`
+  response schemas.
+- **Analytics rollup** is incremental (trailing window + time-leading indexes)
+  rather than dirty-bucket/watermark incremental — correct and bounded, but a
+  watermark design would rebuild only changed buckets.
+- **Web is an operator dashboard**, not yet the full control plane: agents,
+  sandbox profiles, providers, virtual keys, and KB/tasks are managed via
+  API/CLI/MCP but are not first-class web surfaces.
 
 **Owner-gated ceiling**: "tam-os operates 100% on the platform" requires the
 production App install + cutover, which is the owner's decision (see below) — it
@@ -201,11 +207,12 @@ Prior versions of this doc overstated a few things; setting the record straight:
 
 ## Known follow-ups (tracked, non-blocking)
 
-- **Generated SDK route contract** — the client route map is hand-maintained and
-  its GET union omits some non-core routes; generate it from the API's OpenAPI so
-  it can't drift. (Wrong nested paths already resolve to `never`, `@facility/mcp`
-  strict-typechecks clean, and the SDK has behavioural + type tests.)
-- A few non-core v1 endpoints still return loose `AnyObject` response schemas.
+- **SDK route contract** — hand-maintained, but a runtime manifest
+  (`FACILITY_V1_ROUTES`) is diffed against the API's OpenAPI document by a
+  route-coverage test, so it can no longer silently drift. (Wrong nested paths
+  resolve to `never`, `@facility/mcp` strict-typechecks clean, behavioural + type
+  tests.) A few non-core v1 endpoints still return loose `AnyObject` response
+  schemas.
 - **tam-os production migration** run end-to-end (owner-gated).
 - `cost_cents` is integer — fine for real runs; sub-cent precision only if
   fine-grained tiny-call attribution is needed.

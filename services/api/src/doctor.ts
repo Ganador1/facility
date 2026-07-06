@@ -223,7 +223,7 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
       .where(eq(sandboxProfiles.orgId, orgId));
     if (profiles.length === 0) {
       // Absence of any profile is already reported by checkSeedEssentials.
-      return warn(
+      return fail(
         "sandbox_runner",
         "Sandbox runner image",
         "No sandbox profiles exist, so platform-lane runs cannot start.",
@@ -235,7 +235,10 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
       (profile) => profile.image === runnerImage || /runner/i.test(profile.image),
     );
     if (!canRunRunner) {
-      return warn(
+      // Fail (not warn): platform-lane execution is the platform's primary
+      // capability, so a deployment where no profile can run the runner is not
+      // production-ready. `facility doctor` blocks the go/no-go on it.
+      return fail(
         "sandbox_runner",
         "Sandbox runner image",
         `No sandbox profile uses the Facility runner image (expected ${runnerImage}); platform-lane runs (Claude Code, Codex) will not start — only BYO-command runs would.`,

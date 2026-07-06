@@ -220,7 +220,10 @@ describe("db", async () => {
           'runs_org_project_status_queued_idx',
           'audit_events_org_seq_idx',
           'registry_versions_org_item_version_idx',
-          'sandbox_profiles_org_created_idx'
+          'sandbox_profiles_org_created_idx',
+          'runs_created_idx',
+          'llm_requests_created_idx',
+          'outcomes_terminal_idx'
         )
       `,
     )) as Iterable<{ indexname: string }>;
@@ -235,6 +238,10 @@ describe("db", async () => {
         "audit_events_org_seq_idx",
         "registry_versions_org_item_version_idx",
         "sandbox_profiles_org_created_idx",
+        // Analytics rollup trailing-window indexes (migration 0008).
+        "runs_created_idx",
+        "llm_requests_created_idx",
+        "outcomes_terminal_idx",
       ]),
     );
     const applied = (await db.execute(

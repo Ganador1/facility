@@ -97,9 +97,12 @@ aws secretsmanager get-secret-value \
   --output text
 ```
 
-## 5. Run the migration once
+## 5. Run the migrate + seed task once
 
-Run this only after the `database_url` secret and images are populated:
+The `migrate` task runs database migrations **and** seeds the bundled essentials
+(roles, action types, default sandbox profile) that first WorkOS bootstrap and
+`facility doctor` require — seeding is idempotent. Run it only after the
+`database_url` secret and images are populated:
 
 ```bash
 aws ecs run-task \
@@ -110,7 +113,8 @@ aws ecs run-task \
 ```
 
 Watch `/facility/<environment>/migrate` in CloudWatch Logs for
-`applied 0001_control_plane.sql` or `0001_control_plane.sql already applied`.
+`applied 0001_control_plane.sql` (or `already applied`) followed by the seed
+summary. `facility doctor` will flag `seed_essentials` if this task did not run.
 
 ## 6. Verify service health
 
