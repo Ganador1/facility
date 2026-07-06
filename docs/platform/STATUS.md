@@ -5,35 +5,37 @@
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
 
-## Current state (round 18, 2026-07-06)
+## Current state (round 21, 2026-07-06)
 
-The platform was driven through eighteen independent GPT-5.5 (xhigh) verification
-rounds — six adversarial verifiers per full round, one per aspect — each round
-followed by fixes to the named findings, re-verified against primary evidence
-(diff review + a re-run full suite) before commit. The round-16 snapshot below is
-the last stabilized full round (~90 avg); rounds 17–18 then drove the verifiers
-deep into credential-lifecycle correctness (provisioning-failure key leaks, the
-revoke window, run-read secret exposure), which a finishing wave is closing —
-round-19 re-verify pending:
+The platform was driven through twenty-one independent GPT-5.5 (xhigh)
+verification rounds — six adversarial verifiers per full round, one per aspect —
+each round followed by fixes to the named findings, re-verified against primary
+evidence (diff review + a re-run full suite) before commit. Each round is a fresh
+adversarial re-audit at a rising bar, so scores are **not** monotonic: a lower
+number than an earlier round reflects a stricter audit finding the next layer,
+not a regression. Round-21 snapshot:
 
-| aspect | round 1 | round 16 |
+| aspect | round 1 | round 21 |
 |---|---:|---:|
 | Implementation & architecture | 56 | **83** |
-| Security & privacy | 58 | **94** |
-| UI/UX | 76 | 90 |
-| Feature completeness & product fit | 58 | **90** |
-| Optimization | 58 | **92** |
-| Docs, DX, operability | 56 | 88 |
-| **average** | **~59** | **~90** |
+| Security & privacy | 58 | **89** |
+| UI/UX | 76 | 85 |
+| Feature completeness & product fit | 58 | 82 |
+| Optimization | 58 | **90** |
+| Docs, DX, operability | 56 | 84 |
+| **average** | **~59** | **~85.5** |
 
-Later rounds drove into deeper concurrency/atomicity (issue + run-lifecycle
-persistence made race-safe with claim-checked / state-pinned transitions) and
-credential-lifecycle correctness: every terminal run path revokes its keys, a
-reconciler backstop revokes any key orphaned by a crash mid-transition, the
-gateway is push-invalidated on revoke (NOTIFY/LISTEN) so a revoked key dies
-immediately, and run-read APIs redact sealed credential envelopes.
-~180 tests green (real Postgres), Biome clean, web + docs build, and
-`tsc --noEmit` green across **all** packages (including `@facility/mcp`).
+Later rounds drove deep into concurrency/atomicity and tenant isolation:
+run-lifecycle + issue persistence made race-safe with claim-checked / state-pinned
+transitions; credential lifecycle closed end-to-end (every terminal path revokes
+its keys, a reconciler backstop revokes any orphaned by a crash, the gateway is
+push-invalidated on revoke via NOTIFY/LISTEN, run-scoped platform keys carry an
+expiry, run-read APIs redact sealed envelopes); cross-project isolation hardened
+(run lists, repo fingerprints, skill bundles, and registry drafts are all
+project-scoped); registry publish is atomic + single-active (partial unique
+index); run-event seq allocation is race-free (per-run advisory lock). ~186 tests
+green (real Postgres), Biome clean, web + docs build, and `tsc --noEmit` green
+across **all** packages (including `@facility/mcp`).
 Recent hardening (rounds 4–12): SSRF guard on BYO provider URLs, real MCP
 human-gate (write tools create HITL proposals a *separate* principal approves),
 the `v1.ts` god-router split into per-domain routers, run-steer cockpit + guided

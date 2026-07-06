@@ -31,7 +31,8 @@ estimate. Spend appears in analytics in near-real-time.
 ## Audit
 
 By default the gateway stores the full request/response envelope (bodies in
-object storage, metadata in Postgres), access-controlled and retained per
-org policy. Receipts and analytics stay metrics-only — the envelope store is
+object storage, metadata in Postgres), access-controlled (the transcript needs
+`audit:read`) and expired by the object store's lifecycle policy. A per-org
+`retention_days` setting is recorded; app-enforced per-org expiry is a follow-up. Receipts and analytics stay metrics-only — the envelope store is
 the deliberate, governed exception that makes "what exactly did the agent
 send?" answerable.

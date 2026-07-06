@@ -1,6 +1,6 @@
 import { newId } from "@facility/core";
 import { agentDefs, projects, runEvents, runs, steerMessages, withOrg } from "@facility/db";
-import { and, desc, eq, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, notInArray } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";

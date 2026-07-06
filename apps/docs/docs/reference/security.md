@@ -34,8 +34,10 @@ templates, handlers, and guards — not as advice.
 ## Audit & privacy
 
 - Append-only, hash-chained audit log; tamper evidence is a query.
-- Store-everything default (envelopes, transcripts) with per-org retention
-  and access gated by permission + project scope.
+- Store-everything default (envelopes, transcripts), expired by the object
+  store's lifecycle policy (a per-org `retention_days` setting is recorded;
+  app-enforced per-org expiry is a follow-up), and access gated by permission +
+  project scope — the full transcript needs `audit:read`.
 - Receipts and analytics are metrics-only: no prompts, no code, hashed
   actors. Self-hosted telemetry to the vendor: none.
 

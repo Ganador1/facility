@@ -251,9 +251,9 @@ const readTools: ToolDefinition[] = [
   },
   {
     name: "facility_llm_request_envelope",
-    permission: "spend:read",
+    permission: "audit:read",
     description:
-      "Fetch the stored request/response envelope for one LLM request id. Needs spend:read or audit:read.",
+      "Fetch the stored request/response envelope (full transcript) for one LLM request id. Needs audit:read.",
     inputSchema: {
       requestId: z.string().min(1).describe("llm_requests.id to fetch."),
     },

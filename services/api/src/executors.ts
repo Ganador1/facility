@@ -24,7 +24,7 @@ import {
   steerMessages,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
 import {
   createGithubClientFactory,
   FacilityGithubClient,

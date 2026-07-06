@@ -121,7 +121,7 @@ Scoping chain: **org → project → resource**. Every table carries `org_id` (a
 - **Sandboxes**: no provider keys inside — only run-scoped virtual keys (revoked at run end) and short-lived installation tokens scoped to the target repo; egress note in profile; resource limits; destroyed after run.
 - **GitHub**: webhook HMAC verification; App identity for pushes/comments (hardening 14); fork-origin gating (hardening 7); rendered workflows keep SHA-pinning, slash-command line-start parsing, bot refusal, canary message-hash (hardening 3/5/10/13/15); repo-originated text handled as data end-to-end — the api never interpolates it into shell, prompts fence it with run-ID sentinels (hardening 4).
 - **Audit**: hash-chained `audit_events`; gateway envelopes; steer messages; HITL ledger — everything attributable to a principal.
-- **Privacy**: transcripts/envelopes stored by default (GOAL: store everything) but access-controlled per project + permission (`sessions:read`); retention windows configurable per org; telemetry OFF by default for self-hosters (consent-gated, automation-expert contract pattern).
+- **Privacy**: transcripts/envelopes stored by default (GOAL: store everything) but access-controlled per project + permission (the envelope transcript needs `audit:read`); expired by the object store's lifecycle policy (a per-org `retention_days` setting is recorded, app-enforced per-org expiry is a follow-up); telemetry OFF by default for self-hosters (consent-gated, automation-expert contract pattern).
 
 ## 7. Deployment
 

@@ -28,7 +28,8 @@ an exact answer, forever.
 An agent definition is data: engine (Claude Code, Codex, BYO), model tier,
 contract (registry item), optional harness, triggers (slash command,
 schedule, webhook, manual), permissions, sandbox profile. Creating a
-project-specific agent is a form, not a fork of the platform.
+project-specific agent is a declarative definition (via the API/CLI/MCP), not a
+fork of the platform.
 
 ## The ratchet
 

@@ -59,7 +59,7 @@ platform owns what has to be centralized to govern an operation:
 | **Projects & governance** | many projects per org; kickstart a repo to a working factory in minutes; repo **fingerprints** detect drift/corruption; **upgrades** arrive as PRs; the whole method is versioned |
 | **Sandboxes & sessions** | isolated cloud sandboxes for Claude Code / Codex / BYO; **watch any run live and steer a stuck agent**, on the record; driver-based (Docker local, Fargate cloud) |
 | **Gateway & cost** | every model call routes through the LLM proxy — project **virtual keys**, hard **budgets**, cost by model/agent/task, full request audit |
-| **Registry** | skills, rules, agent contracts, harnesses, guards, templates — versioned, bundled, immutable once published; create project-specific agents from a form |
+| **Registry** | skills, rules, agent contracts, harnesses, guards, templates — versioned, bundled, immutable once published; define project-specific agents declaratively via the API/CLI/MCP |
 | **Watchtower** | outcomes, health, the canary — per project, monitor-independent, live numbers never curated |
 | **Inbox** | one place for every decision an agent needs — plan gates, learning validations, budget overrides — approve/reject/steer, fully audited |
 | **Knowledge & the Project Owner** | a Limina-style agent owns the project domain, maintains a validated knowledge base, and turns needs into implementation tasks; **learning mode** proposes new skills and guards nightly, human-validated |
