@@ -19,7 +19,7 @@ import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
 import type { AppConfig } from "../types.js";
 import { raisePlatformIssue } from "../watchtower/issues.js";
 import { DockerSandboxDriver } from "./docker.js";
-import type { LaunchSpec, SandboxDriverName } from "./driver.js";
+import type { LaunchSpec, SandboxDriver, SandboxDriverName } from "./driver.js";
 import { sandboxDriver } from "./driver.js";
 import {
   appendRunEvents,
@@ -37,10 +37,11 @@ type RunRow = typeof runs.$inferSelect;
 export async function dispatchRun(config: AppConfig, job: DispatchJob) {
   if (!job.runId || !job.orgId) throw new Error("runs.dispatch requires runId and orgId");
   const { db, client } = createDb(config.databaseUrl);
-  // Track credentials as they are minted so a failure BEFORE they are persisted
-  // into runs.sandbox can still revoke them (failRun revokes by persisted
-  // sandbox, which wouldn't yet carry these ids).
+  // Track credentials + the launched sandbox as they come into existence so a
+  // failure BEFORE they are persisted into runs.sandbox can still tear them down
+  // (failRun revokes by persisted sandbox, which wouldn't yet carry these ids).
   const createdKeys: RunSandboxState = {};
+  let launchedSandbox: { driver: SandboxDriver; ref: string } | undefined;
   try {
     const run = await loadRun(db, job.orgId, job.runId);
     if (run?.status !== "queued") return;
@@ -69,6 +70,8 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       allowedModels: modelNames(bundle.engineConfig),
       expiresAt: new Date(Date.now() + bundle.timeoutMin * 60_000),
     });
+    // Track the moment it exists — before any further step that could throw.
+    createdKeys.virtualKeyId = virtualKey.id;
 
     // Run-scoped platform key: least-privilege (kb + tasks only), pinned to the
     // run's project, so a harness agent (Project Owner, learning) can maintain
@@ -87,9 +90,8 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       roleId: harnessRoleId,
       createdBy: `run:${run.id}`,
     });
-
-    createdKeys.virtualKeyId = virtualKey.id;
     createdKeys.platformKeyId = platformKey.id;
+
     const runnerToken = `frt_${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const driverName = normalizeDriver(profile.driver);
     const driver = await sandboxDriver(driverName);
@@ -108,6 +110,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       network: objectOrEmpty(profile.network),
     };
     const launched = await driver.launch(launchSpec);
+    launchedSandbox = { driver, ref: launched.ref };
     // Attach the live sandbox only if the run is still active. If a cancel raced
     // provisioning and already made the run terminal, do NOT hand it a live
     // sandbox + keys — tear the sandbox down and revoke the credentials.
@@ -140,12 +143,16 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       { type: "sandbox", data: { driver: driver.name, ref: launched.ref } },
     ]);
   } catch (error) {
-    // failRun revokes by persisted sandbox; also revoke any keys we minted before
-    // persistence so a pre-persist failure can't leak a live fak_/fvk_ key.
     await failRun(db, job.orgId, job.runId, errorMessage(error), "provision_failed").catch(
       () => undefined,
     );
+    // failRun revokes by the persisted sandbox, which on a pre-persist failure
+    // wouldn't carry these — so revoke every key we minted, and destroy the
+    // sandbox if it launched before the failure, directly.
     await revokeRunKeys(db, createdKeys).catch(() => undefined);
+    if (launchedSandbox) {
+      await launchedSandbox.driver.destroy(launchedSandbox.ref).catch(() => undefined);
+    }
     throw error;
   } finally {
     await client.end();
@@ -280,14 +287,22 @@ async function ensureHarnessAgentRole(
 
 export async function reconcileSandboxes(config: AppConfig) {
   const { db, client } = createDb(config.databaseUrl);
-  const docker = new DockerSandboxDriver();
   try {
-    for (const container of await docker.listFacilityContainers()) {
-      const run = (await db.select().from(runs).where(eq(runs.id, container.runId)).limit(1))[0];
-      const sandbox = readSandbox(run?.sandbox);
-      if (!run || terminalStatus(run.status) || sandbox.ref !== container.ref) {
-        await docker.destroy(container.ref);
+    // The orphan-container sweep is docker-specific. Skip it gracefully when the
+    // daemon isn't reachable (e.g. an aws-driver deployment has no local Docker)
+    // so the driver-agnostic reconciliation below — timeout cost-cap backstop and
+    // the orphaned-key sweep — still runs instead of the whole tick throwing.
+    try {
+      const docker = new DockerSandboxDriver();
+      for (const container of await docker.listFacilityContainers()) {
+        const run = (await db.select().from(runs).where(eq(runs.id, container.runId)).limit(1))[0];
+        const sandbox = readSandbox(run?.sandbox);
+        if (!run || terminalStatus(run.status) || sandbox.ref !== container.ref) {
+          await docker.destroy(container.ref);
+        }
       }
+    } catch {
+      // Docker unavailable on this host; other drivers reconcile below.
     }
 
     const liveRuns = await db
@@ -295,28 +310,63 @@ export async function reconcileSandboxes(config: AppConfig) {
       .from(runs)
       .where(inArray(runs.status, ["provisioning", "running"]));
     for (const run of liveRuns) {
-      const sandbox = readSandbox(run.sandbox);
-      if (!sandbox.driver || !sandbox.ref) continue;
-      const driver = await sandboxDriver(sandbox.driver);
-      // Hard cost cap / driver-level backstop: if a run has blown past its timeout
-      // (with grace beyond the runner's own SIGTERM→SIGKILL escalation), destroy
-      // the sandbox and fail the run — covers an engine that ignores signals or a
-      // wedged sandbox the in-container runner can't kill itself.
-      const launchedAt = sandbox.launchedAt ? Date.parse(sandbox.launchedAt) : Number.NaN;
-      const timeoutMin = Number(sandbox.bundle?.timeoutMin) || 60;
-      const deadline = Number.isNaN(launchedAt) ? null : launchedAt + (timeoutMin + 3) * 60_000;
-      if (deadline !== null && Date.now() > deadline) {
-        await driver.destroy(sandbox.ref).catch(() => undefined);
-        await failRun(db, run.orgId, run.id, "sandbox_timeout", "sandbox_timeout");
-        continue;
-      }
-      const status = await driver.status(sandbox.ref);
-      if (status === "exited" || status === "lost") {
-        await failRun(db, run.orgId, run.id, "sandbox_lost", "sandbox_lost");
+      // Isolate each run: one unreachable/misconfigured driver must not abort the
+      // whole tick (and skip the orphaned-key sweep below) — just skip that run.
+      try {
+        const sandbox = readSandbox(run.sandbox);
+        if (!sandbox.driver || !sandbox.ref) continue;
+        const driver = await sandboxDriver(sandbox.driver);
+        // Hard cost cap / driver-level backstop: if a run has blown past its timeout
+        // (with grace beyond the runner's own SIGTERM→SIGKILL escalation), destroy
+        // the sandbox and fail the run — covers an engine that ignores signals or a
+        // wedged sandbox the in-container runner can't kill itself.
+        const launchedAt = sandbox.launchedAt ? Date.parse(sandbox.launchedAt) : Number.NaN;
+        const timeoutMin = Number(sandbox.bundle?.timeoutMin) || 60;
+        const deadline = Number.isNaN(launchedAt) ? null : launchedAt + (timeoutMin + 3) * 60_000;
+        if (deadline !== null && Date.now() > deadline) {
+          await driver.destroy(sandbox.ref).catch(() => undefined);
+          await failRun(db, run.orgId, run.id, "sandbox_timeout", "sandbox_timeout");
+          continue;
+        }
+        const status = await driver.status(sandbox.ref);
+        if (status === "exited" || status === "lost") {
+          await failRun(db, run.orgId, run.id, "sandbox_lost", "sandbox_lost");
+        }
+      } catch {
+        // Driver unreachable for this run; leave it for the next tick.
       }
     }
+
+    // Invariant backstop: a terminal run must never own a live key. Each terminal
+    // path already revokes best-effort, but a crash between the status commit and
+    // that revoke would otherwise leave keys live until their natural expiry — so
+    // reconcile the invariant here, covering every terminal path uniformly.
+    await revokeOrphanedRunKeys(db);
   } finally {
     await client.end();
+  }
+}
+
+// Revoke any still-live virtual key whose run has already gone terminal, in one
+// set-based UPDATE (the isNull filter keeps the working set to genuine orphans).
+// The virtual key is the spend-capable gateway key and carries runId, so it's the
+// one that matters here; low-privilege platform keys (no runId column — linked via
+// run.sandbox.platformKeyId) rely on the per-path revoke plus their own expiry.
+// Push the gateway invalidation for each revoked key, exactly like revokeRunKeys.
+async function revokeOrphanedRunKeys(db: ReturnType<typeof createDb>["db"]) {
+  const terminalRunIds = db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(inArray(runs.status, [...TERMINAL_RUN_STATUSES]));
+  const orphanVirtualKeys = await db
+    .update(virtualKeys)
+    .set({ revokedAt: new Date() })
+    .where(and(isNull(virtualKeys.revokedAt), inArray(virtualKeys.runId, terminalRunIds)))
+    .returning({ prefix: virtualKeys.prefix });
+  for (const row of orphanVirtualKeys) {
+    await db
+      .execute(sql`select pg_notify('facility_key_revoked', ${row.prefix})`)
+      .catch(() => undefined);
   }
 }
 
@@ -451,13 +501,27 @@ async function activeSkills(db: ReturnType<typeof createDb>["db"], orgId: string
 async function revokeRunKeys(db: ReturnType<typeof createDb>["db"], sandbox: RunSandboxState) {
   const now = new Date();
   if (sandbox.virtualKeyId) {
-    await db
+    // Guard on isNull so a re-revoke is a no-op and we only push-invalidate the
+    // gateway cache the first time a key actually flips to revoked.
+    const revoked = await db
       .update(virtualKeys)
       .set({ revokedAt: now })
-      .where(eq(virtualKeys.id, sandbox.virtualKeyId));
+      .where(and(eq(virtualKeys.id, sandbox.virtualKeyId), isNull(virtualKeys.revokedAt)))
+      .returning({ prefix: virtualKeys.prefix });
+    // Push-invalidate the gateway's key cache so a revoked run key stops working
+    // immediately, not after its cache TTL. Best-effort: the gateway's TTL +
+    // per-key expiry remain the backstop if the notify (or its LISTEN) is missed.
+    for (const row of revoked) {
+      await db
+        .execute(sql`select pg_notify('facility_key_revoked', ${row.prefix})`)
+        .catch(() => undefined);
+    }
   }
   if (sandbox.platformKeyId) {
-    await db.update(apiKeys).set({ revokedAt: now }).where(eq(apiKeys.id, sandbox.platformKeyId));
+    await db
+      .update(apiKeys)
+      .set({ revokedAt: now })
+      .where(and(eq(apiKeys.id, sandbox.platformKeyId), isNull(apiKeys.revokedAt)));
   }
 }
 

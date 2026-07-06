@@ -4,11 +4,14 @@ import { providerCredentials, runs, virtualKeys } from "@facility/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { AuthedKey, GatewayConfig, Provider, ProviderCredential } from "./types.js";
 
-// Short cache TTL bounds how long a revoked run key can survive in the gateway
-// (revocation happens in the api process; the gateway can't be signalled
-// synchronously, so the ceiling is this TTL). Run keys also carry their own
-// expiry, enforced on every hit regardless of cache.
+// Cache TTL is the *backstop* on how long a revoked run key can survive in the
+// gateway. The primary path is push invalidation: the api NOTIFYs
+// `facility_key_revoked` with the key prefix on revoke and the gateway evicts
+// synchronously (startKeyRevocationListener). The TTL bounds exposure if that
+// notify (or its LISTEN connection) is ever missed; run keys also carry their
+// own expiry, enforced on every hit regardless of cache.
 const KEY_CACHE_TTL_MS = 15_000;
+const KEY_REVOKED_CHANNEL = "facility_key_revoked";
 const keyCache = new Map<
   string,
   {
@@ -136,6 +139,26 @@ export async function providerCredential(
 export function clearAuthCaches() {
   keyCache.clear();
   credentialCache.clear();
+}
+
+// Structural view of the postgres.js client — just the LISTEN surface we need,
+// so auth.ts stays decoupled from the concrete driver type.
+type RevocationListenClient = {
+  listen: (
+    channel: string,
+    onNotify: (payload: string) => void,
+  ) => Promise<{ unlisten: () => Promise<void> }>;
+};
+
+// Subscribe to the api's key-revocation NOTIFYs and drop the matching cache
+// entry immediately, making revocation effectively synchronous. postgres.js
+// re-subscribes automatically on reconnect; the cache TTL covers the gap.
+export async function startKeyRevocationListener(
+  client: RevocationListenClient,
+): Promise<{ unlisten: () => Promise<void> }> {
+  return client.listen(KEY_REVOKED_CHANNEL, (prefix) => {
+    if (prefix) keyCache.delete(prefix);
+  });
 }
 
 function defaultBaseUrl(provider: Provider): string {

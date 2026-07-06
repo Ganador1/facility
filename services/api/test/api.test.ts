@@ -1596,9 +1596,11 @@ describe("api", async () => {
       expect(healthy.json().ok).toBe(true);
       expect(checkStatus(healthy.json(), "object_storage")).toBe("pass");
       expect(checkStatus(healthy.json(), "audit_hash_chain")).toBe("pass");
-      // The seeded default profile runs the configured runner image, so the
-      // platform-lane readiness check passes.
-      expect(checkStatus(healthy.json(), "sandbox_runner")).toBe("pass");
+      // The seeded default profile runs the configured runner image on the docker
+      // driver (Docker reachable in the test env). Whether that image is present
+      // locally is environmental, so the platform-lane check is pass (image
+      // present) or warn (image absent, pulled on first run) — never fail.
+      expect(["pass", "warn"]).toContain(checkStatus(healthy.json(), "sandbox_runner"));
       expect([...objects.keys()].some((key) => key.includes("/facility-test/envelopes/"))).toBe(
         true,
       );

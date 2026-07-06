@@ -10,7 +10,6 @@ import {
   AuditEventSchema,
   assertBareRowProjectScope,
   assertProjectScope,
-  IdParams,
   IssueIdParams,
   LlmRequestSchema,
   principal,

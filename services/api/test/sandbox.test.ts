@@ -8,6 +8,7 @@ import {
   repos,
   runs,
   seed,
+  virtualKeys,
 } from "@facility/db";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -99,6 +100,29 @@ describe("sandbox api", async () => {
   afterAll(async () => {
     await app.close();
     await client.end();
+  });
+
+  it("imageExists reports daemon image presence without pulling", async () => {
+    const withInspect = (inspect: () => Promise<unknown>) =>
+      new DockerSandboxDriver({ getImage: () => ({ inspect }) } as unknown as ConstructorParameters<
+        typeof DockerSandboxDriver
+      >[0]);
+    // Present: inspect resolves.
+    expect(await withInspect(async () => ({ Id: "sha256:abc" })).imageExists("runner:dev")).toBe(
+      true,
+    );
+    // Absent: inspect rejects with Docker's 404.
+    expect(
+      await withInspect(async () => {
+        throw { statusCode: 404 };
+      }).imageExists("runner:missing"),
+    ).toBe(false);
+    // A real daemon error (not 404) must propagate, not read as "absent".
+    await expect(
+      withInspect(async () => {
+        throw { statusCode: 500, message: "daemon boom" };
+      }).imageExists("runner:dev"),
+    ).rejects.toMatchObject({ statusCode: 500 });
   });
 
   it("aws driver fails loudly as not_configured when env is missing", async () => {
@@ -225,6 +249,69 @@ describe("sandbox api", async () => {
       repo: "private-repo",
     });
     app.githubInstallationTokenFactory = undefined;
+  });
+
+  it("redacts sealed run credentials from run read APIs", async () => {
+    const runId = newId("run");
+    const run = await insertRunnerRun("frt_redact", "provisioning", runId, {
+      driver: "docker",
+      ref: "container-redact",
+      virtualKeyId: "vk_redact",
+      platformKeyId: "ak_redact",
+      runnerTokenHash: await hashKey("frt_redact"),
+      sealedVirtualKey: await seal("fvk_secret", masterKey),
+      sealedPlatformKey: await seal("fak_secret", masterKey),
+    });
+
+    const single = await app.inject({
+      method: "GET",
+      url: `/v1/runs/${run.id}`,
+      headers: { cookie },
+    });
+    expect(single.statusCode).toBe(200);
+    const sandbox = (single.json().sandbox ?? {}) as Record<string, unknown>;
+    // Secrets stripped...
+    expect(sandbox.sealedVirtualKey).toBeUndefined();
+    expect(sandbox.sealedPlatformKey).toBeUndefined();
+    expect(sandbox.runnerTokenHash).toBeUndefined();
+    // ...non-secret fields retained (the UI/CLI still need driver + ref).
+    expect(sandbox.driver).toBe("docker");
+    expect(sandbox.ref).toBe("container-redact");
+
+    const list = await app.inject({ method: "GET", url: "/v1/runs", headers: { cookie } });
+    expect(list.statusCode).toBe(200);
+    const listed = (list.json() as Array<{ id: string; sandbox?: Record<string, unknown> }>).find(
+      (r) => r.id === run.id,
+    );
+    expect(listed?.sandbox?.sealedVirtualKey).toBeUndefined();
+    expect(listed?.sandbox?.sealedPlatformKey).toBeUndefined();
+    expect(listed?.sandbox?.runnerTokenHash).toBeUndefined();
+  });
+
+  it("reconciler revokes orphaned virtual keys left live by a terminal run", async () => {
+    const runId = newId("run");
+    // A run that reached a terminal state but (simulating a crash between the
+    // status commit and the best-effort revoke) still owns a live virtual key.
+    await insertRunnerRun("frt_orphan", "succeeded", runId, {});
+    const keyId = newId("vkey");
+    await db.insert(virtualKeys).values({
+      id: keyId,
+      orgId,
+      projectId,
+      runId,
+      name: "orphan run key",
+      prefix: `orphan_${Date.now()}`,
+      last4: "0000",
+      hash: "orphan-hash",
+      // Far-future expiry so the assertion proves the *sweep* revoked it, not
+      // the key's own natural expiry.
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+
+    await reconcileSandboxes(config);
+
+    const [key] = await db.select().from(virtualKeys).where(eq(virtualKeys.id, keyId));
+    expect(key?.revokedAt).not.toBeNull();
   });
 
   it("launches, stops, and destroys a docker sleep container when Docker is reachable", async () => {

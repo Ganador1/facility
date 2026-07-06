@@ -15,6 +15,21 @@ export class DockerSandboxDriver implements SandboxDriver {
     this.docker = docker;
   }
 
+  /**
+   * Whether an image is present on the daemon *without* pulling it — used by
+   * `facility doctor` to flag a missing runner image before the first run tries
+   * (and possibly fails) to pull it. Throws only on real daemon errors.
+   */
+  async imageExists(image: string): Promise<boolean> {
+    try {
+      await this.docker.getImage(image).inspect();
+      return true;
+    } catch (error) {
+      if (isDockerNotFound(error)) return false;
+      throw error;
+    }
+  }
+
   async launch(spec: LaunchSpec): Promise<{ ref: string }> {
     await this.ensureImage(spec.image);
     const network = dockerNetworkMode(spec.network);

@@ -95,6 +95,17 @@ services:
       # docker driver → the worker launches sandboxes on the host Docker daemon.
       FACILITY_SANDBOX_DRIVER: docker
       FACILITY_RUNNER_IMAGE: ${FACILITY_RUNNER_IMAGE:-facility-runner:dev}
+      # A platform-lane sandbox authenticates back to the api and proxies models
+      # through the gateway. It's a sibling container on the host daemon, so it
+      # must reach them by their names on the compose network — NOT PUBLIC_URL
+      # (localhost), which resolves to the sandbox itself.
+      SANDBOX_API_URL: http://api:4400
+      SANDBOX_GATEWAY_URL: http://gateway:4410
+      # The seeded default profile is egress=restricted, so a sandbox gets NO
+      # network unless a docker network is named. Attach it to this stack's
+      # network so api/gateway resolve; compose's default network is
+      # "<project>_default" and the project name (top of this file) is "facility".
+      FACILITY_SANDBOX_DOCKER_NETWORK: ${FACILITY_SANDBOX_DOCKER_NETWORK:-facility_default}
     volumes:
       # The worker launches docker-driver sandboxes via the host Docker daemon;
       # doctor's sandbox_runner probe needs the same access on the api service.

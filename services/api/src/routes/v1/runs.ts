@@ -16,6 +16,7 @@ import {
   RunEventSchema,
   RunSchema,
   RunWithProjectSchema,
+  redactRunSecrets,
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
 } from "./shared.js";
@@ -169,7 +170,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
         });
         await app.enqueue("runs.dispatch", { runId: run.id, orgId: p.orgId });
       }
-      return run;
+      return run && redactRunSecrets(run);
     },
   );
 
@@ -212,7 +213,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
         .orderBy(desc(runs.queuedAt))
         .limit(query.limit)
         .offset(query.offset);
-      return rows.map((row) => ({ ...row.run, project: row.project }));
+      return rows.map((row) => redactRunSecrets({ ...row.run, project: row.project }));
     },
   );
 
@@ -235,7 +236,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
     async (request) => {
       const p = principal(request);
       const { runId } = request.params as { runId: string };
-      return loadRun(p, runId);
+      return redactRunSecrets(await loadRun(p, runId));
     },
   );
 
@@ -265,9 +266,11 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
           )
           .returning()
       )[0];
-      if (!row) return existing;
+      if (!row) return redactRunSecrets(existing);
+      // cancelRun needs the raw sandbox (driver ref + key ids); redact only the
+      // response copy — redactRunSecrets returns a fresh object, leaving row intact.
       await cancelRun(config, row);
-      return row;
+      return redactRunSecrets(row);
     },
   );
 

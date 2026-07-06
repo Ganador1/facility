@@ -74,6 +74,32 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
    bucket rejects a write, the failure is logged and the metering row is still
    recorded.
 
+## Sandbox networking (docker driver)
+
+A platform-lane run executes in a sandbox the **worker** launches on the host
+Docker daemon — a *sibling* container, not a child of the worker. That sandbox
+authenticates back to the api with its one-time runner token and proxies every
+model call through the gateway, so it has to be able to reach both. Two worker
+settings make that work (the bundled `docker-compose.yml` pre-wires all three):
+
+- **`SANDBOX_API_URL` / `SANDBOX_GATEWAY_URL`** — the api and gateway URLs *as
+  resolved from inside a sandbox container*. This is **not** `PUBLIC_URL`: that
+  is the browser-facing origin (often `localhost`), which inside the sandbox
+  points back at the sandbox itself. On a shared Docker network use the service
+  names (`http://api:4400`, `http://gateway:4410`); with host networking use
+  `http://host.docker.internal:4400` / `:4410`. If unset, they fall back to
+  `PUBLIC_URL` / `GATEWAY_URL`, which only works when those are already
+  sandbox-reachable.
+- **`FACILITY_SANDBOX_DOCKER_NETWORK`** — the seeded **Default runner** profile
+  is `egress=restricted`, so a sandbox is given **no** network unless a Docker
+  network is named. Point this at the network where the api and gateway live
+  (the compose stack's default network is `facility_default`) so the sandbox can
+  resolve them. A profile can override per-profile via `network.docker_network`;
+  set `network.egress="unrestricted"` only for trusted local/e2e profiles.
+
+If a run never leaves `provisioning` and the sandbox logs show connection
+failures to the api or gateway, one of these two is almost always the cause.
+
 ## WorkOS SSO
 
 Production authentication is WorkOS AuthKit (the dev-login path refuses to

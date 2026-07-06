@@ -5,13 +5,16 @@
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
 
-## Current state (round 16, 2026-07-06)
+## Current state (round 18, 2026-07-06)
 
-The platform was driven through sixteen independent GPT-5.5 (xhigh) verification
+The platform was driven through eighteen independent GPT-5.5 (xhigh) verification
 rounds — six adversarial verifiers per full round, one per aspect — each round
 followed by fixes to the named findings, re-verified against primary evidence
-(diff review + a re-run full suite) before commit. Round-16 per-aspect scores
-(a finishing wave is closing the round-16 findings, re-verify pending):
+(diff review + a re-run full suite) before commit. The round-16 snapshot below is
+the last stabilized full round (~90 avg); rounds 17–18 then drove the verifiers
+deep into credential-lifecycle correctness (provisioning-failure key leaks, the
+revoke window, run-read secret exposure), which a finishing wave is closing —
+round-19 re-verify pending:
 
 | aspect | round 1 | round 16 |
 |---|---:|---:|
@@ -25,7 +28,10 @@ followed by fixes to the named findings, re-verified against primary evidence
 
 Later rounds drove into deeper concurrency/atomicity (issue + run-lifecycle
 persistence made race-safe with claim-checked / state-pinned transitions) and
-credential-lifecycle correctness (every terminal run path revokes its keys).
+credential-lifecycle correctness: every terminal run path revokes its keys, a
+reconciler backstop revokes any key orphaned by a crash mid-transition, the
+gateway is push-invalidated on revoke (NOTIFY/LISTEN) so a revoked key dies
+immediately, and run-read APIs redact sealed credential envelopes.
 ~185 tests green (real Postgres), Biome clean, web + docs build, and
 `tsc --noEmit` green across **all** packages (including `@facility/mcp`).
 Recent hardening (rounds 4–12): SSRF guard on BYO provider URLs, real MCP

@@ -9,7 +9,12 @@ import {
 import { createDb } from "@facility/db";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { uuidv7 } from "uuidv7";
-import { authenticateVirtualKey, providerCredential, virtualKeyFromHeaders } from "./auth.js";
+import {
+  authenticateVirtualKey,
+  providerCredential,
+  startKeyRevocationListener,
+  virtualKeyFromHeaders,
+} from "./auth.js";
 import { modelFrom, prepareOpenAiBody, readJsonBody, sanitizedRequest } from "./body.js";
 import { applicableBudgets, emitSoftBudgetIssues, hardBudgetBlock } from "./budgets.js";
 import { readConfig } from "./config.js";
@@ -38,6 +43,17 @@ export async function buildApp(
   const owned = deps.db ? null : createDb(config.databaseUrl);
   const db = deps.db ?? owned?.db;
   if (!db) throw new Error("gateway database unavailable");
+  let revocationListener: { unlisten: () => Promise<void> } | null = null;
+  if (owned) {
+    // Evict revoked run keys the moment the api NOTIFYs, instead of waiting for
+    // the cache TTL. Best-effort: if LISTEN can't be established the TTL backstop
+    // still bounds a revoked key's lifetime, so a failure here must not crash boot.
+    try {
+      revocationListener = await startKeyRevocationListener(owned.client);
+    } catch (err) {
+      app.log.warn({ err }, "key-revocation listener unavailable; relying on cache TTL");
+    }
+  }
   const envelopeStore = deps.envelopeStore ?? createEnvelopeStore(config);
   const now = deps.now ?? (() => new Date());
 
@@ -67,6 +83,7 @@ export async function buildApp(
   );
 
   app.addHook("onClose", async () => {
+    await revocationListener?.unlisten().catch(() => undefined);
     await owned?.client.end();
   });
 

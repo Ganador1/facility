@@ -260,8 +260,9 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
     // to reach the Docker daemon to launch sandboxes. Probe it so a self-host
     // where the socket isn't mounted fails readiness instead of at first run.
     if (driver === "docker") {
+      const dockerDriver = new DockerSandboxDriver();
       try {
-        await new DockerSandboxDriver().status("facility-doctor-probe");
+        await dockerDriver.status("facility-doctor-probe");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         if (/connect|socket|permission|ENOENT|EACCES|refused/i.test(message)) {
@@ -273,6 +274,23 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
           );
         }
         // A missing probe container is expected — it proves the daemon answered.
+      }
+      // The daemon answered — is the runner image actually there? A missing image
+      // isn't fatal (the worker pulls on first launch), but a local-only tag or an
+      // unreachable registry makes that pull fail, so surface it as a warning
+      // rather than letting the first run be where it's discovered.
+      try {
+        if (!(await dockerDriver.imageExists(runnerImage))) {
+          return warn(
+            "sandbox_runner",
+            "Sandbox runner image",
+            `The runner image "${runnerImage}" is not present on the Docker daemon; the first platform-lane run will try to pull it.`,
+            `Pre-build or pull it (e.g. \`docker build -t ${runnerImage} runner/\`) — a local-only tag or an unreachable registry will fail that pull.`,
+          );
+        }
+      } catch {
+        // Image inspection failed for a non-not-found reason; the daemon probe
+        // already passed, so don't block readiness on it.
       }
     }
     return pass(

@@ -33,6 +33,18 @@ export const IdParams = z.object({
 // lists only issueId, not the whole shared IdParams grab-bag.
 export const IssueIdParams = z.object({ issueId: z.string() });
 
+// The run.sandbox jsonb carries sealed run credentials + the runner-token hash.
+// Strip them before returning a run to any `runs:read` principal — only the
+// sandbox itself ever needs them (via the authenticated /internal bundle route).
+const REDACTED_SANDBOX_FIELDS = ["sealedVirtualKey", "sealedPlatformKey", "runnerTokenHash"];
+export function redactRunSecrets<T extends { sandbox?: unknown }>(run: T): T {
+  const sandbox = run.sandbox;
+  if (!sandbox || typeof sandbox !== "object" || Array.isArray(sandbox)) return run;
+  const safe: Record<string, unknown> = { ...(sandbox as Record<string, unknown>) };
+  for (const field of REDACTED_SANDBOX_FIELDS) delete safe[field];
+  return { ...run, sandbox: safe };
+}
+
 export const OrgSchema = z.object({
   id: z.string(),
   name: z.string(),
