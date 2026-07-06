@@ -2648,7 +2648,8 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        provider: string;
+                        /** @enum {string} */
+                        provider: "anthropic" | "openai";
                         name: string;
                         baseUrl?: string;
                         secret: string;
@@ -2901,12 +2902,15 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        scope: string;
+                        /** @enum {string} */
+                        scope: "org" | "project" | "agent_def";
                         projectId?: string;
                         agentDefId?: string;
-                        period: string;
+                        /** @enum {string} */
+                        period: "daily" | "weekly" | "monthly";
                         limitCents: number;
-                        mode: string;
+                        /** @enum {string} */
+                        mode: "soft" | "hard";
                         /** @default true */
                         enabled?: boolean;
                     };
@@ -3027,12 +3031,15 @@ export interface paths {
             requestBody: {
                 content: {
                     "application/json": {
-                        scope?: string;
+                        /** @enum {string} */
+                        scope?: "org" | "project" | "agent_def";
                         projectId?: string;
                         agentDefId?: string;
-                        period?: string;
+                        /** @enum {string} */
+                        period?: "daily" | "weekly" | "monthly";
                         limitCents?: number;
-                        mode?: string;
+                        /** @enum {string} */
+                        mode?: "soft" | "hard";
                         enabled?: boolean;
                     };
                 };

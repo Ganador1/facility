@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   date,
   index,
   integer,
@@ -470,7 +471,15 @@ export const budgets = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     ...timestamps,
   },
-  (table) => [index("budgets_org_idx").on(table.orgId)],
+  (table) => [
+    index("budgets_org_idx").on(table.orgId),
+    // Enum-like invariants the gateway enforces against; backstops every write
+    // path (see migration 0013).
+    check("budgets_scope_check", sql`${table.scope} in ('org', 'project', 'agent_def')`),
+    check("budgets_period_check", sql`${table.period} in ('daily', 'weekly', 'monthly')`),
+    check("budgets_mode_check", sql`${table.mode} in ('soft', 'hard')`),
+    check("budgets_limit_cents_check", sql`${table.limitCents} >= 0`),
+  ],
 );
 
 export const spendCounters = pgTable(

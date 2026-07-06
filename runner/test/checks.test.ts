@@ -4,6 +4,7 @@ import {
   checkEvent,
   engineEnv,
   parseSelfReportedChecks,
+  redactEventData,
   redactSecrets,
   runCheckCommand,
 } from "../src/index.js";
@@ -71,6 +72,23 @@ describe("secret redaction of check output", () => {
 
   it("passes text through untouched when there are no secrets", () => {
     expect(redactSecrets("nothing secret here", [])).toBe("nothing secret here");
+  });
+});
+
+describe("central event redaction (redactEventData)", () => {
+  const secret = "fvk_deadbeefdeadbeefdeadbeefdeadbeef";
+
+  it("recursively scrubs secrets in nested engine event payloads, preserving structure", () => {
+    const redacted = redactEventData(
+      { text: `key is ${secret}`, tool: { input: [secret, { nested: secret }] }, n: 3, ok: true },
+      [secret],
+    ) as { text: string; tool: { input: [string, { nested: string }] }; n: number; ok: boolean };
+    expect(redacted.text).toBe("key is «redacted»");
+    expect(redacted.tool.input[0]).toBe("«redacted»");
+    expect(redacted.tool.input[1].nested).toBe("«redacted»");
+    expect(redacted.n).toBe(3);
+    expect(redacted.ok).toBe(true);
+    expect(JSON.stringify(redacted)).not.toContain(secret);
   });
 });
 

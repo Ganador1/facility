@@ -32,7 +32,7 @@ Facility Platform is a **control plane**. Execution — code, tests, agent runs 
 
 | service | role |
 |---|---|
-| `services/api` | control-plane REST API (OpenAPI), authN/Z, GitHub webhooks, SSE/WS streams, HITL, registry, analytics queries |
+| `services/api` | control-plane REST API (OpenAPI), authN/Z, GitHub webhooks, SSE run-event streams + long-poll steering, HITL, registry, analytics queries |
 | `services/api` (worker entrypoint) | pg-boss consumers + cron: sandbox reconciliation, outcome collector, health monitor, canary, learning mode, fingerprint checks, budget rollups |
 | `services/gateway` | LLM proxy: virtual keys, provider adapters (Anthropic/OpenAI/BYO), streaming passthrough, usage metering, budget enforcement, full audit capture |
 | `apps/web` | Next.js app (TAM-50), talks only to `api` |
@@ -65,7 +65,7 @@ infra/              # docker-compose (self-host), terraform/aws (playground), he
 | 3 | Fastify 5 + Zod (type-provider) + OpenAPI for api & gateway | schema-first: the SDK's schema.d.ts is generated from the emitted OpenAPI doc and the ergonomic route contracts are hand-maintained on top, guarded against drift by a route-coverage test; mature plugin ecosystem (ws, sse, rate-limit); long-lived Node servers. tRPC rejected (CLI/MCP/GitHub are non-TS-web consumers; OpenAPI is the lingua franca). NestJS rejected (ceremony without payoff). |
 | 4 | Postgres 16 + Drizzle ORM | boring, portable, SQL-first migrations; JSONB for payloads; LISTEN/NOTIFY for cheap realtime. Supabase-compatible (tam-os world) but not required. |
 | 5 | pg-boss for queue + cron | scheduler needs sub-hour cadence + event triggers (automation-expert E007 requirement); Postgres-backed = zero extra infra for self-host. Redis/BullMQ rejected as core dependency. |
-| 6 | SSE for streams, WebSocket only for interactive session steering | SSE survives proxies/load-balancers; WS reserved for the one bidirectional surface. |
+| 6 | SSE for run-event streams; steering via POST + long-poll inbox | SSE and long-poll both survive proxies/load-balancers; no WebSocket surface is implemented (a bidirectional WS steering channel remains a possible future enhancement). |
 | 7 | S3-compatible object storage abstraction (MinIO in dev) | transcripts/envelopes are too big for PG; S3 API is the portable denominator. |
 | 8 | Stored secrets sealed at rest (libsodium sealed-box, master key from env/KMS) | provider keys + integration signing secrets are sealed in the DB, never in plaintext; the GitHub App private key and WorkOS credentials are supplied via env from your secret manager (read at boot, not persisted). Self-host stays simple (one master key), cloud can use KMS. |
 | 9 | WorkOS AuthKit for humans; hashed API keys (argon2id) for machines; **MCP auth as an OAuth 2.1 resource server** | GOAL mandates WorkOS as first IdP; keys carry role bindings so RBAC is uniform for humans/agents/CLI/MCP. For MCP clients (Claude, Cursor, ChatGPT) the control plane is a resource server (RFC 9728): it advertises `/.well-known/oauth-protected-resource` pointing at WorkOS as the authorization server, and validates the WorkOS access token directly (issuer-pinned JWKS, RS256, mandatory `exp` + audience). It does **not** relay `/oauth/{authorize,token,register}` — the client talks to WorkOS for the token. API keys remain the non-interactive path. |

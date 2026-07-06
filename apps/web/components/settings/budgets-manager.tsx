@@ -15,11 +15,13 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
   const [mode, setMode] = useState<"soft" | "hard">("soft");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
       const res = await fetch("/api/v1/budgets", {
         method: "POST",
@@ -37,6 +39,7 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
         } | null;
         throw new Error(body?.error?.message ?? `failed (${res.status})`);
       }
+      setNotice(`added ${mode} ${period} budget of $${Number(limit)}`);
       setLimit("");
       router.refresh();
     } catch (err) {
@@ -88,6 +91,11 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
           {busy ? "adding…" : "add budget"}
         </Button>
       </form>
+      {notice ? (
+        <p role="status" aria-live="polite" className="font-mono text-[11px] text-(--ok)">
+          {notice}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" aria-live="assertive" className="font-mono text-[11px] text-(--bad)">
           {error}

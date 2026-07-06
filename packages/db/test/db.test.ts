@@ -269,6 +269,23 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0012_repos_org_scoped_unique.sql");
+    ).toBe("0013_budget_constraints.sql");
+
+    // Budget enum/limit CHECK constraints backstop every write path (migration 0013).
+    const budgetChecks = (await db.execute(
+      sql`
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'budgets'::regclass AND contype = 'c'
+      `,
+    )) as Iterable<{ conname: string }>;
+    expect(new Set(Array.from(budgetChecks).map((row) => row.conname))).toEqual(
+      new Set([
+        "budgets_scope_check",
+        "budgets_period_check",
+        "budgets_mode_check",
+        "budgets_limit_cents_check",
+      ]),
+    );
   });
 });

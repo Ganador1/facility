@@ -421,7 +421,11 @@ const writeTools: ToolDefinition[] = [
       projectId: optionalString.describe("Project id for project or agent budgets."),
       agentDefId: optionalString.describe("Agent definition id for agent budgets."),
       period: z.enum(["daily", "weekly", "monthly"]).describe("Budget period."),
-      limitCents: z.number().int().nonnegative().describe("Budget limit in cents."),
+      limitCents: z
+        .number()
+        .int()
+        .nonnegative()
+        .describe("Budget limit in cents (0 freezes all spend)."),
       mode: z.enum(["soft", "hard"]).describe("Soft alert or hard block mode."),
       enabled: z.boolean().default(true).describe("Whether the budget is active."),
     },

@@ -261,7 +261,7 @@ export async function registerProvidersBudgetsSpendRoutes(
   app.post(
     "/v1/budgets",
     {
-      config: { permission: "budgets:write", auditAction: "budget.breached" },
+      config: { permission: "budgets:write", auditAction: "budget.created" },
       schema: {
         body: z.object({
           // Enum-bound to exactly what the gateway enforces — an unrecognized
@@ -270,7 +270,7 @@ export async function registerProvidersBudgetsSpendRoutes(
           projectId: z.string().optional(),
           agentDefId: z.string().optional(),
           period: z.enum(["daily", "weekly", "monthly"]),
-          limitCents: z.number().int().positive(),
+          limitCents: z.number().int().nonnegative(),
           mode: z.enum(["soft", "hard"]),
           enabled: z.boolean().default(true),
         }),
@@ -356,16 +356,18 @@ export async function registerProvidersBudgetsSpendRoutes(
   app.patch(
     "/v1/budgets/:budgetId",
     {
-      config: { permission: "budgets:write", auditAction: "budget.breached" },
+      config: { permission: "budgets:write", auditAction: "budget.updated" },
       schema: {
         params: z.object({ budgetId: z.string() }),
+        // Same enum/positive-limit invariants as create — PATCH must not be a
+        // back door to an unenforceable or org-wide budget.
         body: z.object({
-          scope: z.string().optional(),
+          scope: z.enum(["org", "project", "agent_def"]).optional(),
           projectId: z.string().optional(),
           agentDefId: z.string().optional(),
-          period: z.string().optional(),
-          limitCents: z.number().int().optional(),
-          mode: z.string().optional(),
+          period: z.enum(["daily", "weekly", "monthly"]).optional(),
+          limitCents: z.number().int().nonnegative().optional(),
+          mode: z.enum(["soft", "hard"]).optional(),
           enabled: z.boolean().optional(),
         }),
         response: { 200: BudgetSchema },
@@ -375,15 +377,24 @@ export async function registerProvidersBudgetsSpendRoutes(
       const p = principal(request);
       const { budgetId } = request.params as { budgetId: string };
       const body = request.body as {
-        scope?: string;
+        scope?: "org" | "project" | "agent_def";
         projectId?: string;
         agentDefId?: string;
-        period?: string;
+        period?: "daily" | "weekly" | "monthly";
         limitCents?: number;
-        mode?: string;
+        mode?: "soft" | "hard";
         enabled?: boolean;
       };
       await loadBudget(p, budgetId);
+      // A project-scoped principal cannot widen a budget to org scope (org budgets
+      // are enforced org-wide, ignoring projectId).
+      if (p.projectId && body.scope === "org") {
+        throw new ApiError(
+          403,
+          "forbidden_budget_scope",
+          "A project-scoped principal cannot change a budget to org scope",
+        );
+      }
       await assertProjectInOrg(p, body.projectId);
       return (
         await db
@@ -408,7 +419,7 @@ export async function registerProvidersBudgetsSpendRoutes(
   app.delete(
     "/v1/budgets/:budgetId",
     {
-      config: { permission: "budgets:write", auditAction: "budget.breached" },
+      config: { permission: "budgets:write", auditAction: "budget.deleted" },
       schema: { params: z.object({ budgetId: z.string() }), response: { 200: Ok } },
     },
     async (request) => {

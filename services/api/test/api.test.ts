@@ -602,6 +602,30 @@ describe("api", async () => {
       payload: { scope: "org", period: "hourly", limitCents: 1000, mode: "hard" },
     });
     expect(badPeriod.statusCode).toBe(400);
+    // PATCH must not be a back door: a project principal cannot widen an existing
+    // budget to org scope, and bad enums are rejected there too.
+    const projectBudget = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { authorization: `Bearer ${projectKey.json().secret}` },
+      payload: { scope: "project", period: "monthly", limitCents: 500, mode: "soft" },
+    });
+    expect(projectBudget.statusCode).toBe(200);
+    const widen = await app.inject({
+      method: "PATCH",
+      url: `/v1/budgets/${projectBudget.json().id}`,
+      headers: { authorization: `Bearer ${projectKey.json().secret}` },
+      payload: { scope: "org" },
+    });
+    expect(widen.statusCode).toBe(403);
+    expect(widen.json().error.code).toBe("forbidden_budget_scope");
+    const patchBadMode = await app.inject({
+      method: "PATCH",
+      url: `/v1/budgets/${projectBudget.json().id}`,
+      headers: { authorization: `Bearer ${projectKey.json().secret}` },
+      payload: { mode: "medium" },
+    });
+    expect(patchBadMode.statusCode).toBe(400);
   });
 
   it("rejects agent references outside the agent project", async () => {

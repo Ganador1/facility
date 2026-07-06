@@ -159,8 +159,11 @@ platform can be called "secure, multi-tenant, enterprise-grade."
 ## The GOAL.md checklist
 
 Every capability the goal named, and where it lives — see
-[PRD.md](PRD.md) §4 and [ARCHITECTURE.md](ARCHITECTURE.md). All are implemented;
-the deliberate v1 scope notes are in ARCHITECTURE §8.
+[PRD.md](PRD.md) §4 and [ARCHITECTURE.md](ARCHITECTURE.md). All are implemented at
+the platform (API) layer; surface coverage is uneven by design — the web control
+plane manages providers/keys/budgets but not yet agents/sandbox-profiles/
+virtual-keys/KB/tasks (those are API/CLI/MCP-managed, see the "operator dashboard"
+note above). The deliberate v1 scope notes are in ARCHITECTURE §8.
 
 ## Human-gated — intentionally NOT automated
 

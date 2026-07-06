@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
@@ -235,8 +235,7 @@ async function runShell(command: string, cwd: string, eventType: string, timeout
   const drains = [child.stdout, child.stderr].map((stream) => {
     const rl = createInterface({ input: stream });
     return (async () => {
-      for await (const line of rl)
-        await emit([{ type: eventType, data: { text: redactSecrets(line) } }]);
+      for await (const line of rl) await emit([{ type: eventType, data: { text: line } }]);
     })();
   });
   const code = await exitCode(child);
@@ -249,15 +248,33 @@ async function runShell(command: string, cwd: string, eventType: string, timeout
   return code;
 }
 
+// Cap the self-reported checks file read so a runaway/malicious agent can't OOM
+// the runner with a giant checks.jsonl. 256KB is far more than any real check set.
+const MAX_SELF_REPORTED_CHECKS_BYTES = 256 * 1024;
+
 async function emitChecks(cwd: string) {
   const path = join(cwd, ".agent-sdlc", "checks.jsonl");
   let body = "";
   try {
-    body = await readFile(path, "utf8");
+    body = await readCappedUtf8(path, MAX_SELF_REPORTED_CHECKS_BYTES);
   } catch {
     return;
   }
   await emit(parseSelfReportedChecks(body));
+}
+
+// Read at most maxBytes of a file as utf8; if the cap is hit, drop the (possibly
+// truncated) trailing partial line so parsing stays well-formed.
+async function readCappedUtf8(path: string, maxBytes: number): Promise<string> {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(maxBytes);
+    const { bytesRead } = await handle.read(buffer, 0, maxBytes, 0);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    return bytesRead < maxBytes ? text : text.slice(0, text.lastIndexOf("\n") + 1);
+  } finally {
+    await handle.close();
+  }
 }
 
 // Parse the agent's self-reported checks.jsonl into `check` events. self_reported
@@ -288,9 +305,8 @@ async function runChecks(bundle: RunBundle, cwd: string) {
   for (const command of bundle.checkCmds) {
     const { code, tail } = await runCheckCommand(command, cwd, bundle.timeoutMin);
     if (code !== 0) allPassed = false;
-    // Scrub injected secrets from the captured output before it is persisted to
-    // run_events (readable by any runs:read principal).
-    await emit([{ type: "check", data: checkEvent(command, code, redactSecrets(tail)) }]);
+    // Injected secrets in the captured output are scrubbed centrally in emit().
+    await emit([{ type: "check", data: checkEvent(command, code, tail) }]);
   }
   return allPassed;
 }
@@ -373,11 +389,36 @@ async function postResult(
   });
 }
 
+// Recursively scrub injected secrets from every string in a value — the engine's
+// parsed assistant/tool/result payloads are agent-influenced and carry the same
+// injected env, so redaction must cover them, not just shell/check output.
+export function redactEventData(
+  value: unknown,
+  secrets: Iterable<string> = secretsToRedact,
+): unknown {
+  if (typeof value === "string") return redactSecrets(value, secrets);
+  if (Array.isArray(value)) return value.map((item) => redactEventData(item, secrets));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        redactEventData(v, secrets),
+      ]),
+    );
+  }
+  return value;
+}
+
 async function emit(events: RunEvent[]) {
   if (events.length === 0) return;
+  // Central redaction: every event that reaches run_events (readable by any
+  // runs:read principal) is scrubbed here, regardless of which producer emitted it.
+  const safe = events.map((event) =>
+    event.data ? { ...event, data: redactEventData(event.data) as Record<string, unknown> } : event,
+  );
   await api(`/internal/runs/${currentRunId()}/events`, {
     method: "POST",
-    body: JSON.stringify(events),
+    body: JSON.stringify(safe),
   });
 }
 
