@@ -223,7 +223,8 @@ describe("db", async () => {
           'sandbox_profiles_org_created_idx',
           'runs_created_idx',
           'llm_requests_created_idx',
-          'outcomes_terminal_idx'
+          'outcomes_terminal_idx',
+          'llm_requests_run_idx'
         )
       `,
     )) as Iterable<{ indexname: string }>;
@@ -242,6 +243,8 @@ describe("db", async () => {
         "runs_created_idx",
         "llm_requests_created_idx",
         "outcomes_terminal_idx",
+        // Run-finalization aggregate by run_id (migration 0009).
+        "llm_requests_run_idx",
       ]),
     );
     const applied = (await db.execute(
@@ -255,6 +258,6 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0008_analytics_rollup_window_indexes.sql");
+    ).toBe("0009_llm_requests_run_idx.sql");
   });
 });

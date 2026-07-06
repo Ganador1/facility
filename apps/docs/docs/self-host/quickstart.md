@@ -28,8 +28,10 @@ facility doctor --url http://localhost:4400 --key fak_...
 ```
 
 The command calls `/v1/admin/doctor` and prints the deployment checklist:
-database and migrations, object-store envelope write/read round trip, seed essentials,
-GitHub App configuration, and audit hash-chain verification.
+database and migrations, object-store envelope write/read round trip, seed
+essentials, the `sandbox_runner` profile (driver + runner image, plus Docker
+daemon reachability for the docker driver), production `auth_config`, GitHub App
+configuration, and audit hash-chain verification.
 
 ## What's running
 

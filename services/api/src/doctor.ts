@@ -7,6 +7,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { verifyEnvelopeRoundTrip } from "./envelopes.js";
+import { DockerSandboxDriver } from "./sandbox/docker.js";
 import type { AppConfig } from "./types.js";
 
 type Db = FastifyInstance["facilityDb"];
@@ -254,6 +255,25 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
         `No sandbox profile matches this deployment (${expectation}); platform-lane runs (Claude Code, Codex) will not start.`,
         "Set FACILITY_SANDBOX_DRIVER (and FACILITY_RUNNER_IMAGE for docker) to match this deployment and re-seed.",
       );
+    }
+    // For the docker driver, config alone isn't enough — the worker must be able
+    // to reach the Docker daemon to launch sandboxes. Probe it so a self-host
+    // where the socket isn't mounted fails readiness instead of at first run.
+    if (driver === "docker") {
+      try {
+        await new DockerSandboxDriver().status("facility-doctor-probe");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/connect|socket|permission|ENOENT|EACCES|refused/i.test(message)) {
+          return fail(
+            "sandbox_runner",
+            "Sandbox runner profile",
+            `A docker sandbox profile is configured, but the Docker daemon is unreachable: ${message}`,
+            "Give the worker access to the Docker socket (mount /var/run/docker.sock), or set FACILITY_SANDBOX_DRIVER=aws.",
+          );
+        }
+        // A missing probe container is expected — it proves the daemon answered.
+      }
     }
     return pass(
       "sandbox_runner",

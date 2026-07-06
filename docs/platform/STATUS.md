@@ -5,25 +5,28 @@
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
 
-## Current state (round 14, 2026-07-06)
+## Current state (round 16, 2026-07-06)
 
-The platform was driven through fourteen independent GPT-5.5 (xhigh) verification
+The platform was driven through sixteen independent GPT-5.5 (xhigh) verification
 rounds — six adversarial verifiers per full round, one per aspect — each round
 followed by fixes to the named findings, re-verified against primary evidence
-(diff review + a re-run full suite) before commit. Round-14 per-aspect scores
-(a fresh finishing wave is closing the round-14 findings, re-verify pending):
+(diff review + a re-run full suite) before commit. Round-16 per-aspect scores
+(a finishing wave is closing the round-16 findings, re-verify pending):
 
-| aspect | round 1 | round 14 |
+| aspect | round 1 | round 16 |
 |---|---:|---:|
-| Implementation & architecture | 56 | **88** |
-| Security & privacy | 58 | **98** |
-| UI/UX | 76 | 87 |
-| Feature completeness & product fit | 58 | **88** |
+| Implementation & architecture | 56 | **83** |
+| Security & privacy | 58 | **94** |
+| UI/UX | 76 | 90 |
+| Feature completeness & product fit | 58 | **90** |
 | Optimization | 58 | **92** |
-| Docs, DX, operability | 56 | 85 |
+| Docs, DX, operability | 56 | 88 |
 | **average** | **~59** | **~90** |
 
-~175 tests green (real Postgres), Biome clean, web + docs build, and
+Later rounds drove into deeper concurrency/atomicity (issue + run-lifecycle
+persistence made race-safe with claim-checked / state-pinned transitions) and
+credential-lifecycle correctness (every terminal run path revokes its keys).
+~185 tests green (real Postgres), Biome clean, web + docs build, and
 `tsc --noEmit` green across **all** packages (including `@facility/mcp`).
 Recent hardening (rounds 4–12): SSRF guard on BYO provider URLs, real MCP
 human-gate (write tools create HITL proposals a *separate* principal approves),
