@@ -269,6 +269,6 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0011_registry_one_active_version.sql");
+    ).toBe("0012_repos_org_scoped_unique.sql");
   });
 });

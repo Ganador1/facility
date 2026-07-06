@@ -536,16 +536,22 @@ async function upsertRegistryDb(
     INSERT INTO registry_items (id, org_id, scope, kind, name, description, latest_version)
     VALUES (${newId("item")}, ${orgId}, 'bundled', ${kind}, ${name}, ${description}, 1)
     ON CONFLICT (org_id, coalesce(project_id, '__none__'), kind, name)
-    DO UPDATE SET description = EXCLUDED.description, latest_version = 1, updated_at = now()
+    DO UPDATE SET description = EXCLUDED.description,
+      latest_version = GREATEST(registry_items.latest_version, 1),
+      updated_at = now()
     RETURNING id
   `);
   const itemId = Array.from(rows as Iterable<{ id: string }>)[0]?.id;
   if (!itemId) throw new Error(`failed to seed registry item ${name}`);
+  // Refresh the bundled v1 content, but DO NOT force status back to 'active' — if
+  // an operator has since published a newer version (v1 deprecated, v2 active),
+  // reactivating v1 would create two active versions and violate the one-active
+  // partial unique index (migration 0011), breaking re-seed on the next restart.
   await db.execute(drizzleSql`
     INSERT INTO registry_versions (id, org_id, item_id, version, content, content_hash, changelog, status, created_by)
     VALUES (${newId("ver")}, ${orgId}, ${itemId}, 1, ${content}, ${contentHash}, 'seeded from CLI templates', 'active', 'seed')
     ON CONFLICT (item_id, version)
-    DO UPDATE SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, status = 'active', updated_at = now()
+    DO UPDATE SET content = EXCLUDED.content, content_hash = EXCLUDED.content_hash, updated_at = now()
   `);
   return itemId;
 }

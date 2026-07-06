@@ -107,6 +107,9 @@ export async function providerCredential(
       .select()
       .from(providerCredentials)
       .where(and(eq(providerCredentials.orgId, orgId), eq(providerCredentials.provider, provider)))
+      // Deterministic when an org has several credentials for one provider: the
+      // oldest (first-configured) wins, stably, rather than an arbitrary limit(1).
+      .orderBy(providerCredentials.createdAt)
       .limit(1)
   )[0];
 

@@ -1,5 +1,5 @@
 import { type FacilityDb, registryItems, registryVersions } from "@facility/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ApiError } from "./errors.js";
 
 /**
@@ -24,6 +24,10 @@ export async function publishRegistryVersion(db: FacilityDb, orgId: string, vers
     if (target?.status !== "draft") {
       throw new ApiError(400, "invalid_state", "Only draft versions can be published");
     }
+    // Serialize concurrent publishes of the SAME item so two drafts can't both
+    // try to activate and collide on the one-active partial unique index (which
+    // would surface as a raw 23505 instead of a clean sequential publish).
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${target.itemId}))`);
     // Deprecate the item's current active version(s) before activating the new one
     // (ordering matters: the partial unique index allows only one active per item).
     await tx

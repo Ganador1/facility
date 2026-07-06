@@ -161,7 +161,10 @@ export const repos = pgTable(
     ...timestamps,
   },
   (table) => [
-    unique("repos_owner_name_uidx").on(table.owner, table.name),
+    // Per-org uniqueness (migration 0012): a repo registration is org-scoped, so
+    // two orgs can reference the same GitHub repo and neither is an existence
+    // oracle for the other.
+    unique("repos_org_owner_name_uidx").on(table.orgId, table.owner, table.name),
     index("repos_org_project_idx").on(table.orgId, table.projectId),
   ],
 );

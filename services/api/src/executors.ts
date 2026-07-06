@@ -24,7 +24,7 @@ import {
   steerMessages,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, desc, eq, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, notInArray, sql } from "drizzle-orm";
 import {
   createGithubClientFactory,
   FacilityGithubClient,
@@ -696,6 +696,10 @@ async function executeRegistryDraft(db: Db, proposal: typeof proposals.$inferSel
   const name = stringField(payload.name);
   const content = stringField(payload.content);
   if (!name || !content) throw new Error("registry_draft_payload_invalid");
+  // Match the registry item within the PROPOSAL's scope only — the unique index
+  // is (org, coalesce(project_id,'__none__'), kind, name), so a project proposal
+  // must not reuse (and draft a version into) another project's, or the org's,
+  // same-named item.
   const existing = (
     await db
       .select()
@@ -705,6 +709,9 @@ async function executeRegistryDraft(db: Db, proposal: typeof proposals.$inferSel
           eq(registryItems.orgId, proposal.orgId),
           eq(registryItems.kind, kind),
           eq(registryItems.name, name),
+          proposal.projectId
+            ? eq(registryItems.projectId, proposal.projectId)
+            : isNull(registryItems.projectId),
         ),
       )
       .limit(1)
