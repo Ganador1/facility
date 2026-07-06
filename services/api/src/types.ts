@@ -25,6 +25,8 @@ export type AppConfig = {
   sandboxGatewayUrl: string;
   // Image the seeded default sandbox profile uses to run the platform runner.
   sandboxRunnerImage: string;
+  // Driver the seeded default sandbox profile uses ("docker" | "aws").
+  sandboxDriver: "docker" | "aws";
   workosApiKey?: string;
   workosAuthkitDomain?: string;
   workosRedirectUri?: string;

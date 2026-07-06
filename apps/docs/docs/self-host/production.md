@@ -62,7 +62,9 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
 
    Production is ready only when the doctor reports no `FAIL` checks. The
    command verifies database connectivity and migrations, object-store
-   envelope write/read with SigV4, seed essentials, GitHub App env completeness when
+   envelope write/read with SigV4, seed essentials, the `sandbox_runner` profile
+   (its driver + runner image match this deployment), production `auth_config`
+   (WorkOS configured when dev-login is off), GitHub App env completeness when
    enabled, and the org audit hash chain.
 
    The doctor runs through the API task's object-store configuration. Give

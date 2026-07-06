@@ -43,6 +43,9 @@ locals {
     { name = "S3_BUCKET", value = aws_s3_bucket.objects.bucket },
     { name = "AWS_REGION", value = var.aws_region },
     { name = "MCP_OAUTH_AUDIENCE", value = var.mcp_oauth_audience },
+    # The Fargate stack runs sandboxes via the AWS driver, so the seeded default
+    # sandbox profile (created by the migrate+seed task) must use it too.
+    { name = "FACILITY_SANDBOX_DRIVER", value = "aws" },
   ]
 
   aws_sandbox_environment = [

@@ -29,10 +29,19 @@ reference, not a requirement. The sandbox driver seam (`docker` | `aws`) is
 where compute specifics live; a Kubernetes Job driver is the documented
 extension point.
 
-After the ECS services roll, run:
+Once images and the `database_url` secret are populated, run the one-shot
+migrate + seed task (it applies migrations **and** seeds the bundled roles,
+action types, and default sandbox profile that first bootstrap and `facility
+doctor` require — it is idempotent). See the module
+[README](https://github.com/theam/facility/tree/main/infra/terraform/aws#5-run-the-migrate--seed-task-once)
+for the exact `aws ecs run-task` invocation.
+
+After the ECS services roll and the migrate+seed task has completed, run:
 
 ```bash
 facility doctor --url https://<api-host> --key fak_...
 ```
 
-Do not send production traffic until the doctor reports no `FAIL` checks.
+Do not send production traffic until the doctor reports no `FAIL` checks — it
+verifies DB migrations, object storage, seed essentials, the `sandbox_runner`
+profile (driver + runner), production `auth_config`, and the audit hash chain.

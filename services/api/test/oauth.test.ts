@@ -73,6 +73,7 @@ describe("oauth token verification", () => {
       sandboxApiUrl: "http://localhost:4400",
       sandboxGatewayUrl: "http://localhost:4410",
       sandboxRunnerImage: "facility-runner:dev",
+      sandboxDriver: "docker",
       facilityInsecureDev: true,
       logLevel: "silent",
     };
@@ -199,6 +200,7 @@ describe("oauth resource server (integration)", async () => {
     sandboxApiUrl: "http://localhost:4400",
     sandboxGatewayUrl: "http://localhost:4410",
     sandboxRunnerImage: "facility-runner:dev",
+    sandboxDriver: "docker",
     webUrl: "http://localhost:3000",
     facilityInsecureDev: true,
     logLevel: "silent",

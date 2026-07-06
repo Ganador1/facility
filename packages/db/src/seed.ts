@@ -42,6 +42,13 @@ function defaultRunnerImage(): string {
   return process.env.FACILITY_RUNNER_IMAGE ?? "facility-runner:dev";
 }
 
+// Driver the default sandbox profile uses; must match the deployment ("docker"
+// for local/self-host, "aws" for the Fargate stack). Keep in sync with
+// config.sandboxDriver.
+function defaultSandboxDriver(): string {
+  return process.env.FACILITY_SANDBOX_DRIVER === "aws" ? "aws" : "docker";
+}
+
 function actionTypeExecutor(name: string) {
   return {
     type: [
@@ -254,8 +261,8 @@ async function seedOrgEssentialsSql(sql: postgres.Sql, orgId: string): Promise<v
     VALUES (
       ${defaultSandboxProfileId(orgId)},
       ${orgId},
-      'Default runner (docker)',
-      'docker',
+      'Default runner',
+      ${defaultSandboxDriver()},
       ${defaultRunnerImage()},
       '{"deps":[]}'::jsonb,
       '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
@@ -299,8 +306,8 @@ async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void>
     VALUES (
       ${defaultSandboxProfileId(orgId)},
       ${orgId},
-      'Default runner (docker)',
-      'docker',
+      'Default runner',
+      ${defaultSandboxDriver()},
       ${defaultRunnerImage()},
       '{"deps":[]}'::jsonb,
       '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,

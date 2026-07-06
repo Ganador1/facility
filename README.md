@@ -119,8 +119,10 @@ scars that shape every generated workflow — is unchanged and lives in:
 ## Status
 
 **v0.3 — private preview.** The platform is new; the method and the installer
-are production-proven. The first tenant is [tam-os](docs/platform/migration-tam-os.md),
-migrated onto the platform additively and reversibly. File layout may still move.
+are production-proven. The first target tenant is
+[tam-os](docs/platform/migration-tam-os.md); its migration is designed to be
+additive and reversible, and has been rehearsed — the production cutover is
+owner-gated and not yet executed. File layout may still move.
 
 ---
 

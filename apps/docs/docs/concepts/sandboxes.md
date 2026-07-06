@@ -16,14 +16,20 @@ runner image with your project's provision command. The provisioned-site rule
 is enforced: if provisioning fails, the agent never starts — a partial
 environment produces hedging, not work.
 
-:::note The runner image
-A **platform-lane** run (Claude Code, Codex) needs an image whose entrypoint is
-the Facility runner — a bare base image like `node:22-bookworm` only supports
-**BYO-command** runs. Build it with `docker build -t facility-runner:dev runner/`
-and set `FACILITY_RUNNER_IMAGE` (default `facility-runner:dev`) so the seeded
-default profile points at it; in the cloud, set it to your pushed runner image
-tag. `facility doctor` fails its `sandbox_runner` check if no profile can run
-the runner, so a false-ready deployment surfaces before the first run.
+:::note The runner image & driver
+A **platform-lane** run (Claude Code, Codex) needs a sandbox profile whose
+**driver matches the deployment** and that can run the Facility runner:
+
+- **docker** (local/self-host) — the profile's image entrypoint must be the
+  runner. Build it with `docker build -t facility-runner:dev runner/` and set
+  `FACILITY_RUNNER_IMAGE` (default `facility-runner:dev`). A bare base image like
+  `node:22-bookworm` only supports **BYO-command** runs.
+- **aws** (Fargate) — the runner comes from the AWS runner task definition; set
+  `FACILITY_SANDBOX_DRIVER=aws` so the seeded default profile uses that driver.
+
+`facility doctor` **fails** its `sandbox_runner` check when no profile matches
+the deployment's driver (and, for docker, the runner image), so a false-ready
+deployment surfaces before the first run.
 :::
 
 ## Drivers

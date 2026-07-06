@@ -20,6 +20,9 @@ const EnvSchema = z
     // Container image that runs the Facility runner for platform-lane runs. The
     // seeded default sandbox profile and `facility doctor` both key off this.
     FACILITY_RUNNER_IMAGE: z.string().default("facility-runner:dev"),
+    // Driver the seeded default sandbox profile uses. Must match the deployment:
+    // "docker" for local/self-host, "aws" for the Fargate stack.
+    FACILITY_SANDBOX_DRIVER: z.enum(["docker", "aws"]).default("docker"),
     WORKOS_API_KEY: z.string().optional(),
     WORKOS_CLIENT_ID: z.string().optional(),
     WORKOS_COOKIE_PASSWORD: z.string().optional(),
@@ -65,6 +68,7 @@ export function readConfig(env = process.env): AppConfig {
     sandboxApiUrl: parsed.SANDBOX_API_URL ?? parsed.PUBLIC_URL,
     sandboxGatewayUrl: parsed.SANDBOX_GATEWAY_URL ?? parsed.GATEWAY_URL,
     sandboxRunnerImage: parsed.FACILITY_RUNNER_IMAGE,
+    sandboxDriver: parsed.FACILITY_SANDBOX_DRIVER,
     workosApiKey: parsed.WORKOS_API_KEY,
     workosClientId: parsed.WORKOS_CLIENT_ID,
     workosCookiePassword: parsed.WORKOS_COOKIE_PASSWORD,

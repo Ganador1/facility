@@ -218,37 +218,47 @@ async function checkSeedEssentials(db: Db, orgId: string): Promise<DoctorCheck> 
 async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Promise<DoctorCheck> {
   try {
     const profiles = await db
-      .select({ image: sandboxProfiles.image })
+      .select({ image: sandboxProfiles.image, driver: sandboxProfiles.driver })
       .from(sandboxProfiles)
       .where(eq(sandboxProfiles.orgId, orgId));
     if (profiles.length === 0) {
       // Absence of any profile is already reported by checkSeedEssentials.
       return fail(
         "sandbox_runner",
-        "Sandbox runner image",
+        "Sandbox runner profile",
         "No sandbox profiles exist, so platform-lane runs cannot start.",
-        "Seed the deployment, then set FACILITY_RUNNER_IMAGE to your runner image.",
+        "Seed the deployment with FACILITY_SANDBOX_DRIVER + FACILITY_RUNNER_IMAGE set for your platform.",
       );
     }
+    // A profile can run a platform-lane agent only if its driver matches the
+    // deployment (a docker profile can't launch on the AWS/Fargate stack, and
+    // vice versa) AND — for the docker driver — its image ships the runner. The
+    // aws driver runs a pre-built runner task definition, so its image text is
+    // not the gate there.
     const runnerImage = config.sandboxRunnerImage;
+    const driver = config.sandboxDriver;
     const canRunRunner = profiles.some(
-      (profile) => profile.image === runnerImage || /runner/i.test(profile.image),
+      (profile) =>
+        profile.driver === driver &&
+        (driver === "aws" || profile.image === runnerImage || /runner/i.test(profile.image)),
     );
     if (!canRunRunner) {
       // Fail (not warn): platform-lane execution is the platform's primary
       // capability, so a deployment where no profile can run the runner is not
       // production-ready. `facility doctor` blocks the go/no-go on it.
+      const expectation =
+        driver === "aws" ? `driver "aws"` : `driver "docker" and the runner image (${runnerImage})`;
       return fail(
         "sandbox_runner",
-        "Sandbox runner image",
-        `No sandbox profile uses the Facility runner image (expected ${runnerImage}); platform-lane runs (Claude Code, Codex) will not start — only BYO-command runs would.`,
-        "Point a sandbox profile at your runner image, or set FACILITY_RUNNER_IMAGE and re-seed.",
+        "Sandbox runner profile",
+        `No sandbox profile matches this deployment (${expectation}); platform-lane runs (Claude Code, Codex) will not start.`,
+        "Set FACILITY_SANDBOX_DRIVER (and FACILITY_RUNNER_IMAGE for docker) to match this deployment and re-seed.",
       );
     }
     return pass(
       "sandbox_runner",
-      "Sandbox runner image",
-      `A sandbox profile runs the Facility runner (${runnerImage}).`,
+      "Sandbox runner profile",
+      `A sandbox profile can run the Facility runner on the "${driver}" driver.`,
     );
   } catch (error) {
     return fail(
