@@ -87,10 +87,14 @@ export async function prepareWorkspace(
     await mkdir(scratchDirFor(root), { recursive: true });
     await runCommand("git", ["init"], scratchDirFor(root)).catch(() => undefined);
   }
+  // Deduplicate by target filename: bundle assembly already sends one active
+  // version per skill, but a duplicate name would otherwise write the same file
+  // twice (order-dependent last-write-wins). Keep the last occurrence, once.
+  const skillsByFile = new Map(bundle.skills.map((skill) => [safeName(skill.name), skill]));
   for (const root of [join(cwd, ".claude", "skills"), join(cwd, ".agents", "skills")]) {
     await mkdir(root, { recursive: true });
-    for (const skill of bundle.skills) {
-      await writeFile(join(root, `${safeName(skill.name)}.md`), skill.content);
+    for (const [fileBase, skill] of skillsByFile) {
+      await writeFile(join(root, `${fileBase}.md`), skill.content);
     }
   }
   if (bundle.harness?.files) {

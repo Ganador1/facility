@@ -403,6 +403,13 @@ async function buildRunBundle(
             : or(eq(sandboxProfiles.id, "sbx_dev_default"), isNull(sandboxProfiles.projectId)),
         ),
       )
+      // Deterministic fallback when an org has several global profiles: the
+      // canonical seeded default wins, otherwise the oldest global profile — never
+      // an arbitrary row (limit(1) with no order returned a nondeterministic pick).
+      .orderBy(
+        sql`case when ${sandboxProfiles.id} = 'sbx_dev_default' then 0 else 1 end`,
+        sandboxProfiles.createdAt,
+      )
       .limit(1)
   )[0];
   if (!profile) throw new Error("run_missing_sandbox_profile");
@@ -488,20 +495,35 @@ async function activeRegistryContent(
 }
 
 async function activeSkills(db: ReturnType<typeof createDb>["db"], orgId: string) {
-  return (
-    await db
-      .select({ name: registryItems.name, content: registryVersions.content })
-      .from(registryVersions)
-      .innerJoin(registryItems, eq(registryVersions.itemId, registryItems.id))
-      .where(
-        and(
-          eq(registryItems.orgId, orgId),
-          eq(registryItems.kind, "skill"),
-          eq(registryVersions.status, "active"),
-        ),
-      )
-      .orderBy(registryItems.name)
-  ).map((row) => ({ name: row.name, content: row.content }));
+  const rows = await db
+    .select({
+      itemId: registryItems.id,
+      name: registryItems.name,
+      version: registryVersions.version,
+      content: registryVersions.content,
+    })
+    .from(registryVersions)
+    .innerJoin(registryItems, eq(registryVersions.itemId, registryItems.id))
+    .where(
+      and(
+        eq(registryItems.orgId, orgId),
+        eq(registryItems.kind, "skill"),
+        eq(registryVersions.status, "active"),
+      ),
+    );
+  // Exactly one skill per item — highest active version wins — even if legacy data
+  // left several versions marked active (publishing now deprecates priors, so this
+  // is a defensive dedup). Then stable order by name.
+  const latest = new Map<string, { name: string; version: number; content: string }>();
+  for (const row of rows) {
+    const current = latest.get(row.itemId);
+    if (!current || row.version > current.version) {
+      latest.set(row.itemId, { name: row.name, version: row.version, content: row.content });
+    }
+  }
+  return [...latest.values()]
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(({ name, content }) => ({ name, content }));
 }
 
 // Revoke a run's least-privilege credentials — the run-scoped virtual key (LLM

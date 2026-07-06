@@ -357,6 +357,41 @@ describe("api", async () => {
     expect(row?.content).toBe("v1");
   });
 
+  it("publishing a new version deprecates the prior active version of the item", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/registry/items",
+      headers: { cookie },
+      payload: { scope: "org", kind: "skill", name: `supersede-${Date.now()}`, content: "v1" },
+    });
+    const itemId = created.json().id;
+    const v1 = created.json().versions[0];
+    await app.inject({
+      method: "POST",
+      url: `/v1/registry/versions/${v1.id}/publish`,
+      headers: { cookie },
+    });
+    const v2 = (
+      await app.inject({
+        method: "POST",
+        url: `/v1/registry/items/${itemId}/versions`,
+        headers: { cookie },
+        payload: { content: "v2" },
+      })
+    ).json();
+    const pub2 = await app.inject({
+      method: "POST",
+      url: `/v1/registry/versions/${v2.id}/publish`,
+      headers: { cookie },
+    });
+    expect(pub2.statusCode).toBe(200);
+    // The item now has exactly one active version (v2); v1 was superseded.
+    const [v1row] = await db.select().from(registryVersions).where(eq(registryVersions.id, v1.id));
+    const [v2row] = await db.select().from(registryVersions).where(eq(registryVersions.id, v2.id));
+    expect(v1row?.status).toBe("deprecated");
+    expect(v2row?.status).toBe("active");
+  });
+
   it("rejects unsafe BYO provider base URLs on write", async () => {
     const blocked = await app.inject({
       method: "POST",
