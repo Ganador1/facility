@@ -15,7 +15,11 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import Fastify, { type FastifyInstance } from "fastify";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearAuthCaches } from "../src/auth.js";
+import {
+  authenticateVirtualKey,
+  clearAuthCaches,
+  startKeyRevocationListener,
+} from "../src/auth.js";
 import { applicableBudgets } from "../src/budgets.js";
 import { buildApp, MemoryEnvelopeStore } from "../src/index.js";
 import { writeMetering } from "../src/metering.js";
@@ -34,7 +38,7 @@ type StubState = {
 };
 
 async function canConnect() {
-  const client = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  const client = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
   try {
     await client`select 1`;
     return true;
@@ -506,6 +510,45 @@ describe("gateway", async () => {
     expect(unknown.status).toBe(401);
     expect(await revoked.json()).toMatchObject({ error: { type: "unauthorized" } });
     expect(await unknown.json()).toMatchObject({ error: { type: "unauthorized" } });
+  });
+
+  it("7b. push-invalidation evicts a warm-cached key on revoke NOTIFY, before the TTL", async () => {
+    // The api revokes in its own process, so the gateway can't be signalled
+    // in-band; it LISTENs for facility_key_revoked and evicts synchronously. Prove
+    // a warm-cached key stops authenticating right after the NOTIFY, not after the
+    // 15s TTL. (buildApp injects db here, so start a listener-owning connection.)
+    const owned = createDb(databaseUrl);
+    const listener = await startKeyRevocationListener(owned.client);
+    try {
+      const setup = await setupVirtualKey({
+        provider: "anthropic",
+        baseUrl: "http://127.0.0.1:1/anthropic/v1",
+      });
+      // Warm the cache.
+      expect(await authenticateVirtualKey(owned.db, setup.secret)).not.toBeNull();
+      // Revoke + NOTIFY exactly as revokeRunKeys does.
+      const [row] = await owned.db
+        .select({ prefix: virtualKeys.prefix })
+        .from(virtualKeys)
+        .where(eq(virtualKeys.id, setup.keyId));
+      await owned.db
+        .update(virtualKeys)
+        .set({ revokedAt: new Date() })
+        .where(eq(virtualKeys.id, setup.keyId));
+      await owned.db.execute(sql`select pg_notify('facility_key_revoked', ${row?.prefix})`);
+      // Once the NOTIFY is delivered the entry is evicted, so re-auth re-queries
+      // and rejects the now-revoked key. Without eviction the stale cache would
+      // keep authenticating it until the TTL, and this would time out.
+      await vi.waitFor(
+        async () => {
+          expect(await authenticateVirtualKey(owned.db, setup.secret)).toBeNull();
+        },
+        { timeout: 3000, interval: 50 },
+      );
+    } finally {
+      await listener.unlisten().catch(() => undefined);
+      await owned.client.end();
+    }
   });
 
   it("8. Upstream 500 status and body pass through and meter as error", async () => {

@@ -9,7 +9,10 @@ const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility";
 
 async function canConnect() {
-  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  // Generous connect timeout: this runs during vitest's module-import phase,
+  // which can block the event loop long enough that a too-tight timeout races the
+  // cold connection and spuriously skips the whole suite on a healthy local DB.
+  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
   try {
     await sql`select 1`;
     return true;
@@ -224,7 +227,9 @@ describe("db", async () => {
           'runs_created_idx',
           'llm_requests_created_idx',
           'outcomes_terminal_idx',
-          'llm_requests_run_idx'
+          'llm_requests_run_idx',
+          'api_keys_run_live_idx',
+          'virtual_keys_run_live_idx'
         )
       `,
     )) as Iterable<{ indexname: string }>;
@@ -245,6 +250,9 @@ describe("db", async () => {
         "outcomes_terminal_idx",
         // Run-finalization aggregate by run_id (migration 0009).
         "llm_requests_run_idx",
+        // Orphaned run-scoped-key sweep partial live-key indexes (migration 0010).
+        "api_keys_run_live_idx",
+        "virtual_keys_run_live_idx",
       ]),
     );
     const applied = (await db.execute(
@@ -258,6 +266,6 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0009_llm_requests_run_idx.sql");
+    ).toBe("0010_api_key_run_scope.sql");
   });
 });

@@ -28,11 +28,14 @@ A **platform-lane** run (Claude Code, Codex) needs a sandbox profile whose
   `FACILITY_SANDBOX_DRIVER=aws` so the seeded default profile uses that driver.
 
 `facility doctor` **fails** its `sandbox_runner` check when no profile matches
-the deployment's driver (and, for docker, the runner image), so a false-ready
-deployment surfaces before the first run. For the docker driver the check also
-probes the Docker daemon — but it runs in the **api** task, so give the **worker**
-(which actually launches sandboxes) the same Docker socket access; the api-side
-probe is a readiness proxy for the worker, exactly as the object-store check is.
+the deployment's driver (a docker profile can't launch on an aws stack, or vice
+versa), so a false-ready deployment surfaces before the first run. For the docker
+driver the check also probes the Docker daemon (fails if unreachable) and **warns**
+when the configured runner image isn't present locally — the first run would pull
+it, which fails for a local-only tag or an unreachable registry. The probe runs in
+the **api** task, so give the **worker** (which actually launches sandboxes) the
+same Docker socket access; the api-side probe is a readiness proxy for the worker,
+exactly as the object-store check is.
 :::
 
 ## Drivers

@@ -42,7 +42,7 @@ const databaseUrl =
 const masterKey = Buffer.alloc(32, 6).toString("base64");
 
 async function canConnect() {
-  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
   try {
     await sqlClient`select 1`;
     return true;

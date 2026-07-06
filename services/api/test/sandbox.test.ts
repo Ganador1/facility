@@ -1,11 +1,13 @@
-import { hashKey, newId, seal } from "@facility/core";
+import { generateApiKey, hashKey, newId, seal } from "@facility/core";
 import {
+  apiKeys,
   auditEvents,
   createDb,
   githubInstallations,
   migrate,
   projects,
   repos,
+  roles,
   runs,
   seed,
   virtualKeys,
@@ -24,7 +26,7 @@ const databaseUrl =
 const masterKey = Buffer.alloc(32, 8).toString("base64");
 
 async function canConnect() {
-  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
   try {
     await sqlClient`select 1`;
     return true;
@@ -286,16 +288,33 @@ describe("sandbox api", async () => {
     expect(listed?.sandbox?.sealedVirtualKey).toBeUndefined();
     expect(listed?.sandbox?.sealedPlatformKey).toBeUndefined();
     expect(listed?.sandbox?.runnerTokenHash).toBeUndefined();
+
+    // The project-scoped run list is a run-read surface too — it must redact.
+    const projList = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/runs`,
+      headers: { cookie },
+    });
+    expect(projList.statusCode).toBe(200);
+    const projListed = (
+      projList.json() as Array<{ id: string; sandbox?: Record<string, unknown> }>
+    ).find((r) => r.id === run.id);
+    expect(projListed?.sandbox?.sealedVirtualKey).toBeUndefined();
+    expect(projListed?.sandbox?.sealedPlatformKey).toBeUndefined();
+    expect(projListed?.sandbox?.runnerTokenHash).toBeUndefined();
   });
 
-  it("reconciler revokes orphaned virtual keys left live by a terminal run", async () => {
+  it("reconciler revokes orphaned run keys (virtual + platform) of a terminal run", async () => {
     const runId = newId("run");
     // A run that reached a terminal state but (simulating a crash between the
-    // status commit and the best-effort revoke) still owns a live virtual key.
+    // status commit and the best-effort revoke) still owns live keys.
     await insertRunnerRun("frt_orphan", "succeeded", runId, {});
-    const keyId = newId("vkey");
+    // Far-future expiry throughout, so the assertions prove the *sweep* revoked
+    // the keys, not their own natural expiry.
+    const farFuture = new Date(Date.now() + 3_600_000);
+    const vkeyId = newId("vkey");
     await db.insert(virtualKeys).values({
-      id: keyId,
+      id: vkeyId,
       orgId,
       projectId,
       runId,
@@ -303,15 +322,61 @@ describe("sandbox api", async () => {
       prefix: `orphan_${Date.now()}`,
       last4: "0000",
       hash: "orphan-hash",
-      // Far-future expiry so the assertion proves the *sweep* revoked it, not
-      // the key's own natural expiry.
-      expiresAt: new Date(Date.now() + 3_600_000),
+      expiresAt: farFuture,
+    });
+    const roleId = newId("key");
+    await db
+      .insert(roles)
+      .values({ id: roleId, orgId, name: `sweep-role-${Date.now()}`, permissions: [] });
+    const platformKeyId = newId("key");
+    await db.insert(apiKeys).values({
+      id: platformKeyId,
+      orgId,
+      name: "orphan platform key",
+      prefix: `orphanpk_${Date.now()}`,
+      last4: "0000",
+      hash: "orphan-pk-hash",
+      scopeType: "project",
+      projectId,
+      roleId,
+      runId,
+      expiresAt: farFuture,
     });
 
     await reconcileSandboxes(config);
 
-    const [key] = await db.select().from(virtualKeys).where(eq(virtualKeys.id, keyId));
-    expect(key?.revokedAt).not.toBeNull();
+    const [vkey] = await db.select().from(virtualKeys).where(eq(virtualKeys.id, vkeyId));
+    expect(vkey?.revokedAt).not.toBeNull();
+    const [pkey] = await db.select().from(apiKeys).where(eq(apiKeys.id, platformKeyId));
+    expect(pkey?.revokedAt).not.toBeNull();
+  });
+
+  it("rejects an expired run-scoped platform key at authentication", async () => {
+    const roleId = newId("key");
+    await db
+      .insert(roles)
+      .values({ id: roleId, orgId, name: `expiry-role-${Date.now()}`, permissions: ["runs:read"] });
+    const expired = await generateApiKey("fak");
+    await db.insert(apiKeys).values({
+      id: expired.id,
+      orgId,
+      name: "expired run key",
+      prefix: expired.lookup,
+      last4: expired.last4,
+      hash: expired.hash,
+      scopeType: "project",
+      projectId,
+      roleId,
+      // Already expired: auth must reject it even though it's not revoked.
+      // (runId omitted — expiry enforcement is independent of the run link.)
+      expiresAt: new Date(Date.now() - 1000),
+    });
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/runs",
+      headers: { authorization: `Bearer ${expired.secret}` },
+    });
+    expect(response.statusCode).toBe(401);
   });
 
   it("launches, stops, and destroys a docker sleep container when Docker is reachable", async () => {

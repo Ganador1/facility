@@ -113,6 +113,11 @@ export const apiKeys = pgTable(
       .notNull()
       .references(() => roles.id),
     createdBy: text("created_by"),
+    // Run-scoped platform keys carry the run they belong to + an expiry, so the
+    // reconciler can sweep them when the run goes terminal and auth rejects them
+    // once expired. Null for ordinary (user/service) keys. (migration 0010)
+    runId: text("run_id").references(() => runs.id),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
     lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
     ...timestamps,

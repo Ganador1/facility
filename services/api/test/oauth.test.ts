@@ -174,7 +174,7 @@ describe("oauth token verification", () => {
 // --- Integration through resolvePrincipal (requires Postgres) ---
 
 async function canConnect() {
-  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
   try {
     await sqlClient`select 1`;
     return true;

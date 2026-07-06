@@ -90,7 +90,7 @@ projects.
 
 ## Verification performed
 
-- **Full test suite green**: ~70 tests across core/db/api/gateway/mcp/runner/
+- **Full test suite green**: ~180 tests across core/db/api/gateway/mcp/runner/
   harness/cli, real Postgres; lint (Biome) clean; guards pass.
 - **Money path, live**: minted a project virtual key via the API, proxied a
   real `claude-haiku` completion through the gateway, confirmed it metered into

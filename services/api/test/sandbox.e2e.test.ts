@@ -201,7 +201,7 @@ describe("sandbox docker e2e", () => {
 });
 
 async function assertPostgres() {
-  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
   try {
     await sqlClient`select 1`;
   } finally {

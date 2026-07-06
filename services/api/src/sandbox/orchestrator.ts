@@ -89,6 +89,10 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
       projectId: run.projectId,
       roleId: harnessRoleId,
       createdBy: `run:${run.id}`,
+      // Same lifecycle as the virtual key: bound to the run, expires with it, so
+      // it can be swept on terminal + rejected once expired (no indefinite fak_).
+      runId: run.id,
+      expiresAt: new Date(Date.now() + bundle.timeoutMin * 60_000),
     });
     createdKeys.platformKeyId = platformKey.id;
 
@@ -347,12 +351,13 @@ export async function reconcileSandboxes(config: AppConfig) {
   }
 }
 
-// Revoke any still-live virtual key whose run has already gone terminal, in one
-// set-based UPDATE (the isNull filter keeps the working set to genuine orphans).
-// The virtual key is the spend-capable gateway key and carries runId, so it's the
-// one that matters here; low-privilege platform keys (no runId column — linked via
-// run.sandbox.platformKeyId) rely on the per-path revoke plus their own expiry.
-// Push the gateway invalidation for each revoked key, exactly like revokeRunKeys.
+// Revoke any still-live run-scoped key whose run has already gone terminal, in
+// two set-based UPDATEs (the isNull filter keeps the working set to genuine
+// orphans, backed by the partial live-key indexes from migration 0010). Both the
+// spend-capable virtual key and the platform key now carry runId, so the sweep is
+// symmetric. Push the gateway invalidation for each revoked virtual key, exactly
+// like revokeRunKeys (the gateway doesn't cache platform keys — api auth rechecks
+// revokedAt + expiry on every hit).
 async function revokeOrphanedRunKeys(db: ReturnType<typeof createDb>["db"]) {
   const terminalRunIds = db
     .select({ id: runs.id })
@@ -368,6 +373,10 @@ async function revokeOrphanedRunKeys(db: ReturnType<typeof createDb>["db"]) {
       .execute(sql`select pg_notify('facility_key_revoked', ${row.prefix})`)
       .catch(() => undefined);
   }
+  await db
+    .update(apiKeys)
+    .set({ revokedAt: new Date() })
+    .where(and(isNull(apiKeys.revokedAt), inArray(apiKeys.runId, terminalRunIds)));
 }
 
 async function buildRunBundle(

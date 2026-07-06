@@ -33,12 +33,17 @@ services:
     image: minio/mc:RELEASE.2025-04-16T18-13-26Z
     depends_on:
       - minio
-    entrypoint: ["/bin/sh", "-c"]
-    command: |
-      until mc alias set local http://minio:9000 "$${S3_ACCESS_KEY:-facility}" "$${S3_SECRET_KEY:-facility-dev-secret}"; do
-        sleep 1
-      done
-      mc mb --ignore-existing "local/$${S3_BUCKET:-facility}"
+    # The script must be the third element of entrypoint (the -c arg), NOT a
+    # separate `command:` block scalar — compose v2.33+ word-splits a string
+    # `command`, truncating the script and dropping the `mc mb` bucket creation.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$${S3_ACCESS_KEY:-facility}" "$${S3_SECRET_KEY:-facility-dev-secret}"; do
+          sleep 1
+        done
+        mc mb --ignore-existing "local/$${S3_BUCKET:-facility}"
     environment:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-facility}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-facility-dev-secret}
@@ -77,6 +82,11 @@ services:
       WORKOS_COOKIE_PASSWORD: ${WORKOS_COOKIE_PASSWORD:-}
       FACILITY_SANDBOX_DRIVER: docker
       FACILITY_RUNNER_IMAGE: ${FACILITY_RUNNER_IMAGE:-facility-runner:dev}
+      # The api builds the runner bundle, so the api/gateway URLs it hands a
+      # sandbox come from ITS config — they must be sandbox-reachable service
+      # names, not PUBLIC_URL (localhost, which is the sandbox itself).
+      SANDBOX_API_URL: http://api:4400
+      SANDBOX_GATEWAY_URL: http://gateway:4410
     ports: ["4400:4400"]
     volumes:
       # doctor's sandbox_runner check probes the Docker daemon for the docker driver.

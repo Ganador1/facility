@@ -14,7 +14,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import swagger from "@fastify/swagger";
 import swaggerUi from "@fastify/swagger-ui";
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, gt, isNull, or } from "drizzle-orm";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
   jsonSchemaTransform,
@@ -276,7 +276,16 @@ async function resolvePrincipal(
       })
       .from(apiKeys)
       .innerJoin(rolesTable, eq(apiKeys.roleId, rolesTable.id))
-      .where(and(eq(apiKeys.prefix, keyLookup(secret)), isNull(apiKeys.revokedAt)))
+      // Reject revoked keys and expired run-scoped keys (expiresAt is null for
+      // ordinary keys). A run's platform key thus stops authenticating the moment
+      // it expires, even if the terminal-path revoke was somehow missed.
+      .where(
+        and(
+          eq(apiKeys.prefix, keyLookup(secret)),
+          isNull(apiKeys.revokedAt),
+          or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, new Date())),
+        ),
+      )
       .limit(2);
     for (const row of rows) {
       if (await verifyKey(secret, row.key.hash)) {

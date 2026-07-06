@@ -104,16 +104,21 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
     async (request) => {
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
+      // A project-scoped principal may only list its own project's runs — without
+      // this a key pinned to project X could read project Y's runs in the same org.
+      assertProjectScope(p, projectId);
       const query = request.query as { status?: string; limit: number; offset: number };
       const clauses = [eq(runs.orgId, p.orgId), eq(runs.projectId, projectId)];
       if (query.status) clauses.push(eq(runs.status, query.status));
-      return db
+      const rows = await db
         .select()
         .from(runs)
         .where(and(...clauses))
         .orderBy(desc(runs.queuedAt))
         .limit(query.limit)
         .offset(query.offset);
+      // Strip sealed credentials from every run-read surface.
+      return rows.map(redactRunSecrets);
     },
   );
 
