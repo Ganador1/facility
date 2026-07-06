@@ -6,7 +6,7 @@ import postgres from "postgres";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import { cancelRun } from "../../sandbox/orchestrator.js";
-import { notifyRunEvent, TERMINAL_RUN_STATUSES } from "../../sandbox/state.js";
+import { appendRunEvents, TERMINAL_RUN_STATUSES } from "../../sandbox/state.js";
 import type { AppConfig, Principal } from "../../types.js";
 import {
   AnyObject,
@@ -222,16 +222,6 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
     },
   );
 
-  // Human-rate seq allocation (steer). The runner's internal event ingest owns
-  // high-frequency assignment; collisions here surface as a retryable 500.
-  async function nextRunEventSeq(dbx: typeof db, runId: string) {
-    const rows = await dbx
-      .select({ max: sql<number>`coalesce(max(seq), 0)` })
-      .from(runEvents)
-      .where(eq(runEvents.runId, runId));
-    return Number(rows[0]?.max ?? 0) + 1;
-  }
-
   app.get(
     "/v1/runs/:runId",
     {
@@ -353,19 +343,12 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
           })
           .returning()
       )[0];
-      const steerEvent = (
-        await db
-          .insert(runEvents)
-          .values({
-            orgId: p.orgId,
-            runId,
-            seq: await nextRunEventSeq(db, runId),
-            type: "steer",
-            data: { text: (request.body as { body: string }).body, author: p.id },
-          })
-          .returning()
-      )[0];
-      if (steerEvent) await notifyRunEvent(db, runId, steerEvent);
+      // Route through appendRunEvents so the seq allocation shares the per-run
+      // advisory lock (and NOTIFY) with the runner's high-frequency ingest — no
+      // duplicate-key race between a steer and a concurrent event batch.
+      await appendRunEvents(db, p.orgId, runId, [
+        { type: "steer", data: { text: (request.body as { body: string }).body, author: p.id } },
+      ]);
       return message;
     },
   );

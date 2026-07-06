@@ -41,7 +41,7 @@ import {
 } from "./harness.js";
 import { publishRegistryVersion } from "./registry.js";
 import { cancelRun } from "./sandbox/orchestrator.js";
-import { notifyRunEvent, TERMINAL_RUN_STATUSES } from "./sandbox/state.js";
+import { appendRunEvents, TERMINAL_RUN_STATUSES } from "./sandbox/state.js";
 import type { AppConfig } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -248,19 +248,11 @@ async function executeKnownMcpTool(
         .values({ id: newId("evt"), orgId, runId, body })
         .returning()
     )[0];
-    const event = (
-      await db
-        .insert(runEvents)
-        .values({
-          orgId,
-          runId,
-          seq: await nextRunEventSeq(db, runId),
-          type: "steer",
-          data: { text: body, author: actor.id },
-        })
-        .returning()
-    )[0];
-    if (event) await notifyRunEvent(db, runId, event);
+    // Share the per-run advisory-locked seq allocation (+ NOTIFY) with the
+    // runner's event ingest — no duplicate-key race with a concurrent batch.
+    await appendRunEvents(db, orgId, runId, [
+      { type: "steer", data: { text: body, author: actor.id } },
+    ]);
     return { messageId: message?.id };
   }
 
@@ -467,14 +459,6 @@ function auditActorType(type: string) {
   return type === "user" || type === "key" || type === "agent" || type === "system"
     ? type
     : "system";
-}
-
-async function nextRunEventSeq(db: Db, runId: string) {
-  const rows = await db
-    .select({ max: sql<number>`coalesce(max(seq), 0)` })
-    .from(runEvents)
-    .where(eq(runEvents.runId, runId));
-  return Number(rows[0]?.max ?? 0) + 1;
 }
 
 async function resolveAgentForMcpRun(db: Db, orgId: string, projectId: string, agentName: string) {

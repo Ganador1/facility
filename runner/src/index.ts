@@ -204,13 +204,18 @@ async function runShell(command: string, cwd: string, eventType: string, timeout
     stdio: ["ignore", "pipe", "pipe"],
   });
   const clearTimers = armEngineTimeout(child, timeoutMin);
-  for (const stream of [child.stdout, child.stderr]) {
+  const drains = [child.stdout, child.stderr].map((stream) => {
     const rl = createInterface({ input: stream });
-    void (async () => {
+    return (async () => {
       for await (const line of rl) await emit([{ type: eventType, data: { text: line } }]);
     })();
-  }
+  });
   const code = await exitCode(child);
+  // Wait for both stream readers to finish draining before returning, so no
+  // output line is emitted AFTER the caller records the run's result (a late
+  // event would be dropped as post-terminal). Previously these loops were
+  // fire-and-forget and could lose or reorder trailing output.
+  await Promise.all(drains);
   clearTimers();
   return code;
 }

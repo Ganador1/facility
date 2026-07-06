@@ -56,14 +56,6 @@ export function terminalStatus(status: string) {
   return (TERMINAL_RUN_STATUSES as readonly string[]).includes(status);
 }
 
-export async function nextRunEventSeq(db: FacilityDb, runId: string): Promise<number> {
-  const rows = await db
-    .select({ max: sql<number>`coalesce(max(seq), 0)` })
-    .from(runEvents)
-    .where(eq(runEvents.runId, runId));
-  return Number(rows[0]?.max ?? 0) + 1;
-}
-
 export async function appendRunEvents(
   db: FacilityDb,
   orgId: string,
@@ -71,16 +63,30 @@ export async function appendRunEvents(
   events: Array<{ type: string; data?: Record<string, unknown>; ts?: string }>,
 ) {
   if (events.length === 0) return [];
-  const start = await nextRunEventSeq(db, runId);
-  const values = events.map((event, index) => ({
-    orgId,
-    runId,
-    seq: start + index,
-    type: event.type,
-    data: event.data ?? {},
-    ts: event.ts ? new Date(event.ts) : undefined,
-  }));
-  const inserted = await db.insert(runEvents).values(values).returning();
+  // Allocate the seq range and insert atomically per run. `max(seq)+1` then
+  // insert races on the (run_id, seq) PK when two producers append to the same
+  // run at once (e.g. a runner batch and a lifecycle event), surfacing as a
+  // retryable duplicate-key 500. A per-run advisory lock inside one transaction
+  // serializes allocation+insert for THIS run only — other runs (different lock
+  // key) never contend. NOTIFY fires after commit so listeners see only durable
+  // events.
+  const inserted = await db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${runId}))`);
+    const rows = await tx
+      .select({ max: sql<number>`coalesce(max(seq), 0)` })
+      .from(runEvents)
+      .where(eq(runEvents.runId, runId));
+    const start = Number(rows[0]?.max ?? 0) + 1;
+    const values = events.map((event, index) => ({
+      orgId,
+      runId,
+      seq: start + index,
+      type: event.type,
+      data: event.data ?? {},
+      ts: event.ts ? new Date(event.ts) : undefined,
+    }));
+    return tx.insert(runEvents).values(values).returning();
+  });
   for (const event of inserted) {
     await notifyRunEvent(db, runId, event);
   }

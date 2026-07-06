@@ -8,6 +8,7 @@ import {
   projects,
   repos,
   roles,
+  runEvents,
   runs,
   seed,
   virtualKeys,
@@ -19,6 +20,7 @@ import { buildApp } from "../src/app.js";
 import { AwsSandboxDriver } from "../src/sandbox/aws.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
 import { reconcileSandboxes } from "../src/sandbox/orchestrator.js";
+import { appendRunEvents } from "../src/sandbox/state.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -125,6 +127,28 @@ describe("sandbox api", async () => {
         throw { statusCode: 500, message: "daemon boom" };
       }).imageExists("runner:dev"),
     ).rejects.toMatchObject({ statusCode: 500 });
+  });
+
+  it("appendRunEvents allocates contiguous seqs under concurrent appends", async () => {
+    const runId = newId("run");
+    await insertRunnerRun("frt_seq", "running", runId, {});
+    // Many producers append to the SAME run at once — without the per-run advisory
+    // lock these race on the (run_id, seq) PK and some fail with a duplicate key.
+    const count = 24;
+    const results = await Promise.all(
+      Array.from({ length: count }, (_, i) =>
+        appendRunEvents(db, orgId, runId, [{ type: "assistant", data: { n: i } }]),
+      ),
+    );
+    expect(results.every((r) => r.length === 1)).toBe(true);
+    const rows = await db
+      .select({ seq: runEvents.seq })
+      .from(runEvents)
+      .where(eq(runEvents.runId, runId))
+      .orderBy(runEvents.seq);
+    const seqs = rows.map((r) => r.seq);
+    // All appends landed, with unique + contiguous seqs starting at 1.
+    expect(seqs).toEqual(Array.from({ length: count }, (_, i) => i + 1));
   });
 
   it("aws driver fails loudly as not_configured when env is missing", async () => {
