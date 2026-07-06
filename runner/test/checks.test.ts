@@ -1,6 +1,12 @@
 import { tmpdir } from "node:os";
-import { describe, expect, it } from "vitest";
-import { checkEvent, redactSecrets, runCheckCommand } from "../src/index.js";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  checkEvent,
+  engineEnv,
+  parseSelfReportedChecks,
+  redactSecrets,
+  runCheckCommand,
+} from "../src/index.js";
 
 describe("platform acceptance checks", () => {
   it("reports the exit code of a passing command", async () => {
@@ -65,5 +71,47 @@ describe("secret redaction of check output", () => {
 
   it("passes text through untouched when there are no secrets", () => {
     expect(redactSecrets("nothing secret here", [])).toBe("nothing secret here");
+  });
+});
+
+describe("self-reported check provenance", () => {
+  it("forces self_reported:true even when the agent line claims false", () => {
+    const events = parseSelfReportedChecks(
+      '{"name":"lint","status":"passed","self_reported":false}',
+    );
+    expect(events).toHaveLength(1);
+    expect(events[0]?.data.self_reported).toBe(true);
+    expect(events[0]?.data.name).toBe("lint");
+  });
+
+  it("isolates a malformed line without dropping the valid ones", () => {
+    const events = parseSelfReportedChecks(['{"name":"a"}', "not json", '{"name":"b"}'].join("\n"));
+    expect(events.map((e) => e.data.name)).toEqual(["a", "b"]);
+    expect(events.every((e) => e.data.self_reported === true)).toBe(true);
+  });
+
+  it("is empty for empty input", () => {
+    expect(parseSelfReportedChecks("")).toEqual([]);
+  });
+});
+
+describe("engine environment isolation", () => {
+  const saved = { runner: process.env.RUNNER_TOKEN, auth: process.env.ANTHROPIC_AUTH_TOKEN };
+  afterEach(() => {
+    if (saved.runner === undefined) delete process.env.RUNNER_TOKEN;
+    else process.env.RUNNER_TOKEN = saved.runner;
+    if (saved.auth === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+    else process.env.ANTHROPIC_AUTH_TOKEN = saved.auth;
+  });
+
+  it("never leaks the runner's internal-lifecycle token to the child engine/checks", () => {
+    process.env.RUNNER_TOKEN = "rt_super_secret_runner_token";
+    process.env.ANTHROPIC_AUTH_TOKEN = "should-be-stripped";
+    const env = engineEnv();
+    expect(env.RUNNER_TOKEN).toBeUndefined();
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.HOME).toBe("/work");
+    // The runner's own process still holds the token for its api() calls.
+    expect(process.env.RUNNER_TOKEN).toBe("rt_super_secret_runner_token");
   });
 });

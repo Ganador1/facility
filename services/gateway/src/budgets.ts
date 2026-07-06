@@ -26,7 +26,10 @@ export async function applicableBudgets(
   key: AuthedKey,
   now: Date,
 ): Promise<BudgetState[]> {
-  const cacheKey = `${key.orgId}:${key.projectId}:${key.runId ?? "none"}:${key.budgetId ?? "none"}`;
+  // agentDefId MUST be in the key: the query below filters on it, so two requests
+  // that share org/project/run/budget but differ in agent would otherwise be served
+  // each other's cached budget definitions until the TTL expires.
+  const cacheKey = `${key.orgId}:${key.projectId}:${key.agentDefId ?? "none"}:${key.runId ?? "none"}:${key.budgetId ?? "none"}`;
   let defs = budgetDefCache.get(cacheKey);
   if (!defs || defs.expiresAt <= Date.now()) {
     const filters = [
@@ -191,12 +194,23 @@ async function adjustBudgetCounter(db: FacilityDb, budget: BudgetState, deltaCen
     );
 }
 
+// Per-instance throttle so a breached soft budget writes its issue at most once
+// per window here, instead of upserting on every allowed request (hot-path write
+// amplification). The DB upsert already dedupes by fingerprint; this just avoids
+// the redundant write. Keyed by fingerprint, which includes the budget window, so
+// it rolls over naturally.
+const SOFT_ISSUE_THROTTLE_MS = 60_000;
+const softIssueEmittedAt = new Map<string, number>();
+
 export async function emitSoftBudgetIssues(db: FacilityDb, states: BudgetState[], key: AuthedKey) {
   const breached = states.filter(
     (budget) => budget.mode === "soft" && budget.spentCents >= budget.limitCents,
   );
+  const nowMs = Date.now();
   for (const budget of breached) {
     const fingerprint = `budget.warned:${budget.id}:${budget.windowStart}`;
+    if (nowMs - (softIssueEmittedAt.get(fingerprint) ?? 0) < SOFT_ISSUE_THROTTLE_MS) continue;
+    softIssueEmittedAt.set(fingerprint, nowMs);
     await db
       .insert(platformIssues)
       .values({
@@ -224,6 +238,7 @@ export async function emitSoftBudgetIssues(db: FacilityDb, states: BudgetState[]
 
 export function clearBudgetCache() {
   budgetDefCache.clear();
+  softIssueEmittedAt.clear();
 }
 
 export function windowStart(period: string, now: Date): string {

@@ -76,7 +76,11 @@ export function KeysManager({ keys, roles }: { keys: ApiKey[]; roles: Role[] }) 
   return (
     <div className="flex flex-col gap-5">
       {issued ? (
-        <div className="flex flex-col gap-2 border border-(--line-strong) bg-(--bg-subtle) p-4">
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex flex-col gap-2 border border-(--line-strong) bg-(--bg-subtle) p-4"
+        >
           <span className="font-mono text-[10.5px] uppercase tracking-[0.2em] text-(--ink)">
             copy this now — shown once
           </span>
@@ -92,16 +96,18 @@ export function KeysManager({ keys, roles }: { keys: ApiKey[]; roles: Role[] }) 
       ) : null}
 
       <form onSubmit={issue} className="flex flex-wrap items-end gap-3">
-        <Field label="new key name" className="flex-1">
+        <Field label="new key name" className="min-w-0 flex-1">
           <TextInput
             required
+            name="key-name"
+            autoComplete="off"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="ci-pipeline"
           />
         </Field>
         <Field label="role">
-          <Select value={roleId} onChange={(e) => setRoleId(e.target.value)}>
+          <Select name="key-role" value={roleId} onChange={(e) => setRoleId(e.target.value)}>
             {roles.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
@@ -113,8 +119,16 @@ export function KeysManager({ keys, roles }: { keys: ApiKey[]; roles: Role[] }) 
           {busy ? "issuing…" : "issue key"}
         </Button>
       </form>
-      {notice ? <p className="font-mono text-[11px] text-(--ok)">{notice}</p> : null}
-      {error ? <p className="font-mono text-[11px] text-(--bad)">{error}</p> : null}
+      {notice ? (
+        <p role="status" aria-live="polite" className="font-mono text-[11px] text-(--ok)">
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p role="alert" aria-live="assertive" className="font-mono text-[11px] text-(--bad)">
+          {error}
+        </p>
+      ) : null}
 
       {live.length === 0 ? (
         <p className="text-sm text-(--dim)">No active keys.</p>
@@ -123,13 +137,13 @@ export function KeysManager({ keys, roles }: { keys: ApiKey[]; roles: Role[] }) 
           {live.map((k) => (
             <div
               key={k.id}
-              className="flex items-center gap-4 border-b border-(--line) px-4 py-3 last:border-b-0"
+              className="flex min-w-0 items-center gap-4 border-b border-(--line) px-4 py-3 last:border-b-0"
             >
-              <span className="font-mono text-[13px] text-(--ink)">{k.name}</span>
-              <span className="font-mono text-[11px] text-(--dim)">
+              <span className="min-w-0 truncate font-mono text-[13px] text-(--ink)">{k.name}</span>
+              <span className="shrink-0 font-mono text-[11px] text-(--dim)">
                 {k.prefix}…{k.last4}
               </span>
-              <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-(--dim)">
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.16em] text-(--dim)">
                 {k.scopeType}
               </span>
               {pendingRevokeId === k.id ? (

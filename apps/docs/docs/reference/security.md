@@ -16,9 +16,13 @@ Security and privacy are first-class concerns; this page is the contract.
 
 ## Secrets
 
-- Provider keys, GitHub App key, WorkOS credentials: sealed (libsodium) with
-  a master key from your secret manager/KMS. Decrypted only in the service
-  that needs them; never returned by any API; access audited.
+- **Stored secrets** — provider API keys and integration signing secrets are
+  sealed (libsodium) with a master key from your secret manager/KMS, decrypted
+  only in the service that needs them, and never returned by any API.
+- **Service credentials** — the GitHub App private key and WorkOS credentials
+  are supplied to the services as environment variables from your secret
+  manager; the platform reads them at boot and does not persist them in its
+  database.
 - Sandboxes receive no provider secrets — only run-scoped virtual keys and
   short-lived repo tokens fetched after boot.
 

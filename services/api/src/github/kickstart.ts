@@ -12,10 +12,11 @@ import {
   type FacilityDb,
   githubInstallations,
   insertAuditEvent,
+  projects,
   proposals,
   repos,
 } from "@facility/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { ApiError } from "../errors.js";
 import type { AppConfig, Principal } from "../types.js";
 import { raisePlatformIssue } from "../watchtower/issues.js";
@@ -174,6 +175,18 @@ export async function kickstartRepo(args: {
       updatedAt: new Date(),
     })
     .where(eq(repos.id, args.repo.id));
+  // Persist the resolved acceptance gates into the project's settings too, so the
+  // PLATFORM lane runs them (the runner reads projects.settings.check_cmds as its
+  // fallback). Without this, only the repo lane's vendored workflows would carry
+  // the detected checks and a platform-lane run would have zero gates. Merge with
+  // `||` to preserve default_branch and any other settings keys.
+  await args.db
+    .update(projects)
+    .set({
+      settings: sql`${projects.settings} || ${JSON.stringify({ check_cmds: renderAnswers.checkCmds ?? [] })}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(projects.orgId, args.repo.orgId), eq(projects.id, args.projectId)));
   await createKickstartProposal(
     args.db,
     args.repo.orgId,

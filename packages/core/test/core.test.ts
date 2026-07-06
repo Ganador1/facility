@@ -90,6 +90,19 @@ describe("provider base URL validation", () => {
     await expect(
       validateProviderBaseUrl("https://private.example/v1", { resolveHost }),
     ).rejects.toThrow("provider_base_url_private_host");
+    // Special-use ranges that must also be refused: 0.0.0.0/8, multicast/reserved
+    // (>=224), broadcast, and the TEST-NET documentation range.
+    for (const host of [
+      "0.0.0.0",
+      "224.0.0.1",
+      "239.255.255.250",
+      "255.255.255.255",
+      "192.0.2.1",
+    ]) {
+      await expect(
+        validateProviderBaseUrl(`https://${host}/v1`, { resolveHost: async () => [host] }),
+      ).rejects.toThrow("provider_base_url_private_host");
+    }
   });
 
   it("allows standard public provider endpoints", async () => {

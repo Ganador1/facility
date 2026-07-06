@@ -58,6 +58,7 @@ exactly what the run needs.
 Every run streams structured events — status, tool use, checks, output — to
 the platform. Open any run to watch it live or replay it later. When an agent
 is stuck, an engineer can **steer**: send it a message from the run view, on
-the record. Steering is delivered into the agent's session, marked in the
-transcript, and written to the audit log. Diagnosing a wedged session no
-longer means SSH and guesswork.
+the record. The message is recorded in the transcript and audit log and
+delivered to the run's steering inbox (`STEERING.md`), which the agent picks up
+as it works — for the non-interactive Claude/Codex CLIs that means between turns,
+not mid-token. Diagnosing a wedged session no longer means SSH and guesswork.

@@ -235,7 +235,8 @@ async function runShell(command: string, cwd: string, eventType: string, timeout
   const drains = [child.stdout, child.stderr].map((stream) => {
     const rl = createInterface({ input: stream });
     return (async () => {
-      for await (const line of rl) await emit([{ type: eventType, data: { text: line } }]);
+      for await (const line of rl)
+        await emit([{ type: eventType, data: { text: redactSecrets(line) } }]);
     })();
   });
   const code = await exitCode(child);
@@ -256,21 +257,25 @@ async function emitChecks(cwd: string) {
   } catch {
     return;
   }
-  const events = body
+  await emit(parseSelfReportedChecks(body));
+}
+
+// Parse the agent's self-reported checks.jsonl into `check` events. self_reported
+// is forced true LAST so an agent-authored line can't spoof platform provenance by
+// setting self_reported:false, and each line is isolated in its own try/catch so
+// one malformed line can't throw out the whole batch (or abort before the
+// platform-owned checks run).
+export function parseSelfReportedChecks(body: string) {
+  return body
     .split(/\r?\n/)
     .filter(Boolean)
     .flatMap((line) => {
       try {
-        // self_reported LAST so an agent-authored line can't spoof platform
-        // provenance by setting self_reported:false. Per-line isolation so one
-        // malformed line can't throw out the whole batch (or abort before the
-        // platform-owned checks run).
         return [{ type: "check", data: { ...JSON.parse(line), self_reported: true } }];
       } catch {
         return [];
       }
     });
-  await emit(events);
 }
 
 // Run the platform-owned acceptance gates (bundle.checkCmds) after the engine.
@@ -361,7 +366,9 @@ async function postResult(
           duration_ms: Date.now() - startedAt,
         },
       },
-      error: error ? `${JSON.stringify(error)} ${stderrTail.slice(-2000)}` : undefined,
+      error: error
+        ? redactSecrets(`${JSON.stringify(error)} ${stderrTail.slice(-2000)}`)
+        : undefined,
     }),
   });
 }
@@ -392,9 +399,18 @@ async function fetchJson(url: string, init: RequestInit = {}) {
   return response.json();
 }
 
-function engineEnv() {
+export function engineEnv() {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: "/work" };
   delete env.ANTHROPIC_AUTH_TOKEN;
+  // Never expose the runner's internal-lifecycle credential to the (untrusted)
+  // engine or check commands. With RUNNER_TOKEN a compromised agent could call
+  // /internal/runs/:id/{events,result} for its own run to forge platform-provenance
+  // check events or post a fake `succeeded` result — bypassing the very acceptance
+  // gates the runner enforces. The runner keeps its own RUNNER_TOKEN in its process
+  // env for its api() calls; the child simply never inherits it. (The agent still
+  // reaches the platform's v1 API via FACILITY_API_URL + FACILITY_PLATFORM_KEY,
+  // which are separately authorized and cannot touch run lifecycle.)
+  delete env.RUNNER_TOKEN;
   return env;
 }
 

@@ -5,25 +5,27 @@
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
 
-## Current state (round 21, 2026-07-06)
+## Current state (round 26, 2026-07-06)
 
-The platform was driven through twenty-one independent GPT-5.5 (xhigh)
+The platform was driven through twenty-six independent GPT-5.5 (xhigh)
 verification rounds — six adversarial verifiers per full round, one per aspect —
 each round followed by fixes to the named findings, re-verified against primary
 evidence (diff review + a re-run full suite) before commit. Each round is a fresh
 adversarial re-audit at a rising bar, so scores are **not** monotonic: a lower
 number than an earlier round reflects a stricter audit finding the next layer,
-not a regression. Round-21 snapshot:
+not a regression. Round-26 snapshot (the wave after it closes the round-26
+security blocker — agent env inheriting the runner token — and its impl/features
+majors, pending round-27 re-verification):
 
-| aspect | round 1 | round 21 |
+| aspect | round 1 | round 26 |
 |---|---:|---:|
-| Implementation & architecture | 56 | **83** |
-| Security & privacy | 58 | **89** |
-| UI/UX | 76 | 85 |
-| Feature completeness & product fit | 58 | 82 |
+| Implementation & architecture | 56 | **86** |
+| Security & privacy | 58 | 82 |
+| UI/UX | 76 | **88** |
+| Feature completeness & product fit | 58 | **86** |
 | Optimization | 58 | **90** |
-| Docs, DX, operability | 56 | 84 |
-| **average** | **~59** | **~85.5** |
+| Docs, DX, operability | 56 | **84** |
+| **average** | **~59** | **~86** |
 
 Later rounds drove deep into concurrency/atomicity and tenant isolation:
 run-lifecycle + issue persistence made race-safe with claim-checked / state-pinned

@@ -128,8 +128,11 @@ async function handleProvider(
   const priced = normalizedModel !== null;
   const zeroCostPolicy = isZeroCostVirtualKey(key, model);
   const budgets = await applicableBudgets(db, key, now());
-  const recordedBody =
-    provider === "openai" ? prepareOpenAiBody(parsed.json).recordedBody : parsed.json;
+  // Prepare the OpenAI body once (it clones + reserializes to inject
+  // stream_options.include_usage); both the recorded and upstream bodies reuse it
+  // rather than paying the transform twice on the hot path.
+  const prepared = provider === "openai" ? prepareOpenAiBody(parsed.json) : null;
+  const recordedBody = prepared ? prepared.recordedBody : parsed.json;
   const requestBody = sanitizedRequest(recordedBody, request.headers);
 
   if (!priced && !zeroCostPolicy) {
@@ -212,7 +215,7 @@ async function handleProvider(
   }
 
   await emitSoftBudgetIssues(db, budgets, key);
-  const upstreamBody = provider === "openai" ? prepareOpenAiBody(parsed.json).raw : parsed.raw;
+  const upstreamBody = prepared ? prepared.raw : parsed.raw;
   const pendingRecord = baseRecord({
     requestId,
     provider,

@@ -568,6 +568,42 @@ describe("api", async () => {
     expect(sameOrgKey.statusCode).toBe(200);
   });
 
+  it("forbids a project-scoped principal from creating an org-wide budget and rejects bad enums", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const projectKey = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: `proj-budget-key-${suffix}`, roleId: ownerRole, projectId },
+    });
+    expect(projectKey.statusCode).toBe(200);
+    // A project-scoped principal must not create an org-wide budget (it would cap
+    // the whole org's spend, since the gateway ignores projectId for org budgets).
+    const orgBudget = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { authorization: `Bearer ${projectKey.json().secret}` },
+      payload: { scope: "org", period: "monthly", limitCents: 1000, mode: "hard" },
+    });
+    expect(orgBudget.statusCode).toBe(403);
+    expect(orgBudget.json().error.code).toBe("forbidden_budget_scope");
+    // Unenforceable enum values are rejected up front, not silently stored.
+    const badMode = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: { scope: "org", period: "monthly", limitCents: 1000, mode: "medium" },
+    });
+    expect(badMode.statusCode).toBe(400);
+    const badPeriod = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: { scope: "org", period: "hourly", limitCents: 1000, mode: "hard" },
+    });
+    expect(badPeriod.statusCode).toBe(400);
+  });
+
   it("rejects agent references outside the agent project", async () => {
     const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const projectA = (

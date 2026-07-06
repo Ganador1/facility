@@ -54,6 +54,9 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
             required
             type="number"
             min="1"
+            inputMode="decimal"
+            name="budget-limit"
+            autoComplete="off"
             value={limit}
             onChange={(e) => setLimit(e.target.value)}
             placeholder="500"
@@ -61,14 +64,22 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
           />
         </Field>
         <Field label="period">
-          <Select value={period} onChange={(e) => setPeriod(e.target.value as typeof period)}>
+          <Select
+            name="budget-period"
+            value={period}
+            onChange={(e) => setPeriod(e.target.value as typeof period)}
+          >
             <option value="daily">daily</option>
             <option value="weekly">weekly</option>
             <option value="monthly">monthly</option>
           </Select>
         </Field>
         <Field label="mode">
-          <Select value={mode} onChange={(e) => setMode(e.target.value as typeof mode)}>
+          <Select
+            name="budget-mode"
+            value={mode}
+            onChange={(e) => setMode(e.target.value as typeof mode)}
+          >
             <option value="soft">soft — warn</option>
             <option value="hard">hard — stop</option>
           </Select>
@@ -77,7 +88,11 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
           {busy ? "adding…" : "add budget"}
         </Button>
       </form>
-      {error ? <p className="font-mono text-[11px] text-(--bad)">{error}</p> : null}
+      {error ? (
+        <p role="alert" aria-live="assertive" className="font-mono text-[11px] text-(--bad)">
+          {error}
+        </p>
+      ) : null}
 
       {budgets.length === 0 ? (
         <p className="text-sm text-(--dim)">No budgets. Spend is uncapped.</p>

@@ -3,7 +3,7 @@ import { budgets, providerCredentials, virtualKeys } from "@facility/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { notFound } from "../../errors.js";
+import { ApiError, notFound } from "../../errors.js";
 import type { Principal } from "../../types.js";
 import {
   AnyObject,
@@ -264,12 +264,14 @@ export async function registerProvidersBudgetsSpendRoutes(
       config: { permission: "budgets:write", auditAction: "budget.breached" },
       schema: {
         body: z.object({
-          scope: z.string(),
+          // Enum-bound to exactly what the gateway enforces — an unrecognized
+          // scope/period/mode would store a budget the runtime silently ignores.
+          scope: z.enum(["org", "project", "agent_def"]),
           projectId: z.string().optional(),
           agentDefId: z.string().optional(),
-          period: z.string(),
-          limitCents: z.number().int(),
-          mode: z.string(),
+          period: z.enum(["daily", "weekly", "monthly"]),
+          limitCents: z.number().int().positive(),
+          mode: z.enum(["soft", "hard"]),
           enabled: z.boolean().default(true),
         }),
         response: { 200: BudgetSchema },
@@ -278,16 +280,35 @@ export async function registerProvidersBudgetsSpendRoutes(
     async (request) => {
       const p = principal(request);
       const body = request.body as {
-        scope: string;
+        scope: "org" | "project" | "agent_def";
         projectId?: string;
         agentDefId?: string;
-        period: string;
+        period: "daily" | "weekly" | "monthly";
         limitCents: number;
-        mode: string;
+        mode: "soft" | "hard";
         enabled: boolean;
       };
+      // A project-scoped principal must not create an org-wide budget: the gateway
+      // treats org budgets as covering the whole org (ignoring projectId), so this
+      // would let a project admin cap every other project's spend.
+      if (p.projectId && body.scope === "org") {
+        throw new ApiError(
+          403,
+          "forbidden_budget_scope",
+          "A project-scoped principal cannot create an org-wide budget",
+        );
+      }
       await assertProjectInOrg(p, body.projectId);
-      const projectId = p.projectId ?? body.projectId;
+      // Org budgets are org-wide (no project); project/agent budgets bind to the
+      // principal's project (or, for an org principal, the named in-org project).
+      const projectId = body.scope === "org" ? null : (p.projectId ?? body.projectId ?? null);
+      if (body.scope !== "org" && !projectId) {
+        throw new ApiError(
+          400,
+          "budget_project_required",
+          "A project- or agent-scoped budget requires a projectId",
+        );
+      }
       return (
         await db
           .insert(budgets)
