@@ -3766,6 +3766,7 @@ export interface paths {
                             items: {
                                 id: string;
                                 orgId: string;
+                                projectId?: string | null;
                                 seq: number;
                                 actor: unknown;
                                 action: string;
@@ -3931,10 +3932,7 @@ export interface paths {
         };
         get: {
             parameters: {
-                query?: {
-                    from?: string;
-                    to?: string;
-                };
+                query?: never;
                 header?: never;
                 path?: never;
                 cookie?: never;

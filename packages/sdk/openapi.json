@@ -7641,6 +7641,10 @@
                           "orgId": {
                             "type": "string"
                           },
+                          "projectId": {
+                            "nullable": true,
+                            "type": "string"
+                          },
                           "seq": {
                             "type": "number"
                           },
@@ -8017,24 +8021,6 @@
     },
     "/v1/audit/verify": {
       "get": {
-        "parameters": [
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "query",
-            "name": "from",
-            "required": false
-          },
-          {
-            "schema": {
-              "type": "string"
-            },
-            "in": "query",
-            "name": "to",
-            "required": false
-          }
-        ],
         "responses": {
           "200": {
             "description": "Default Response",

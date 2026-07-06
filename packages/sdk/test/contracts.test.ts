@@ -4,6 +4,7 @@ import type {
   FacilityRouteBody,
   FacilityRouteResponse,
   InboxResponse,
+  Issue,
   Me,
   Project,
   QueryParams,
@@ -200,6 +201,7 @@ describe("typed route contracts", () => {
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/projects">>().toEqualTypeOf<Project[]>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/runs">>().toEqualTypeOf<RunWithProject[]>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/inbox">>().toEqualTypeOf<InboxResponse>();
+    expectTypeOf<FacilityRouteResponse<"GET", "/v1/issues">>().toEqualTypeOf<Issue[]>();
   });
 
   it("resolves a bare :id route but rejects a wrong nested path as never", () => {

@@ -31,6 +31,7 @@ import type {
 } from "./contracts.js";
 
 export type * from "./contracts.js";
+export { FACILITY_V1_ROUTES, type FacilityV1Route } from "./routes.js";
 
 type RouteOptions<Method extends FacilityRouteMethod, Path extends FacilityRoutePath<Method>> = {
   body?: FacilityRouteBody<Method, Path>;

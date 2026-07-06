@@ -320,6 +320,7 @@ export type FacilityGetRoutePath =
   | `/v1/runs/${string}`
   | `/v1/runs/${string}/events`
   | "/v1/inbox"
+  | "/v1/issues"
   | `/v1/proposals/${string}`
   | "/v1/audit"
   | "/v1/audit/verify"
@@ -366,39 +367,41 @@ export type FacilityGetRouteResponse<Path extends FacilityGetRoutePath> = Path e
                       ? IfLeaf<Id, Run>
                       : Path extends "/v1/inbox"
                         ? InboxResponse
-                        : Path extends `/v1/proposals/${infer Id}`
-                          ? IfLeaf<Id, ProposalWithEvents>
-                          : Path extends "/v1/audit"
-                            ? AuditTail
-                            : Path extends "/v1/audit/verify"
-                              ? { ok: boolean; firstBreakSeq: number | null }
-                              : Path extends "/v1/admin/doctor"
-                                ? DoctorResponse
-                                : Path extends "/v1/registry/items"
-                                  ? RegistryItem[]
-                                  : Path extends `/v1/registry/items/${infer Id}`
-                                    ? IfLeaf<Id, RegistryItemWithVersions>
-                                    : Path extends "/v1/spend"
-                                      ? SpendRow[]
-                                      : Path extends "/v1/members"
-                                        ? MemberRow[]
-                                        : Path extends "/v1/roles"
-                                          ? Role[]
-                                          : Path extends "/v1/keys"
-                                            ? ApiKey[]
-                                            : Path extends "/v1/providers"
-                                              ? Provider[]
-                                              : Path extends "/v1/budgets"
-                                                ? Budget[]
-                                                : Path extends `/v1/budgets/${infer Id}`
-                                                  ? IfLeaf<Id, Budget>
-                                                  : Path extends "/v1/llm-requests"
-                                                    ? LlmRequestPage
-                                                    : Path extends `/v1/llm-requests/${string}/envelope`
-                                                      ? LlmRequestEnvelope
-                                                      : Path extends "/v1/sandbox-profiles"
-                                                        ? SandboxProfile[]
-                                                        : never;
+                        : Path extends "/v1/issues"
+                          ? Issue[]
+                          : Path extends `/v1/proposals/${infer Id}`
+                            ? IfLeaf<Id, ProposalWithEvents>
+                            : Path extends "/v1/audit"
+                              ? AuditTail
+                              : Path extends "/v1/audit/verify"
+                                ? { ok: boolean; firstBreakSeq: number | null }
+                                : Path extends "/v1/admin/doctor"
+                                  ? DoctorResponse
+                                  : Path extends "/v1/registry/items"
+                                    ? RegistryItem[]
+                                    : Path extends `/v1/registry/items/${infer Id}`
+                                      ? IfLeaf<Id, RegistryItemWithVersions>
+                                      : Path extends "/v1/spend"
+                                        ? SpendRow[]
+                                        : Path extends "/v1/members"
+                                          ? MemberRow[]
+                                          : Path extends "/v1/roles"
+                                            ? Role[]
+                                            : Path extends "/v1/keys"
+                                              ? ApiKey[]
+                                              : Path extends "/v1/providers"
+                                                ? Provider[]
+                                                : Path extends "/v1/budgets"
+                                                  ? Budget[]
+                                                  : Path extends `/v1/budgets/${infer Id}`
+                                                    ? IfLeaf<Id, Budget>
+                                                    : Path extends "/v1/llm-requests"
+                                                      ? LlmRequestPage
+                                                      : Path extends `/v1/llm-requests/${string}/envelope`
+                                                        ? LlmRequestEnvelope
+                                                        : Path extends "/v1/sandbox-profiles"
+                                                          ? SandboxProfile[]
+                                                          : never;
 
 export type FacilityPostRoutes = {
   "/v1/projects": Route<Project, CreateProjectRequest>;
