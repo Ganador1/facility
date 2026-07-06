@@ -290,7 +290,20 @@ export async function reconcileSandboxes(config: AppConfig) {
     for (const run of liveRuns) {
       const sandbox = readSandbox(run.sandbox);
       if (!sandbox.driver || !sandbox.ref) continue;
-      const status = await (await sandboxDriver(sandbox.driver)).status(sandbox.ref);
+      const driver = await sandboxDriver(sandbox.driver);
+      // Hard cost cap / driver-level backstop: if a run has blown past its timeout
+      // (with grace beyond the runner's own SIGTERM→SIGKILL escalation), destroy
+      // the sandbox and fail the run — covers an engine that ignores signals or a
+      // wedged sandbox the in-container runner can't kill itself.
+      const launchedAt = sandbox.launchedAt ? Date.parse(sandbox.launchedAt) : Number.NaN;
+      const timeoutMin = Number(sandbox.bundle?.timeoutMin) || 60;
+      const deadline = Number.isNaN(launchedAt) ? null : launchedAt + (timeoutMin + 3) * 60_000;
+      if (deadline !== null && Date.now() > deadline) {
+        await driver.destroy(sandbox.ref).catch(() => undefined);
+        await failRun(db, run.orgId, run.id, "sandbox_timeout", "sandbox_timeout");
+        continue;
+      }
+      const status = await driver.status(sandbox.ref);
       if (status === "exited" || status === "lost") {
         await failRun(db, run.orgId, run.id, "sandbox_lost", "sandbox_lost");
       }

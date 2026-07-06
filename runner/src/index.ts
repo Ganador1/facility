@@ -179,14 +179,14 @@ async function runJsonProcess(
   const child = spawn(command, args, { cwd, env: engineEnv(), stdio: ["ignore", "pipe", "pipe"] });
   const stderr = createWriteStream(join(workRoot, "engine.stderr.log"), { flags: "a" });
   child.stderr.pipe(stderr);
-  const timer = setTimeout(() => child.kill("SIGTERM"), Math.max(1, timeoutMin - 2) * 60_000);
+  const clearTimers = armEngineTimeout(child, timeoutMin);
   const rl = createInterface({ input: child.stdout });
   for await (const line of rl) {
     const event = parse(line);
     if (event) await emit([event]);
   }
   const code = await exitCode(child);
-  clearTimeout(timer);
+  clearTimers();
   if (Date.now() - startedAt >= Math.max(1, timeoutMin - 2) * 60_000) {
     return 124;
   }
@@ -199,7 +199,7 @@ async function runShell(command: string, cwd: string, eventType: string, timeout
     env: engineEnv(),
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const timer = setTimeout(() => child.kill("SIGTERM"), Math.max(1, timeoutMin - 2) * 60_000);
+  const clearTimers = armEngineTimeout(child, timeoutMin);
   for (const stream of [child.stdout, child.stderr]) {
     const rl = createInterface({ input: stream });
     void (async () => {
@@ -207,7 +207,7 @@ async function runShell(command: string, cwd: string, eventType: string, timeout
     })();
   }
   const code = await exitCode(child);
-  clearTimeout(timer);
+  clearTimers();
   return code;
 }
 
@@ -311,6 +311,24 @@ async function runCommand(command: string, args: string[], cwd: string) {
 
 function exitCode(child: ReturnType<typeof spawn>) {
   return new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? 1)));
+}
+
+// Arm the engine timeout: SIGTERM at (timeout - 2min), then escalate to SIGKILL
+// if the engine ignores it, so a process that traps/ignores SIGTERM cannot run
+// (and bill) unbounded. Returns a disposer that cancels both timers on clean exit.
+function armEngineTimeout(child: ReturnType<typeof spawn>, timeoutMin: number) {
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const termTimer = setTimeout(
+    () => {
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+    },
+    Math.max(1, timeoutMin - 2) * 60_000,
+  );
+  return () => {
+    clearTimeout(termTimer);
+    if (killTimer) clearTimeout(killTimer);
+  };
 }
 
 export function composedPrompt(bundle: RunBundle) {
