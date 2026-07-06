@@ -58,9 +58,10 @@ resource server** — remote MCP now accepts WorkOS-issued access-token JWTs
 - **Analytics rollup** is incremental (trailing window + time-leading indexes)
   rather than dirty-bucket/watermark incremental — correct and bounded, but a
   watermark design would rebuild only changed buckets.
-- **Web is an operator dashboard**, not yet the full control plane: agents,
-  sandbox profiles, providers, virtual keys, and KB/tasks are managed through the
-  **v1 API** (with partial CLI/MCP coverage — the CLI focuses on
+- **Web is an operator dashboard**, not yet the full control plane: settings now
+  manages providers, API keys, and budgets in the web UI, but agents, sandbox
+  profiles, virtual keys, and KB/tasks are still managed through the **v1 API**
+  (with partial CLI/MCP coverage — the CLI focuses on
   status/projects/runs/inbox/issues/keys/kickstart/llm-requests; MCP on
   run/registry/budget/project tools) and are not yet first-class web surfaces.
 
@@ -88,7 +89,7 @@ projects.
 | HITL inbox | control plane + web | action types + resolvers + append-only ledger (AUTO-202) · **tested** |
 | Knowledge / PO / learning | `@facility/harness` | Limina-style chains, write-time validation, PO + learning contracts (bundled), task propose→approve→issue, no auto-apply · **tested** |
 | MCP + CLI | `@facility/mcp`, `@theam/facility` | HITL-gated tools (stdio + HTTP), platform CLI commands · **tested** |
-| Web | `@facility/web` (Next 16) | TAM-50 design system, all surfaces (overview, projects+kickstart, runs+live steer, inbox, registry, analytics, audit, settings mgmt), responsive · **verified in browser** |
+| Web | `@facility/web` (Next 16) | TAM-50 design system; operator surfaces (overview, projects+kickstart, runs+live steer, inbox, registry, analytics, audit, settings — providers/keys/budgets mgmt), responsive; **not yet a full control plane** (agents/sandbox-profiles/virtual-keys/KB/tasks remain API-managed) · **verified in browser** |
 | Docs | `@facility/docs` (Docusaurus) | concepts, self-host, guides, reference — TAM-50 skinned · **builds + verified** |
 | Infra | `infra/` | Dockerfiles (build + run verified), docker-compose self-host, AWS Terraform · **plan-validated on the live account** |
 

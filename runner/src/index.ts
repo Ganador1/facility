@@ -11,10 +11,27 @@ import type { RunBundle, RunEvent } from "./types.js";
 const workRoot = "/work";
 const steerFile = join(workRoot, "STEERING.md");
 
+// Secret values injected into the run (virtual key, platform key, runner token,
+// repo clone token) that must never surface in captured check output persisted to
+// run_events, which any runs:read principal can read. Populated as the workspace
+// is prepared; redactSecrets() scrubs them from a check's stdout/stderr tail.
+const secretsToRedact = new Set<string>();
+
+export function redactSecrets(text: string, secrets: Iterable<string> = secretsToRedact): string {
+  let out = text;
+  for (const secret of secrets) {
+    // Length guard so a short/empty value can't over-redact; real keys/tokens are
+    // long. split/join replaces every occurrence without regex-escaping the secret.
+    if (secret && secret.length >= 8) out = out.split(secret).join("«redacted»");
+  }
+  return out;
+}
+
 async function main() {
   const startedAt = Date.now();
   let bundle: RunBundle | null = null;
   let steerStop: (() => void) | undefined;
+  secretsToRedact.add(runnerToken());
   try {
     const hello = await api<Record<string, unknown>>(`/internal/runs/${currentRunId()}/hello`, {
       method: "POST",
@@ -118,6 +135,10 @@ export async function prepareWorkspace(
   // Platform key for KB/task writes (Project Owner / learning agents).
   process.env.FACILITY_PROJECT_ID = platform.projectId;
   if (platform.platformKey) process.env.FACILITY_PLATFORM_KEY = platform.platformKey;
+  // Register every injected secret for redaction from captured check output.
+  for (const secret of [virtualKey, platform.platformKey, platform.repoToken]) {
+    if (secret) secretsToRedact.add(secret);
+  }
 }
 
 async function runEngine(bundle: RunBundle, startedAt: number) {
@@ -238,7 +259,17 @@ async function emitChecks(cwd: string) {
   const events = body
     .split(/\r?\n/)
     .filter(Boolean)
-    .map((line) => ({ type: "check", data: { self_reported: true, ...JSON.parse(line) } }));
+    .flatMap((line) => {
+      try {
+        // self_reported LAST so an agent-authored line can't spoof platform
+        // provenance by setting self_reported:false. Per-line isolation so one
+        // malformed line can't throw out the whole batch (or abort before the
+        // platform-owned checks run).
+        return [{ type: "check", data: { ...JSON.parse(line), self_reported: true } }];
+      } catch {
+        return [];
+      }
+    });
   await emit(events);
 }
 
@@ -252,7 +283,9 @@ async function runChecks(bundle: RunBundle, cwd: string) {
   for (const command of bundle.checkCmds) {
     const { code, tail } = await runCheckCommand(command, cwd, bundle.timeoutMin);
     if (code !== 0) allPassed = false;
-    await emit([{ type: "check", data: checkEvent(command, code, tail) }]);
+    // Scrub injected secrets from the captured output before it is persisted to
+    // run_events (readable by any runs:read principal).
+    await emit([{ type: "check", data: checkEvent(command, code, redactSecrets(tail)) }]);
   }
   return allPassed;
 }
@@ -271,15 +304,18 @@ export function checkEvent(command: string, code: number, tail: string) {
 }
 
 // Run one check command, capturing a bounded tail of combined stdout+stderr for
-// failure diagnostics. Same env and timeout guard as the engine, so a hung check
-// can't run (and bill) unbounded.
+// failure diagnostics. The command runs in its own process group (detached) so a
+// hung check's ENTIRE tree — `pnpm test` spawning node workers, etc. — is
+// signalled at the timeout, not just the top `sh` (whose death would orphan the
+// workers until the sandbox is reaped).
 export async function runCheckCommand(command: string, cwd: string, timeoutMin: number) {
   const child = spawn("sh", ["-c", command], {
     cwd,
     env: engineEnv(),
     stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
   });
-  const clearTimers = armEngineTimeout(child, timeoutMin);
+  const clearTimers = armProcessGroupTimeout(child, timeoutMin);
   let tail = "";
   const capture = (stream: NodeJS.ReadableStream | null) =>
     new Promise<void>((resolve) => {
@@ -393,6 +429,33 @@ function armEngineTimeout(child: ReturnType<typeof spawn>, timeoutMin: number) {
     () => {
       child.kill("SIGTERM");
       killTimer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+    },
+    Math.max(1, timeoutMin - 2) * 60_000,
+  );
+  return () => {
+    clearTimeout(termTimer);
+    if (killTimer) clearTimeout(killTimer);
+  };
+}
+
+// Like armEngineTimeout, but signals the child's whole PROCESS GROUP (negative
+// pid) — the child must have been spawned `detached: true`. Used for checks so a
+// hung command's descendants die with it instead of being orphaned. Falls back to
+// signalling just the child if the group is already gone.
+function armProcessGroupTimeout(child: ReturnType<typeof spawn>, timeoutMin: number) {
+  const signalGroup = (signal: NodeJS.Signals) => {
+    try {
+      if (child.pid) process.kill(-child.pid, signal);
+      else child.kill(signal);
+    } catch {
+      child.kill(signal);
+    }
+  };
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
+  const termTimer = setTimeout(
+    () => {
+      signalGroup("SIGTERM");
+      killTimer = setTimeout(() => signalGroup("SIGKILL"), 15_000);
     },
     Math.max(1, timeoutMin - 2) * 60_000,
   );

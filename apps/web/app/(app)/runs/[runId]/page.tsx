@@ -28,6 +28,7 @@ export default async function RunPage({ params }: { params: Promise<{ runId: str
       agentDisplayName={agentDisplayName}
       permissions={me.ok ? me.data.permissions : []}
       initialEvents={events.ok ? events.data : []}
+      initialEventsError={!events.ok}
     />
   );
 }

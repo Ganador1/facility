@@ -222,6 +222,11 @@ function checkItems(events: RunEvent[]) {
         | "ok"
         | "bad"
         | "machine",
+      // Platform-owned gate vs the agent's own self-report — the runner sets
+      // self_reported:false on gates it ran itself.
+      platform: event.data.self_reported === false,
+      exitCode: typeof event.data.exit_code === "number" ? event.data.exit_code : null,
+      output: typeof event.data.output === "string" ? event.data.output : null,
     }));
 }
 
@@ -243,12 +248,14 @@ export function RunCockpit({
   agentDisplayName,
   permissions,
   initialEvents,
+  initialEventsError = false,
 }: {
   run: Run;
   project: Pick<Project, "id" | "name" | "slug"> | null;
   agentDisplayName?: string;
   permissions: string[];
   initialEvents: RunEvent[];
+  initialEventsError?: boolean;
 }) {
   const [events, setEvents] = useState(initialEvents);
   const [action, setAction] = useState<ActionState>(null);
@@ -513,11 +520,38 @@ export function RunCockpit({
               {checks.length || artifacts.length ? (
                 <>
                   {checks.length ? (
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-col gap-2">
                       {checks.map((check) => (
-                        <span key={check.key} className={chipClass(check.tone)}>
-                          {check.label}
-                        </span>
+                        <div key={check.key} className="flex flex-col gap-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              title={
+                                check.platform
+                                  ? "platform-owned acceptance gate"
+                                  : "agent self-reported"
+                              }
+                              className="font-mono text-[9px] uppercase tracking-[0.16em] text-(--dim)"
+                            >
+                              {check.platform ? "gate" : "self"}
+                            </span>
+                            <span className={chipClass(check.tone)}>{check.label}</span>
+                            {check.exitCode !== null && check.exitCode !== 0 ? (
+                              <span className="font-mono text-[10px] text-(--bad)">
+                                exit {check.exitCode}
+                              </span>
+                            ) : null}
+                          </div>
+                          {check.output ? (
+                            <details>
+                              <summary className="cursor-pointer font-mono text-[10.5px] text-(--mut) hover:text-(--ink)">
+                                output
+                              </summary>
+                              <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap border border-(--line) bg-(--bg-subtle) p-2 font-mono text-[11px] text-(--dim)">
+                                {check.output}
+                              </pre>
+                            </details>
+                          ) : null}
+                        </div>
                       ))}
                     </div>
                   ) : null}
@@ -550,6 +584,12 @@ export function RunCockpit({
           </div>
         </div>
 
+        {initialEventsError && events.length === 0 ? (
+          <p className="border border-(--bad) px-4 py-2 font-mono text-[11px] text-(--bad)">
+            couldn't load this run's recorded events — this is a load failure, not an empty run.
+            {live ? " retrying live…" : " reload to try again."}
+          </p>
+        ) : null}
         <RunTranscript runId={run.id} events={events} live={live} canSteer={canSteer} />
       </section>
     </div>

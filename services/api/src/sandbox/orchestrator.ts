@@ -6,6 +6,7 @@ import {
   insertAuditEvent,
   kbSpaces,
   llmRequests,
+  projects,
   registryItems,
   registryVersions,
   repos,
@@ -420,6 +421,16 @@ async function buildRunBundle(
       .where(and(eq(repos.orgId, run.orgId), eq(repos.projectId, run.projectId)))
       .limit(1)
   )[0];
+  // The project's configured acceptance gates (settings.check_cmds) — what
+  // kickstart detects and the web project page edits — are the fallback source of
+  // truth for the platform lane when the sandbox profile doesn't override them.
+  const project = (
+    await db
+      .select({ settings: projects.settings })
+      .from(projects)
+      .where(and(eq(projects.orgId, run.orgId), eq(projects.id, run.projectId)))
+      .limit(1)
+  )[0];
   const contract = await activeRegistryContent(db, run.orgId, agent.contractItemId);
   const skills = await activeSkills(db, run.orgId, run.projectId);
   const space = (
@@ -450,7 +461,12 @@ async function buildRunBundle(
       : { cloneUrl: null, branch: null, installationTokenRef: null },
     provisionCmd:
       stringField(profile.setup, "provision_cmd") ?? stringField(profile.setup, "provisionCmd"),
-    checkCmds: arrayField(profile.setup, "check_cmds"),
+    // Acceptance gates: a sandbox profile's setup.check_cmds is an explicit
+    // platform-level override; otherwise fall back to the project's own configured
+    // checks (projects.settings.check_cmds — what kickstart detects, the web project
+    // page shows, and the repo lane runs), so gates configured for a project also
+    // run in the platform lane instead of silently doing nothing.
+    checkCmds: resolveCheckCmds(profile, project?.settings),
     gatewayUrls: {
       anthropic: `${gatewayBase}/anthropic`,
       openai: `${gatewayBase}/openai`,
@@ -679,6 +695,14 @@ function arrayField(value: unknown, key: string) {
   return Array.isArray(candidate)
     ? candidate.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+// Resolve the run's acceptance-gate commands: a sandbox profile's explicit
+// setup.check_cmds override wins; otherwise the project's own configured checks
+// (settings.check_cmds). Empty when neither is set.
+export function resolveCheckCmds(profile: { setup: unknown }, projectSettings: unknown): string[] {
+  const profileChecks = arrayField(profile.setup, "check_cmds");
+  return profileChecks.length > 0 ? profileChecks : arrayField(projectSettings, "check_cmds");
 }
 
 function command(value: unknown) {

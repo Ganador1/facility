@@ -56,9 +56,9 @@ AWS S3, R2, and other S3-compatible endpoints.
 
 ## First real steps
 
-1. **Providers** — add your Anthropic/OpenAI keys (sealed at rest) via the v1 API
-   (`POST /v1/providers`); provider credentials are API-managed today — there is
-   not yet a dedicated CLI command or a first-class web settings surface.
+1. **Providers** — add your Anthropic/OpenAI keys (sealed at rest) from the web
+   **Settings → providers** page, or via the v1 API (`POST /v1/providers`); there
+   is not yet a dedicated CLI command.
 2. **GitHub App** — create your own App installation (see
    [Production](production)) so kickstart and triggers work against your org.
 3. **Kickstart** — connect a repo and open the kickstart PR.

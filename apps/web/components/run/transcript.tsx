@@ -4,6 +4,16 @@ import { Button, Terminal, type TerminalLine, TextInput } from "@facility/ui";
 import { useState } from "react";
 import type { RunEvent } from "@/lib/api";
 
+// A check's pass/fail can arrive as `result` (agent self-reports) or `status`
+// (platform gates emit status: "passed"|"failed"). Recognize both vocabularies so
+// a passed platform gate isn't mis-toned red.
+function checkTone(data: Record<string, unknown>): "ok" | "bad" | "machine" {
+  const verdict = `${data.status ?? data.result ?? ""}`;
+  if (["passed", "success", "ok", "succeeded"].includes(verdict)) return "ok";
+  if (["failed", "failure", "error"].includes(verdict)) return "bad";
+  return "machine";
+}
+
 function toLine(event: RunEvent): TerminalLine {
   const ts = new Date(event.ts).toLocaleTimeString("en-GB", { hour12: false });
   const text =
@@ -11,7 +21,9 @@ function toLine(event: RunEvent): TerminalLine {
       ? event.data.text
       : typeof event.data.message === "string"
         ? event.data.message
-        : JSON.stringify(event.data);
+        : typeof event.data.command === "string"
+          ? event.data.command
+          : JSON.stringify(event.data);
   switch (event.type) {
     case "status":
       return { tag: ts, text, tone: "info" };
@@ -21,7 +33,7 @@ function toLine(event: RunEvent): TerminalLine {
     case "error":
       return { tag: ts, text, tone: "bad" };
     case "check":
-      return { tag: ts, text, tone: event.data.result === "success" ? "ok" : "bad" };
+      return { tag: ts, text, tone: checkTone(event.data) };
     case "steer":
       return { tag: ts, text: `⟶ steer: ${text}`, tone: "human" };
     case "assistant":

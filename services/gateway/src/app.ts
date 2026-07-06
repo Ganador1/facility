@@ -1,11 +1,6 @@
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import {
-  MODEL_PRICES_USD_PER_1M,
-  newId,
-  normalizeModel,
-  validateProviderBaseUrl,
-} from "@facility/core";
+import { MODEL_PRICES_USD_PER_1M, newId, normalizeModel } from "@facility/core";
 import { createDb } from "@facility/db";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { uuidv7 } from "uuidv7";
@@ -274,10 +269,13 @@ async function handleProvider(
       credential.apiKey,
       upstreamBody,
     );
-    const safeBaseUrl = await validateProviderBaseUrl(credential.baseUrl, {
-      allowLocalhostHttp: config.facilityInsecureDev,
-    });
-    upstream = await fetch(upstreamUrl(safeBaseUrl, suffix, request.url), {
+    // credential.baseUrl is already the normalized, SSRF-validated URL produced by
+    // validateProviderBaseUrl when the credential was opened (auth.ts), and the
+    // credential cache bounds its trust window. Re-validating here would repeat a
+    // DNS lookup on every proxied request for no real gain — fetch re-resolves DNS
+    // independently anyway, so per-request validation can't close a rebinding TOCTOU;
+    // redirect:"error" below is what actually blocks redirect-based SSRF.
+    upstream = await fetch(upstreamUrl(credential.baseUrl, suffix, request.url), {
       method: "POST",
       headers: upstreamHeaders,
       body: upstreamBody,

@@ -51,8 +51,10 @@ Small Node 22 TS program + Dockerfile (`runner/Dockerfile`, base `node:22-bookwo
    - codex: `codex exec --json -s danger-full-access` (sandboxing is the container) — map JSONL events likewise.
    - byo: `sh -c config.cmd` with the same env contract; stdout lines → `assistant` events.
 5. Steering: poll long-poll endpoint; on message: write to a `STEERING.md` inbox file AND (claude_code) send via stdin turn injection if the CLI session is interactive-capable; v1 baseline that MUST work: queue the steer text and append it as the next user turn using `claude -p --resume <session_id>` when the current turn completes; emit `steer` event when applied. Document the mechanism per engine in runner/README.md — no pretending.
-6. Checks self-report: parse `.agent-sdlc/checks.jsonl` if the agent wrote it (tam-os convention) → `check` events (flagged self_reported).
-7. result: succeeded when engine exit 0 (claude: result event subtype success), else failed + tail of stderr as error. Never swallow the engine's nonzero exit.
+6. Checks — two kinds, both surfaced as `check` events:
+   - **Platform-owned gates:** after the engine, run every `bundle.checkCmds` command in the workspace cwd; each emits a `check` event flagged `self_reported: false` with `status` passed/failed, `exit_code`, and (on failure) a capped, secret-redacted output tail. Source of truth: the sandbox profile's `setup.check_cmds`, falling back to the project's `settings.check_cmds`.
+   - **Agent self-report:** parse `.agent-sdlc/checks.jsonl` if the agent wrote it (tam-os convention) → `check` events flagged `self_reported: true` (the runner forces this flag; the agent can't spoof platform provenance).
+7. result: succeeded when engine exit 0 (claude: result event subtype success) **and** every platform check passed; otherwise failed (`checks_failed` when the engine succeeded but a gate did not) + tail of stderr as error. Never swallow the engine's nonzero exit, and never report success while a required gate is red.
 
 Timeout safety inside the container: kill engine at bundle.timeoutMin−2, post result failed `timeout`.
 

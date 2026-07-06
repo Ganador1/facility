@@ -11,7 +11,13 @@ your organization — ECS, Cloud Run, Kubernetes, Nomad, a VM with compose.
 ## Requirements
 
 - **Postgres 16+** (managed recommended). One database; the platform runs its
-  own migrations at deploy (`@facility/db migrate`).
+  own migrations at deploy (`@facility/db migrate`). The gateway holds a
+  `LISTEN` connection for cache invalidation — the api `NOTIFY`s
+  `facility_key_revoked` (revoked keys) and `facility_provider_changed` (rotated
+  provider credentials) so the gateway evicts immediately instead of waiting out
+  its 60s cache. Give the gateway a **direct/session-mode** connection: a
+  transaction-mode pooler (e.g. PgBouncer) silently drops `LISTEN/NOTIFY`, so
+  credential/key changes would only take effect after the TTL.
 - **S3-compatible object storage** — AWS S3, GCS (S3 mode), MinIO, R2.
   Facility signs envelope reads/writes with AWS SigV4 for both AWS S3 and
   configured `S3_ENDPOINT` stores.

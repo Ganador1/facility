@@ -1,7 +1,7 @@
 import { newId } from "@facility/core";
 import type { FacilityDb } from "@facility/db";
 import { budgets, platformIssues, spendCounters } from "@facility/db";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, or, sql } from "drizzle-orm";
 import type { AuthedKey, BudgetState } from "./types.js";
 
 type BudgetDef = {
@@ -68,17 +68,24 @@ export async function applicableBudgets(
     .where(
       and(
         eq(spendCounters.orgId, key.orgId),
-        inArray(
-          spendCounters.budgetId,
-          defs.defs.map((def) => def.id),
+        // Constrain to each budget's CURRENT window only — the unique
+        // (budget_id, window_start) index backs this exactly — instead of
+        // fetching every historical window for these budgets and filtering in
+        // memory (which grew unbounded as windows accumulated on the hot path).
+        or(
+          ...defs.defs.map((def) =>
+            and(
+              eq(spendCounters.budgetId, def.id),
+              eq(
+                spendCounters.windowStart,
+                windowByBudget.get(def.id) ?? windowStart(def.period, now),
+              ),
+            ),
+          ),
         ),
       ),
     );
-  const spentByBudget = new Map(
-    counters
-      .filter((row) => row.windowStart === windowByBudget.get(row.budgetId))
-      .map((row) => [row.budgetId, row.spentCents]),
-  );
+  const spentByBudget = new Map(counters.map((row) => [row.budgetId, row.spentCents]));
 
   return defs.defs.map((def) => ({
     ...def,
