@@ -1561,6 +1561,42 @@ describe("api", async () => {
     }
   });
 
+  it("denies the llm envelope to a spend:read-only principal", async () => {
+    const role = await app.inject({
+      method: "POST",
+      url: "/v1/roles",
+      headers: { cookie },
+      payload: { name: `spend-only-${Date.now()}`, permissions: ["spend:read"] },
+    });
+    const issued = await app.inject({
+      method: "POST",
+      url: "/v1/keys",
+      headers: { cookie },
+      payload: { name: "spend-only-key", roleId: role.json().id, projectId },
+    });
+    const requestId = newId("evt");
+    await db.insert(llmRequests).values({
+      id: requestId,
+      orgId,
+      projectId,
+      provider: "openai",
+      model: "gpt-5.5",
+      status: "ok",
+      costCents: 1,
+      latencyMs: 1,
+      requestUri: "s3://facility-test/x.json.gz",
+      responseUri: "s3://facility-test/x.json.gz",
+    });
+    // spend:read sees cost (via /v1/spend + the request list) but NOT the full
+    // request/response transcript — the envelope now requires audit:read.
+    const denied = await app.inject({
+      method: "GET",
+      url: `/v1/llm-requests/${requestId}/envelope`,
+      headers: { authorization: `Bearer ${issued.json().secret}` },
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
   it("runs the admin readiness doctor with object-store and audit-chain checks", async () => {
     const objects = new Map<string, Buffer>();
     const server = createServer((request, response) => {

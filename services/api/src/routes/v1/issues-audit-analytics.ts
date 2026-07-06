@@ -258,7 +258,10 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
   app.get(
     "/v1/llm-requests/:requestId/envelope",
     {
-      config: { permission: ["spend:read", "audit:read"] },
+      // The envelope is the full request/response transcript — audit-grade, not
+      // spend data. `spend:read` (cost dashboards) must NOT see it; require the
+      // stricter `audit:read` even though the row's cost fields are spend-visible.
+      config: { permission: "audit:read" },
       schema: {
         params: z.object({ requestId: z.string() }),
         response: { 200: z.object({ llmRequest: LlmRequestSchema, envelope: z.unknown() }) },

@@ -100,6 +100,11 @@ export async function registerGithubRoutes(app: FastifyInstance, config: AppConf
       const p = principal(request);
       const { repoId } = request.params as { repoId: string };
       const repo = await loadRepoById(db, p.orgId, repoId);
+      // A project-scoped key may only touch its own project's repos — the repoId
+      // is org-addressed, so pin it to the principal's project (404, no oracle).
+      if (p.projectId && repo.projectId !== p.projectId) {
+        throw new ApiError(404, "not_found", "Repo not found");
+      }
       return adoptFingerprints({ db, factory: factory(), repo, principal: p });
     },
   );
@@ -114,6 +119,9 @@ export async function registerGithubRoutes(app: FastifyInstance, config: AppConf
       const p = principal(request);
       const { repoId } = request.params as { repoId: string };
       const repo = await loadRepoById(db, p.orgId, repoId);
+      if (p.projectId && repo.projectId !== p.projectId) {
+        throw new ApiError(404, "not_found", "Repo not found");
+      }
       return verifyFingerprints({ db, factory: factory(), repo });
     },
   );

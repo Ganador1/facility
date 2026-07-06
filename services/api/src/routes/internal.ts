@@ -226,9 +226,17 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
     },
   );
 
+  // The global clone token is a dev / single-tenant convenience. In a
+  // production-serious deployment (dev-login off, !facilityInsecureDev) it would
+  // let any tenant clone an arbitrary repo they named with a shared token, so it
+  // is refused there — a repo needs a real GitHub App installation instead. This
+  // mirrors the doctor's production posture and the gateway's dev-key fallback.
+  const cloneTokenFallback = (): string | null =>
+    config.facilityInsecureDev ? (config.githubCloneToken ?? null) : null;
+
   async function repoTokenForRun(sandbox: RunSandboxState): Promise<string | null> {
     const repo = sandbox.bundle?.repo;
-    if (!repo?.installationTokenRef || !repo.cloneUrl) return config.githubCloneToken ?? null;
+    if (!repo?.installationTokenRef || !repo.cloneUrl) return cloneTokenFallback();
     const installation = (
       await db
         .select()
@@ -236,15 +244,15 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         .where(eq(githubInstallations.id, repo.installationTokenRef))
         .limit(1)
     )[0];
-    if (!installation) return config.githubCloneToken ?? null;
+    if (!installation) return cloneTokenFallback();
     const parsed = parseGithubCloneUrl(repo.cloneUrl);
-    if (!parsed) return config.githubCloneToken ?? null;
+    if (!parsed) return cloneTokenFallback();
     const tokenFactory =
       app.githubInstallationTokenFactory ??
       (config.githubAppId && config.githubAppPrivateKey
         ? createGithubInstallationTokenFactory(config)
         : null);
-    if (!tokenFactory) return config.githubCloneToken ?? null;
+    if (!tokenFactory) return cloneTokenFallback();
     return tokenFactory({
       installationId: installation.installationId,
       owner: parsed.owner,

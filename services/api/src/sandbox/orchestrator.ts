@@ -421,7 +421,7 @@ async function buildRunBundle(
       .limit(1)
   )[0];
   const contract = await activeRegistryContent(db, run.orgId, agent.contractItemId);
-  const skills = await activeSkills(db, run.orgId);
+  const skills = await activeSkills(db, run.orgId, run.projectId);
   const space = (
     await db
       .select()
@@ -494,11 +494,15 @@ async function activeRegistryContent(
   return row.version.content;
 }
 
-async function activeSkills(db: ReturnType<typeof createDb>["db"], orgId: string) {
+async function activeSkills(
+  db: ReturnType<typeof createDb>["db"],
+  orgId: string,
+  projectId: string,
+) {
   const rows = await db
     .select({
-      itemId: registryItems.id,
       name: registryItems.name,
+      projectId: registryItems.projectId,
       version: registryVersions.version,
       content: registryVersions.content,
     })
@@ -509,19 +513,29 @@ async function activeSkills(db: ReturnType<typeof createDb>["db"], orgId: string
         eq(registryItems.orgId, orgId),
         eq(registryItems.kind, "skill"),
         eq(registryVersions.status, "active"),
+        // Only this run's own scope: org-global skills (projectId null) plus the
+        // run's project skills — NEVER other projects' skills (cross-project leak).
+        or(isNull(registryItems.projectId), eq(registryItems.projectId, projectId)),
       ),
     );
-  // Exactly one skill per item — highest active version wins — even if legacy data
-  // left several versions marked active (publishing now deprecates priors, so this
-  // is a defensive dedup). Then stable order by name.
-  const latest = new Map<string, { name: string; version: number; content: string }>();
+  // One skill per name. A project-scoped skill overrides an org-global one of the
+  // same name (project customization wins); within the same scope the highest
+  // active version wins. Then stable order by name.
+  const chosen = new Map<
+    string,
+    { name: string; scoped: boolean; version: number; content: string }
+  >();
   for (const row of rows) {
-    const current = latest.get(row.itemId);
-    if (!current || row.version > current.version) {
-      latest.set(row.itemId, { name: row.name, version: row.version, content: row.content });
-    }
+    const scoped = row.projectId != null;
+    const current = chosen.get(row.name);
+    const wins =
+      !current ||
+      (scoped && !current.scoped) ||
+      (scoped === current.scoped && row.version > current.version);
+    if (wins)
+      chosen.set(row.name, { name: row.name, scoped, version: row.version, content: row.content });
   }
-  return [...latest.values()]
+  return [...chosen.values()]
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(({ name, content }) => ({ name, content }));
 }
