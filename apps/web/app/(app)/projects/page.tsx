@@ -1,13 +1,14 @@
 import { ButtonLink, Cell, Eyebrow, HairlineGrid, PillTag } from "@facility/ui";
 import Link from "next/link";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { api } from "@/lib/api";
 
 export const metadata = { title: "projects" };
 
 export default async function ProjectsPage() {
   const projects = await api.projects();
-  if (!projects.ok) return <Offline detail={projects.message} />;
+  if (!projects.ok)
+    return projects.offline ? <Offline /> : <ErrorNotice message={projects.message} />;
 
   const items = projects.data;
 

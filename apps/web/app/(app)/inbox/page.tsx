@@ -1,7 +1,7 @@
 import { Eyebrow } from "@facility/ui";
 import { IssueCard } from "@/components/inbox/issue-card";
 import { ProposalCard } from "@/components/inbox/proposal-card";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { api } from "@/lib/api";
 
 export const metadata = { title: "inbox" };
@@ -12,7 +12,7 @@ export default async function InboxPage({
   searchParams: Promise<{ focus?: string }>;
 }) {
   const [{ focus }, inbox] = await Promise.all([searchParams, api.inboxFull()]);
-  if (!inbox.ok) return inbox.offline ? <Offline /> : <Offline detail={inbox.message} />;
+  if (!inbox.ok) return inbox.offline ? <Offline /> : <ErrorNotice message={inbox.message} />;
 
   const { proposals, issues } = inbox.data;
 

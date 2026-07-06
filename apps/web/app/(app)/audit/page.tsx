@@ -1,12 +1,12 @@
 import { Eyebrow } from "@facility/ui";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { api } from "@/lib/api";
 
 export const metadata = { title: "audit" };
 
 export default async function AuditPage() {
   const audit = await api.audit("?limit=100");
-  if (!audit.ok) return <Offline detail={audit.message} />;
+  if (!audit.ok) return audit.offline ? <Offline /> : <ErrorNotice message={audit.message} />;
 
   const items = audit.data;
 

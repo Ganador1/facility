@@ -23,6 +23,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
   }
 
   const p = project.data;
+  const runsError = runs.ok ? null : runs.message;
   const items = runs.ok ? runs.data : [];
   const live = items.filter((r) => ["queued", "provisioning", "running"].includes(r.status));
   const settings = (p.settings ?? {}) as {
@@ -47,12 +48,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
         <Cell className="p-5">
           <Metric
             label="agents live"
-            value={live.length}
-            tone={live.length ? "agent" : undefined}
+            value={runsError ? "—" : live.length}
+            tone={!runsError && live.length ? "agent" : undefined}
           />
         </Cell>
         <Cell className="p-5">
-          <Metric label="runs" value={items.length} />
+          <Metric label="runs" value={runsError ? "—" : items.length} />
         </Cell>
         <Cell className="p-5">
           <Metric
@@ -67,7 +68,9 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
 
       <section className="flex flex-col gap-4">
         <Eyebrow>recent runs</Eyebrow>
-        {items.length === 0 ? (
+        {runsError ? (
+          <ErrorNotice message={`Couldn't load runs — ${runsError}`} />
+        ) : items.length === 0 ? (
           <p className="text-sm text-(--dim)">No runs in this project yet.</p>
         ) : (
           <div className="flex flex-col border border-(--line)">
@@ -99,12 +102,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ projec
           </div>
           <div className="flex justify-between gap-6">
             <span className="text-(--dim)">provision</span>
-            <span className="truncate text-(--code)">{settings.provision_cmd ?? "—"}</span>
+            <span className="truncate text-(--code)">{settings.provision_cmd ?? "—"}</span>
           </div>
           <div className="flex justify-between gap-6">
             <span className="shrink-0 text-(--dim)">checks</span>
             <span className="text-right text-(--code)">
-              {settings.check_cmds?.length ? settings.check_cmds.join(" · ") : "—"}
+              {settings.check_cmds?.length ? settings.check_cmds.join(" · ") : "—"}
             </span>
           </div>
         </div>

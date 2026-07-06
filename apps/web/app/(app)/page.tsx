@@ -57,7 +57,9 @@ export default async function OverviewPage() {
           <Metric
             label="spend · mtd"
             value={monthCents == null ? "—" : fmtCost(monthCents)}
-            hint="straight from the gateway, never curated"
+            hint={
+              spend.ok ? "straight from the gateway, never curated" : "gateway spend didn't load"
+            }
           />
         </Cell>
       </HairlineGrid>

@@ -1,5 +1,5 @@
 import { Eyebrow, PillTag } from "@facility/ui";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { api } from "@/lib/api";
 
 export const metadata = { title: "registry" };
@@ -22,7 +22,8 @@ export default async function RegistryPage({
 }) {
   const { kind } = await searchParams;
   const registry = await api.registry(kind ? `?kind=${kind}` : "");
-  if (!registry.ok) return <Offline detail={registry.message} />;
+  if (!registry.ok)
+    return registry.offline ? <Offline /> : <ErrorNotice message={registry.message} />;
 
   const items = registry.data;
 

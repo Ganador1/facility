@@ -103,19 +103,31 @@ async function status(ctx) {
   const inbox = unwrapInbox(await api(ctx, "GET", "/v1/inbox", { query: { state: "open" } }));
   const issues = await api(ctx, "GET", "/v1/issues", { query: { state: "open" } });
   const spend = await api(ctx, "GET", "/v1/spend", { query: { from: monthStart(), groupBy: "day" } });
-  const runs = (
-    await Promise.all(
-      asArray(projects).map((project) =>
-        api(ctx, "GET", `/v1/projects/${project.id}/runs`, { query: { status: "running" } }).catch(() => [])
-      )
-    )
-  ).flat();
-  const payload = { projects, liveRuns: runs, inbox, issues, spend };
+  // Track per-project run-fetch failures instead of silently swallowing them to
+  // [], so a partial load reports as degraded rather than a confident "0".
+  const runResults = await Promise.all(
+    asArray(projects).map((project) =>
+      api(ctx, "GET", `/v1/projects/${project.id}/runs`, { query: { status: "running" } })
+        .then((result) => ({ ok: true, runs: asArray(result) }))
+        .catch(() => ({ ok: false, runs: [] })),
+    ),
+  );
+  const runs = runResults.flatMap((result) => result.runs);
+  const failedProjects = runResults.filter((result) => !result.ok).length;
+  const payload = { projects, liveRuns: runs, liveRunsPartial: failedProjects > 0, inbox, issues, spend };
   if (ctx.json) writeJson(ctx, payload);
   else {
     ctx.stdout.write(`\n${bold("Facility status")}\n`);
     ctx.stdout.write(row("projects", asArray(projects).length));
-    ctx.stdout.write(row("live runs", asArray(runs).length, true));
+    ctx.stdout.write(
+      row(
+        "live runs",
+        failedProjects
+          ? `${runs.length} ${yellow(`(partial — ${failedProjects} project(s) failed to load)`)}`
+          : runs.length,
+        true,
+      ),
+    );
     ctx.stdout.write(row("open inbox", asArray(inbox).length));
     ctx.stdout.write(row("open issues", asArray(issues).length));
     ctx.stdout.write(row("spend MTD", cents(sum(asArray(spend), "cost_cents"))));
