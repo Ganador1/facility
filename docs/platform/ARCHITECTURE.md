@@ -125,7 +125,7 @@ Scoping chain: **org → project → resource**. Every table carries `org_id` (a
 
 ## 7. Deployment
 
-- **Self-host quickstart**: `docker compose up` → postgres, minio, api, worker, gateway, web, docs + bootstrap wizard (first org, first admin, WorkOS optional in dev via local-dev auth flag that cannot be enabled when `NODE_ENV=production` without explicit `FACILITY_INSECURE_DEV=1`).
+- **Self-host quickstart**: `docker compose up` → postgres, minio, api, worker, gateway, web (plus one-shot migrate + bucket-create). First-org bootstrap is login-driven, not a wizard: the first user to sign in becomes owner of a new org (WorkOS in production; a local dev-login flow that cannot be enabled when `NODE_ENV=production` without explicit `FACILITY_INSECURE_DEV=1`). The docs site builds separately.
 - **AWS playground (validation)**: Terraform — VPC, RDS Postgres, S3, ECS Fargate services (api/worker/gateway/web), ALB, ECR, Fargate runner tasks, KMS for master key, CloudWatch logs. Region us-east-1, account 746486153337.
 - **Any-cloud claim**: everything is containers + PG + S3-API; drivers isolate compute specifics; helm chart is a documented follow-up with the k8s Job driver.
 

@@ -229,7 +229,8 @@ describe("db", async () => {
           'outcomes_terminal_idx',
           'llm_requests_run_idx',
           'api_keys_run_live_idx',
-          'virtual_keys_run_live_idx'
+          'virtual_keys_run_live_idx',
+          'registry_versions_one_active_uidx'
         )
       `,
     )) as Iterable<{ indexname: string }>;
@@ -253,6 +254,8 @@ describe("db", async () => {
         // Orphaned run-scoped-key sweep partial live-key indexes (migration 0010).
         "api_keys_run_live_idx",
         "virtual_keys_run_live_idx",
+        // One-active-version-per-item guard (migration 0011).
+        "registry_versions_one_active_uidx",
       ]),
     );
     const applied = (await db.execute(
@@ -266,6 +269,6 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0010_api_key_run_scope.sql");
+    ).toBe("0011_registry_one_active_version.sql");
   });
 });

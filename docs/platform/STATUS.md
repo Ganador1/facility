@@ -32,7 +32,7 @@ credential-lifecycle correctness: every terminal run path revokes its keys, a
 reconciler backstop revokes any key orphaned by a crash mid-transition, the
 gateway is push-invalidated on revoke (NOTIFY/LISTEN) so a revoked key dies
 immediately, and run-read APIs redact sealed credential envelopes.
-~185 tests green (real Postgres), Biome clean, web + docs build, and
+~180 tests green (real Postgres), Biome clean, web + docs build, and
 `tsc --noEmit` green across **all** packages (including `@facility/mcp`).
 Recent hardening (rounds 4–12): SSRF guard on BYO provider URLs, real MCP
 human-gate (write tools create HITL proposals a *separate* principal approves),

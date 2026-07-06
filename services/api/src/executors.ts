@@ -39,6 +39,7 @@ import {
   toHarnessEntry,
   toHarnessSpace,
 } from "./harness.js";
+import { publishRegistryVersion } from "./registry.js";
 import { cancelRun } from "./sandbox/orchestrator.js";
 import { notifyRunEvent, TERMINAL_RUN_STATUSES } from "./sandbox/state.js";
 import type { AppConfig } from "./types.js";
@@ -311,25 +312,11 @@ async function executeKnownMcpTool(
 
   if (toolName === "facility_publish_registry_version") {
     const versionId = requiredString(args.versionId, "versionId");
-    const version = (
-      await db
-        .update(registryVersions)
-        .set({ status: "active", updatedAt: new Date() })
-        .where(
-          and(
-            eq(registryVersions.orgId, orgId),
-            eq(registryVersions.id, versionId),
-            eq(registryVersions.status, "draft"),
-          ),
-        )
-        .returning()
-    )[0];
-    if (!version) throw new Error("registry_version_not_publishable");
-    await db
-      .update(registryItems)
-      .set({ latestVersion: version.version, updatedAt: new Date() })
-      .where(and(eq(registryItems.orgId, orgId), eq(registryItems.id, version.itemId)));
-    return { versionId };
+    // Same atomic publish-supersede as the HTTP route: deprecate the item's prior
+    // active version(s), activate this draft, bump latestVersion — so publishing
+    // through HITL keeps the one-active-version-per-item invariant too.
+    const version = await publishRegistryVersion(db, orgId, versionId);
+    return { versionId: version.id };
   }
 
   if (toolName === "facility_create_agent") {

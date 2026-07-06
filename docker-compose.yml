@@ -80,6 +80,19 @@ services:
       WORKOS_API_KEY: ${WORKOS_API_KEY:-}
       WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID:-}
       WORKOS_COOKIE_PASSWORD: ${WORKOS_COOKIE_PASSWORD:-}
+      # Production auth completeness: without WORKOS_AUTHKIT_DOMAIN the SSO login is
+      # incomplete, and MCP_OAUTH_AUDIENCE gates OAuth-JWT auth for remote MCP —
+      # `facility doctor` fails when these are absent in production. Forwarded from
+      # the host so a real deployment can set them.
+      WORKOS_AUTHKIT_DOMAIN: ${WORKOS_AUTHKIT_DOMAIN:-}
+      MCP_OAUTH_AUDIENCE: ${MCP_OAUTH_AUDIENCE:-}
+      # GitHub App (repo automation): webhooks 401 and clone-token minting fail
+      # without these; doctor flags them when repo automation is enabled.
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_CLONE_TOKEN: ${GITHUB_CLONE_TOKEN:-}
       FACILITY_SANDBOX_DRIVER: docker
       FACILITY_RUNNER_IMAGE: ${FACILITY_RUNNER_IMAGE:-facility-runner:dev}
       # The api builds the runner bundle, so the api/gateway URLs it hands a
@@ -102,6 +115,13 @@ services:
     environment:
       DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility
       SECRET_MASTER_KEY: ${SECRET_MASTER_KEY:?set SECRET_MASTER_KEY}
+      # The worker dispatches runs, so it mints repo clone credentials — it needs
+      # the same GitHub App env as the api (installation-token minting + fallback).
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY: ${GITHUB_APP_PRIVATE_KEY:-}
+      GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-}
+      GITHUB_CLONE_TOKEN: ${GITHUB_CLONE_TOKEN:-}
       # docker driver → the worker launches sandboxes on the host Docker daemon.
       FACILITY_SANDBOX_DRIVER: docker
       FACILITY_RUNNER_IMAGE: ${FACILITY_RUNNER_IMAGE:-facility-runner:dev}

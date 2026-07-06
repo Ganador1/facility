@@ -1,9 +1,10 @@
 import { newId } from "@facility/core";
 import { registryItems, registryVersions } from "@facility/db";
-import { and, asc, desc, eq, ne } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
+import { publishRegistryVersion } from "../../registry.js";
 import type { Principal } from "../../types.js";
 import {
   assertBareRowProjectScope,
@@ -226,42 +227,9 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
       const p = principal(request);
       const { versionId } = request.params as { versionId: string };
       await loadRegistryVersion(p, versionId);
-      const version = (
-        await db
-          .update(registryVersions)
-          .set({ status: "active", updatedAt: new Date() })
-          .where(
-            and(
-              eq(registryVersions.orgId, p.orgId),
-              eq(registryVersions.id, versionId),
-              eq(registryVersions.status, "draft"),
-            ),
-          )
-          .returning()
-      )[0];
-      if (!version)
-        throw new ApiError(400, "invalid_state", "Only draft versions can be published");
-      // Publishing supersedes: any previously-active version of this item is
-      // deprecated, so an item has at most one active version. Run bundle assembly
-      // and the runner key skills/contracts by name and assume a single active
-      // version — multiple would write duplicate files / feed nondeterministic
-      // content to a run.
-      await db
-        .update(registryVersions)
-        .set({ status: "deprecated", updatedAt: new Date() })
-        .where(
-          and(
-            eq(registryVersions.orgId, p.orgId),
-            eq(registryVersions.itemId, version.itemId),
-            eq(registryVersions.status, "active"),
-            ne(registryVersions.id, versionId),
-          ),
-        );
-      await db
-        .update(registryItems)
-        .set({ latestVersion: version.version })
-        .where(and(eq(registryItems.orgId, p.orgId), eq(registryItems.id, version.itemId)));
-      return version;
+      // Atomic publish-supersede (deprecate prior active + activate + bump
+      // latestVersion) shared with the HITL proposal executor.
+      return publishRegistryVersion(db, p.orgId, versionId);
     },
   );
 
