@@ -5,6 +5,7 @@ import type {
   FacilityRouteResponse,
   InboxResponse,
   Issue,
+  JsonObject,
   Me,
   Project,
   QueryParams,
@@ -202,6 +203,14 @@ describe("typed route contracts", () => {
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/runs">>().toEqualTypeOf<RunWithProject[]>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/inbox">>().toEqualTypeOf<InboxResponse>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/issues">>().toEqualTypeOf<Issue[]>();
+    // Non-core surfaces now typed (permissive JsonObject, no cast needed).
+    expectTypeOf<FacilityRouteResponse<"GET", "/v1/analytics">>().toEqualTypeOf<JsonObject[]>();
+    expectTypeOf<
+      FacilityRouteResponse<"POST", "/v1/projects/proj_1/tasks">
+    >().toEqualTypeOf<JsonObject>();
+    expectTypeOf<
+      FacilityRouteResponse<"GET", "/v1/projects/proj_1/health">
+    >().toEqualTypeOf<JsonObject>();
   });
 
   it("resolves a bare :id route but rejects a wrong nested path as never", () => {
