@@ -78,16 +78,27 @@ describe("secret redaction of check output", () => {
 describe("central event redaction (redactEventData)", () => {
   const secret = "fvk_deadbeefdeadbeefdeadbeefdeadbeef";
 
-  it("recursively scrubs secrets in nested engine event payloads, preserving structure", () => {
+  it("recursively scrubs secrets in nested engine event payloads (values AND keys)", () => {
     const redacted = redactEventData(
-      { text: `key is ${secret}`, tool: { input: [secret, { nested: secret }] }, n: 3, ok: true },
+      {
+        text: `key is ${secret}`,
+        tool: { input: [secret, { nested: secret }] },
+        [`field_${secret}`]: "value",
+        n: 3,
+        ok: true,
+      },
       [secret],
-    ) as { text: string; tool: { input: [string, { nested: string }] }; n: number; ok: boolean };
+    ) as Record<string, unknown> & {
+      text: string;
+      tool: { input: [string, { nested: string }] };
+    };
     expect(redacted.text).toBe("key is «redacted»");
     expect(redacted.tool.input[0]).toBe("«redacted»");
     expect(redacted.tool.input[1].nested).toBe("«redacted»");
     expect(redacted.n).toBe(3);
     expect(redacted.ok).toBe(true);
+    // The secret embedded in a property NAME is scrubbed too.
+    expect(Object.keys(redacted)).toContain("field_«redacted»");
     expect(JSON.stringify(redacted)).not.toContain(secret);
   });
 });

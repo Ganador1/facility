@@ -269,9 +269,10 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0013_budget_constraints.sql");
+    ).toBe("0014_budget_scope_coherence.sql");
 
-    // Budget enum/limit CHECK constraints backstop every write path (migration 0013).
+    // Budget enum/limit + scope-coherence CHECK constraints backstop every write
+    // path (migrations 0013 + 0014).
     const budgetChecks = (await db.execute(
       sql`
         SELECT conname
@@ -285,6 +286,7 @@ describe("db", async () => {
         "budgets_period_check",
         "budgets_mode_check",
         "budgets_limit_cents_check",
+        "budgets_scope_coherence_check",
       ]),
     );
   });

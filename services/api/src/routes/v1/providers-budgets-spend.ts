@@ -3,7 +3,8 @@ import { budgets, providerCredentials, virtualKeys } from "@facility/db";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ApiError, notFound } from "../../errors.js";
+import { resolveBudgetScope } from "../../budget-scope.js";
+import { notFound } from "../../errors.js";
 import type { Principal } from "../../types.js";
 import {
   AnyObject,
@@ -288,36 +289,26 @@ export async function registerProvidersBudgetsSpendRoutes(
         mode: "soft" | "hard";
         enabled: boolean;
       };
-      // A project-scoped principal must not create an org-wide budget: the gateway
-      // treats org budgets as covering the whole org (ignoring projectId), so this
-      // would let a project admin cap every other project's spend.
-      if (p.projectId && body.scope === "org") {
-        throw new ApiError(
-          403,
-          "forbidden_budget_scope",
-          "A project-scoped principal cannot create an org-wide budget",
-        );
-      }
-      await assertProjectInOrg(p, body.projectId);
-      // Org budgets are org-wide (no project); project/agent budgets bind to the
-      // principal's project (or, for an org principal, the named in-org project).
-      const projectId = body.scope === "org" ? null : (p.projectId ?? body.projectId ?? null);
-      if (body.scope !== "org" && !projectId) {
-        throw new ApiError(
-          400,
-          "budget_project_required",
-          "A project- or agent-scoped budget requires a projectId",
-        );
-      }
+      // Centralized scope coherence + authorization (shared with PATCH + the HITL
+      // executor): org budgets null their project/agent, project/agent budgets
+      // require a project, agent budgets require an agent def, and a project-scoped
+      // principal can't create an org-wide budget.
+      const resolved = resolveBudgetScope({
+        scope: body.scope,
+        projectId: body.projectId,
+        agentDefId: body.agentDefId,
+        principalProjectId: p.projectId ?? null,
+      });
+      await assertProjectInOrg(p, resolved.projectId);
       return (
         await db
           .insert(budgets)
           .values({
             id: newId("bud"),
             orgId: p.orgId,
-            scope: body.scope,
-            projectId,
-            agentDefId: body.agentDefId,
+            scope: resolved.scope,
+            projectId: resolved.projectId,
+            agentDefId: resolved.agentDefId,
             period: body.period,
             limitCents: body.limitCents,
             mode: body.mode,
@@ -386,31 +377,39 @@ export async function registerProvidersBudgetsSpendRoutes(
         enabled?: boolean;
       };
       await loadBudget(p, budgetId);
-      // A project-scoped principal cannot widen a budget to org scope (org budgets
-      // are enforced org-wide, ignoring projectId).
-      if (p.projectId && body.scope === "org") {
-        throw new ApiError(
-          403,
-          "forbidden_budget_scope",
-          "A project-scoped principal cannot change a budget to org scope",
-        );
-      }
-      await assertProjectInOrg(p, body.projectId);
+      // scope/project/agent are only mutable together, through the shared resolver:
+      // widening to org nulls the project (so it becomes a true org budget the
+      // project owner can no longer touch) and is refused for a project principal.
+      // Other fields update independently.
+      const resolved =
+        body.scope === undefined
+          ? undefined
+          : resolveBudgetScope({
+              scope: body.scope,
+              projectId: body.projectId,
+              agentDefId: body.agentDefId,
+              principalProjectId: p.projectId ?? null,
+            });
+      if (resolved) await assertProjectInOrg(p, resolved.projectId);
       return (
         await db
           .update(budgets)
-          .set(
-            definedFields({
-              scope: body.scope,
-              projectId: p.projectId ?? body.projectId,
-              agentDefId: body.agentDefId,
+          .set({
+            ...definedFields({
               period: body.period,
               limitCents: body.limitCents,
               mode: body.mode,
               enabled: body.enabled,
               updatedAt: new Date(),
             }),
-          )
+            ...(resolved
+              ? {
+                  scope: resolved.scope,
+                  projectId: resolved.projectId,
+                  agentDefId: resolved.agentDefId,
+                }
+              : {}),
+          })
           .where(and(eq(budgets.orgId, p.orgId), eq(budgets.id, budgetId)))
           .returning()
       )[0];

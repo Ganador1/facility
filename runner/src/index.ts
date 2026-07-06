@@ -400,8 +400,10 @@ export function redactEventData(
   if (Array.isArray(value)) return value.map((item) => redactEventData(item, secrets));
   if (value && typeof value === "object") {
     return Object.fromEntries(
+      // Redact the KEY too: an agent-influenced payload could carry an injected
+      // secret as a property name, not just a value.
       Object.entries(value as Record<string, unknown>).map(([k, v]) => [
-        k,
+        redactSecrets(k, secrets),
         redactEventData(v, secrets),
       ]),
     );

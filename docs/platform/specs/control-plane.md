@@ -23,7 +23,7 @@ Pure domain logic, zero I/O (no DB imports). Modules:
 5. `crypto.ts` — sealed-box helpers over libsodium: `seal(plaintext, masterKeyB64)`, `open(sealed, masterKeyB64)`; API-key hashing `hashKey(secret)` / `verifyKey(secret, hash)` (argon2id, sensible params); `generateApiKey(prefix)` → `{id, secret: '<prefix>_<40 hex>', hash, last4}`; HMAC confirmation tokens `mintConfirmation({secret, userId, clientId, toolName, argsHash, summary, ttlMs=300_000})` / `verifyConfirmation` (the tam-os MCP write-confirmation pattern).
 6. `receipts.ts` — zod schema `facility.run.v1`: superset of tam-os `agent_sdlc.run.v1` (see discovery/tam-os.md §receipts): provider `claude_code|codex_cli|byo`, mode (architect|builder|review|address_review|ci_doctor|security_sweep|po|learning|custom), result, usage {input_tokens, output_tokens, cache_read?, cache_write?, cost_cents, cost_source}, activity {turns, shell_commands, file_changes, mcp_tool_calls, web_searches, tool_calls, errors}, github ctx (actor SHA-256-hashed), timing. Include `parseTamOsReceipt(json)` → facility receipt (compat mapping).
 7. `fingerprints.ts` — `manifestFor(files: {path, content}[])` → `{version, files: [{path, sha256}], manifestHash}`; `diffManifest(expected, actual)` → `{missing, modified, extra}` (extra only within managed paths).
-8. `audit.ts` — event name catalog (dot notation: `org.created`, `member.added`, `key.issued`, `run.started`, `hitl.decided`, `registry.published`, `budget.breached`, …) + `hashChain(prevHash, event)` → sha256 hex; zod `AuditEventSchema`.
+8. `audit.ts` — event name catalog (dot notation: `org.created`, `member.added`, `key.issued`, `run.started`, `hitl.decided`, `registry.published`, `budget.created|updated|deleted`, …) + `hashChain(prevHash, event)` → sha256 hex; zod `AuditEventSchema`.
 
 Unit-test every module (pricing math, wildcard `can`, seal/open roundtrip, confirmation expiry/tamper, manifest diff, hash chain determinism, receipt compat parse with a realistic tam-os fixture).
 
@@ -85,7 +85,7 @@ Plugins/middleware, in order: request-id (uuidv7), pino logger, cookie, rate-lim
 
 **RBAC guard**: route registration declares `{permission: 'projects:read'}` in route config; guard resolves org scope from principal + `:projectId` param when present (verify project belongs to principal org, 404 otherwise), checks `can()`, 403 with `{error, needed}` on failure. Routes without declared permission → only auth routes/health allowed (enforce via a startup assertion that walks the route table — no accidentally-open routes).
 
-**Audit**: `request.audit(action, target, payload?)` decorator → inserts audit event with hash chain (per-org advisory lock or serialized insert via `SELECT … FOR UPDATE` on last event; correctness over throughput here); auto-audit every non-GET route on success (2xx) with route-declared action name; auth events audited explicitly.
+**Audit**: `request.audit(action, target, payload?)` decorator → inserts audit event with hash chain (per-org advisory lock or serialized insert via `SELECT … FOR UPDATE` on last event; correctness over throughput here); auto-audit fires on success (2xx) for every **protected, non-GET route that declares an `auditAction`** (the hash-chained `audit_events` log); auth events audited explicitly. Webhook deliveries and runner-lifecycle writes are recorded in their own event logs (`inbound_events`, `run_events`), not the audit chain.
 
 **Routes v1** (all under `/v1`, OpenAPI-schema'd with zod, consistent error envelope `{error: {code, message, details?}}`):
 
@@ -134,7 +134,7 @@ API integration tests (vitest, real Postgres, app via `buildApp`): dev-login →
 - Tenancy: no route can read/write outside principal org (I will grep for raw `db.` usage in routes — hot-table access goes through the scoped helpers).
 - No secret ever serialized in a response, log, or audit payload (grep for sealed_secret/hash fields in serializers; providers route returns metadata only).
 - Bundled roles/permissions come from `@facility/core` — no string literals sprinkled in routes.
-- Audit coverage: every mutation route audited; chain verified in tests.
+- Audit coverage: every protected, non-GET route with a declared `auditAction` is auto-audited into the hash chain on success; chain verified in tests.
 - Error envelope consistent; zod schemas on every body/query/response; OpenAPI builds without warnings.
 - No dead abstractions: no repository-pattern ceremony beyond the scoped helpers; Fastify idioms, not a framework-on-a-framework.
 - pg-boss worker boots clean and registers crons: `hitl.expire` (hourly), placeholders for watchtower/learning as no-op logs.

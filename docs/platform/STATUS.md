@@ -5,26 +5,26 @@
 This is the honest state of the platform build against [GOAL.md](../../GOAL.md).
 Nothing here is curated for a slide.
 
-## Current state (round 26, 2026-07-06)
+## Current state (round 28, 2026-07-06)
 
-The platform was driven through twenty-six independent GPT-5.5 (xhigh)
+The platform was driven through twenty-eight independent GPT-5.5 (xhigh)
 verification rounds — six adversarial verifiers per full round, one per aspect —
 each round followed by fixes to the named findings, re-verified against primary
 evidence (diff review + a re-run full suite) before commit. Each round is a fresh
 adversarial re-audit at a rising bar, so scores are **not** monotonic: a lower
 number than an earlier round reflects a stricter audit finding the next layer,
-not a regression. Round-26 snapshot (the wave after it closes the round-26
-security blocker — agent env inheriting the runner token — and its impl/features
-majors, pending round-27 re-verification):
+not a regression. Round-28 snapshot (the wave after it centralizes budget-scope
+authorization across HTTP/HITL/DB and makes runner secret-redaction cover object
+keys, pending round-29 re-verification):
 
-| aspect | round 1 | round 26 |
+| aspect | round 1 | round 28 |
 |---|---:|---:|
-| Implementation & architecture | 56 | **86** |
-| Security & privacy | 58 | 82 |
-| UI/UX | 76 | **88** |
-| Feature completeness & product fit | 58 | **86** |
-| Optimization | 58 | **90** |
-| Docs, DX, operability | 56 | **84** |
+| Implementation & architecture | 56 | 84 |
+| Security & privacy | 58 | 84 |
+| UI/UX | 76 | **89** |
+| Feature completeness & product fit | 58 | 84 |
+| Optimization | 58 | **88** |
+| Docs, DX, operability | 56 | **88** |
 | **average** | **~59** | **~86** |
 
 Later rounds drove deep into concurrency/atomicity and tenant isolation:
@@ -81,7 +81,7 @@ projects.
 | area | package/service | state |
 |---|---|---|
 | Domain logic | `@facility/core` | permissions + wildcard RBAC, price table (dated-model aware), sealed-box crypto + argon2 keys + HMAC confirmations, `facility.run.v1` receipts (tam-os superset), fingerprints, audit hash chain, render/detect ports · **tested** |
-| Data | `@facility/db` | Drizzle schema (30+ tables), migrations 0001–0012 (glob-ordered runner), org-scoped helpers, hash-chained audit, idempotent seed · **tested** |
+| Data | `@facility/db` | Drizzle schema (30+ tables), migrations 0001–0014 (glob-ordered runner), org-scoped helpers, hash-chained audit, idempotent seed · **tested** |
 | Control plane | `@facility/api` (Fastify 5) | session + API-key auth, WorkOS AuthKit hooks, RBAC preHandler + startup assertion, auto-audit, 70+ v1 routes, SSE run streams, HITL ledger, KB DAG validation, internal runner API, GitHub webhooks, watchtower + learning workers · **tested** |
 | LLM gateway | `@facility/gateway` | Anthropic/OpenAI/BYO proxy, virtual keys, budgets (soft/hard), zero-copy streaming with usage tee, metering, envelopes · **tested + verified live** |
 | Sandboxes | `@facility/api` sandbox + `runner/` | driver seam (Docker + **real AWS Fargate/ECS** driver), race-safe run lifecycle with credential revocation on every terminal path, runner-token internal API, live session streaming + steering, engine parsers (Claude/Codex/BYO) · **tested + docker e2e** |

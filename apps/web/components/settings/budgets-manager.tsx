@@ -56,7 +56,7 @@ export function BudgetsManager({ budgets }: { budgets: Budget[] }) {
           <TextInput
             required
             type="number"
-            min="1"
+            min="0"
             inputMode="decimal"
             name="budget-limit"
             autoComplete="off"

@@ -24,6 +24,7 @@ import {
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
 import { and, desc, eq, isNull, notInArray } from "drizzle-orm";
+import { resolveBudgetScope } from "./budget-scope.js";
 import {
   createGithubClientFactory,
   FacilityGithubClient,
@@ -130,7 +131,15 @@ async function executeMcpToolCall(
   if (proposedTargetProjectId !== undefined && proposedTargetProjectId !== proposalProjectId) {
     throw new Error("mcp_target_project_changed");
   }
-  const result = await executeKnownMcpTool(db, proposal.orgId, actor, toolName, args, options);
+  const result = await executeKnownMcpTool(
+    db,
+    proposal.orgId,
+    actor,
+    toolName,
+    args,
+    options,
+    proposalProjectId,
+  );
   await insertAuditEvent(db, {
     orgId: proposal.orgId,
     projectId: targetProjectId ?? proposalProjectId,
@@ -148,6 +157,7 @@ async function executeKnownMcpTool(
   toolName: string,
   args: Record<string, unknown>,
   options: ExecuteApprovedProposalOptions,
+  proposalProjectId: string | null,
 ) {
   if (toolName === "facility_create_project") {
     const project = (
@@ -257,26 +267,22 @@ async function executeKnownMcpTool(
 
   if (toolName === "facility_set_budget") {
     const budgetId = optionalString(args.budgetId);
-    let projectId = optionalString(args.projectId) ?? null;
-    if (budgetId) {
-      // An existing budget's project IS its scope. The HITL proposal was
-      // resolved and approved against that project, so an MCP update must not
-      // move the budget to another project via args.projectId — pin it.
-      const existing = (
-        await db
-          .select({ projectId: budgets.projectId })
-          .from(budgets)
-          .where(and(eq(budgets.orgId, orgId), eq(budgets.id, budgetId)))
-          .limit(1)
-      )[0];
-      if (!existing) throw new Error("budget_not_found");
-      projectId = existing.projectId ?? null;
-    }
-    await assertMcpProjectInOrg(db, orgId, projectId);
-    const values = {
+    // Same centralized scope coherence + authorization as the HTTP routes, keyed on
+    // the PROPOSAL's project scope: a project-scoped proposal cannot create/modify an
+    // org-wide budget, org budgets null their project/agent, and agent budgets require
+    // an agent def. This closes the HITL/MCP path that previously persisted a
+    // project-targeted `scope:"org"` row the gateway then enforced org-wide.
+    const resolved = resolveBudgetScope({
       scope: requiredString(args.scope, "scope"),
-      projectId,
+      projectId: optionalString(args.projectId),
       agentDefId: optionalString(args.agentDefId),
+      principalProjectId: proposalProjectId,
+    });
+    await assertMcpProjectInOrg(db, orgId, resolved.projectId);
+    const values = {
+      scope: resolved.scope,
+      projectId: resolved.projectId,
+      agentDefId: resolved.agentDefId,
       period: requiredString(args.period, "period"),
       limitCents: requiredNumber(args.limitCents, "limitCents"),
       mode: requiredString(args.mode, "mode"),

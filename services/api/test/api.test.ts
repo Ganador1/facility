@@ -626,6 +626,42 @@ describe("api", async () => {
       payload: { mode: "medium" },
     });
     expect(patchBadMode.statusCode).toBe(400);
+
+    // Scope coherence: agent budgets need an agent def; project/agent budgets need
+    // a project; and widening a project budget to org (by an org principal) nulls
+    // the project so it becomes a true org-wide budget.
+    const agentNoAgent = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: { scope: "agent_def", projectId, period: "daily", limitCents: 10, mode: "hard" },
+    });
+    expect(agentNoAgent.statusCode).toBe(400);
+    expect(agentNoAgent.json().error.code).toBe("budget_agent_required");
+    const projectNoProject = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: { scope: "project", period: "daily", limitCents: 10, mode: "hard" },
+    });
+    expect(projectNoProject.statusCode).toBe(400);
+    expect(projectNoProject.json().error.code).toBe("budget_project_required");
+    const orgOwned = await app.inject({
+      method: "POST",
+      url: "/v1/budgets",
+      headers: { cookie },
+      payload: { scope: "project", projectId, period: "daily", limitCents: 10, mode: "hard" },
+    });
+    expect(orgOwned.statusCode).toBe(200);
+    const widened = await app.inject({
+      method: "PATCH",
+      url: `/v1/budgets/${orgOwned.json().id}`,
+      headers: { cookie },
+      payload: { scope: "org" },
+    });
+    expect(widened.statusCode).toBe(200);
+    expect(widened.json().scope).toBe("org");
+    expect(widened.json().projectId).toBeNull();
   });
 
   it("rejects agent references outside the agent project", async () => {

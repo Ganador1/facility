@@ -20,16 +20,30 @@ type BudgetDef = {
 // counter increment in metering.ts is an atomic UPSERT, so the only residual
 // race is genuinely-simultaneous in-flight requests, bounded by their count.
 const budgetDefCache = new Map<string, { expiresAt: number; defs: BudgetDef[] }>();
+// Bound the cache: without this, a long-lived gateway accumulates one entry per
+// distinct auth-key shape forever. On overflow, drop expired entries first, then
+// (if still full) the whole cache — a bounded, self-healing restart.
+const BUDGET_DEF_CACHE_MAX = 10_000;
+
+function cacheBudgetDefs(cacheKey: string, value: { expiresAt: number; defs: BudgetDef[] }) {
+  if (budgetDefCache.size >= BUDGET_DEF_CACHE_MAX) {
+    const nowMs = Date.now();
+    for (const [k, v] of budgetDefCache) if (v.expiresAt <= nowMs) budgetDefCache.delete(k);
+    if (budgetDefCache.size >= BUDGET_DEF_CACHE_MAX) budgetDefCache.clear();
+  }
+  budgetDefCache.set(cacheKey, value);
+}
 
 export async function applicableBudgets(
   db: FacilityDb,
   key: AuthedKey,
   now: Date,
 ): Promise<BudgetState[]> {
-  // agentDefId MUST be in the key: the query below filters on it, so two requests
-  // that share org/project/run/budget but differ in agent would otherwise be served
-  // each other's cached budget definitions until the TTL expires.
-  const cacheKey = `${key.orgId}:${key.projectId}:${key.agentDefId ?? "none"}:${key.runId ?? "none"}:${key.budgetId ?? "none"}`;
+  // Key by exactly what the definition query filters on (org/project/agentDef/
+  // budget). runId is deliberately EXCLUDED: the query never filters by run, so
+  // including it only fragmented the cache per run-scoped key and let it grow
+  // unbounded. agentDefId MUST be present so agent budgets don't cross-serve.
+  const cacheKey = `${key.orgId}:${key.projectId}:${key.agentDefId ?? "none"}:${key.budgetId ?? "none"}`;
   let defs = budgetDefCache.get(cacheKey);
   if (!defs || defs.expiresAt <= Date.now()) {
     const filters = [
@@ -59,7 +73,7 @@ export async function applicableBudgets(
         mode: row.mode as BudgetState["mode"],
       })),
     };
-    budgetDefCache.set(cacheKey, defs);
+    cacheBudgetDefs(cacheKey, defs);
   }
 
   if (defs.defs.length === 0) return [];

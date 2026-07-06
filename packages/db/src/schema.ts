@@ -479,6 +479,14 @@ export const budgets = pgTable(
     check("budgets_period_check", sql`${table.period} in ('daily', 'weekly', 'monthly')`),
     check("budgets_mode_check", sql`${table.mode} in ('soft', 'hard')`),
     check("budgets_limit_cents_check", sql`${table.limitCents} >= 0`),
+    // Scope coherence (migration 0014): org ⇒ no project/agent; project ⇒ project,
+    // no agent; agent_def ⇒ project AND agent.
+    check(
+      "budgets_scope_coherence_check",
+      sql`(${table.scope} = 'org' and ${table.projectId} is null and ${table.agentDefId} is null)
+        or (${table.scope} = 'project' and ${table.projectId} is not null and ${table.agentDefId} is null)
+        or (${table.scope} = 'agent_def' and ${table.projectId} is not null and ${table.agentDefId} is not null)`,
+    ),
   ],
 );
 
