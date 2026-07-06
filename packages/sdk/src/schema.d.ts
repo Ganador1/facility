@@ -3649,17 +3649,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    projectId: string;
-                    runId: string;
-                    itemId: string;
-                    versionId: string;
-                    proposalId: string;
-                    entryId: string;
-                    taskId: string;
                     issueId: string;
-                    keyId: string;
-                    userId: string;
-                    roleId: string;
                 };
                 cookie?: never;
             };
@@ -3698,17 +3688,7 @@ export interface paths {
                 query?: never;
                 header?: never;
                 path: {
-                    projectId: string;
-                    runId: string;
-                    itemId: string;
-                    versionId: string;
-                    proposalId: string;
-                    entryId: string;
-                    taskId: string;
                     issueId: string;
-                    keyId: string;
-                    userId: string;
-                    roleId: string;
                 };
                 cookie?: never;
             };

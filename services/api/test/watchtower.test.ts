@@ -459,6 +459,9 @@ describe("watchtower", async () => {
     expect(normalizeSeverity("medium")).toBe("warn");
     expect(normalizeSeverity("critical")).toBe("critical");
     expect(normalizeSeverity("whatever")).toBe("info");
+    // Case-insensitive: external producers may send upper-case severities.
+    expect(normalizeSeverity("ERROR")).toBe("error");
+    expect(normalizeSeverity("Critical")).toBe("critical");
     expect(isActionableSeverity("high")).toBe(true);
     expect(isActionableSeverity("warn")).toBe(false);
   });

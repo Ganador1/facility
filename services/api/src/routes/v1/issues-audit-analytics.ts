@@ -1,5 +1,5 @@
 import { auditEvents, llmRequests, platformIssues, verifyAuditChain } from "@facility/db";
-import { and, desc, eq, gte, lt, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { readEnvelopeObject } from "../../envelopes.js";
@@ -11,6 +11,7 @@ import {
   assertBareRowProjectScope,
   assertProjectScope,
   IdParams,
+  IssueIdParams,
   LlmRequestSchema,
   principal,
   type V1RouteContext,
@@ -91,7 +92,7 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
           permission: "issues:write",
           auditAction: action === "ack" ? "issue.acked" : "issue.resolved",
         },
-        schema: { params: IdParams, response: { 200: AnyObject } },
+        schema: { params: IssueIdParams, response: { 200: AnyObject } },
       },
       async (request) => {
         const p = principal(request);
@@ -105,21 +106,42 @@ export async function registerIssuesAuditRoutes(app: FastifyInstance, context: V
         )[0];
         if (!issue) throw notFound("Issue not found");
         assertBareRowProjectScope(p, issue.projectId, "Issue not found");
-        // Valid transitions: ack moves open → acked only (a resolved issue must
-        // not silently reopen); resolve moves open/acked → resolved. Re-issuing
-        // the same terminal action is idempotent.
-        if (action === "ack" && issue.state !== "open") {
-          if (issue.state === "acked") return issue;
-          throw new ApiError(409, "invalid_transition", "Only an open issue can be acknowledged.");
+        // Valid transitions: ack moves open → acked; resolve moves open/acked →
+        // resolved. Re-issuing the terminal state is idempotent.
+        const target = action === "ack" ? "acked" : "resolved";
+        const allowedFrom = action === "ack" ? ["open"] : ["open", "acked"];
+        if (issue.state === target) return issue;
+        if (!allowedFrom.includes(issue.state)) {
+          throw new ApiError(
+            409,
+            "invalid_transition",
+            `Cannot ${action} an issue in state "${issue.state}".`,
+          );
         }
-        if (action === "resolve" && issue.state === "resolved") return issue;
-        return (
+        // Pin the update to the allowed prior state so a concurrent transition
+        // cannot be clobbered (e.g. ack racing a resolve). 0 rows updated means
+        // the state moved under us — reconcile from the current row.
+        const [updated] = await db
+          .update(platformIssues)
+          .set({ state: target, updatedAt: new Date() })
+          .where(
+            and(
+              eq(platformIssues.orgId, p.orgId),
+              eq(platformIssues.id, issueId),
+              inArray(platformIssues.state, allowedFrom),
+            ),
+          )
+          .returning();
+        if (updated) return updated;
+        const current = (
           await db
-            .update(platformIssues)
-            .set({ state: action === "ack" ? "acked" : "resolved", updatedAt: new Date() })
+            .select()
+            .from(platformIssues)
             .where(and(eq(platformIssues.orgId, p.orgId), eq(platformIssues.id, issueId)))
-            .returning()
+            .limit(1)
         )[0];
+        if (current?.state === target) return current;
+        throw new ApiError(409, "invalid_transition", "Issue state changed concurrently.");
       },
     );
   }

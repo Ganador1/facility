@@ -29,6 +29,10 @@ export const IdParams = z.object({
   roleId: z.string().optional(),
 });
 
+// Route-specific single-param schema so the generated OpenAPI for /v1/issues/:id/*
+// lists only issueId, not the whole shared IdParams grab-bag.
+export const IssueIdParams = z.object({ issueId: z.string() });
+
 export const OrgSchema = z.object({
   id: z.string(),
   name: z.string(),

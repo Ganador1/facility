@@ -12,13 +12,13 @@ import {
   type FacilityDb,
   githubInstallations,
   insertAuditEvent,
-  platformIssues,
   proposals,
   repos,
 } from "@facility/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { ApiError } from "../errors.js";
 import type { AppConfig, Principal } from "../types.js";
+import { raisePlatformIssue } from "../watchtower/issues.js";
 import { FacilityGithubClient, type GithubClientFactory, type TreeItem } from "./client.js";
 import { readRepoFiles } from "./repo-files.js";
 
@@ -366,22 +366,17 @@ async function upsertPlatformIssue(
   diff: { missing: string[]; modified: string[]; extra: string[] },
 ) {
   const fingerprint = sha256Hex(JSON.stringify({ repo: repo.id, kind, diff }));
-  await db
-    .insert(platformIssues)
-    .values({
-      id: newId("iss"),
-      orgId: repo.orgId,
-      projectId: repo.projectId,
-      kind: "fingerprint_drift",
-      severity: kind === "corrupted" ? "error" : "warn",
-      fingerprint,
-      title: `Facility managed files drifted in ${repo.owner}/${repo.name}`,
-      bodyMd: JSON.stringify(diff, null, 2),
-    })
-    .onConflictDoUpdate({
-      target: [platformIssues.orgId, platformIssues.fingerprint],
-      set: { lastSeen: new Date(), count: sql`${platformIssues.count} + 1`, updatedAt: new Date() },
-    });
+  // Route through the shared atomic upsert so recurring drift reopens a resolved
+  // issue (and dedupes race-safely) instead of only bumping lastSeen/count.
+  await raisePlatformIssue(db, {
+    orgId: repo.orgId,
+    projectId: repo.projectId,
+    kind: "fingerprint_drift",
+    severity: kind === "corrupted" ? "error" : "warn",
+    fingerprint,
+    title: `Facility managed files drifted in ${repo.owner}/${repo.name}`,
+    bodyMd: JSON.stringify(diff, null, 2),
+  });
 }
 
 async function auditGithub(

@@ -204,7 +204,13 @@ export async function emitSoftBudgetIssues(db: FacilityDb, states: BudgetState[]
       })
       .onConflictDoUpdate({
         target: [platformIssues.orgId, platformIssues.fingerprint],
-        set: { lastSeen: new Date(), count: sql`${platformIssues.count} + 1` },
+        set: {
+          lastSeen: new Date(),
+          count: sql`${platformIssues.count} + 1`,
+          // A recurring breach reopens a resolved issue so it does not stay hidden.
+          state: sql`case when ${platformIssues.state} = 'resolved' then 'open' else ${platformIssues.state} end`,
+          updatedAt: new Date(),
+        },
       });
   }
 }

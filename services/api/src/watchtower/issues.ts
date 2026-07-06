@@ -1,6 +1,6 @@
 import { newId } from "@facility/core";
 import { type FacilityDb, insertAuditEvent, platformIssues } from "@facility/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 // Canonical severity ladder. Producers historically emitted "high"/"medium",
 // which the inbox and project-health filters (keyed on "error") silently
@@ -13,8 +13,9 @@ export type IssueSeverity = "info" | "warn" | "error" | "critical";
 export const ACTIONABLE_SEVERITIES: IssueSeverity[] = ["error", "critical"];
 
 export function normalizeSeverity(severity: string): IssueSeverity {
-  switch (severity) {
+  switch (severity.trim().toLowerCase()) {
     case "critical":
+    case "fatal":
       return "critical";
     case "error":
     case "high":
@@ -44,9 +45,15 @@ export type IssueInput = {
 
 export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
   const severity = normalizeSeverity(input.severity);
-  const existing = (
+  const now = new Date();
+  const projectId = input.projectId ?? null;
+  // Read the prior state ONLY to decide whether this raise is a reopen (an audit
+  // signal). Correctness and dedupe are handled atomically by the ON CONFLICT
+  // upsert below, so a race here can at worst mislabel the audit event — it can
+  // never corrupt state or throw on a concurrent first raise.
+  const prior = (
     await db
-      .select()
+      .select({ state: platformIssues.state })
       .from(platformIssues)
       .where(
         and(
@@ -56,51 +63,44 @@ export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
       )
       .limit(1)
   )[0];
-  const now = new Date();
-  if (!existing) {
-    return (
-      await db
-        .insert(platformIssues)
-        .values({
-          id: newId("iss"),
-          orgId: input.orgId,
-          projectId: input.projectId ?? undefined,
-          kind: input.kind,
-          severity,
-          fingerprint: input.fingerprint,
-          title: input.title,
-          bodyMd: input.bodyMd,
-          state: "open",
-        })
-        .returning()
-    )[0];
-  }
-
-  const wasResolved = existing.state === "resolved";
   const updated = (
     await db
-      .update(platformIssues)
-      .set({
-        projectId: input.projectId ?? existing.projectId,
+      .insert(platformIssues)
+      .values({
+        id: newId("iss"),
+        orgId: input.orgId,
+        projectId: projectId ?? undefined,
         kind: input.kind,
         severity,
+        fingerprint: input.fingerprint,
         title: input.title,
         bodyMd: input.bodyMd,
-        state: wasResolved ? "open" : existing.state,
-        lastSeen: now,
-        count: existing.count + 1,
-        updatedAt: now,
+        state: "open",
       })
-      .where(and(eq(platformIssues.orgId, input.orgId), eq(platformIssues.id, existing.id)))
+      .onConflictDoUpdate({
+        target: [platformIssues.orgId, platformIssues.fingerprint],
+        set: {
+          projectId: sql`coalesce(${projectId}, ${platformIssues.projectId})`,
+          kind: input.kind,
+          severity,
+          title: input.title,
+          bodyMd: input.bodyMd,
+          // Recurrence reopens a resolved issue; an open/acked one stays as-is.
+          state: sql`case when ${platformIssues.state} = 'resolved' then 'open' else ${platformIssues.state} end`,
+          lastSeen: now,
+          count: sql`${platformIssues.count} + 1`,
+          updatedAt: now,
+        },
+      })
       .returning()
   )[0];
-  if (wasResolved) {
+  if (prior?.state === "resolved") {
     await insertAuditEvent(db, {
       orgId: input.orgId,
-      projectId: updated?.projectId ?? input.projectId ?? existing.projectId ?? null,
+      projectId: updated?.projectId ?? projectId,
       actor: { type: "system", name: "watchtower" },
       action: "issue.reopened",
-      target: { type: "issue", id: existing.id },
+      target: { type: "issue", id: updated?.id ?? "" },
       payload: { fingerprint: input.fingerprint, kind: input.kind },
     });
   }
