@@ -90,6 +90,22 @@ test("runs and inbox render stub fetch fixtures", async () => {
   assert.ok(inboxOut.text.includes("prop_1"));
 });
 
+test("inbox surfaces watchtower issues alongside proposals", async () => {
+  const out = sink();
+  const fetch = async (url) => {
+    if (new URL(url).pathname === "/v1/inbox") {
+      return json({
+        proposals: [{ id: "prop_1", state: "open", actionTypeId: "plan", projectId: "proj_1" }],
+        issues: [{ id: "iss_1", severity: "error", kind: "run_failure", state: "open", title: "Boom" }],
+      });
+    }
+    return json({ error: { message: "missing fixture" } }, 404);
+  };
+  assert.equal(await runPlatformCommand("inbox", [], { config: config(), stdout: out, fetch }), 0);
+  assert.ok(out.text.includes("prop_1"), "shows proposals");
+  assert.ok(out.text.includes("iss_1") && out.text.includes("run_failure"), "shows issues");
+});
+
 test("llm-requests list calls raw metering endpoint", async () => {
   const stdout = sink();
   const calls = [];

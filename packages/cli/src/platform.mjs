@@ -155,13 +155,20 @@ async function projects(args, ctx) {
 async function runs(args, ctx, flags) {
   const sub = args[0];
   if (sub === "list") {
-    const runs = flags.project
-      ? await api(ctx, "GET", `/v1/projects/${(await resolveProject(ctx, flags.project)).id}/runs`, {
-          query: { status: flags.status },
-        })
-      : await runsForAllProjects(ctx, flags.status);
-    if (ctx.json) writeJson(ctx, runs);
-    else table(ctx, ["id", "project", "status", "mode"], asArray(runs).map((r) => [r.id, r.projectId, r.status, r.mode]), { live: true });
+    let runs;
+    let failedProjects = 0;
+    if (flags.project) {
+      runs = await api(ctx, "GET", `/v1/projects/${(await resolveProject(ctx, flags.project)).id}/runs`, {
+        query: { status: flags.status },
+      });
+    } else {
+      ({ runs, failedProjects } = await runsForAllProjects(ctx, flags.status));
+    }
+    if (ctx.json) writeJson(ctx, flags.project ? runs : { runs, failedProjects });
+    else {
+      if (failedProjects) ctx.stdout.write(`  ${yellow("!")} ${dim(`${failedProjects} project(s) failed to load — inventory is partial`)}\n`);
+      table(ctx, ["id", "project", "status", "mode"], asArray(runs).map((r) => [r.id, r.projectId, r.status, r.mode]), { live: true });
+    }
     return 0;
   }
   if (sub === "trigger") {
@@ -189,9 +196,19 @@ async function runs(args, ctx, flags) {
 
 async function inbox(args, ctx, flags) {
   if (!args.length) {
-    const items = unwrapInbox(await api(ctx, "GET", "/v1/inbox", { query: { state: flags.state || "open" } }));
-    if (ctx.json) writeJson(ctx, items);
-    else table(ctx, ["id", "state", "action", "project"], asArray(items).map((item) => [item.id, item.state, item.actionTypeId, item.projectId]));
+    const raw = await api(ctx, "GET", "/v1/inbox", { query: { state: flags.state || "open" } });
+    const proposals = unwrapInbox(raw);
+    const issues = Array.isArray(raw) ? [] : asArray(raw?.issues);
+    if (ctx.json) {
+      writeJson(ctx, { proposals, issues });
+      return 0;
+    }
+    ctx.stdout.write(`  ${bold("gates")}${dim(` · ${asArray(proposals).length}`)}\n`);
+    table(ctx, ["id", "state", "action", "project"], asArray(proposals).map((item) => [item.id, item.state, item.actionTypeId, item.projectId]));
+    if (issues.length) {
+      ctx.stdout.write(`\n  ${bold("issues")}${dim(` · ${issues.length} from watchtower`)}\n`);
+      table(ctx, ["id", "severity", "kind", "state", "title"], issues.map((item) => [item.id, item.severity, item.kind, item.state, item.title]));
+    }
     return 0;
   }
   if (args[0] === "decide") {
@@ -346,13 +363,17 @@ async function resolveProject(ctx, slugOrId) {
 
 async function runsForAllProjects(ctx, status) {
   const projects = await api(ctx, "GET", "/v1/projects");
-  return (
-    await Promise.all(
-      asArray(projects).map((project) =>
-        api(ctx, "GET", `/v1/projects/${project.id}/runs`, { query: { status } }).catch(() => [])
-      )
+  const results = await Promise.all(
+    asArray(projects).map((project) =>
+      api(ctx, "GET", `/v1/projects/${project.id}/runs`, { query: { status } })
+        .then((runs) => ({ ok: true, runs: asArray(runs) }))
+        .catch(() => ({ ok: false, runs: [] }))
     )
-  ).flat();
+  );
+  return {
+    runs: results.flatMap((result) => result.runs),
+    failedProjects: results.filter((result) => !result.ok).length,
+  };
 }
 
 async function watchRun(ctx, runId) {

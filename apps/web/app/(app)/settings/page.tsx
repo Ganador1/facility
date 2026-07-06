@@ -1,5 +1,5 @@
 import { Divider, Eyebrow } from "@facility/ui";
-import { Offline } from "@/components/offline";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { BudgetsManager } from "@/components/settings/budgets-manager";
 import { KeysManager } from "@/components/settings/keys-manager";
 import { MembersList } from "@/components/settings/members-list";
@@ -79,7 +79,11 @@ export default async function SettingsPage() {
             Machine access for the CLI, MCP, and integrations. Each key carries a role — RBAC is
             identical to a human session.
           </p>
-          <KeysManager keys={keys.ok ? keys.data : []} roles={roles.ok ? roles.data : []} />
+          {keys.ok ? (
+            <KeysManager keys={keys.data} roles={roles.ok ? roles.data : []} />
+          ) : (
+            <ErrorNotice message={`Couldn't load API keys — ${keys.message}`} />
+          )}
         </section>
       ) : null}
 
@@ -89,7 +93,13 @@ export default async function SettingsPage() {
           <p className="text-sm leading-relaxed text-(--mut)">
             Enforced at the gateway on every model call. Soft warns; hard stops.
           </p>
-          <BudgetsManager budgets={budgets.ok ? budgets.data : []} />
+          {budgets.ok ? (
+            <BudgetsManager budgets={budgets.data} />
+          ) : (
+            <ErrorNotice
+              message={`Couldn't load budgets — enforcement status unknown; don't assume spend is uncapped (${budgets.message})`}
+            />
+          )}
         </section>
       ) : null}
     </div>
