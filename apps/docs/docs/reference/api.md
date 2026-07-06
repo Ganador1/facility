@@ -31,10 +31,10 @@ client is `@facility/sdk`.
 `/v1/projects` (+`/repos`, `/agents`, `/runs`, `/kb`, `/tasks`,
 `/kickstart`, `/upgrade`) · `/v1/runs/:id` (+`/events`, `/stream`, `/steer`,
 `/cancel`) · `/v1/registry` · `/v1/sandbox-profiles` · `/v1/providers` ·
-`/v1/virtual-keys` · `/v1/budgets` · `/v1/spend` · `/v1/inbox` ·
-`/v1/proposals` · `/v1/issues` · `/v1/analytics` · `/v1/audit` ·
+`/v1/projects/:projectId/virtual-keys` · `/v1/budgets` · `/v1/spend` ·
+`/v1/inbox` · `/v1/proposals` · `/v1/issues` · `/v1/analytics` · `/v1/audit` ·
 `/v1/llm-requests` (+`/:requestId/envelope`) · `/v1/admin/doctor` ·
-`/webhooks/github`.
+`/webhooks/github` · `/webhooks/inbound/:integrationId`.
 
 The generated OpenAPI document is the authoritative, always-current
 reference — this page is the orientation map.

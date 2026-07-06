@@ -59,8 +59,10 @@ resource server** — remote MCP now accepts WorkOS-issued access-token JWTs
   rather than dirty-bucket/watermark incremental — correct and bounded, but a
   watermark design would rebuild only changed buckets.
 - **Web is an operator dashboard**, not yet the full control plane: agents,
-  sandbox profiles, providers, virtual keys, and KB/tasks are managed via
-  API/CLI/MCP but are not first-class web surfaces.
+  sandbox profiles, providers, virtual keys, and KB/tasks are managed through the
+  **v1 API** (with partial CLI/MCP coverage — the CLI focuses on
+  status/projects/runs/inbox/issues/keys/kickstart/llm-requests; MCP on
+  run/registry/budget/project tools) and are not yet first-class web surfaces.
 
 **Owner-gated ceiling**: "tam-os operates 100% on the platform" requires the
 production App install + cutover, which is the owner's decision (see below) — it
@@ -76,7 +78,7 @@ projects.
 | area | package/service | state |
 |---|---|---|
 | Domain logic | `@facility/core` | permissions + wildcard RBAC, price table (dated-model aware), sealed-box crypto + argon2 keys + HMAC confirmations, `facility.run.v1` receipts (tam-os superset), fingerprints, audit hash chain, render/detect ports · **tested** |
-| Data | `@facility/db` | Drizzle schema (30+ tables), migrations 0001–0004 (ordered runner), org-scoped helpers, hash-chained audit, idempotent seed · **tested** |
+| Data | `@facility/db` | Drizzle schema (30+ tables), migrations 0001–0012 (glob-ordered runner), org-scoped helpers, hash-chained audit, idempotent seed · **tested** |
 | Control plane | `@facility/api` (Fastify 5) | session + API-key auth, WorkOS AuthKit hooks, RBAC preHandler + startup assertion, auto-audit, 70+ v1 routes, SSE run streams, HITL ledger, KB DAG validation, internal runner API, GitHub webhooks, watchtower + learning workers · **tested** |
 | LLM gateway | `@facility/gateway` | Anthropic/OpenAI/BYO proxy, virtual keys, budgets (soft/hard), zero-copy streaming with usage tee, metering, envelopes · **tested + verified live** |
 | Sandboxes | `@facility/api` sandbox + `runner/` | driver seam (Docker + **real AWS Fargate/ECS** driver), race-safe run lifecycle with credential revocation on every terminal path, runner-token internal API, live session streaming + steering, engine parsers (Claude/Codex/BYO) · **tested + docker e2e** |

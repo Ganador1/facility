@@ -1,6 +1,6 @@
 import { generateApiKey, newId, seal } from "@facility/core";
 import { budgets, providerCredentials, virtualKeys } from "@facility/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { notFound } from "../../errors.js";
@@ -199,7 +199,7 @@ export async function registerProvidersBudgetsSpendRoutes(
       const p = principal(request);
       const { projectId, keyId } = request.params as { projectId: string; keyId: string };
       assertProjectScope(p, projectId);
-      await db
+      const revoked = await db
         .update(virtualKeys)
         .set({ revokedAt: new Date() })
         .where(
@@ -207,8 +207,18 @@ export async function registerProvidersBudgetsSpendRoutes(
             eq(virtualKeys.orgId, p.orgId),
             eq(virtualKeys.projectId, projectId),
             eq(virtualKeys.id, keyId),
+            isNull(virtualKeys.revokedAt),
           ),
-        );
+        )
+        .returning({ prefix: virtualKeys.prefix });
+      // Push-invalidate the gateway key cache immediately, exactly like run-key
+      // revocation — a manually revoked key must stop working now, not after the
+      // gateway's cache TTL.
+      for (const row of revoked) {
+        await db
+          .execute(sql`select pg_notify('facility_key_revoked', ${row.prefix})`)
+          .catch(() => undefined);
+      }
       return { ok: true };
     },
   );

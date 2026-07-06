@@ -117,7 +117,10 @@ export async function registerWebhookRoutes(app: FastifyInstance, config: AppCon
           stringField(payload, "eventType") ??
           stringField(payload, "type") ??
           "generic";
-        const id = deliveryId ? `in_${deliveryId}` : newId("evt");
+        // Scope idempotency to the integration: a delivery id is only unique per
+        // sender, so a global `in_${deliveryId}` would let one integration's
+        // delivery id suppress a different integration's event.
+        const id = deliveryId ? `in_${integration.id}_${deliveryId}` : newId("evt");
         const inserted = await app.facilityDb
           .insert(inboundEvents)
           .values({

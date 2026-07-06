@@ -17,6 +17,11 @@ pnpm --filter @facility/db migrate && pnpm --filter @facility/db seed
 pnpm dev                       # api :4400 · gateway :4410 · web :3400
 ```
 
+`pnpm dev` runs the api, gateway, and web. The **worker** (queue consumers +
+crons: run dispatch, watchtower, learning) is a separate process — start it with
+`node services/api/dist/worker.js` (or its dev script) so platform-lane runs
+actually dispatch. In the docker-compose stack it's the dedicated `worker` service.
+
 Open `http://localhost:3400`, sign in with **dev sign in** (enabled by
 `FACILITY_INSECURE_DEV=1` — refused in production builds), and you're in the
 seeded organization.
@@ -51,9 +56,9 @@ AWS S3, R2, and other S3-compatible endpoints.
 
 ## First real steps
 
-1. **Providers** — add your Anthropic/OpenAI keys (sealed at rest) via the API or
-   CLI (`POST /v1/providers`); provider credentials are managed through the
-   API/CLI/MCP, not yet a first-class web settings surface.
+1. **Providers** — add your Anthropic/OpenAI keys (sealed at rest) via the v1 API
+   (`POST /v1/providers`); provider credentials are API-managed today — there is
+   not yet a dedicated CLI command or a first-class web settings surface.
 2. **GitHub App** — create your own App installation (see
    [Production](production)) so kickstart and triggers work against your org.
 3. **Kickstart** — connect a repo and open the kickstart PR.
