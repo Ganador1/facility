@@ -24,6 +24,7 @@ export function resolveSlashCommand(body: string): { command?: string; ambiguous
 
 export async function routeTrigger(
   db: FacilityDb,
+  orgId: string,
   client: FacilityGithubClient,
   payload: TriggerPayload,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
@@ -41,11 +42,13 @@ export async function routeTrigger(
   if (!owner || !name || !sender || !issueNumber || !commentId) {
     return { routed: false, reason: "missing_payload" };
   }
+  // Scope to the webhook's resolved org — repos are per-org unique (migration
+  // 0012), so a global owner/name lookup could route to another tenant's repo.
   const repo = (
     await db
       .select()
       .from(repos)
-      .where(and(eq(repos.owner, owner), eq(repos.name, name)))
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
       .limit(1)
   )[0];
   if (!repo) return { routed: false, reason: "repo_unmanaged" };

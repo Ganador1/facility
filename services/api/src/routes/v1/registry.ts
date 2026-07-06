@@ -1,10 +1,10 @@
 import { newId } from "@facility/core";
 import { registryItems, registryVersions } from "@facility/db";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
-import { publishRegistryVersion } from "../../registry.js";
+import { createNextDraftVersion, publishRegistryVersion } from "../../registry.js";
 import type { Principal } from "../../types.js";
 import {
   assertBareRowProjectScope,
@@ -197,23 +197,14 @@ export async function registerRegistryRoutes(app: FastifyInstance, context: V1Ro
       const p = principal(request);
       const { itemId } = request.params as { itemId: string };
       await loadRegistryItem(p, itemId);
-      const max =
-        (
-          await db
-            .select()
-            .from(registryVersions)
-            .where(and(eq(registryVersions.orgId, p.orgId), eq(registryVersions.itemId, itemId)))
-            .orderBy(desc(registryVersions.version))
-            .limit(1)
-        )[0]?.version ?? 0;
-      return createRegistryVersion(
-        p.orgId,
+      // Advisory-locked next-version allocation — no duplicate-key race between
+      // concurrent draft creations for the same item.
+      return createNextDraftVersion(db, {
+        orgId: p.orgId,
         itemId,
-        max + 1,
-        (request.body as { content: string }).content,
-        "draft",
-        p.id,
-      );
+        content: (request.body as { content: string }).content,
+        createdBy: p.id,
+      });
     },
   );
 

@@ -1,11 +1,22 @@
 import { createHmac } from "node:crypto";
 import { newId } from "@facility/core";
-import { createDb, githubInstallations, inboundEvents, migrate, orgs, seed } from "@facility/db";
+import {
+  createDb,
+  githubInstallations,
+  inboundEvents,
+  integrations,
+  migrate,
+  orgs,
+  projects,
+  repos,
+  seed,
+} from "@facility/db";
 import { asc, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { FacilityGithubClient } from "../src/github/client.js";
+import { processGithubWebhook } from "../src/github/processor.js";
 import { resolveSlashCommand } from "../src/github/router.js";
 import type { AppConfig } from "../src/types.js";
 
@@ -158,6 +169,75 @@ describe("github integration", async () => {
       .from(inboundEvents)
       .where(eq(inboundEvents.id, `gh_${delivery}`));
     expect(rows).toHaveLength(1);
+  });
+
+  it("routes a webhook to the resolved org's repo when two tenants share a repo name", async () => {
+    // repos are per-org unique (migration 0012), so two orgs can register the
+    // same owner/name. The processor must select the repo of the webhook's
+    // resolved org — a global owner/name lookup would cross tenants.
+    const owner = "cross";
+    const name = `tenant-${Date.now()}`;
+    const setups: { orgId: string; repoId: string; integrationId: string }[] = [];
+    for (let i = 0; i < 2; i++) {
+      const orgId = newId("org");
+      const suffix = `${Date.now()}-${i}`;
+      await db.insert(orgs).values({ id: orgId, name: `xorg-${suffix}`, slug: `xorg-${suffix}` });
+      const projectId = newId("proj");
+      await db
+        .insert(projects)
+        .values({ id: projectId, orgId, name: "p", slug: `p-${suffix}`, settings: {} });
+      const inst = (
+        await db
+          .insert(githubInstallations)
+          .values({
+            id: newId("int"),
+            orgId,
+            installationId: Date.now() * 10 + i,
+            accountLogin: owner,
+            targetType: "Organization",
+          })
+          .returning()
+      )[0];
+      const repoId = newId("repo");
+      await db.insert(repos).values({
+        id: repoId,
+        orgId,
+        projectId,
+        installationId: inst?.id,
+        owner,
+        name,
+        defaultBranch: "main",
+        fingerprint: { files: [{ path: "managed.md" }] },
+      });
+      const integrationId = newId("int");
+      await db
+        .insert(integrations)
+        .values({ id: integrationId, orgId, kind: "github", name: "gh" });
+      setups.push({ orgId, repoId, integrationId });
+    }
+    const [target, other] = setups;
+    if (!target || !other) throw new Error("two-org setup failed");
+    const eventId = `gh_${newId("evt")}`;
+    await db.insert(inboundEvents).values({
+      id: eventId,
+      orgId: target.orgId,
+      integrationId: target.integrationId,
+      verified: true,
+      eventType: "push",
+      payload: {
+        repository: { owner: { login: owner }, name },
+        ref: "refs/heads/main",
+        commits: [{ modified: ["managed.md"] }],
+      },
+    });
+    const enqueued: { queue: string; data: Record<string, unknown> }[] = [];
+    await processGithubWebhook(db, config, { inboundEventId: eventId }, undefined, async (q, d) => {
+      enqueued.push({ queue: q, data: d });
+      return null;
+    });
+    const verify = enqueued.find((e) => e.queue === "fingerprints.verify");
+    expect(verify?.data.repoId).toBe(target.repoId);
+    expect(verify?.data.repoId).not.toBe(other.repoId);
   });
 
   it("matches only start-of-line slash commands and detects ambiguity", () => {

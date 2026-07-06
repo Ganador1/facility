@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { newId } from "@facility/core";
 import type { createDb } from "@facility/db";
 import {
@@ -39,7 +38,7 @@ import {
   toHarnessEntry,
   toHarnessSpace,
 } from "./harness.js";
-import { publishRegistryVersion } from "./registry.js";
+import { createNextDraftVersion, publishRegistryVersion } from "./registry.js";
 import { cancelRun } from "./sandbox/orchestrator.js";
 import { appendRunEvents, TERMINAL_RUN_STATUSES } from "./sandbox/state.js";
 import type { AppConfig } from "./types.js";
@@ -733,23 +732,13 @@ async function executeRegistryDraft(db: Db, proposal: typeof proposals.$inferSel
         .returning()
     )[0];
   if (!item) throw new Error("registry_item_create_failed");
-  const latest = (
-    await db
-      .select()
-      .from(registryVersions)
-      .where(eq(registryVersions.itemId, item.id))
-      .orderBy(desc(registryVersions.version))
-      .limit(1)
-  )[0];
-  await db.insert(registryVersions).values({
-    id: newId("ver"),
+  // Advisory-locked next-version allocation (shared with the HTTP route) — no
+  // duplicate-key race with a concurrent draft on the same item.
+  await createNextDraftVersion(db, {
     orgId: proposal.orgId,
     itemId: item.id,
-    version: (latest?.version ?? 0) + 1,
     content,
-    contentHash: createHash("sha256").update(content).digest("hex"),
     changelog: `Drafted from approved proposal ${proposal.id}`,
-    status: "draft",
     createdBy: "learning",
   });
 }

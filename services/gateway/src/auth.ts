@@ -108,8 +108,9 @@ export async function providerCredential(
       .from(providerCredentials)
       .where(and(eq(providerCredentials.orgId, orgId), eq(providerCredentials.provider, provider)))
       // Deterministic when an org has several credentials for one provider: the
-      // oldest (first-configured) wins, stably, rather than an arbitrary limit(1).
-      .orderBy(providerCredentials.createdAt)
+      // oldest (first-configured) wins, with id as a stable tiebreaker for rows
+      // sharing a created_at (bulk insert), rather than an arbitrary limit(1).
+      .orderBy(providerCredentials.createdAt, providerCredentials.id)
       .limit(1)
   )[0];
 

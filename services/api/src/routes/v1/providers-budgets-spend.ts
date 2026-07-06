@@ -142,7 +142,10 @@ export async function registerProvidersBudgetsSpendRoutes(
       const p = principal(request);
       const { projectId } = request.params as { projectId: string };
       const body = request.body as { name: string; allowedModels?: string[]; expiresAt?: string };
-      assertProjectScope(p, projectId);
+      // Verify the project is in the principal's org (not just scope): an org
+      // admin could otherwise mint a key with a foreign project's id, producing a
+      // mismatched org/project row the gateway then trusts.
+      await sharedAssertProjectInOrg(db, p, projectId);
       const key = await generateApiKey("fvk");
       const row = (
         await db

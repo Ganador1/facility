@@ -1,6 +1,49 @@
+import { createHash } from "node:crypto";
+import { newId } from "@facility/core";
 import { type FacilityDb, registryItems, registryVersions } from "@facility/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { ApiError } from "./errors.js";
+
+/**
+ * Allocate the next version number for an item and insert a draft, atomically.
+ * A per-item advisory lock serializes concurrent draft creation so two callers
+ * (an author + the learning executor, say) can't both read the same max(version)
+ * and collide on UNIQUE(item_id, version) with a raw duplicate-key error.
+ */
+export async function createNextDraftVersion(
+  db: FacilityDb,
+  input: { orgId: string; itemId: string; content: string; changelog?: string; createdBy: string },
+) {
+  const { orgId, itemId, content, changelog, createdBy } = input;
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${itemId}))`);
+    const max =
+      (
+        await tx
+          .select({ version: registryVersions.version })
+          .from(registryVersions)
+          .where(and(eq(registryVersions.orgId, orgId), eq(registryVersions.itemId, itemId)))
+          .orderBy(desc(registryVersions.version))
+          .limit(1)
+      )[0]?.version ?? 0;
+    return (
+      await tx
+        .insert(registryVersions)
+        .values({
+          id: newId("ver"),
+          orgId,
+          itemId,
+          version: max + 1,
+          content,
+          contentHash: createHash("sha256").update(content).digest("hex"),
+          changelog,
+          status: "draft",
+          createdBy,
+        })
+        .returning()
+    )[0];
+  });
+}
 
 /**
  * Publish a draft registry version as the single active version of its item,

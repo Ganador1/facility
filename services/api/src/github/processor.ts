@@ -55,13 +55,24 @@ export async function processGithubWebhook(
     if (event.eventType === "installation" || event.eventType === "installation_repositories") {
       await processInstallation(db, event.orgId, payload);
     } else if (event.eventType === "push") {
-      await processPush(db, payload, enqueue);
+      await processPush(db, event.orgId, payload, enqueue);
     } else if (event.eventType === "issues" || event.eventType === "issue_comment") {
-      await processTrigger(db, factory ?? createGithubClientFactory(config), payload, enqueue);
+      await processTrigger(
+        db,
+        event.orgId,
+        factory ?? createGithubClientFactory(config),
+        payload,
+        enqueue,
+      );
     } else if (event.eventType === "pull_request") {
-      await processPullRequest(db, payload, factory ?? createGithubClientFactory(config));
+      await processPullRequest(
+        db,
+        event.orgId,
+        payload,
+        factory ?? createGithubClientFactory(config),
+      );
     } else if (event.eventType === "workflow_run") {
-      await processWorkflowRun(db, payload);
+      await processWorkflowRun(db, event.orgId, payload);
     }
     await db
       .update(inboundEvents)
@@ -124,6 +135,7 @@ async function processInstallation(db: FacilityDb, orgId: string, payload: Webho
 
 async function processPush(
   db: FacilityDb,
+  orgId: string,
   payload: WebhookPayload,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
@@ -131,11 +143,13 @@ async function processPush(
   const name = payload.repository?.name;
   const branch = String((payload as { ref?: string }).ref ?? "").replace(/^refs\/heads\//, "");
   if (!owner || !name) return;
+  // Scope to the webhook's resolved org: repos are per-org unique (migration
+  // 0012), so a global owner/name lookup could select another tenant's repo.
   const repo = (
     await db
       .select()
       .from(repos)
-      .where(and(eq(repos.owner, owner), eq(repos.name, name)))
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
       .limit(1)
   )[0];
   if (!repo || branch !== repo.defaultBranch) return;
@@ -161,6 +175,7 @@ async function processPush(
 
 async function processTrigger(
   db: FacilityDb,
+  orgId: string,
   factory: GithubClientFactory,
   payload: WebhookPayload,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
@@ -173,7 +188,7 @@ async function processTrigger(
     await db
       .select()
       .from(repos)
-      .where(and(eq(repos.owner, owner), eq(repos.name, name)))
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
       .limit(1)
   )[0];
   if (!repo) return;
@@ -182,7 +197,7 @@ async function processTrigger(
     repo: name,
     defaultBranch: repo.defaultBranch,
   });
-  const result = await routeTrigger(db, client, payload, enqueue);
+  const result = await routeTrigger(db, orgId, client, payload, enqueue);
   if (result.routed) {
     await auditGithub(db, repo.orgId, "github.comment.created", repo, {
       issueNumber: payload.issue?.number,
@@ -193,6 +208,7 @@ async function processTrigger(
 
 async function processPullRequest(
   db: FacilityDb,
+  orgId: string,
   payload: WebhookPayload,
   factory: GithubClientFactory,
 ) {
@@ -207,7 +223,7 @@ async function processPullRequest(
     await db
       .select()
       .from(repos)
-      .where(and(eq(repos.owner, owner), eq(repos.name, name)))
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
       .limit(1)
   )[0];
   if (!repo) return;
@@ -271,7 +287,7 @@ async function pullRequestMetrics(
   return { reviewRounds, fixupCommits };
 }
 
-async function processWorkflowRun(db: FacilityDb, payload: WebhookPayload) {
+async function processWorkflowRun(db: FacilityDb, orgId: string, payload: WebhookPayload) {
   if (payload.action !== "completed" || !payload.workflow_run?.name?.startsWith("facility-"))
     return;
   const owner = payload.repository?.owner?.login;
@@ -281,7 +297,7 @@ async function processWorkflowRun(db: FacilityDb, payload: WebhookPayload) {
     await db
       .select()
       .from(repos)
-      .where(and(eq(repos.owner, owner), eq(repos.name, name)))
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
       .limit(1)
   )[0];
   if (!repo) return;
