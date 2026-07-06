@@ -80,7 +80,14 @@ export default async function SettingsPage() {
             identical to a human session.
           </p>
           {keys.ok ? (
-            <KeysManager keys={keys.data} roles={roles.ok ? roles.data : []} />
+            <>
+              {!roles.ok ? (
+                <ErrorNotice
+                  message={`Couldn't load roles — issuing a key is disabled until they load (${roles.message})`}
+                />
+              ) : null}
+              <KeysManager keys={keys.data} roles={roles.ok ? roles.data : []} />
+            </>
           ) : (
             <ErrorNotice message={`Couldn't load API keys — ${keys.message}`} />
           )}

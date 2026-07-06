@@ -433,7 +433,10 @@ async function activeSkills(db: ReturnType<typeof createDb>["db"], orgId: string
 async function revokeRunKeys(db: ReturnType<typeof createDb>["db"], sandbox: RunSandboxState) {
   const now = new Date();
   if (sandbox.virtualKeyId) {
-    await db.update(virtualKeys).set({ revokedAt: now }).where(eq(virtualKeys.id, sandbox.virtualKeyId));
+    await db
+      .update(virtualKeys)
+      .set({ revokedAt: now })
+      .where(eq(virtualKeys.id, sandbox.virtualKeyId));
   }
   if (sandbox.platformKeyId) {
     await db.update(apiKeys).set({ revokedAt: now }).where(eq(apiKeys.id, sandbox.platformKeyId));
@@ -452,7 +455,13 @@ async function failRun(
   const [failed] = await db
     .update(runs)
     .set({ status: "failed", error: message, endedAt: new Date(), updatedAt: new Date() })
-    .where(and(eq(runs.orgId, orgId), eq(runs.id, runId), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
+    .where(
+      and(
+        eq(runs.orgId, orgId),
+        eq(runs.id, runId),
+        notInArray(runs.status, [...TERMINAL_RUN_STATUSES]),
+      ),
+    )
     .returning({ projectId: runs.projectId, sandbox: runs.sandbox });
   if (!failed) return; // already terminal — another path handled it.
   // Reclaim the run's credentials + sandbox so a failed run can't keep calling

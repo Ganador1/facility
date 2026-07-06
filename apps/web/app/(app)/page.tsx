@@ -11,7 +11,7 @@ const DASH = "—";
 export default async function OverviewPage() {
   const [{ offline, error: runsError, projects, runs }, inbox, spend] = await Promise.all([
     fetchAllRuns(),
-    api.inbox(),
+    api.inboxFull(),
     api.spend("?groupBy=day"),
   ]);
 
@@ -19,11 +19,15 @@ export default async function OverviewPage() {
 
   const live = runs.filter((r) => ["queued", "provisioning", "running"].includes(r.status));
   const needsHuman = runs.filter((r) => r.status === "awaiting_human");
-  const openProposals = inbox.ok ? inbox.data : [];
+  const openProposals = inbox.ok ? inbox.data.proposals : [];
+  // Watchtower issues are actionable too — the landing surface must not report
+  // "all clear" when open issues exist.
+  const openIssues = inbox.ok ? inbox.data.issues : [];
   const monthCents = spend.ok ? summarizeSpend(spend.data).totalCents : null;
-  // Only assert "needs you" once both sources that feed it (inbox proposals +
-  // awaiting-human runs) actually loaded — otherwise show "—", never a false 0.
+  // Only assert "needs you" once both sources that feed it (inbox
+  // proposals+issues + awaiting-human runs) actually loaded — else show "—".
   const gatesLoaded = inbox.ok && !runsError;
+  const needsYou = openProposals.length + openIssues.length + needsHuman.length;
 
   return (
     <div className="flex flex-col gap-10">
@@ -45,9 +49,9 @@ export default async function OverviewPage() {
         <Cell>
           <Metric
             label="needs you"
-            value={gatesLoaded ? openProposals.length + needsHuman.length : DASH}
-            tone={gatesLoaded && openProposals.length + needsHuman.length ? "human" : undefined}
-            hint={gatesLoaded ? "open gates + blocked runs" : "some sources didn't load"}
+            value={gatesLoaded ? needsYou : DASH}
+            tone={gatesLoaded && needsYou ? "human" : undefined}
+            hint={gatesLoaded ? "open gates + issues + blocked runs" : "some sources didn't load"}
           />
         </Cell>
         <Cell>
@@ -119,7 +123,7 @@ export default async function OverviewPage() {
         </div>
         {!inbox.ok ? (
           <ErrorNotice message={`Couldn't load the inbox — ${inbox.message}`} />
-        ) : openProposals.length === 0 ? (
+        ) : openProposals.length === 0 && openIssues.length === 0 ? (
           <p className="text-sm text-(--dim)">Nothing is waiting on you. Both gates are clear.</p>
         ) : (
           <div className="flex flex-col border border-(--line)">
@@ -135,6 +139,21 @@ export default async function OverviewPage() {
                     {p.actionType}
                   </span>{" "}
                   <span className="text-(--mut)">· {fmtAgo(p.createdAt)}</span>
+                </span>
+              </Link>
+            ))}
+            {openIssues.slice(0, 6).map((issue) => (
+              <Link
+                key={issue.id}
+                href="/inbox"
+                className="flex items-center gap-4 border-b border-(--line) px-5 py-4 transition-colors last:border-b-0 hover:bg-(--card)"
+              >
+                <StatusDot tone="bad" />
+                <span className="min-w-0 flex-1 truncate text-sm text-(--ink)">
+                  <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-(--bad)">
+                    {issue.severity}
+                  </span>{" "}
+                  <span className="text-(--mut)">{issue.title}</span>
                 </span>
               </Link>
             ))}

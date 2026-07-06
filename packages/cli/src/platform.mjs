@@ -39,6 +39,8 @@ export async function runPlatformCommand(command, args, options = {}) {
         return await runs(rest, authed, flags);
       case "inbox":
         return await inbox(rest, authed, flags);
+      case "issues":
+        return await issues(rest, authed, flags);
       case "kickstart":
         return await kickstart(rest, authed, flags, ctx);
       case "upgrade":
@@ -219,6 +221,24 @@ async function inbox(args, ctx, flags) {
     return 0;
   }
   throw new CliError("Usage: facility inbox [decide <id> approve|reject]");
+}
+
+async function issues(args, ctx, flags) {
+  const sub = args[0] || "list";
+  if (sub === "list") {
+    const result = await api(ctx, "GET", "/v1/issues", { query: { state: flags.state, kind: flags.kind } });
+    if (ctx.json) writeJson(ctx, result);
+    else table(ctx, ["id", "severity", "kind", "state", "title"], asArray(result).map((i) => [i.id, i.severity, i.kind, i.state, i.title]));
+    return 0;
+  }
+  if (sub === "ack" || sub === "resolve") {
+    const id = args[1];
+    if (!id) throw new CliError(`Usage: facility issues ${sub} <id>`);
+    const result = await api(ctx, "POST", `/v1/issues/${id}/${sub}`);
+    output(ctx, result, () => `  ${bold(sub === "ack" ? "acknowledged" : "resolved")} ${id}\n`);
+    return 0;
+  }
+  throw new CliError("Usage: facility issues list|ack <id>|resolve <id>");
 }
 
 async function kickstart(args, ctx, flags, rawCtx) {
