@@ -29,11 +29,18 @@ export default async function SettingsPage() {
   ]);
   if (!me.ok) return <Offline detail={me.message} />;
 
-  const canManageKeys = me.data.permissions.some((p) => p === "*" || p === "keys:issue");
+  // Match the backend's wildcard-aware `can()`: a grant of `resource:*` (e.g. the
+  // bundled admin's `providers:*`) covers the specific action, so the UI gate must
+  // accept it too — otherwise a section is hidden from someone who can use it.
+  const canManageKeys = me.data.permissions.some(
+    (p) => p === "*" || p === "keys:issue" || p === "keys:*",
+  );
   const canManageBudgets = me.data.permissions.some(
     (p) => p === "*" || p === "budgets:write" || p === "budgets:*",
   );
-  const canManageProviders = me.data.permissions.some((p) => p === "*" || p === "providers:write");
+  const canManageProviders = me.data.permissions.some(
+    (p) => p === "*" || p === "providers:write" || p === "providers:*",
+  );
 
   return (
     <div className="flex flex-col gap-10">

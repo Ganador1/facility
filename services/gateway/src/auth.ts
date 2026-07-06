@@ -12,6 +12,10 @@ import type { AuthedKey, GatewayConfig, Provider, ProviderCredential } from "./t
 // own expiry, enforced on every hit regardless of cache.
 const KEY_CACHE_TTL_MS = 15_000;
 const KEY_REVOKED_CHANNEL = "facility_key_revoked";
+// The api NOTIFYs this with an `${orgId}:${provider}` cache key when a provider
+// credential is created/updated/deleted, so the gateway drops the cached opened
+// credential immediately instead of serving the stale one for up to the 60s TTL.
+const PROVIDER_CHANGED_CHANNEL = "facility_provider_changed";
 const keyCache = new Map<
   string,
   {
@@ -154,15 +158,28 @@ type RevocationListenClient = {
   ) => Promise<{ unlisten: () => Promise<void> }>;
 };
 
-// Subscribe to the api's key-revocation NOTIFYs and drop the matching cache
-// entry immediately, making revocation effectively synchronous. postgres.js
-// re-subscribes automatically on reconnect; the cache TTL covers the gap.
+// Subscribe to the api's cache-invalidation NOTIFYs and drop the matching entry
+// immediately, making revocation/rotation effectively synchronous. Two channels:
+// `facility_key_revoked` (payload = key prefix) evicts the key cache, and
+// `facility_provider_changed` (payload = `${orgId}:${provider}`) evicts the
+// opened-credential cache so a rotated/removed provider secret isn't served for
+// up to the 60s TTL. postgres.js re-subscribes automatically on reconnect; the
+// cache TTLs cover any gap.
 export async function startKeyRevocationListener(
   client: RevocationListenClient,
 ): Promise<{ unlisten: () => Promise<void> }> {
-  return client.listen(KEY_REVOKED_CHANNEL, (prefix) => {
+  const keySub = await client.listen(KEY_REVOKED_CHANNEL, (prefix) => {
     if (prefix) keyCache.delete(prefix);
   });
+  const providerSub = await client.listen(PROVIDER_CHANGED_CHANNEL, (cacheKey) => {
+    if (cacheKey) credentialCache.delete(cacheKey);
+  });
+  return {
+    unlisten: async () => {
+      await keySub.unlisten().catch(() => undefined);
+      await providerSub.unlisten().catch(() => undefined);
+    },
+  };
 }
 
 function defaultBaseUrl(provider: Provider): string {

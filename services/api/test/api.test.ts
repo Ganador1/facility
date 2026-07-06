@@ -2534,6 +2534,74 @@ describe("api", async () => {
     expect(issue?.severity).toBe("error");
   });
 
+  it("does not let one integration's delivery id suppress another's identical id", async () => {
+    // Regression: inbound idempotency keys on `in_${integration.id}_${deliveryId}`,
+    // not a global `in_${deliveryId}`. Two integrations that happen to emit the
+    // same delivery id must BOTH process — the first must not shadow the second.
+    const secret = "shared-inbound-secret";
+    const delivery = newId("evt");
+    const make = async (label: string) =>
+      (
+        await db
+          .insert(integrations)
+          .values({
+            id: newId("int"),
+            orgId,
+            projectId,
+            kind: "generic_inbound",
+            name: label,
+            config: { projectId },
+            sealedSecret: await seal(secret, masterKey),
+          })
+          .returning()
+      )[0];
+    const a = await make("Inbound A");
+    const b = await make("Inbound B");
+    if (!a || !b) throw new Error("integration fixtures missing");
+
+    const post = async (integrationId: string, fingerprint: string) => {
+      const payload = Buffer.from(
+        JSON.stringify({ eventType: "alert", title: fingerprint, bodyMd: "b", fingerprint }),
+      );
+      const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+      return app.inject({
+        method: "POST",
+        url: `/webhooks/inbound/${integrationId}`,
+        headers: {
+          "content-type": "application/json",
+          "x-facility-delivery": delivery,
+          "x-facility-signature": signature,
+        },
+        payload,
+      });
+    };
+
+    const fpA = `shared-a:${delivery}`;
+    const fpB = `shared-b:${delivery}`;
+    expect((await post(a.id, fpA)).statusCode).toBe(202);
+    expect((await post(b.id, fpB)).statusCode).toBe(202);
+
+    expect(
+      await db
+        .select()
+        .from(inboundEvents)
+        .where(eq(inboundEvents.id, `in_${a.id}_${delivery}`)),
+    ).toHaveLength(1);
+    expect(
+      await db
+        .select()
+        .from(inboundEvents)
+        .where(eq(inboundEvents.id, `in_${b.id}_${delivery}`)),
+    ).toHaveLength(1);
+    // Both fully processed — each raised its own issue, so the second wasn't dropped.
+    expect(
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fpA)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fpB)),
+    ).toHaveLength(1);
+  });
+
   it("refuses steering a finished run", async () => {
     const target = await createProjectWithAgent("Steering Run");
     const run = await app.inject({

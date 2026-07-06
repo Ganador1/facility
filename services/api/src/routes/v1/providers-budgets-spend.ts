@@ -58,10 +58,10 @@ export async function registerProvidersBudgetsSpendRoutes(
       config: { permission: "providers:write", auditAction: "provider.created", orgAdmin: true },
       schema: {
         body: z.object({
-          provider: z.string(),
-          name: z.string(),
+          provider: z.enum(["anthropic", "openai"]),
+          name: z.string().trim().min(1),
           baseUrl: z.string().optional(),
-          secret: z.string(),
+          secret: z.string().min(1),
         }),
         response: { 200: ProviderPublicSchema.nullable() },
       },
@@ -69,7 +69,7 @@ export async function registerProvidersBudgetsSpendRoutes(
     async (request) => {
       const p = principal(request);
       const body = request.body as {
-        provider: string;
+        provider: "anthropic" | "openai";
         name: string;
         baseUrl?: string;
         secret: string;
@@ -92,6 +92,14 @@ export async function registerProvidersBudgetsSpendRoutes(
           })
           .returning()
       )[0];
+      // Push-invalidate the gateway provider-credential cache so a newly added
+      // (or first-ever, replacing the dev fallback) credential is used
+      // immediately, not after the gateway's 60s TTL.
+      await db
+        .execute(
+          sql`select pg_notify('facility_provider_changed', ${`${p.orgId}:${body.provider}`})`,
+        )
+        .catch(() => undefined);
       return row
         ? {
             id: row.id,
@@ -112,14 +120,25 @@ export async function registerProvidersBudgetsSpendRoutes(
     },
     async (request) => {
       const p = principal(request);
-      await db
+      const removed = await db
         .delete(providerCredentials)
         .where(
           and(
             eq(providerCredentials.orgId, p.orgId),
             eq(providerCredentials.id, (request.params as { providerId: string }).providerId),
           ),
-        );
+        )
+        .returning({ provider: providerCredentials.provider });
+      // Push-invalidate the gateway provider-credential cache: a removed secret
+      // (or a fail-over to the next-oldest credential for this provider) must
+      // take effect now, not after the 60s TTL. Mirrors the key-revoke NOTIFY.
+      for (const row of removed) {
+        await db
+          .execute(
+            sql`select pg_notify('facility_provider_changed', ${`${p.orgId}:${row.provider}`})`,
+          )
+          .catch(() => undefined);
+      }
       return { ok: true };
     },
   );

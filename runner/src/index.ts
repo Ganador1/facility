@@ -39,12 +39,19 @@ async function main() {
         return;
       }
     }
-    const code = await runEngine(bundle, startedAt);
+    const engineCode = await runEngine(bundle, startedAt);
     await emitChecks(cwdFor(bundle));
+    // Platform-owned acceptance gates run independently of the engine's own
+    // exit code and self-report: a run only succeeds if the engine succeeded AND
+    // every configured check command passes. Skip them when the engine already
+    // failed (the run fails regardless). Without this an agent could report
+    // success while its required checks are red.
+    const checksPassed = engineCode === 0 ? await runChecks(bundle, cwdFor(bundle)) : false;
+    const succeeded = engineCode === 0 && checksPassed;
     await postResult(
-      code === 0 ? "succeeded" : "failed",
+      succeeded ? "succeeded" : "failed",
       startedAt,
-      code === 0 ? undefined : { code },
+      succeeded ? undefined : engineCode !== 0 ? { code: engineCode } : { code: "checks_failed" },
     );
   } catch (error) {
     await postResult("failed", startedAt, { error: errorMessage(error) }).catch(() => undefined);
@@ -233,6 +240,61 @@ async function emitChecks(cwd: string) {
     .filter(Boolean)
     .map((line) => ({ type: "check", data: { self_reported: true, ...JSON.parse(line) } }));
   await emit(events);
+}
+
+// Run the platform-owned acceptance gates (bundle.checkCmds) after the engine.
+// Each command's pass/fail is emitted as a `check` event (self_reported: false,
+// distinct from the agent's own checks.jsonl) and the run fails if any command
+// exits non-zero. Vacuously true when no checks are configured — runs without
+// gates are unaffected.
+async function runChecks(bundle: RunBundle, cwd: string) {
+  let allPassed = true;
+  for (const command of bundle.checkCmds) {
+    const { code, tail } = await runCheckCommand(command, cwd, bundle.timeoutMin);
+    if (code !== 0) allPassed = false;
+    await emit([{ type: "check", data: checkEvent(command, code, tail) }]);
+  }
+  return allPassed;
+}
+
+// Shape of a platform-check event. `status` uses the passed/failed vocabulary the
+// web cockpit tones on; output is carried only for failures (capped) so a red
+// gate is debuggable without bloating the event log with green checks' logs.
+export function checkEvent(command: string, code: number, tail: string) {
+  return {
+    self_reported: false,
+    command,
+    status: code === 0 ? "passed" : "failed",
+    exit_code: code,
+    ...(code === 0 || !tail ? {} : { output: tail.slice(-2000) }),
+  };
+}
+
+// Run one check command, capturing a bounded tail of combined stdout+stderr for
+// failure diagnostics. Same env and timeout guard as the engine, so a hung check
+// can't run (and bill) unbounded.
+export async function runCheckCommand(command: string, cwd: string, timeoutMin: number) {
+  const child = spawn("sh", ["-c", command], {
+    cwd,
+    env: engineEnv(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const clearTimers = armEngineTimeout(child, timeoutMin);
+  let tail = "";
+  const capture = (stream: NodeJS.ReadableStream | null) =>
+    new Promise<void>((resolve) => {
+      if (!stream) return resolve();
+      stream.on("data", (chunk) => {
+        tail = (tail + chunk.toString()).slice(-4000);
+      });
+      stream.on("end", resolve);
+      stream.on("error", () => resolve());
+    });
+  const drains = [capture(child.stdout), capture(child.stderr)];
+  const code = await exitCode(child);
+  await Promise.all(drains);
+  clearTimers();
+  return { code, tail: tail.trim() };
 }
 
 async function postResult(

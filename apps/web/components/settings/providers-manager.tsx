@@ -86,21 +86,27 @@ export function ProvidersManager({ providers }: { providers: Provider[] }) {
     <div className="flex flex-col gap-5">
       <form onSubmit={add} className="flex flex-wrap items-end gap-3">
         <Field label="provider">
-          <Select value={provider} onChange={(e) => setProvider(e.target.value)}>
+          <Select name="provider" value={provider} onChange={(e) => setProvider(e.target.value)}>
             <option value="anthropic">anthropic</option>
             <option value="openai">openai</option>
           </Select>
         </Field>
-        <Field label="name" className="flex-1">
+        <Field label="name" className="min-w-0 flex-1">
           <TextInput
             required
+            name="provider-name"
+            autoComplete="off"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="default"
           />
         </Field>
-        <Field label="base url (optional)" className="flex-1">
+        <Field label="base url (optional)" className="min-w-0 flex-1">
           <TextInput
+            type="url"
+            inputMode="url"
+            name="provider-base-url"
+            autoComplete="off"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="https://api.anthropic.com/v1"
@@ -110,6 +116,8 @@ export function ProvidersManager({ providers }: { providers: Provider[] }) {
           <TextInput
             required
             type="password"
+            name="provider-secret"
+            autoComplete="new-password"
             value={secret}
             onChange={(e) => setSecret(e.target.value)}
             placeholder="sk-…"
@@ -119,8 +127,16 @@ export function ProvidersManager({ providers }: { providers: Provider[] }) {
           {busy ? "adding…" : "add provider"}
         </Button>
       </form>
-      {notice ? <p className="font-mono text-[11px] text-(--ok)">{notice}</p> : null}
-      {error ? <p className="font-mono text-[11px] text-(--bad)">{error}</p> : null}
+      {notice ? (
+        <p role="status" aria-live="polite" className="font-mono text-[11px] text-(--ok)">
+          {notice}
+        </p>
+      ) : null}
+      {error ? (
+        <p role="alert" aria-live="assertive" className="font-mono text-[11px] text-(--bad)">
+          {error}
+        </p>
+      ) : null}
 
       {live.length === 0 ? (
         <p className="text-sm text-(--dim)">
@@ -131,14 +147,16 @@ export function ProvidersManager({ providers }: { providers: Provider[] }) {
           {live.map((row) => (
             <div
               key={row.id}
-              className="flex items-center gap-4 border-b border-(--line) px-4 py-3 last:border-b-0"
+              className="flex min-w-0 items-center gap-4 border-b border-(--line) px-4 py-3 last:border-b-0"
             >
-              <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-(--dim)">
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-[0.16em] text-(--dim)">
                 {row.provider}
               </span>
-              <span className="font-mono text-[13px] text-(--ink)">{row.name}</span>
+              <span className="shrink-0 font-mono text-[13px] text-(--ink)">{row.name}</span>
               {row.baseUrl ? (
-                <span className="truncate font-mono text-[11px] text-(--dim)">{row.baseUrl}</span>
+                <span className="min-w-0 truncate font-mono text-[11px] text-(--dim)">
+                  {row.baseUrl}
+                </span>
               ) : null}
               {pendingDeleteId === row.id ? (
                 <div className="ml-auto flex flex-wrap items-center justify-end gap-3">

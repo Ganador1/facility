@@ -18,6 +18,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import {
   authenticateVirtualKey,
   clearAuthCaches,
+  providerCredential,
   startKeyRevocationListener,
 } from "../src/auth.js";
 import { applicableBudgets } from "../src/budgets.js";
@@ -542,6 +543,58 @@ describe("gateway", async () => {
       await vi.waitFor(
         async () => {
           expect(await authenticateVirtualKey(owned.db, setup.secret)).toBeNull();
+        },
+        { timeout: 3000, interval: 50 },
+      );
+    } finally {
+      await listener.unlisten().catch(() => undefined);
+      await owned.client.end();
+    }
+  });
+
+  it("7c. push-invalidation evicts a warm-cached provider credential on change NOTIFY", async () => {
+    // The api rotates/removes provider credentials in its own process; the gateway
+    // caches the opened upstream credential by `${orgId}:${provider}` for 60s. It
+    // LISTENs for facility_provider_changed and evicts synchronously so a rotated
+    // secret takes effect immediately, not after the TTL.
+    const localConfig: GatewayConfig = {
+      databaseUrl,
+      secretMasterKey: masterKey,
+      port: 4410,
+      logLevel: "silent",
+      facilityInsecureDev: true,
+    };
+    const owned = createDb(databaseUrl);
+    const listener = await startKeyRevocationListener(owned.client);
+    try {
+      await owned.db.insert(providerCredentials).values({
+        id: newId("int"),
+        orgId,
+        provider: "anthropic",
+        name: "default",
+        baseUrl: "https://api.anthropic.com/v1",
+        sealedSecret: await seal("secret-v1", masterKey),
+        createdBy: "test",
+      });
+      // Warm the cache with v1.
+      expect((await providerCredential(owned.db, localConfig, "anthropic", orgId)).apiKey).toBe(
+        "secret-v1",
+      );
+      // Rotate the stored secret + NOTIFY exactly as the provider routes do.
+      await owned.db
+        .update(providerCredentials)
+        .set({ sealedSecret: await seal("secret-v2", masterKey) })
+        .where(eq(providerCredentials.orgId, orgId));
+      await owned.db.execute(
+        sql`select pg_notify('facility_provider_changed', ${`${orgId}:anthropic`})`,
+      );
+      // After the NOTIFY the entry is evicted, so the next read re-opens v2. Without
+      // eviction the stale v1 would persist until the 60s TTL and this would time out.
+      await vi.waitFor(
+        async () => {
+          expect((await providerCredential(owned.db, localConfig, "anthropic", orgId)).apiKey).toBe(
+            "secret-v2",
+          );
         },
         { timeout: 3000, interval: 50 },
       );
