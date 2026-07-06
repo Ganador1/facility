@@ -3,6 +3,7 @@ import { ErrorNotice, Offline } from "@/components/offline";
 import { BudgetsManager } from "@/components/settings/budgets-manager";
 import { KeysManager } from "@/components/settings/keys-manager";
 import { MembersList } from "@/components/settings/members-list";
+import { ProvidersManager } from "@/components/settings/providers-manager";
 import { api, type Member, type MemberRow } from "@/lib/api";
 
 export const metadata = { title: "settings" };
@@ -18,12 +19,13 @@ function flattenMembers(rows: MemberRow[]): Member[] {
 }
 
 export default async function SettingsPage() {
-  const [me, keys, roles, budgets, membersRaw] = await Promise.all([
+  const [me, keys, roles, budgets, membersRaw, providers] = await Promise.all([
     api.me(),
     api.keys(),
     api.roles(),
     api.budgets(),
     api.members(),
+    api.providers(),
   ]);
   if (!me.ok) return <Offline detail={me.message} />;
 
@@ -31,6 +33,7 @@ export default async function SettingsPage() {
   const canManageBudgets = me.data.permissions.some(
     (p) => p === "*" || p === "budgets:write" || p === "budgets:*",
   );
+  const canManageProviders = me.data.permissions.some((p) => p === "*" || p === "providers:write");
 
   return (
     <div className="flex flex-col gap-10">
@@ -90,6 +93,21 @@ export default async function SettingsPage() {
             </>
           ) : (
             <ErrorNotice message={`Couldn't load API keys — ${keys.message}`} />
+          )}
+        </section>
+      ) : null}
+
+      {canManageProviders ? (
+        <section className="flex max-w-2xl flex-col gap-4">
+          <Eyebrow>providers</Eyebrow>
+          <p className="text-sm leading-relaxed text-(--mut)">
+            Model provider credentials the gateway proxies every call through. Sealed at rest; the
+            secret is never shown again after you add it.
+          </p>
+          {providers.ok ? (
+            <ProvidersManager providers={providers.data} />
+          ) : (
+            <ErrorNotice message={`Couldn't load providers — ${providers.message}`} />
           )}
         </section>
       ) : null}
