@@ -48,11 +48,10 @@ services/api        services/gateway
 packages/core       # domain logic: permissions, pricing, fingerprints, template rendering, validation
 packages/db         # drizzle schema + migrations
 packages/ui         # TAM-50 design system (React)
-packages/sdk        # typed client generated from OpenAPI
-packages/cli        # @theam/facility (v0.2 installer + platform commands)
+packages/sdk        # typed client: schema.d.ts generated from OpenAPI + hand-maintained ergonomic contracts (drift-guarded against openapi.json)
+packages/cli        # @theam/facility (v0.2 installer + platform commands + bundled templates/)
 packages/mcp        # platform MCP server
 packages/harness    # session protocols: PO agent, learning mode, KB validation
-packages/assets     # the versioned template sets (v0.2 templates/ + modules/ + prompts)
 runner/             # sandbox agent-host + Dockerfiles
 infra/              # docker-compose (self-host), terraform/aws (playground), helm (later)
 ```
@@ -63,13 +62,13 @@ infra/              # docker-compose (self-host), terraform/aws (playground), he
 |---|---|---|
 | 1 | TypeScript everywhere, Node 22, pnpm + Turborepo | one language across api/web/cli/mcp/runner; team fluency (tam-os is TS); turbo caching. Nx heavier, polyglot unnecessary. |
 | 2 | Next.js 16 App Router + React 19 + Tailwind v4 for web | matches theam-ai-sdlc generation exactly (brand dossier); RSC for fast dashboards. |
-| 3 | Fastify 5 + Zod (type-provider) + OpenAPI for api & gateway | schema-first with generated SDK; mature plugin ecosystem (ws, sse, rate-limit); long-lived Node servers. tRPC rejected (CLI/MCP/GitHub are non-TS-web consumers; OpenAPI is the lingua franca). NestJS rejected (ceremony without payoff). |
+| 3 | Fastify 5 + Zod (type-provider) + OpenAPI for api & gateway | schema-first: the SDK's schema.d.ts is generated from the emitted OpenAPI doc and the ergonomic route contracts are hand-maintained on top, guarded against drift by a route-coverage test; mature plugin ecosystem (ws, sse, rate-limit); long-lived Node servers. tRPC rejected (CLI/MCP/GitHub are non-TS-web consumers; OpenAPI is the lingua franca). NestJS rejected (ceremony without payoff). |
 | 4 | Postgres 16 + Drizzle ORM | boring, portable, SQL-first migrations; JSONB for payloads; LISTEN/NOTIFY for cheap realtime. Supabase-compatible (tam-os world) but not required. |
 | 5 | pg-boss for queue + cron | scheduler needs sub-hour cadence + event triggers (automation-expert E007 requirement); Postgres-backed = zero extra infra for self-host. Redis/BullMQ rejected as core dependency. |
 | 6 | SSE for streams, WebSocket only for interactive session steering | SSE survives proxies/load-balancers; WS reserved for the one bidirectional surface. |
 | 7 | S3-compatible object storage abstraction (MinIO in dev) | transcripts/envelopes are too big for PG; S3 API is the portable denominator. |
 | 8 | Secrets sealed at rest (libsodium sealed-box, master key from env/KMS) | provider keys, GitHub App key, WorkOS secrets never in plaintext; self-host stays simple (one master key), cloud can use KMS. |
-| 9 | WorkOS AuthKit for humans; hashed API keys (argon2id) for machines; **MCP auth via the tam-os OAuth 2.1 AS-relay pattern** | GOAL mandates WorkOS as first IdP (tam-os approach); keys carry role bindings so RBAC is uniform for humans/agents/CLI/MCP. For MCP clients (Claude, Cursor, ChatGPT) the api exposes RFC 8414/9728 metadata + `/oauth/{authorize,token,register}` relaying to WorkOS with PKCE S256, issuer-pinned JWKS verification — the production-proven tam-os design, copied. API keys remain the non-interactive path. |
+| 9 | WorkOS AuthKit for humans; hashed API keys (argon2id) for machines; **MCP auth as an OAuth 2.1 resource server** | GOAL mandates WorkOS as first IdP; keys carry role bindings so RBAC is uniform for humans/agents/CLI/MCP. For MCP clients (Claude, Cursor, ChatGPT) the control plane is a resource server (RFC 9728): it advertises `/.well-known/oauth-protected-resource` pointing at WorkOS as the authorization server, and validates the WorkOS access token directly (issuer-pinned JWKS, RS256, mandatory `exp` + audience). It does **not** relay `/oauth/{authorize,token,register}` — the client talks to WorkOS for the token. API keys remain the non-interactive path. |
 | 10 | RBAC = permission-string catalog; bundled roles + custom roles | `resource:action` grants at org/project scope; custom roles are named permission sets — no policy-engine dependency (OPA rejected for v1: complexity without a customer). |
 | 11 | Audit = append-only `audit_events`, hash-chained per org | tamper-evident without external infra; gateway keeps full request/response envelopes (bodies in object storage). "Store everything by default." |
 | 12 | Sandbox drivers: `docker` (dev/self-host) + `aws` (Fargate) behind one interface | any-cloud via driver seam (k8s Job driver is a documented extension point); Fargate proves the cloud path on the playground account. |
@@ -77,7 +76,7 @@ infra/              # docker-compose (self-host), terraform/aws (playground), he
 | 14 | HITL implements the AUTO-202 design (action types + resolvers + append-only ledger) | the org already converged on this spec (tam-os#238); building anything else would fork the company's own decision. |
 | 15 | KB native storage in Postgres (entries + typed frontmatter + link graph) with git export | write-time validation and graph queries need a DB; git remains the interchange/audit format (automation-expert compatibility). |
 | 16 | Docusaurus 3 for docs | GOAL names it; theme skinned to TAM-50. |
-| 17 | The v0.2 template set becomes `packages/assets` **system template v1**, rendered server-side at kickstart | the installer's proven output is the platform's kickstart contract; fingerprints are computed from rendered output. |
+| 17 | The v0.2 template set ships in `packages/cli/templates` as **system template v1**, rendered server-side at kickstart | the installer's proven output is the platform's kickstart contract; fingerprints are computed from rendered output. |
 | 18 | All 15 hardening notes carry over as platform invariants | SHA-pinned actions in rendered workflows, slash-command parsing, bot-refusal, message-hash canary, App-identity pushes, untrusted-text framing, secret normalization, fork gating. They are encoded in templates, webhook handlers, and guards — not prose. |
 | 19 | Receipts: `facility.run.v1` is a compatible superset of `tam-os.agent_sdlc.run.v1` | tam-os keeps emitting its schema; the platform ingests it natively (compat lane) via a signed ingest endpoint, and platform-native runs emit the superset. Privacy boundary preserved: metrics only, hashed actors, never prompts/bodies/tool IO. |
 | 20 | Mutating MCP tools require short-TTL HMAC confirmation tokens | tam-os write-confirmation pattern (token binds user+client+tool+args-hash+summary, 5-min TTL) — prevents one-shot destructive tool calls from AI clients. |

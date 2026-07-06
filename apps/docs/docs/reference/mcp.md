@@ -9,14 +9,17 @@ the same RBAC and audit as every other surface.
 
 ## Connect
 
-Local (stdio):
+Local (stdio). `@facility/mcp` is not published to a public registry, so build it
+from the repo (`pnpm --filter @facility/mcp build`) and point the client at the
+built binary (`packages/mcp/dist/bin/facility-mcp.js`). With no subcommand it
+speaks MCP over stdio:
 
 ```json
 {
   "mcpServers": {
     "facility": {
-      "command": "npx",
-      "args": ["-y", "@facility/mcp"],
+      "command": "node",
+      "args": ["/abs/path/to/facility/packages/mcp/dist/bin/facility-mcp.js"],
       "env": {
         "FACILITY_API_URL": "https://facility.yourorg.com",
         "FACILITY_API_KEY": "fak_…"
@@ -26,7 +29,10 @@ Local (stdio):
 }
 ```
 
-Remote: streamable HTTP at `https://<mcp-host>/mcp` with `Authorization: Bearer <credential>`.
+Remote: run the same binary as an HTTP server with `facility-mcp serve` (it is not
+one of the containers the AWS Terraform stack deploys — host it yourself next to
+the control plane). It exposes streamable HTTP at `https://<mcp-host>/mcp` with
+`Authorization: Bearer <credential>`.
 Two credential kinds are accepted: a `fak_…` API key (for non-interactive services) or a WorkOS
 OAuth 2.1 access token (for interactive clients like Claude, Cursor, and ChatGPT). Interactive
 clients discover the flow from `/.well-known/oauth-protected-resource` (advertised on a `401` via
