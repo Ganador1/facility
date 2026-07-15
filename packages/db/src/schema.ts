@@ -170,6 +170,46 @@ export const repos = pgTable(
   ],
 );
 
+export const ghIssues = pgTable(
+  "gh_issues",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    repoId: text("repo_id")
+      .notNull()
+      .references(() => repos.id),
+    number: integer("number").notNull(),
+    title: text("title").notNull(),
+    state: text("state").notNull(),
+    author: text("author"),
+    labels: jsonb("labels").notNull().default(sql`'[]'::jsonb`),
+    assignees: jsonb("assignees").notNull().default(sql`'[]'::jsonb`),
+    htmlUrl: text("html_url").notNull(),
+    bodyMd: text("body_md"),
+    commentsCount: integer("comments_count").notNull().default(0),
+    ghCreatedAt: timestamp("gh_created_at", { withTimezone: true }),
+    ghUpdatedAt: timestamp("gh_updated_at", { withTimezone: true }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    unique("gh_issues_repo_number_uidx").on(table.repoId, table.number),
+    index("gh_issues_org_project_state_idx").on(table.orgId, table.projectId, table.state),
+    index("gh_issues_org_project_updated_idx").on(
+      table.orgId,
+      table.projectId,
+      table.ghUpdatedAt.desc(),
+    ),
+    check("gh_issues_state_check", sql`${table.state} in ('open', 'closed')`),
+  ],
+);
+
 export const registryItems = pgTable(
   "registry_items",
   {
@@ -291,6 +331,7 @@ export const agentDefs = pgTable(
     sandboxProfileId: text("sandbox_profile_id").references(() => sandboxProfiles.id),
     permissions: text("permissions").array().notNull().default(sql`'{}'::text[]`),
     enabled: boolean("enabled").notNull().default(true),
+    lastScheduledAt: timestamp("last_scheduled_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [index("agent_defs_org_project_idx").on(table.orgId, table.projectId)],
@@ -314,6 +355,9 @@ export const runs = pgTable(
     sandbox: jsonb("sandbox").notNull().default(sql`'{}'::jsonb`),
     receipt: jsonb("receipt"),
     gh: jsonb("gh").notNull().default(sql`'{}'::jsonb`),
+    engineSessionId: text("engine_session_id"),
+    transcriptUri: text("transcript_uri"),
+    sessionStateUri: text("session_state_uri"),
     error: text("error"),
     queuedAt: timestamp("queued_at", { withTimezone: true }).defaultNow().notNull(),
     startedAt: timestamp("started_at", { withTimezone: true }),
@@ -356,11 +400,65 @@ export const steerMessages = pgTable(
       .notNull()
       .references(() => runs.id),
     authorUserId: text("author_user_id").references(() => users.id),
+    kind: text("kind").notNull().default("steer"),
     body: text("body").notNull(),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     ...timestamps,
   },
-  (table) => [index("steer_messages_org_idx").on(table.orgId)],
+  (table) => [
+    index("steer_messages_org_idx").on(table.orgId),
+    check("steer_messages_kind_check", sql`${table.kind} in ('steer', 'interrupt')`),
+  ],
+);
+
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    agentDefId: text("agent_def_id")
+      .notNull()
+      .references(() => agentDefs.id),
+    title: text("title"),
+    lastRunId: text("last_run_id").references(() => runs.id),
+    engineSessionId: text("engine_session_id"),
+    status: text("status").notNull().default("idle"),
+    createdBy: jsonb("created_by").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("conversations_org_project_idx").on(table.orgId, table.projectId),
+    check("conversations_status_check", sql`${table.status} in ('idle', 'running')`),
+  ],
+);
+
+export const conversationMessages = pgTable(
+  "conversation_messages",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id),
+    seq: integer("seq").notNull(),
+    role: text("role").notNull(),
+    body: text("body").notNull(),
+    runId: text("run_id").references(() => runs.id),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("conversation_messages_conversation_seq_uidx").on(table.conversationId, table.seq),
+    index("conversation_messages_org_conversation_idx").on(table.orgId, table.conversationId),
+    check("conversation_messages_role_check", sql`${table.role} in ('user', 'agent', 'system')`),
+    check("conversation_messages_seq_positive_check", sql`${table.seq} > 0`),
+  ],
 );
 
 export const providerCredentials = pgTable(
@@ -710,6 +808,7 @@ export const outcomes = pgTable(
     orgId: text("org_id")
       .notNull()
       .references(() => orgs.id),
+    runId: text("run_id").references(() => runs.id),
     projectId: text("project_id")
       .notNull()
       .references(() => projects.id),

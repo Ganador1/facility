@@ -4,7 +4,7 @@ import { Button, Cell, cx, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } f
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { RunTranscript } from "@/components/run/transcript";
 import type { Project, Run, RunEvent } from "@/lib/api";
-import { fmtCost, fmtDuration } from "@/lib/run-format";
+import { fmtCost, fmtDuration, fmtStatus } from "@/lib/run-format";
 
 const LIVE = new Set(["queued", "provisioning", "running", "awaiting_human"]);
 const RETRYABLE = new Set(["failed", "canceled"]);
@@ -39,16 +39,28 @@ function textFromData(data: Record<string, unknown>) {
             : typeof data.name === "string"
               ? data.name
               : null;
-  return value ?? JSON.stringify(data);
+  if (value) return value;
+  // Known machine payloads become sentences; unknown ones become terse
+  // key–value pairs. Raw JSON never reaches the chrome.
+  if (typeof data.queue === "string") {
+    return data.queue === "runs.dispatch" ? "waiting in the dispatch queue" : `queue ${data.queue}`;
+  }
+  const pairs = Object.entries(data)
+    .filter(([, v]) => typeof v === "string" || typeof v === "number" || typeof v === "boolean")
+    .slice(0, 3)
+    .map(([k, v]) => `${k} ${String(v)}`);
+  return pairs.length > 0 ? pairs.join(" · ") : null;
 }
 
 function eventLabel(event: RunEvent) {
   const text = textFromData(event.data);
+  if (!text) return event.type;
   if (event.type === "tool") return `tool: ${text}`;
   if (event.type === "shell") return `shell: ${text}`;
   if (event.type === "check") return `check: ${text}`;
   if (event.type === "status") return text;
   if (event.type === "steer") return `human steer: ${text}`;
+  if (event.type === "queued") return text;
   return `${event.type}: ${text}`;
 }
 
@@ -142,6 +154,15 @@ function derivePhases(events: RunEvent[], run: Run) {
   });
 }
 
+const PHASE_STATUS_WORDS: Record<PhaseStatus, string> = {
+  active: "now",
+  waiting: "on you",
+  ok: "done",
+  bad: "failed",
+  canceled: "canceled",
+  pending: "",
+};
+
 function toneForPhase(status: PhaseStatus) {
   if (status === "active") return "agent";
   if (status === "waiting") return "human";
@@ -152,7 +173,7 @@ function toneForPhase(status: PhaseStatus) {
 
 function chipClass(tone: "ok" | "bad" | "machine" | "human") {
   return cx(
-    "inline-flex items-center border px-2 py-1 font-mono text-[10px] uppercase tracking-[0.12em]",
+    "inline-flex items-center border px-2 py-1 text-[11px] font-medium",
     tone === "ok" && "border-(--ok) text-(--ok)",
     tone === "bad" && "border-(--bad) text-(--bad)",
     tone === "human" && "border-(--human) text-(--human)",
@@ -198,17 +219,33 @@ function linkFromValue(value: unknown) {
   return /^https?:\/\//.test(value) ? value : null;
 }
 
+// A gh artifact can be a bare string/number, or the {number,url} object the
+// platform PR hook actually writes onto runs.gh.pr — resolve either shape.
+function artifactFrom(value: unknown): { text: string; href: string | null } | null {
+  if (typeof value === "string" || typeof value === "number") {
+    return { text: String(value), href: linkFromValue(value) };
+  }
+  if (value && typeof value === "object") {
+    const obj = value as { number?: unknown; url?: unknown };
+    const href = linkFromValue(obj.url);
+    const text = typeof obj.number === "number" ? `#${obj.number}` : href ? "open" : null;
+    if (text || href) return { text: text ?? "open", href };
+  }
+  return null;
+}
+
 function githubArtifacts(run: Run) {
   const gh = (run.gh ?? {}) as Record<string, unknown>;
-  const prHref = linkFromValue(gh.pr) ?? linkFromValue(gh.prUrl) ?? linkFromValue(gh.url);
-  const issueHref =
-    linkFromValue(gh.issue) ?? linkFromValue(gh.issueUrl) ?? linkFromValue(gh.htmlUrl);
-  const prText = typeof gh.pr === "string" || typeof gh.pr === "number" ? String(gh.pr) : null;
-  const issueText =
-    typeof gh.issue === "string" || typeof gh.issue === "number" ? String(gh.issue) : null;
+  const pr = artifactFrom(gh.pr) ?? artifactFrom(gh.prUrl) ?? artifactFrom(gh.url);
+  const issueNumber = typeof gh.issueNumber === "number" ? gh.issueNumber : undefined;
+  const issue =
+    artifactFrom(gh.issue) ??
+    artifactFrom(gh.issueUrl) ??
+    artifactFrom(gh.htmlUrl) ??
+    (issueNumber !== undefined ? { text: `#${issueNumber}`, href: null } : null);
   return [
-    prText || prHref ? { label: "PR", text: prText ?? "open", href: prHref } : null,
-    issueText || issueHref ? { label: "issue", text: issueText ?? "open", href: issueHref } : null,
+    pr ? { label: "PR", text: pr.text, href: pr.href } : null,
+    issue ? { label: "issue", text: issue.text, href: issue.href } : null,
   ].filter((item): item is { label: string; text: string; href: string | null } => Boolean(item));
 }
 
@@ -259,8 +296,14 @@ export function RunCockpit({
 }) {
   const [events, setEvents] = useState(initialEvents);
   const [action, setAction] = useState<ActionState>(null);
-  const [busy, setBusy] = useState<"cancel" | "retry" | null>(null);
+  const [busy, setBusy] = useState<"cancel" | "retry" | "interrupt" | "resume" | null>(null);
   const lastSeq = useRef(initialEvents.at(-1)?.seq ?? 0);
+  // Session identity lands on runs written after the resume infrastructure —
+  // older rows simply don't offer resume.
+  const engineSessionId = (run as { engineSessionId?: string | null }).engineSessionId ?? null;
+  const transcriptUri = (run as { transcriptUri?: string | null }).transcriptUri ?? null;
+  const resumable =
+    !LIVE.has(run.status) && run.engine === "claude_code" && Boolean(engineSessionId);
 
   const live = LIVE.has(run.status);
   const canSteer = hasPermission(permissions, "runs:steer");
@@ -338,6 +381,53 @@ export function RunCockpit({
     }
   }
 
+  async function interruptRun() {
+    if (
+      !window.confirm(
+        "Interrupt this session? The engine stops gracefully, uploads its state, and stays resumable.",
+      )
+    ) {
+      return;
+    }
+    setBusy("interrupt");
+    setAction(null);
+    try {
+      const res = await fetch(`/api/v1/runs/${run.id}/interrupt`, { method: "POST" });
+      if (!res.ok) throw new Error(`interrupt failed (${res.status})`);
+      setAction({ tone: "ok", message: "interrupt requested — the session will stop shortly" });
+    } catch (err) {
+      setAction({ tone: "bad", message: err instanceof Error ? err.message : "interrupt failed" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function resumeRun() {
+    const message = window.prompt(
+      "Resume this session — what should the agent do next? (empty = continue where it left off)",
+    );
+    if (message === null) return;
+    setBusy("resume");
+    setAction(null);
+    try {
+      const res = await fetch(`/api/v1/runs/${run.id}/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(message.trim() ? { message: message.trim() } : {}),
+      });
+      const next = (await res.json().catch(() => null)) as {
+        id?: string;
+        error?: { message?: string };
+      } | null;
+      if (!res.ok) throw new Error(next?.error?.message ?? `resume failed (${res.status})`);
+      if (next?.id) window.location.assign(`/projects/${run.projectId}/sessions/${next.id}`);
+    } catch (err) {
+      setAction({ tone: "bad", message: err instanceof Error ? err.message : "resume failed" });
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function retryRun() {
     if (!window.confirm("Retry this run with the same project and agent?")) return;
     setBusy("retry");
@@ -360,7 +450,7 @@ export function RunCockpit({
       });
       if (!res.ok) throw new Error(`retry failed (${res.status})`);
       const next = (await res.json()) as { id?: string };
-      if (next.id) window.location.assign(`/runs/${next.id}`);
+      if (next.id) window.location.assign(`/projects/${run.projectId}/sessions/${next.id}`);
       else setAction({ tone: "ok", message: "retry queued" });
     } catch (err) {
       setAction({ tone: "bad", message: err instanceof Error ? err.message : "retry failed" });
@@ -375,17 +465,17 @@ export function RunCockpit({
         <div className="flex flex-col gap-5 border-b border-(--line) p-4 sm:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0 flex-1">
-              <Eyebrow>run · {run.id}</Eyebrow>
+              <Eyebrow>session · {run.id}</Eyebrow>
               <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2">
                 <h1 className="min-w-0 break-words font-mono text-[clamp(20px,3vw,32px)] font-semibold tracking-tight">
                   {run.mode}
                 </h1>
-                <span className="inline-flex items-center gap-2 font-mono text-[12px] uppercase tracking-[0.14em] text-(--mut)">
+                <span className="inline-flex items-center gap-2 text-[12.5px] text-(--mut)">
                   <StatusDot tone={toneFor(run.status)} pulse={run.status === "running"} />
-                  {run.status}
+                  {fmtStatus(run.status)}
                 </span>
               </div>
-              <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 font-mono text-[11px] uppercase tracking-[0.14em] text-(--dim)">
+              <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-[12px] text-(--dim)">
                 <span>{run.engine}</span>
                 <span>{agentDisplayName ?? agentName(run)}</span>
                 <span>{project?.slug ?? run.projectId}</span>
@@ -394,6 +484,18 @@ export function RunCockpit({
 
             <div className="flex w-full flex-col gap-2 sm:w-auto sm:min-w-[260px]">
               <div className="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
+                {live && canSteer ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full sm:w-auto"
+                    disabled={busy !== null}
+                    onClick={interruptRun}
+                    title="Stop gracefully; the session stays resumable"
+                  >
+                    {busy === "interrupt" ? "interrupting" : "interrupt"}
+                  </Button>
+                ) : null}
                 {live && canWrite ? (
                   <Button
                     variant="danger"
@@ -403,6 +505,18 @@ export function RunCockpit({
                     onClick={cancelRun}
                   >
                     {busy === "cancel" ? "canceling" : "cancel"}
+                  </Button>
+                ) : null}
+                {resumable && canTrigger ? (
+                  <Button
+                    variant="primary"
+                    tone="agent"
+                    size="sm"
+                    className="w-full sm:w-auto"
+                    disabled={busy !== null}
+                    onClick={resumeRun}
+                  >
+                    {busy === "resume" ? "resuming" : "resume session"}
                   </Button>
                 ) : null}
                 {RETRYABLE.has(run.status) && canTrigger ? (
@@ -435,15 +549,19 @@ export function RunCockpit({
           <div className="flex items-start gap-3 border border-(--line) bg-(--bg-subtle) px-4 py-3">
             <StatusDot
               tone={
-                run.status === "awaiting_human" ? "human" : live ? "agent" : toneFor(run.status)
+                run.status === "awaiting_human"
+                  ? "human"
+                  : run.status === "queued"
+                    ? "info"
+                    : live
+                      ? "agent"
+                      : toneFor(run.status)
               }
               pulse={run.status === "running"}
               className="mt-1"
             />
             <div className="min-w-0">
-              <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-(--dim)">
-                current activity
-              </p>
+              <p className="text-[11px] font-medium text-(--dim)">current activity</p>
               <p className="mt-1 break-words text-sm text-(--ink)">
                 {latestMeaningful
                   ? eventLabel(latestMeaningful)
@@ -459,13 +577,25 @@ export function RunCockpit({
 
         <HairlineGrid cols="grid-cols-2 lg:grid-cols-5" className="border-0 border-b">
           <Cell className="p-4 sm:p-5">
-            <Metric label="started" value={formatStarted(run)} />
+            <Metric
+              label={run.startedAt ? "started" : "queued"}
+              value={formatStarted(run)}
+              hint={run.startedAt ? undefined : "waiting for a worker to pick it up"}
+            />
           </Cell>
           <Cell className="p-4 sm:p-5">
-            <Metric label="duration" value={fmtDuration(run.startedAt, run.endedAt)} />
+            <Metric
+              label="duration"
+              value={fmtDuration(run.startedAt, run.endedAt)}
+              hint={run.startedAt ? undefined : "starts when the sandbox does"}
+            />
           </Cell>
           <Cell className="p-4 sm:p-5">
-            <Metric label="cost" value={fmtCost(usage?.cost_cents)} />
+            <Metric
+              label="cost"
+              value={fmtCost(usage?.cost_cents)}
+              hint={usage ? undefined : live ? "metered as it works" : "no receipt"}
+            />
           </Cell>
           <Cell className="p-4 sm:p-5">
             <Metric
@@ -496,15 +626,17 @@ export function RunCockpit({
                   />
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="font-mono text-[12px] uppercase tracking-[0.16em] text-(--ink)">
-                        {phase.label}
-                      </span>
-                      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-(--dim)">
-                        {phase.status}
+                      <span className="text-[13px] font-medium text-(--ink)">{phase.label}</span>
+                      <span className="text-[11px] text-(--dim)">
+                        {PHASE_STATUS_WORDS[phase.status]}
                       </span>
                     </div>
                     <p className="mt-2 line-clamp-2 text-[12px] leading-relaxed text-(--mut)">
-                      {phase.latest ? eventLabel(phase.latest) : `${phase.count} events`}
+                      {phase.latest
+                        ? eventLabel(phase.latest)
+                        : phase.count > 0
+                          ? `${phase.count} events`
+                          : "nothing yet"}
                     </p>
                   </div>
                 </div>
@@ -530,7 +662,7 @@ export function RunCockpit({
                                   ? "platform-owned acceptance gate"
                                   : "agent self-reported"
                               }
-                              className="font-mono text-[9px] uppercase tracking-[0.16em] text-(--dim)"
+                              className="text-[10px] font-medium text-(--dim)"
                             >
                               {check.platform ? "gate" : "self"}
                             </span>
@@ -554,6 +686,16 @@ export function RunCockpit({
                         </div>
                       ))}
                     </div>
+                  ) : null}
+                  {transcriptUri ? (
+                    <a
+                      href={`/api/v1/runs/${run.id}/transcript`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-mono text-[12px] text-(--info) underline-offset-4 hover:underline"
+                    >
+                      raw transcript ↗
+                    </a>
                   ) : null}
                   {artifacts.length ? (
                     <div className="flex flex-col gap-2">

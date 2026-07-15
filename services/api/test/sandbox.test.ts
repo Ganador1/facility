@@ -1,11 +1,15 @@
 import { generateApiKey, hashKey, newId, seal } from "@facility/core";
 import {
+  agentDefs,
   apiKeys,
   auditEvents,
+  conversationMessages,
+  conversations,
   createDb,
   githubInstallations,
   migrate,
   projects,
+  registryItems,
   repos,
   roles,
   runEvents,
@@ -19,12 +23,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { AwsSandboxDriver } from "../src/sandbox/aws.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
-import { reconcileSandboxes } from "../src/sandbox/orchestrator.js";
+import { finishRun, reconcileSandboxes } from "../src/sandbox/orchestrator.js";
 import { appendRunEvents } from "../src/sandbox/state.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
-  process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility";
+  process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_test";
 const masterKey = Buffer.alloc(32, 8).toString("base64");
 
 async function canConnect() {
@@ -187,6 +191,191 @@ describe("sandbox api", async () => {
     expect(terminal.statusCode).toBe(409);
   });
 
+  it("finishRun persists the engine session id from the runner result", async () => {
+    const run = await insertRunnerRun("frt_finish_session", "running");
+    await finishRun(db, run, { status: "succeeded", engineSessionId: "sess_finish_123" });
+    const stored = (await db.select().from(runs).where(eq(runs.id, run.id)).limit(1))[0];
+    expect(stored?.engineSessionId).toBe("sess_finish_123");
+  });
+
+  it("finishRun appends the assistant reply to a conversation and marks it idle", async () => {
+    const contract = (
+      await db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId,
+          kind: "agent_contract",
+          name: `conversation-contract-${Date.now()}`,
+        })
+        .returning()
+    )[0];
+    if (!contract) throw new Error("contract fixture missing");
+    const agent = (
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name: `conversation-agent-${Date.now()}`,
+          engine: "claude_code",
+          model: {},
+          contractItemId: contract.id,
+          triggers: [],
+          permissions: [],
+          enabled: true,
+        })
+        .returning()
+    )[0];
+    if (!agent) throw new Error("agent fixture missing");
+    const conversation = (
+      await db
+        .insert(conversations)
+        .values({
+          id: newId("evt"),
+          orgId,
+          projectId,
+          agentDefId: agent.id,
+          status: "running",
+          createdBy: { type: "user", id: "test" },
+        })
+        .returning()
+    )[0];
+    if (!conversation) throw new Error("conversation fixture missing");
+    const run = await insertRunnerRun("frt_finish_conversation", "running", newId("run"), {
+      runnerTokenHash: await hashKey("frt_finish_conversation"),
+    });
+    await db
+      .update(runs)
+      .set({
+        agentDefId: agent.id,
+        engine: "claude_code",
+        mode: "conversation",
+        trigger: {
+          type: "conversation",
+          conversationId: conversation.id,
+          message: "hello",
+        },
+      })
+      .where(eq(runs.id, run.id));
+    // The message handler pins the owning run; finishConversationTurn only
+    // finalizes the run the conversation points at.
+    await db
+      .update(conversations)
+      .set({ lastRunId: run.id })
+      .where(eq(conversations.id, conversation.id));
+    const [conversationRun] = await db.select().from(runs).where(eq(runs.id, run.id));
+    if (!conversationRun) throw new Error("conversation run fixture missing");
+    await appendRunEvents(db, orgId, run.id, [
+      { type: "assistant", data: { text: "first reply" } },
+      { type: "assistant", data: { text: "final reply" } },
+    ]);
+    await finishRun(db, conversationRun, {
+      status: "succeeded",
+      engineSessionId: "sess_conversation_2",
+    });
+    const messages = await db
+      .select()
+      .from(conversationMessages)
+      .where(eq(conversationMessages.conversationId, conversation.id))
+      .orderBy(conversationMessages.seq);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.role).toBe("agent");
+    expect(messages[0]?.body).toBe("final reply");
+    expect(messages[0]?.runId).toBe(run.id);
+    const [stored] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, conversation.id));
+    expect(stored?.status).toBe("idle");
+    expect(stored?.lastRunId).toBe(run.id);
+    expect(stored?.engineSessionId).toBe("sess_conversation_2");
+  });
+
+  it("a foreign run cannot finalize a conversation it doesn't own (even same agent)", async () => {
+    const contract = (
+      await db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId,
+          kind: "agent_contract",
+          name: `forge-contract-${Date.now()}`,
+        })
+        .returning()
+    )[0];
+    const sharedAgent = (
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name: `forge-agent-${Date.now()}`,
+          engine: "claude_code",
+          model: {},
+          contractItemId: contract?.id ?? "",
+          triggers: [],
+          permissions: [],
+          enabled: true,
+        })
+        .returning()
+    )[0];
+    if (!sharedAgent) throw new Error("shared agent fixture missing");
+    // A running conversation pinned to its OWN in-flight run — same agent the
+    // attacker uses, so ONLY the lastRunId pin distinguishes owner from forger.
+    const victimRun = await insertRunnerRun("frt_victim", "running", newId("run"), {
+      runnerTokenHash: await hashKey("frt_victim"),
+    });
+    const victimConversationId = newId("evt");
+    await db.insert(conversations).values({
+      id: victimConversationId,
+      orgId,
+      projectId,
+      agentDefId: sharedAgent.id,
+      status: "running",
+      lastRunId: victimRun.id,
+      createdBy: { type: "user", id: "victim" },
+    });
+    const forged = await insertRunnerRun("frt_forge", "running", newId("run"), {
+      runnerTokenHash: await hashKey("frt_forge"),
+    });
+    await db
+      .update(runs)
+      .set({
+        agentDefId: sharedAgent.id,
+        engine: "claude_code",
+        mode: "conversation",
+        trigger: { type: "conversation", conversationId: victimConversationId },
+      })
+      .where(eq(runs.id, forged.id));
+    const [forgedRun] = await db.select().from(runs).where(eq(runs.id, forged.id));
+    if (!forgedRun) throw new Error("forged run fixture missing");
+    await appendRunEvents(db, orgId, forged.id, [
+      { type: "assistant", data: { text: "attacker reply" } },
+    ]);
+    await finishRun(db, forgedRun, {
+      status: "succeeded",
+      engineSessionId: "sess_attacker",
+    }).catch(() => undefined);
+    const [victim] = await db
+      .select()
+      .from(conversations)
+      .where(eq(conversations.id, victimConversationId));
+    expect(victim?.status).toBe("running"); // untouched — still owned by victimRun
+    expect(victim?.engineSessionId ?? null).toBeNull();
+    const forgedMessages = await db
+      .select()
+      .from(conversationMessages)
+      .where(eq(conversationMessages.conversationId, victimConversationId));
+    expect(forgedMessages).toHaveLength(0);
+  });
+
   it("delivers run events over the NOTIFY-backed SSE path without safety polling", async () => {
     const token = "frt_stream";
     const run = await insertRunnerRun(token, "running");
@@ -273,6 +462,7 @@ describe("sandbox api", async () => {
       installationId: installationNumber,
       owner,
       repo: "private-repo",
+      permissions: { contents: "read" },
     });
     app.githubInstallationTokenFactory = undefined;
   });

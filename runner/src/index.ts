@@ -1,15 +1,38 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createWriteStream } from "node:fs";
-import { appendFile, mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import {
+  appendFile,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { parseClaudeStreamJsonLine, parseCodexJsonlLine } from "./parsers.js";
+import {
+  parseClaudeSessionId,
+  parseClaudeStreamJsonLine,
+  parseCodexJsonlLine,
+  parseCodexSessionId,
+} from "./parsers.js";
 import type { RunBundle, RunEvent } from "./types.js";
 
 const workRoot = "/work";
 const steerFile = join(workRoot, "STEERING.md");
+const transcriptFile = join(workRoot, "engine.stream.jsonl");
+const sessionStateDir = join(workRoot, ".claude");
+const sessionStateArchive = join(workRoot, "claude-session-state.tgz");
+const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
+let engineSessionId: string | null = null;
+let activeEngineChild: ReturnType<typeof spawn> | null = null;
+let clearInterruptEscalation: (() => void) | null = null;
+let interruptRequested = false;
 
 // Secret values injected into the run (virtual key, platform key, runner token,
 // repo clone token) that must never surface in captured check output persisted to
@@ -56,7 +79,14 @@ async function main() {
         return;
       }
     }
+    await writeFile(transcriptFile, "");
     const engineCode = await runEngine(bundle, startedAt);
+    await uploadTranscript();
+    await uploadSessionState(bundle);
+    if (interruptRequested) {
+      await postResult("canceled", startedAt, "human_interrupt");
+      return;
+    }
     await emitChecks(cwdFor(bundle));
     // Platform-owned acceptance gates run independently of the engine's own
     // exit code and self-report: a run only succeeds if the engine succeeded AND
@@ -65,10 +95,12 @@ async function main() {
     // success while its required checks are red.
     const checksPassed = engineCode === 0 ? await runChecks(bundle, cwdFor(bundle)) : false;
     const succeeded = engineCode === 0 && checksPassed;
+    const git = succeeded ? await shipGitChanges(bundle) : undefined;
     await postResult(
       succeeded ? "succeeded" : "failed",
       startedAt,
       succeeded ? undefined : engineCode !== 0 ? { code: engineCode } : { code: "checks_failed" },
+      git,
     );
   } catch (error) {
     await postResult("failed", startedAt, { error: errorMessage(error) }).catch(() => undefined);
@@ -107,6 +139,9 @@ export async function prepareWorkspace(
       ["clone", "--branch", bundle.repo.branch ?? "main", cloneUrl, repoDirFor(root)],
       root,
     );
+    if (bundle.resume?.branch) {
+      await checkoutResumeBranch(repoDirFor(root), bundle.resume.branch);
+    }
   } else {
     await mkdir(scratchDirFor(root), { recursive: true });
     await runCommand("git", ["init"], scratchDirFor(root)).catch(() => undefined);
@@ -143,24 +178,17 @@ export async function prepareWorkspace(
 
 async function runEngine(bundle: RunBundle, startedAt: number) {
   const timeoutMin = bundle.timeoutMin;
+  if (interruptRequested) return 130;
   if (bundle.engine === "claude_code") {
-    const args = [
-      "-p",
-      composedPrompt(bundle),
-      "--output-format",
-      "stream-json",
-      "--verbose",
-      "--permission-mode",
-      "bypassPermissions",
-      "--max-turns",
-      "500",
-    ];
+    const restored = await restoreSessionState(bundle);
+    const args = buildClaudeCodeArgs(bundle, restored);
     addModelFlags(args, bundle.engineConfig);
     return runJsonProcess(
       "claude",
       args,
       cwdFor(bundle),
       parseClaudeStreamJsonLine,
+      parseClaudeSessionId,
       timeoutMin,
       startedAt,
     );
@@ -171,6 +199,7 @@ async function runEngine(bundle: RunBundle, startedAt: number) {
       ["exec", "--json", "-s", "danger-full-access", composedPrompt(bundle)],
       cwdFor(bundle),
       parseCodexJsonlLine,
+      parseCodexSessionId,
       timeoutMin,
       startedAt,
     );
@@ -185,13 +214,23 @@ function startSteeringPoll() {
     let afterId: string | undefined;
     while (!stopped) {
       const query = afterId ? `?afterId=${encodeURIComponent(afterId)}` : "";
-      const messages = await api<Array<{ id: string; body: string }>>(
+      const messages = await api<Array<{ id: string; body: string; kind?: string }>>(
         `/internal/runs/${currentRunId()}/steer${query}`,
       );
       for (const message of messages) {
         afterId = message.id;
-        await appendFile(steerFile, `\n\n## ${new Date().toISOString()}\n${message.body}\n`);
-        await emit([{ type: "steer", data: { id: message.id, applied: true } }]);
+        await handleControlMessage(message, {
+          appendSteer: async (body) => {
+            await appendFile(steerFile, `\n\n## ${new Date().toISOString()}\n${body}\n`);
+          },
+          emit,
+          interrupt: async () => {
+            interruptRequested = true;
+            if (activeEngineChild && !clearInterruptEscalation) {
+              clearInterruptEscalation = terminateChild(activeEngineChild);
+            }
+          },
+        });
       }
     }
   })().catch(() => undefined);
@@ -205,24 +244,192 @@ async function runJsonProcess(
   args: string[],
   cwd: string,
   parse: (line: string) => RunEvent | null,
+  parseSessionId: (line: string) => string | null,
   timeoutMin: number,
   startedAt: number,
 ) {
   const child = spawn(command, args, { cwd, env: engineEnv(), stdio: ["ignore", "pipe", "pipe"] });
+  activeEngineChild = child;
   const stderr = createWriteStream(join(workRoot, "engine.stderr.log"), { flags: "a" });
   child.stderr.pipe(stderr);
   const clearTimers = armEngineTimeout(child, timeoutMin);
   const rl = createInterface({ input: child.stdout });
   for await (const line of rl) {
+    await appendFile(transcriptFile, `${redactSecrets(line)}\n`);
+    if (!engineSessionId) {
+      const sessionId = parseSessionId(line);
+      if (sessionId) {
+        engineSessionId = sessionId;
+        await emit([{ type: "session", data: { engine_session_id: sessionId } }]);
+      }
+    }
     const event = parse(line);
     if (event) await emit([event]);
   }
   const code = await exitCode(child);
+  if (activeEngineChild === child) activeEngineChild = null;
+  clearInterruptEscalation?.();
+  clearInterruptEscalation = null;
   clearTimers();
+  if (interruptRequested) return 130;
   if (Date.now() - startedAt >= Math.max(1, timeoutMin - 2) * 60_000) {
     return 124;
   }
   return code;
+}
+
+async function uploadTranscript() {
+  const size = await stat(transcriptFile)
+    .then((info) => info.size)
+    .catch(() => 0);
+  if (size === 0) return;
+  try {
+    await api(`/internal/runs/${currentRunId()}/transcript`, {
+      method: "POST",
+      headers: { "content-type": "application/x-ndjson" },
+      body: createReadStream(transcriptFile) as unknown as RequestInit["body"],
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+  } catch {
+    await emit([{ type: "artifact_error", data: { kind: "transcript_upload_failed" } }]).catch(
+      () => undefined,
+    );
+  }
+}
+
+async function restoreSessionState(bundle: RunBundle) {
+  if (bundle.engine !== "claude_code" || !bundle.resume) return false;
+  try {
+    const response = await fetch(`${apiUrl()}/internal/runs/${currentRunId()}/session-state`, {
+      headers: { authorization: `Bearer ${runnerToken()}` },
+    });
+    if (!response.ok) {
+      throw new Error(`session state restore failed ${response.status}`);
+    }
+    await writeFile(sessionStateArchive, Buffer.from(await response.arrayBuffer()));
+    await rm(sessionStateDir, { recursive: true, force: true });
+    await mkdir(workRoot, { recursive: true });
+    await runCommand("tar", ["-xzf", sessionStateArchive, "-C", workRoot], workRoot);
+    return true;
+  } catch (error) {
+    await emit([
+      {
+        type: "artifact_error",
+        data: { kind: "session_state_restore_failed", error: errorMessage(error) },
+      },
+    ]).catch(() => undefined);
+    return false;
+  }
+}
+
+async function uploadSessionState(bundle: RunBundle) {
+  if (bundle.engine !== "claude_code") return;
+  const size = await directorySize(sessionStateDir).catch(() => 0);
+  if (size === 0) return;
+  if (size > SESSION_STATE_MAX_BYTES) {
+    await emit([
+      { type: "artifact_error", data: { kind: "session_state_too_large", bytes: size } },
+    ]).catch(() => undefined);
+    return;
+  }
+  try {
+    await rm(sessionStateArchive, { force: true });
+    await runCommand("tar", ["-czf", sessionStateArchive, "-C", workRoot, ".claude"], workRoot);
+    const archiveSize = await stat(sessionStateArchive).then((info) => info.size);
+    if (archiveSize > SESSION_STATE_MAX_BYTES) {
+      await emit([
+        {
+          type: "artifact_error",
+          data: { kind: "session_state_too_large", bytes: archiveSize },
+        },
+      ]).catch(() => undefined);
+      return;
+    }
+    await api(`/internal/runs/${currentRunId()}/session-state`, {
+      method: "POST",
+      headers: { "content-type": "application/gzip" },
+      body: createReadStream(sessionStateArchive) as unknown as RequestInit["body"],
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+  } catch (error) {
+    await emit([
+      {
+        type: "artifact_error",
+        data: { kind: "session_state_upload_failed", error: errorMessage(error) },
+      },
+    ]).catch(() => undefined);
+  }
+}
+
+export function buildClaudeCodeArgs(bundle: RunBundle, restoredSessionState: boolean) {
+  const args =
+    bundle.resume && restoredSessionState
+      ? ["-p", bundle.resume.prompt, "--resume", bundle.resume.sessionId]
+      : ["-p", composedPrompt(bundle)];
+  args.push(
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "bypassPermissions",
+    "--max-turns",
+    "500",
+  );
+  return args;
+}
+
+type ControlMessage = { id: string; body: string; kind?: string };
+type ControlHandlers = {
+  appendSteer: (body: string) => Promise<void>;
+  emit: (events: RunEvent[]) => Promise<void>;
+  interrupt: () => Promise<void>;
+};
+
+export async function handleControlMessage(message: ControlMessage, handlers: ControlHandlers) {
+  if (message.kind === "interrupt") {
+    await handlers.emit([{ type: "status", data: { message: "human interrupt" } }]);
+    await handlers.interrupt();
+    await handlers.emit([{ type: "steer", data: { id: message.id, kind: "interrupt" } }]);
+    return "interrupt";
+  }
+  await handlers.appendSteer(message.body);
+  await handlers.emit([{ type: "steer", data: { id: message.id, applied: true } }]);
+  return "steer";
+}
+
+export function terminateChild(
+  child: Pick<ReturnType<typeof spawn>, "kill">,
+  escalateMs = 15_000,
+  setTimer: typeof setTimeout = setTimeout,
+) {
+  child.kill("SIGTERM");
+  const timer = setTimer(() => child.kill("SIGKILL"), escalateMs);
+  return () => clearTimeout(timer);
+}
+
+async function checkoutResumeBranch(cwd: string, branch: string) {
+  try {
+    await gitOutput(cwd, ["fetch", "origin", branch]);
+    await gitOutput(cwd, ["checkout", branch]);
+  } catch (error) {
+    await emit([
+      {
+        type: "artifact_error",
+        data: { kind: "resume_branch_missing", error: errorMessage(error) },
+      },
+    ]).catch(() => undefined);
+  }
+}
+
+async function directorySize(path: string): Promise<number> {
+  const info = await lstat(path);
+  if (!info.isDirectory()) return info.size;
+  const entries = await readdir(path);
+  let total = 0;
+  for (const entry of entries) {
+    total += await directorySize(join(path, entry));
+  }
+  return total;
 }
 
 async function runShell(command: string, cwd: string, eventType: string, timeoutMin: number) {
@@ -355,9 +562,10 @@ export async function runCheckCommand(command: string, cwd: string, timeoutMin: 
 }
 
 async function postResult(
-  status: "succeeded" | "failed",
+  status: "succeeded" | "failed" | "canceled",
   startedAt: number,
-  error?: Record<string, unknown>,
+  error?: Record<string, unknown> | string,
+  git?: Record<string, unknown>,
 ) {
   const stderrTail = await readFile(join(workRoot, "engine.stderr.log"), "utf8").catch(() => "");
   await api(`/internal/runs/${currentRunId()}/result`, {
@@ -382,11 +590,85 @@ async function postResult(
           duration_ms: Date.now() - startedAt,
         },
       },
-      error: error
-        ? redactSecrets(`${JSON.stringify(error)} ${stderrTail.slice(-2000)}`)
-        : undefined,
+      error:
+        typeof error === "string"
+          ? error
+          : error
+            ? redactSecrets(`${JSON.stringify(error)} ${stderrTail.slice(-2000)}`)
+            : undefined,
+      git,
+      engineSessionId: engineSessionId ?? undefined,
     }),
   });
+}
+
+async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown> | undefined> {
+  if (!bundle.repo.cloneUrl || bundle.mode === "architect") return undefined;
+  const cwd = cwdFor(bundle);
+  const baseBranch = bundle.repo.branch ?? "main";
+  try {
+    const status = (await gitOutput(cwd, ["status", "--porcelain"])).trim();
+    if (status) {
+      await gitOutput(cwd, ["add", "-A"]);
+      await gitOutput(cwd, [
+        "-c",
+        "user.name=Facility Runner",
+        "-c",
+        "user.email=runner@facility.local",
+        "commit",
+        "-m",
+        `facility: ${bundle.mode} run ${currentRunId()}`,
+      ]);
+    }
+    const ahead = Number(
+      (await gitOutput(cwd, ["rev-list", "--count", `origin/${baseBranch}..HEAD`])).trim(),
+    );
+    if (!status && ahead <= 0) return { changed: false };
+    const branch = `facility/run-${currentRunId().slice(-8)}`;
+    const headSha = (await gitOutput(cwd, ["rev-parse", "HEAD"])).trim();
+    await gitOutput(cwd, ["branch", "-f", branch, headSha]);
+    try {
+      const { token } = await api<{ token: string }>(
+        `/internal/runs/${currentRunId()}/push-token`,
+        { method: "POST" },
+      );
+      secretsToRedact.add(token);
+      await gitOutput(cwd, [
+        "push",
+        pushUrlFor(bundle.repo.cloneUrl, token),
+        `${headSha}:refs/heads/${branch}`,
+      ]);
+      return { branch, headSha, changed: true };
+    } catch (error) {
+      const pushError = errorMessage(error);
+      await emit([{ type: "artifact_error", data: { kind: "git_push_failed", error: pushError } }]);
+      return { branch, headSha, changed: true, pushError };
+    }
+  } catch (error) {
+    const pushError = errorMessage(error);
+    await emit([{ type: "artifact_error", data: { kind: "git_push_failed", error: pushError } }]);
+    return { changed: true, pushError };
+  }
+}
+
+async function gitOutput(cwd: string, args: string[]) {
+  const child = spawn("git", args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk.toString();
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk.toString();
+  });
+  const code = await exitCode(child);
+  if (code !== 0) throw new Error(redactSecrets(`git ${args[0]} exited ${code}: ${stderr}`));
+  return stdout;
+}
+
+function pushUrlFor(cloneUrl: string, token: string) {
+  if (!cloneUrl.startsWith("https://github.com/")) return cloneUrl;
+  return cloneUrl.replace("https://github.com/", `https://x-access-token:${token}@github.com/`);
 }
 
 // Recursively scrub injected secrets from every string in a value — the engine's
@@ -528,7 +810,13 @@ export function composedPrompt(bundle: RunBundle) {
   const harnessNote = bundle.harness?.files
     ? "\n\nProject harness/KB context is in ./harness/SESSION.md - read it first."
     : "";
-  return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}`;
+  const steeringNote =
+    "\n\nHuman steering may arrive in ./STEERING.md while you work (it starts empty). Re-read it after finishing each task or before major decisions; if it contains new instructions, follow them.";
+  const conversationNote =
+    bundle.scope.type === "conversation" && typeof bundle.scope.message === "string"
+      ? `\n\n## Conversation\n${bundle.scope.message}`
+      : "";
+  return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}${steeringNote}${conversationNote}`;
 }
 
 function addModelFlags(args: string[], config: Record<string, unknown>) {

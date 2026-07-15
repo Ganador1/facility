@@ -1,12 +1,21 @@
 import { newId } from "@facility/core";
-import { agentDefs, projects, runEvents, runs, steerMessages, withOrg } from "@facility/db";
+import {
+  agentDefs,
+  insertAuditEvent,
+  projects,
+  runEvents,
+  runs,
+  steerMessages,
+  withOrg,
+} from "@facility/db";
 import { and, desc, eq, notInArray } from "drizzle-orm";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import postgres from "postgres";
 import { z } from "zod";
+import { readTranscriptObject } from "../../envelopes.js";
 import { ApiError, notFound } from "../../errors.js";
 import { cancelRun } from "../../sandbox/orchestrator.js";
-import { appendRunEvents, TERMINAL_RUN_STATUSES } from "../../sandbox/state.js";
+import { appendRunEvents, TERMINAL_RUN_STATUSES, terminalStatus } from "../../sandbox/state.js";
 import type { AppConfig, Principal } from "../../types.js";
 import {
   AnyObject,
@@ -95,6 +104,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
         params: IdParams,
         querystring: z.object({
           status: z.string().optional(),
+          agentDefId: z.string().optional(),
           limit: z.coerce.number().int().min(1).max(200).default(50),
           offset: z.coerce.number().int().min(0).default(0),
         }),
@@ -107,9 +117,15 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
       // A project-scoped principal may only list its own project's runs — without
       // this a key pinned to project X could read project Y's runs in the same org.
       assertProjectScope(p, projectId);
-      const query = request.query as { status?: string; limit: number; offset: number };
+      const query = request.query as {
+        status?: string;
+        agentDefId?: string;
+        limit: number;
+        offset: number;
+      };
       const clauses = [eq(runs.orgId, p.orgId), eq(runs.projectId, projectId)];
       if (query.status) clauses.push(eq(runs.status, query.status));
+      if (query.agentDefId) clauses.push(eq(runs.agentDefId, query.agentDefId));
       const rows = await db
         .select()
         .from(runs)
@@ -270,6 +286,21 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
   );
 
   app.get(
+    "/v1/runs/:runId/transcript",
+    {
+      config: { permission: "runs:read" },
+      schema: { params: IdParams },
+    },
+    async (request, reply) => {
+      const p = principal(request);
+      const { runId } = request.params as { runId: string };
+      const run = await loadRun(p, runId);
+      const body = await readTranscriptObject(config, run.transcriptUri, run.orgId);
+      return reply.type("application/x-ndjson").send(body);
+    },
+  );
+
+  app.get(
     "/v1/runs/:runId/events",
     {
       config: { permission: "runs:read" },
@@ -339,6 +370,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
             orgId: p.orgId,
             runId,
             authorUserId: p.userId,
+            kind: "steer",
             body: (request.body as { body: string }).body,
           })
           .returning()
@@ -352,6 +384,120 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
       return message;
     },
   );
+
+  app.post(
+    "/v1/runs/:runId/interrupt",
+    {
+      config: { permission: "runs:steer" },
+      schema: { params: IdParams, response: { 200: z.object({ ok: z.boolean() }) } },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { runId } = request.params as { runId: string };
+      const run = await loadRun(p, runId);
+      if (terminalStatus(run.status)) {
+        throw new ApiError(409, "run_terminal", "Cannot interrupt a finished run");
+      }
+      await db.insert(steerMessages).values({
+        id: newId("evt"),
+        orgId: p.orgId,
+        runId,
+        authorUserId: p.userId,
+        kind: "interrupt",
+        body: "human_interrupt",
+      });
+      await appendRunEvents(db, p.orgId, runId, [
+        { type: "steer", data: { kind: "interrupt", author: p.id } },
+      ]);
+      await insertAuditEvent(db, {
+        orgId: p.orgId,
+        projectId: run.projectId,
+        actor: auditActor(p),
+        action: "run.interrupted",
+        target: { type: "run", id: run.id },
+        payload: {},
+      });
+      return { ok: true };
+    },
+  );
+
+  app.post(
+    "/v1/runs/:runId/resume",
+    {
+      config: { permission: "runs:trigger" },
+      schema: {
+        params: IdParams,
+        body: z.object({ message: z.string().optional() }).nullable().default({}),
+        response: { 200: RunSchema },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { runId } = request.params as { runId: string };
+      const parent = await loadRun(p, runId);
+      if (!terminalStatus(parent.status)) {
+        throw new ApiError(409, "run_not_terminal", "Only terminal runs can be resumed");
+      }
+      if (parent.engine !== "claude_code") {
+        throw new ApiError(409, "not_resumable", "Run engine does not support resume");
+      }
+      if (!parent.engineSessionId) {
+        throw new ApiError(409, "not_resumable", "Run has no engine session id");
+      }
+      const body = (request.body ?? {}) as { message?: string };
+      const gh = parentGhForResume(parent.gh);
+      const trigger: Record<string, unknown> = { type: "resume", resumeOf: parent.id };
+      if (body.message !== undefined) trigger.message = body.message;
+      const run = (
+        await db
+          .insert(runs)
+          .values({
+            id: newId("run"),
+            orgId: p.orgId,
+            projectId: parent.projectId,
+            agentDefId: parent.agentDefId,
+            mode: parent.mode,
+            engine: parent.engine,
+            trigger,
+            gh,
+            createdBy: { type: p.type, id: p.id },
+          })
+          .returning()
+      )[0];
+      if (!run) throw new ApiError(500, "run_create_failed", "Run could not be created");
+      await db.insert(runEvents).values({
+        orgId: p.orgId,
+        runId: run.id,
+        seq: 1,
+        type: "queued",
+        data: { queue: "runs.dispatch" },
+      });
+      await app.enqueue("runs.dispatch", { runId: run.id, orgId: p.orgId });
+      await insertAuditEvent(db, {
+        orgId: p.orgId,
+        projectId: run.projectId,
+        actor: auditActor(p),
+        action: "run.resumed",
+        target: { type: "run", id: run.id },
+        payload: { resumeOf: parent.id },
+      });
+      return redactRunSecrets(run);
+    },
+  );
+}
+
+function parentGhForResume(value: unknown) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const gh = source as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (typeof gh.owner === "string") out.owner = gh.owner;
+  if (typeof gh.repo === "string") out.repo = gh.repo;
+  if (typeof gh.branch === "string") out.branch = gh.branch;
+  return out;
+}
+
+function auditActor(p: Principal): { type: "user" | "key"; id: string } {
+  return { type: p.type, id: p.id };
 }
 
 async function streamRunEvents(

@@ -16,11 +16,16 @@ import { FacilityClient } from "@facility/sdk";
 import { cookies } from "next/headers";
 
 export type {
+  AgentDef,
+  AgentStatus,
   ApiKey,
   AuditEvent,
   Budget,
+  Catalog,
   ConnectProjectRepoRequest,
   CreateProjectRequest,
+  Integration,
+  IntegrationEvent,
   Issue,
   KickstartAnswers,
   KickstartPreview,
@@ -28,11 +33,14 @@ export type {
   Me,
   Member,
   MemberRow,
+  Outcome,
   Project,
   ProjectRepo,
   Proposal,
   Provider,
   RegistryItem,
+  RegistryItemWithVersions,
+  RegistryVersion,
   Role,
   Run,
   RunEvent,
@@ -103,6 +111,16 @@ export const api = {
   kickstart: (projectId: string, body: { repoId: string; answers: KickstartAnswers; mode: "pr" }) =>
     apiFetch("POST", `/v1/projects/${projectId}/kickstart`, { body }),
   projectAgents: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/agents`),
+  agentsStatus: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/agents/status`),
+  catalog: () => apiFetch("GET", "/v1/catalog"),
+  integrations: () => apiFetch("GET", "/v1/integrations"),
+  integrationEvents: (integrationId: string) =>
+    apiFetch("GET", `/v1/integrations/${integrationId}/events`),
+  projectHealth: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/health`),
+  updateProject: (projectId: string, body: Record<string, unknown>) =>
+    apiFetch("PATCH", `/v1/projects/${projectId}`, {
+      body: body as FacilityRouteBody<"PATCH", `/v1/projects/${string}`>,
+    }),
   runs: (projectId: string, params = "") =>
     apiFetch("GET", `/v1/projects/${projectId}/runs`, { query: queryFromParams(params) }),
   allRuns: (params = "") => apiFetch("GET", "/v1/runs", { query: queryFromParams(params) }),
@@ -130,20 +148,80 @@ export const api = {
     };
   },
   proposal: (id: string) => apiFetch("GET", `/v1/proposals/${id}`),
+  outcomes: (params = "") => apiFetch("GET", "/v1/outcomes", { query: queryFromParams(params) }),
+  auditVerify: () => apiFetch("GET", "/v1/audit/verify"),
   audit: async (params = ""): Promise<ApiResult<AuditEvent[]>> => {
     const res = await apiFetch("GET", "/v1/audit", { query: queryFromParams(params) });
     if (!res.ok) return res;
     return { ok: true, data: Array.isArray(res.data) ? res.data : res.data.items };
   },
+  auditPage: async (
+    params = "",
+  ): Promise<ApiResult<{ items: AuditEvent[]; nextCursor: number | null }>> => {
+    const res = await apiFetch("GET", "/v1/audit", { query: queryFromParams(params) });
+    if (!res.ok) return res;
+    return {
+      ok: true,
+      data: Array.isArray(res.data) ? { items: res.data, nextCursor: null } : res.data,
+    };
+  },
   registry: (params = "") =>
     apiFetch("GET", "/v1/registry/items", { query: queryFromParams(params) }),
+  registryItem: (id: string) => apiFetch("GET", `/v1/registry/items/${id}`),
+  kbSpace: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/kb/space`),
+  kbEntries: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/kb/entries`),
   spend: (params = "") => apiFetch("GET", "/v1/spend", { query: queryFromParams(params) }),
+  sandboxProfiles: () => apiFetch("GET", "/v1/sandbox-profiles"),
   members: () => apiFetch("GET", "/v1/members"),
   roles: () => apiFetch("GET", "/v1/roles"),
   keys: () => apiFetch("GET", "/v1/keys"),
   providers: () => apiFetch("GET", "/v1/providers"),
   budgets: () => apiFetch("GET", "/v1/budgets"),
 };
+
+/**
+ * Escape hatch for endpoints landing in this same release train (issue mirror,
+ * repo discovery) whose SDK contracts don't exist yet. Every caller carries a
+ * TODO(sdk) and migrates to the typed client once the route map regenerates.
+ */
+export async function untypedApi<T>(
+  method: "GET" | "POST",
+  path: string,
+  body?: unknown,
+): Promise<ApiResult<T>> {
+  const jar = await cookies();
+  const session = jar.get(SESSION_COOKIE);
+  try {
+    const res = await fetch(`${API_URL}${path}`, {
+      method,
+      cache: "no-store",
+      headers: {
+        ...(session ? { cookie: `${SESSION_COOKIE}=${session.value}` } : {}),
+        ...(body !== undefined ? { "content-type": "application/json" } : {}),
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    if (!res.ok) {
+      const detail = (await res.json().catch(() => null)) as {
+        error?: { message?: string };
+      } | null;
+      return {
+        ok: false,
+        status: res.status,
+        offline: false,
+        message: detail?.error?.message ?? `${res.status} ${res.statusText}`,
+      };
+    }
+    return { ok: true, data: (await res.json()) as T };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      offline: true,
+      message: error instanceof Error ? error.message : "control plane unreachable",
+    };
+  }
+}
 
 /** Sum + descending groups from the spend endpoint's raw rows. */
 export function summarizeSpend(rows: SpendRow[]): {

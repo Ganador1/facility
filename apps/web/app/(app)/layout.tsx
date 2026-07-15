@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
-import { Offline } from "@/components/offline";
-import { MobileNav, Sidebar } from "@/components/shell/nav";
-import { Topbar } from "@/components/shell/topbar";
+import { ErrorNotice, Offline } from "@/components/offline";
 import { api } from "@/lib/api";
 
+/**
+ * Auth gate only. Chrome (sidebar/topbar) lives one level down: org pages get
+ * the thin org shell, `/projects/[projectId]/*` gets the project world shell.
+ */
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const me = await api.me();
 
@@ -15,17 +17,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </div>
       );
     }
-    redirect("/login");
+    // Only a real auth failure logs you out. A throttled or erroring control
+    // plane (429/5xx) must degrade honestly, not bounce the session to /login.
+    if (me.status === 401 || me.status === 403) redirect("/login");
+    return (
+      <div className="mx-auto flex min-h-dvh max-w-3xl items-center px-6">
+        <ErrorNotice message={`The control plane answered ${me.status} — ${me.message}`} />
+      </div>
+    );
   }
 
-  return (
-    <div className="flex min-h-dvh">
-      <Sidebar />
-      <div className="min-w-0 flex-1">
-        <MobileNav />
-        <Topbar me={me.data} />
-        <main className="px-5 py-8 sm:px-8 lg:px-10">{children}</main>
-      </div>
-    </div>
-  );
+  return children;
 }

@@ -5,27 +5,54 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
-export const NAV = [
-  { href: "/", label: "overview" },
-  { href: "/projects", label: "projects" },
-  { href: "/runs", label: "runs" },
-  { href: "/inbox", label: "inbox" },
-  { href: "/registry", label: "registry" },
-  { href: "/analytics", label: "analytics" },
-  { href: "/audit", label: "audit" },
-  { href: "/settings", label: "settings" },
-] as const;
+export type NavProject = { id: string; slug: string };
 
-function isActive(pathname: string, href: string) {
-  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+type NavItem = { href: string; label: string; badge?: number };
+
+/** Org-level destinations — thin by design; the daily loop lives inside a project. */
+export function orgNav(inboxCount?: number): NavItem[] {
+  return [
+    { href: "/projects", label: "Projects" },
+    { href: "/sessions", label: "Fleet" },
+    { href: "/inbox", label: "Inbox", badge: inboxCount },
+    { href: "/harness", label: "Harness" },
+    { href: "/audit", label: "Audit" },
+    { href: "/settings", label: "Settings" },
+  ];
 }
 
-function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+/** The project world: everything scoped to the project in focus. */
+export function projectNav(projectId: string): NavItem[] {
+  const base = `/projects/${projectId}`;
+  return [
+    { href: base, label: "Overview" },
+    { href: `${base}/issues`, label: "Issues" },
+    { href: `${base}/sessions`, label: "Sessions" },
+    { href: `${base}/owner`, label: "Owner" },
+    { href: `${base}/agents`, label: "Agents" },
+    { href: `${base}/settings`, label: "Settings" },
+  ];
+}
+
+function isActive(pathname: string, href: string, exact: boolean) {
+  return exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function NavLinks({
+  items,
+  exactFirst = false,
+  onNavigate,
+}: {
+  items: NavItem[];
+  /** Project nav: the first item (overview) is the section root — match it exactly. */
+  exactFirst?: boolean;
+  onNavigate?: () => void;
+}) {
   const pathname = usePathname();
   return (
     <nav className="flex flex-col" aria-label="Primary">
-      {NAV.map((item, i) => {
-        const active = isActive(pathname, item.href);
+      {items.map((item, i) => {
+        const active = isActive(pathname, item.href, exactFirst && i === 0);
         return (
           <Link
             key={item.href}
@@ -33,20 +60,57 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             onClick={onNavigate}
             aria-current={active ? "page" : undefined}
             className={cx(
-              "group flex items-baseline gap-3 border-l-2 px-5 py-2.5 font-mono text-[12px] uppercase tracking-[0.18em] transition-colors",
+              "group flex items-baseline gap-3 border-l-2 px-5 py-2 text-[13px] transition-colors",
               active
-                ? "border-(--line-strong) text-(--ink)"
+                ? "border-(--line-strong) font-medium text-(--ink)"
                 : "border-transparent text-(--mut) hover:text-(--ink)",
             )}
           >
-            <span className={cx("text-[10px]", active ? "text-(--ink)" : "text-(--dim)")}>
+            <span className={cx("font-mono text-[10px]", active ? "text-(--ink)" : "text-(--dim)")}>
               {String(i + 1).padStart(2, "0")}
             </span>
             {item.label}
+            {item.badge ? (
+              <span className="ml-auto font-mono text-[11px] text-(--human)">{item.badge}</span>
+            ) : null}
           </Link>
         );
       })}
     </nav>
+  );
+}
+
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="px-5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-(--dim)">
+      {children}
+    </span>
+  );
+}
+
+function NavSections({
+  project,
+  inboxCount,
+  onNavigate,
+}: {
+  project?: NavProject;
+  inboxCount?: number;
+  onNavigate?: () => void;
+}) {
+  if (!project) {
+    return <NavLinks items={orgNav(inboxCount)} onNavigate={onNavigate} />;
+  }
+  return (
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-col gap-2">
+        <SectionLabel>project</SectionLabel>
+        <NavLinks items={projectNav(project.id)} exactFirst onNavigate={onNavigate} />
+      </div>
+      <div className="flex flex-col gap-2">
+        <SectionLabel>org</SectionLabel>
+        <NavLinks items={orgNav(inboxCount)} onNavigate={onNavigate} />
+      </div>
+    </div>
   );
 }
 
@@ -81,21 +145,21 @@ function FooterSignature({ compact = false }: { compact?: boolean }) {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ project, inboxCount }: { project?: NavProject; inboxCount?: number }) {
   return (
     <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col justify-between border-r border-(--line) py-6 lg:flex">
       <div className="flex flex-col gap-8">
         <Link href="/" className="px-5 font-mono text-[15px] font-semibold tracking-tight">
           facility<span className="text-(--accent)">.</span>
         </Link>
-        <NavLinks />
+        <NavSections project={project} inboxCount={inboxCount} />
       </div>
       <FooterSignature />
     </aside>
   );
 }
 
-export function MobileNav() {
+export function MobileNav({ project, inboxCount }: { project?: NavProject; inboxCount?: number }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
@@ -116,9 +180,14 @@ export function MobileNav() {
   return (
     <div className="lg:hidden">
       <div className="sticky top-0 z-40 flex items-center justify-between border-b border-(--line) bg-(--bg)/95 px-5 py-4 backdrop-blur">
-        <Link href="/" className="font-mono text-[15px] font-semibold tracking-tight">
-          facility<span className="text-(--accent)">.</span>
-        </Link>
+        <div className="flex min-w-0 items-baseline gap-3">
+          <Link href="/" className="font-mono text-[15px] font-semibold tracking-tight">
+            facility<span className="text-(--accent)">.</span>
+          </Link>
+          {project ? (
+            <span className="truncate font-mono text-[12px] text-(--mut)">{project.slug}</span>
+          ) : null}
+        </div>
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -141,8 +210,12 @@ export function MobileNav() {
         </button>
       </div>
       {open ? (
-        <div className="fixed inset-0 top-[57px] z-30 flex flex-col justify-between bg-(--bg) pb-8 pt-4">
-          <NavLinks onNavigate={() => setOpen(false)} />
+        <div className="fixed inset-0 top-[57px] z-30 flex flex-col justify-between overflow-y-auto bg-(--bg) pb-8 pt-4">
+          <NavSections
+            project={project}
+            inboxCount={inboxCount}
+            onNavigate={() => setOpen(false)}
+          />
           <FooterSignature compact />
         </div>
       ) : null}

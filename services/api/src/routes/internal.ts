@@ -1,8 +1,13 @@
 import { open, verifyKey } from "@facility/core";
-import { githubInstallations, runs, steerMessages } from "@facility/db";
+import { githubInstallations, insertAuditEvent, repos, runs, steerMessages } from "@facility/db";
 import { and, asc, eq, gt, inArray, isNull, notInArray } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import {
+  readSessionStateObject,
+  writeSessionStateObject,
+  writeTranscriptObject,
+} from "../envelopes.js";
 import { ApiError, notFound } from "../errors.js";
 import { createGithubInstallationTokenFactory } from "../github/client.js";
 import { signedBundleToken, verifyBundleToken } from "../sandbox/bundle-url.js";
@@ -17,6 +22,8 @@ import {
 import type { AppConfig } from "../types.js";
 
 const Params = z.object({ runId: z.string() });
+const TRANSCRIPT_MAX_BYTES = 50 * 1024 * 1024;
+const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
 const EventBatch = z.array(
   z.object({
     type: z.string().min(1),
@@ -31,6 +38,21 @@ type RunnerRequest = FastifyRequest & {
 
 export async function registerInternalRoutes(app: FastifyInstance, config: AppConfig) {
   const db = app.facilityDb;
+
+  if (!app.hasContentTypeParser("application/x-ndjson")) {
+    app.addContentTypeParser(
+      "application/x-ndjson",
+      { parseAs: "buffer", bodyLimit: TRANSCRIPT_MAX_BYTES },
+      (_request, body, done) => done(null, body),
+    );
+  }
+  if (!app.hasContentTypeParser("application/gzip")) {
+    app.addContentTypeParser(
+      "application/gzip",
+      { parseAs: "buffer", bodyLimit: SESSION_STATE_MAX_BYTES },
+      (_request, body, done) => done(null, body),
+    );
+  }
 
   async function authenticate(request: FastifyRequest) {
     const { runId } = request.params as { runId: string };
@@ -200,6 +222,153 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
   );
 
   app.post(
+    "/internal/runs/:runId/push-token",
+    {
+      config: { public: true },
+      preHandler: authenticate,
+      schema: {
+        params: Params,
+        response: { 200: z.object({ token: z.string() }) },
+      },
+    },
+    async (request) => {
+      const run = (request as RunnerRequest).runnerRun;
+      if (!run) throw notFound("Run not found");
+      const sandbox = readSandbox(run.sandbox);
+      const repoRef = await repoForRun(run, sandbox);
+      if (!repoRef?.installationId) {
+        throw new ApiError(409, "no_installation", "Run repository has no GitHub installation");
+      }
+      const installation = (
+        await db
+          .select()
+          .from(githubInstallations)
+          .where(eq(githubInstallations.id, repoRef.installationId))
+          .limit(1)
+      )[0];
+      if (!installation) {
+        throw new ApiError(409, "no_installation", "Run repository has no GitHub installation");
+      }
+      const tokenFactory =
+        app.githubInstallationTokenFactory ?? createGithubInstallationTokenFactory(config);
+      const token = await tokenFactory({
+        installationId: installation.installationId,
+        owner: repoRef.owner,
+        repo: repoRef.name,
+        permissions: { contents: "write" },
+      });
+      await insertAuditEvent(db, {
+        orgId: run.orgId,
+        projectId: run.projectId,
+        actor: { type: "agent", id: run.id },
+        action: "run.push_token_issued",
+        target: { type: "run", id: run.id },
+        payload: { repoId: repoRef.id },
+      });
+      return { token };
+    },
+  );
+
+  app.post(
+    "/internal/runs/:runId/transcript",
+    {
+      config: { public: true },
+      preHandler: authenticate,
+      schema: {
+        params: Params,
+        response: { 200: z.object({ uri: z.string() }) },
+      },
+    },
+    async (request) => {
+      const run = (request as RunnerRequest).runnerRun;
+      if (!run) throw notFound("Run not found");
+      if (!Buffer.isBuffer(request.body)) {
+        throw new ApiError(400, "invalid_transcript", "Transcript body must be ndjson bytes");
+      }
+      if (request.body.length > TRANSCRIPT_MAX_BYTES) {
+        throw new ApiError(413, "payload_too_large", "Transcript exceeds 50 MB");
+      }
+      const uri = await writeTranscriptObject({
+        config,
+        orgId: run.orgId,
+        runId: run.id,
+        body: request.body,
+      });
+      await db
+        .update(runs)
+        .set({ transcriptUri: uri, updatedAt: new Date() })
+        .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
+      return { uri };
+    },
+  );
+
+  app.post(
+    "/internal/runs/:runId/session-state",
+    {
+      config: { public: true },
+      preHandler: authenticate,
+      schema: {
+        params: Params,
+        response: { 200: z.object({ uri: z.string() }) },
+      },
+    },
+    async (request) => {
+      const run = (request as RunnerRequest).runnerRun;
+      if (!run) throw notFound("Run not found");
+      if (!Buffer.isBuffer(request.body)) {
+        throw new ApiError(400, "invalid_session_state", "Session state body must be gzip bytes");
+      }
+      if (request.body.length > SESSION_STATE_MAX_BYTES) {
+        throw new ApiError(413, "payload_too_large", "Session state exceeds 200 MB");
+      }
+      const uri = await writeSessionStateObject({
+        config,
+        orgId: run.orgId,
+        runId: run.id,
+        body: request.body,
+      });
+      await db
+        .update(runs)
+        .set({ sessionStateUri: uri, updatedAt: new Date() })
+        .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
+      return { uri };
+    },
+  );
+
+  app.get(
+    "/internal/runs/:runId/session-state",
+    {
+      config: { public: true },
+      preHandler: authenticate,
+      schema: { params: Params },
+    },
+    async (request, reply) => {
+      const run = (request as RunnerRequest).runnerRun;
+      if (!run) throw notFound("Run not found");
+      const sandbox = readSandbox(run.sandbox);
+      const resume = sandbox.bundle?.resume;
+      if (!resume?.sessionStateFrom) throw notFound("Session state not found");
+      const parent = (
+        await db
+          .select()
+          .from(runs)
+          .where(
+            and(
+              eq(runs.orgId, run.orgId),
+              eq(runs.projectId, run.projectId),
+              run.agentDefId ? eq(runs.agentDefId, run.agentDefId) : isNull(runs.agentDefId),
+              eq(runs.id, resume.sessionStateFrom),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (!parent) throw notFound("Session state not found");
+      const body = await readSessionStateObject(config, parent.sessionStateUri, parent.orgId);
+      return reply.type("application/gzip").send(body);
+    },
+  );
+
+  app.post(
     "/internal/runs/:runId/result",
     {
       config: { public: true },
@@ -207,9 +376,18 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
       schema: {
         params: Params,
         body: z.object({
-          status: z.enum(["succeeded", "failed"]),
+          status: z.enum(["succeeded", "failed", "canceled"]),
           receipt: z.record(z.string(), z.unknown()).optional(),
           error: z.string().optional(),
+          git: z
+            .object({
+              branch: z.string().optional(),
+              headSha: z.string().optional(),
+              changed: z.boolean(),
+              pushError: z.string().optional(),
+            })
+            .optional(),
+          engineSessionId: z.string().optional(),
         }),
         response: { 200: z.record(z.string(), z.unknown()) },
       },
@@ -218,11 +396,16 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
       const run = (request as RunnerRequest).runnerRun;
       if (!run) throw notFound("Run not found");
       const body = request.body as {
-        status: "succeeded" | "failed";
+        status: "succeeded" | "failed" | "canceled";
         receipt?: Record<string, unknown>;
         error?: string;
+        git?: { branch?: string; headSha?: string; changed: boolean; pushError?: string };
+        engineSessionId?: string;
       };
-      return (await finishRun(db, run, body)) as unknown as Record<string, unknown>;
+      return (await finishRun(db, run, body, {
+        config,
+        githubClientFactory: app.githubClientFactory,
+      })) as unknown as Record<string, unknown>;
     },
   );
 
@@ -257,7 +440,29 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
       installationId: installation.installationId,
       owner: parsed.owner,
       repo: parsed.repo,
+      permissions: { contents: "read" },
     });
+  }
+
+  async function repoForRun(run: typeof runs.$inferSelect, sandbox: RunSandboxState) {
+    const parsed = sandbox.bundle?.repo?.cloneUrl
+      ? parseGithubCloneUrl(sandbox.bundle.repo.cloneUrl)
+      : null;
+    if (!parsed) return null;
+    return (
+      await db
+        .select()
+        .from(repos)
+        .where(
+          and(
+            eq(repos.orgId, run.orgId),
+            eq(repos.projectId, run.projectId),
+            eq(repos.owner, parsed.owner),
+            eq(repos.name, parsed.repo),
+          ),
+        )
+        .limit(1)
+    )[0];
   }
 }
 

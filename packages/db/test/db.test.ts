@@ -6,7 +6,7 @@ import { createDb, insertAuditEvent, migrate, seed, withOrg } from "../src/index
 import * as schema from "../src/schema.js";
 
 const databaseUrl =
-  process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility";
+  process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_test";
 
 async function canConnect() {
   // Generous connect timeout: this runs during vitest's module-import phase,
@@ -144,6 +144,9 @@ describe("db", async () => {
       ["learning", true],
       ["project-owner", true],
     ]);
+    const po = agents.find((agent) => agent.name === "project-owner");
+    expect(po?.engine).toBe("claude_code");
+    expect(po?.model).toEqual({ model: "claude-sonnet-5" });
   });
 
   it("non-demo seed populates org essentials without demo projects", async () => {
@@ -269,7 +272,7 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0014_budget_scope_coherence.sql");
+    ).toBe("0017_interactive_sessions.sql");
 
     // Budget enum/limit + scope-coherence CHECK constraints backstop every write
     // path (migrations 0013 + 0014).
@@ -287,6 +290,27 @@ describe("db", async () => {
         "budgets_mode_check",
         "budgets_limit_cents_check",
         "budgets_scope_coherence_check",
+      ]),
+    );
+
+    const interactiveChecks = (await db.execute(
+      sql`
+        SELECT conname
+        FROM pg_constraint
+        WHERE conname in (
+          'steer_messages_kind_check',
+          'conversations_status_check',
+          'conversation_messages_role_check',
+          'conversation_messages_seq_positive_check'
+        )
+      `,
+    )) as Iterable<{ conname: string }>;
+    expect(new Set(Array.from(interactiveChecks).map((row) => row.conname))).toEqual(
+      new Set([
+        "steer_messages_kind_check",
+        "conversations_status_check",
+        "conversation_messages_role_check",
+        "conversation_messages_seq_positive_check",
       ]),
     );
   });

@@ -446,6 +446,142 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/runs/{runId}/push-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            token: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/runs/{runId}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            uri: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/runs/{runId}/session-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            uri: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/runs/{runId}/result": {
         parameters: {
             query?: never;
@@ -468,11 +604,18 @@ export interface paths {
                 content: {
                     "application/json": {
                         /** @enum {string} */
-                        status: "succeeded" | "failed";
+                        status: "succeeded" | "failed" | "canceled";
                         receipt?: {
                             [key: string]: unknown;
                         };
                         error?: string;
+                        git?: {
+                            branch?: string;
+                            headSha?: string;
+                            changed: boolean;
+                            pushError?: string;
+                        };
+                        engineSessionId?: string;
                     };
                 };
             };
@@ -2100,6 +2243,7 @@ export interface paths {
             parameters: {
                 query?: {
                     status?: string;
+                    agentDefId?: string;
                     limit?: number;
                     offset?: number;
                 };
@@ -2139,6 +2283,9 @@ export interface paths {
                             sandbox: unknown;
                             receipt: unknown;
                             gh: unknown;
+                            engineSessionId: string | null;
+                            transcriptUri: string | null;
+                            sessionStateUri: string | null;
                             error: string | null;
                             /** Format: date-time */
                             queuedAt: string;
@@ -2210,6 +2357,9 @@ export interface paths {
                             sandbox: unknown;
                             receipt: unknown;
                             gh: unknown;
+                            engineSessionId: string | null;
+                            transcriptUri: string | null;
+                            sessionStateUri: string | null;
                             error: string | null;
                             /** Format: date-time */
                             queuedAt: string;
@@ -2271,6 +2421,9 @@ export interface paths {
                             sandbox: unknown;
                             receipt: unknown;
                             gh: unknown;
+                            engineSessionId: string | null;
+                            transcriptUri: string | null;
+                            sessionStateUri: string | null;
                             error: string | null;
                             /** Format: date-time */
                             queuedAt: string;
@@ -2347,6 +2500,9 @@ export interface paths {
                             sandbox: unknown;
                             receipt: unknown;
                             gh: unknown;
+                            engineSessionId: string | null;
+                            transcriptUri: string | null;
+                            sessionStateUri: string | null;
                             error: string | null;
                             /** Format: date-time */
                             queuedAt: string;
@@ -2420,6 +2576,9 @@ export interface paths {
                             sandbox: unknown;
                             receipt: unknown;
                             gh: unknown;
+                            engineSessionId: string | null;
+                            transcriptUri: string | null;
+                            sessionStateUri: string | null;
                             error: string | null;
                             /** Format: date-time */
                             queuedAt: string;
@@ -2437,6 +2596,51 @@ export interface paths {
                 };
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2592,6 +2796,734 @@ export interface paths {
                     content: {
                         "application/json": {
                             [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/interrupt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            ok: boolean;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{runId}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        message?: string;
+                    } | null;
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            orgId: string;
+                            projectId: string;
+                            agentDefId: string | null;
+                            mode: string;
+                            engine: string;
+                            status: string;
+                            trigger: unknown;
+                            sandbox: unknown;
+                            receipt: unknown;
+                            gh: unknown;
+                            engineSessionId: string | null;
+                            transcriptUri: string | null;
+                            sessionStateUri: string | null;
+                            error: string | null;
+                            /** Format: date-time */
+                            queuedAt: string;
+                            /** Format: date-time */
+                            startedAt: string | null;
+                            /** Format: date-time */
+                            endedAt: string | null;
+                            createdBy: unknown;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            orgId: string;
+                            projectId: string;
+                            agentDefId: string;
+                            title: string | null;
+                            lastRunId: string | null;
+                            engineSessionId: string | null;
+                            status: string;
+                            createdBy: unknown;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                            lastMessage: {
+                                id: string;
+                                orgId: string;
+                                conversationId: string;
+                                seq: number;
+                                role: string;
+                                body: string;
+                                runId: string | null;
+                                /** Format: date-time */
+                                createdAt: string;
+                            } | null;
+                        }[];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        agentDefId?: string;
+                        title?: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            orgId: string;
+                            projectId: string;
+                            agentDefId: string;
+                            title: string | null;
+                            lastRunId: string | null;
+                            engineSessionId: string | null;
+                            status: string;
+                            createdBy: unknown;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    conversationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            conversation: {
+                                id: string;
+                                orgId: string;
+                                projectId: string;
+                                agentDefId: string;
+                                title: string | null;
+                                lastRunId: string | null;
+                                engineSessionId: string | null;
+                                status: string;
+                                createdBy: unknown;
+                                /** Format: date-time */
+                                createdAt: string;
+                                /** Format: date-time */
+                                updatedAt: string;
+                            };
+                            messages: {
+                                id: string;
+                                orgId: string;
+                                conversationId: string;
+                                seq: number;
+                                role: string;
+                                body: string;
+                                runId: string | null;
+                                /** Format: date-time */
+                                createdAt: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/conversations/{conversationId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    conversationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        body: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            message: {
+                                id: string;
+                                orgId: string;
+                                conversationId: string;
+                                seq: number;
+                                role: string;
+                                body: string;
+                                runId: string | null;
+                                /** Format: date-time */
+                                createdAt: string;
+                            };
+                            runId: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/github/installations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            installationId: number;
+                            accountLogin: string;
+                            targetType: string;
+                            /** Format: date-time */
+                            suspendedAt: string | null;
+                        }[];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/github/installations/{installationId}/repos": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    query?: string;
+                };
+                header?: never;
+                path: {
+                    installationId: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                owner: string;
+                                name: string;
+                                fullName: string;
+                                private: boolean;
+                                defaultBranch: string;
+                                htmlUrl: string;
+                            }[];
+                            truncated: boolean;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    state?: "open" | "closed" | "all";
+                    q?: string;
+                    cursor?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            items: {
+                                id: string;
+                                number: number;
+                                title: string;
+                                state: string;
+                                labels: unknown;
+                                assignees: unknown;
+                                author: string | null;
+                                htmlUrl: string;
+                                commentsCount: number;
+                                /** Format: date-time */
+                                ghUpdatedAt: string | null;
+                                linkedRuns: {
+                                    id: string;
+                                    mode: string;
+                                    status: string;
+                                    engine: string;
+                                    pr?: unknown;
+                                }[];
+                            }[];
+                            nextCursor: string | null;
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/issues/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            number: number;
+                            title: string;
+                            state: string;
+                            labels: unknown;
+                            assignees: unknown;
+                            author: string | null;
+                            htmlUrl: string;
+                            commentsCount: number;
+                            /** Format: date-time */
+                            ghUpdatedAt: string | null;
+                            linkedRuns: {
+                                id: string;
+                                mode: string;
+                                status: string;
+                                engine: string;
+                                pr?: unknown;
+                            }[];
+                            bodyMd: string | null;
+                            runs: {
+                                id: string;
+                                mode: string;
+                                engine: string;
+                                status: string;
+                                /** Format: date-time */
+                                startedAt: string | null;
+                                /** Format: date-time */
+                                endedAt: string | null;
+                                receipt: unknown;
+                                pr?: unknown;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/issues/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                202: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            queued: number;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/issues/{number}/trigger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    number: number;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        agent: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            orgId: string;
+                            projectId: string;
+                            agentDefId: string | null;
+                            mode: string;
+                            engine: string;
+                            status: string;
+                            trigger: unknown;
+                            sandbox: unknown;
+                            receipt: unknown;
+                            gh: unknown;
+                            engineSessionId: string | null;
+                            transcriptUri: string | null;
+                            sessionStateUri: string | null;
+                            error: string | null;
+                            /** Format: date-time */
+                            queuedAt: string;
+                            /** Format: date-time */
+                            startedAt: string | null;
+                            /** Format: date-time */
+                            endedAt: string | null;
+                            createdBy: unknown;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
                         };
                     };
                 };
@@ -3732,8 +4664,12 @@ export interface paths {
                 query?: {
                     from?: number;
                     to?: number;
+                    createdFrom?: string;
+                    createdTo?: string;
+                    projectId?: string;
                     actor?: string;
                     action?: string;
+                    actionPrefix?: string;
                     limit?: number;
                     cursor?: number;
                 };
@@ -3768,6 +4704,47 @@ export interface paths {
                             }[];
                             nextCursor: number | null;
                         };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    projectId?: string;
+                    state?: "open" | "terminal" | "all";
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            [key: string]: unknown;
+                        }[];
                     };
                 };
             };
@@ -4694,6 +5671,7 @@ export interface paths {
                             [key: string]: unknown;
                         }[];
                         sandboxProfileId?: string;
+                        permissions?: string[];
                         /** @default true */
                         enabled?: boolean;
                     };
@@ -4780,6 +5758,7 @@ export interface paths {
                             [key: string]: unknown;
                         }[];
                         sandboxProfileId?: string;
+                        permissions?: string[];
                         enabled?: boolean;
                     };
                 };
@@ -4981,6 +5960,370 @@ export interface paths {
                 };
             };
         };
+        trace?: never;
+    };
+    "/v1/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            engines: {
+                                id: string;
+                                label: string;
+                                note: string;
+                            }[];
+                            models: {
+                                id: string;
+                                provider: string;
+                                inputPer1M: number;
+                                outputPer1M: number;
+                            }[];
+                            permissions: {
+                                resources: string[];
+                                special: string[];
+                                all: string[];
+                            };
+                            triggerTypes: {
+                                type: string;
+                                label: string;
+                                note: string;
+                            }[];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/agents/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    projectId: string;
+                    runId: string;
+                    itemId: string;
+                    versionId: string;
+                    proposalId: string;
+                    entryId: string;
+                    taskId: string;
+                    issueId: string;
+                    keyId: string;
+                    userId: string;
+                    roleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            agentId: string;
+                            name: string;
+                            enabled: boolean;
+                            engine: string;
+                            model: {
+                                [key: string]: unknown;
+                            };
+                            contractItemId: string;
+                            contractName: string | null;
+                            description: string | null;
+                            triggers: {
+                                [key: string]: unknown;
+                            }[];
+                            schedule: {
+                                cron: string;
+                                timezone: string | null;
+                                source: string;
+                            } | null;
+                            /** Format: date-time */
+                            nextRunAt: string | null;
+                            lastRun: {
+                                id: string;
+                                status: string;
+                                /** Format: date-time */
+                                queuedAt: string;
+                                /** Format: date-time */
+                                endedAt: string | null;
+                                costCents: number | null;
+                                prUrl: string | null;
+                            } | null;
+                            liveRun: {
+                                id: string;
+                                status: string;
+                            } | null;
+                            counts14d: {
+                                total: number;
+                                succeeded: number;
+                                failed: number;
+                                canceled: number;
+                                awaitingHuman: number;
+                            };
+                            prCount14d: number;
+                            eventBindings: {
+                                integrationId: string;
+                                name: string;
+                                kind: string;
+                                enabled: boolean;
+                                dispatchesRuns: boolean;
+                            }[];
+                        }[];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/integrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            orgId: string;
+                            projectId: string | null;
+                            kind: string;
+                            name: string;
+                            config: {
+                                [key: string]: unknown;
+                            };
+                            enabled: boolean;
+                            hasSecret: boolean;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                        }[];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        name: string;
+                        kind: string;
+                        /** @default {} */
+                        config?: {
+                            [key: string]: unknown;
+                        };
+                        secret?: string;
+                        projectId?: string;
+                        /** @default true */
+                        enabled?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            orgId: string;
+                            projectId: string | null;
+                            kind: string;
+                            name: string;
+                            config: {
+                                [key: string]: unknown;
+                            };
+                            enabled: boolean;
+                            hasSecret: boolean;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/integrations/{integrationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    integrationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        name?: string;
+                        kind?: string;
+                        config?: {
+                            [key: string]: unknown;
+                        };
+                        secret?: string;
+                        projectId?: string | null;
+                        enabled?: boolean;
+                    };
+                };
+            };
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            orgId: string;
+                            projectId: string | null;
+                            kind: string;
+                            name: string;
+                            config: {
+                                [key: string]: unknown;
+                            };
+                            enabled: boolean;
+                            hasSecret: boolean;
+                            /** Format: date-time */
+                            createdAt: string;
+                            /** Format: date-time */
+                            updatedAt: string;
+                        };
+                    };
+                };
+            };
+        };
+        trace?: never;
+    };
+    "/v1/integrations/{integrationId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    integrationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Default Response */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            id: string;
+                            /** Format: date-time */
+                            receivedAt: string;
+                            verified: boolean;
+                            eventType: string;
+                            /** Format: date-time */
+                            processedAt: string | null;
+                            error: string | null;
+                        }[];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/v1/admin/doctor": {
