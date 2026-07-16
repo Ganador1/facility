@@ -21,9 +21,6 @@ You can use the repository installer by itself. The platform is optional.
 
 ## Who Facility is for
 
-- **Software engineers working in a single repository** who want agents to
-  plan, implement, verify, and open pull requests without giving them permission
-  to approve or merge their own work.
 - **Engineering teams** that want one explicit standard for humans and agents,
   reproducible environments for agent runs, and deterministic checks for
   repository-specific rules.
