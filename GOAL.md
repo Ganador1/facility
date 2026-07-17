@@ -2,8 +2,6 @@ Right now, we see a major limitation with the current approach to this project: 
 
 Ideally, everything should be centralized into a single platform that governs all of this — a place where we can do the same things much more easily and with better control, in a more semantic way, enabling collaboration, reusability, and governance. Think of something similar to Vercel as a platform, but focused entirely on the AI SDLC process.
 
-> **How we approach this from now on:** the product strategy and design laws live in [.claude/skills/control-plane-strategy/SKILL.md](.claude/skills/control-plane-strategy/SKILL.md); the current working spec is [docs/platform/REDESIGN.md](docs/platform/REDESIGN.md).
-
 Following the TAM-50 brand system, design and build a platform that aligns with the vision presented at **https://sdlc.theagilemonkeys.com/** (theam/theam-ai-sdlc on GitHub) and Facility. This platform must be deployable by any organization on any cloud provider and enable companies to govern their entire AI SDLC process.
 
 Some of the capabilities we want to support include:
