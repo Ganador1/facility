@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 
-/** Analytics folded into the portfolio and project overviews (REDESIGN §4i). */
+/** Analytics live in the portfolio and project overviews. */
 export default function LegacyAnalyticsRedirect() {
   redirect("/projects");
 }

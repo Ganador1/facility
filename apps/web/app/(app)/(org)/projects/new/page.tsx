@@ -20,7 +20,7 @@ import type { Project, ProjectRepo } from "@/lib/api";
  * Kickstart, one screen: pick a repository the GitHub App can already see (or
  * name a new one), preview the generated assets, open the PR. No
  * greenfield/existing question, no typed slugs — the installation knows the
- * repos (REDESIGN §4a).
+ * repositories.
  */
 
 type Installation = {
@@ -457,7 +457,7 @@ export default function KickstartPage() {
                       if (!name) setName(repoName);
                     }
                   }}
-                  placeholder="theam/tam-os"
+                  placeholder="acme/payments-service"
                 />
               </Field>
             ) : null}

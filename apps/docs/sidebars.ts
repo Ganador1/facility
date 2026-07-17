@@ -29,7 +29,7 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "guides",
       collapsed: false,
-      items: ["guides/kickstart", "guides/existing-repo", "guides/tam-os"],
+      items: ["guides/kickstart", "guides/existing-repo"],
     },
     {
       type: "category",

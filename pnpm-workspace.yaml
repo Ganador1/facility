@@ -12,8 +12,7 @@ overrides:
   "serialize-javascript@<=7.0.2": 7.0.7
   "uuid@<11.1.1": 11.1.1
 
-# Postinstall build-script allowlist — nothing builds unless named here
-# (the tam-os supply-chain convention).
+# Postinstall build-script allowlist — nothing builds unless named here.
 allowBuilds:
   sharp: true
   argon2: true

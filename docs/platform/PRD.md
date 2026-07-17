@@ -1,11 +1,11 @@
 # Facility Platform — Product Requirements
 
-**Status**: v1 draft · owner: platform crew · source: GOAL.md, sdlc.theagilemonkeys.com, docs/method.md
+**Status**: v1 draft · source: sdlc.theagilemonkeys.com and [docs/method.md](../method.md)
 **One-liner**: The self-hostable platform that governs an organization's entire AI SDLC — "Vercel for the AI software factory."
 
 ## 1. Problem
 
-Facility v0.2 installs the AI SDLC as vendored files: workflows, guards, skills, prompts, telemetry scripts spread across every repo, org secrets, and side systems. It works — tam-os runs on it in production — but it does not scale as an operation:
+Facility v0.2 installs the AI SDLC as vendored files: workflows, guards, skills, prompts, telemetry scripts spread across every repo, org secrets, and side systems. The method works in production, but it does not scale as an operation:
 
 - No single place to see projects, agents, outcomes, costs, or incidents across an organization.
 - Provider keys, budgets, and model access are managed per-repo, per-secret, invisible in aggregate.
@@ -20,7 +20,7 @@ The method is proven. The factory needs a control plane.
 
 Facility Platform is the **control plane for the AI SDLC**. Execution stays where it belongs — GitHub repos, CI, isolated sandboxes — while the platform owns **governance**: identity, policy, money, knowledge, telemetry, and the human gates.
 
-Deployable by any organization on any cloud (containers + Postgres + object storage). tam-os is tenant #1 and must operate 100% on it.
+Deployable by any organization on any cloud using containers, Postgres, and object storage.
 
 **Non-goals (v1)**: replacing GitHub as the SCM; a hosted multi-tenant SaaS offering (single-org self-host first, multi-org data model from day one); replacing CI providers; building our own model inference.
 
@@ -57,7 +57,7 @@ Deployable by any organization on any cloud (containers + Postgres + object stor
 ### P4 — Knowledge: registry & learning
 - Enterprise-wide + project-scoped registry: **skills, rules, harnesses, agent definitions**, versioned with content hashes; bundled recommended set (the v0.2 crew + modules) ships with the platform.
 - Creation of new agents for project-specific use cases: define contract (prompt), harness, model tier, triggers, permissions — from the UI/CLI/MCP.
-- **Project Owner agent**: Limina-style harness that owns the project domain — maintains the knowledge base, generates implementation tasks (the tam-os / automation-expert workflow, native).
+- **Project Owner agent**: a structured harness that owns the project domain, maintains the knowledge base, and generates implementation tasks.
 - **Learning mode**: nightly per-project agent that mines what happened (runs, reviews, failures) and proposes new skills/rules/KB entries — every proposal lands in the HITL inbox for human validation before activation.
 - Knowledge base + task management surfaces in the product (browse, edit, approve, trace task → PR → outcome).
 
@@ -72,7 +72,7 @@ Deployable by any organization on any cloud (containers + Postgres + object stor
 - The two gates stay human: plan acceptance in Facility (or `/builder` in the repo lane), then live-preview validation, PR review, and squash merge in GitHub. The platform makes gates cheap to exercise, never optional.
 
 ### P7 — Access: identity & interfaces
-- AuthN: **WorkOS SSO** (AuthKit, the tam-os approach) for humans; hashed API keys for machines.
+- AuthN: **WorkOS SSO** (AuthKit) for humans; hashed API keys for machines.
 - AuthZ: bundled roles (owner, admin, maintainer, engineer, viewer) + **custom roles** from a permission catalog; org- and project-scoped grants.
 - **GitHub App**: installed in the org's environment; webhooks drive triggers, kickstart/upgrade PRs, fingerprint checks; App identity for pushes (hardening note 14).
 - **AI-operable**: a first-class **MCP server** and **CLI** expose the same governed API, so the platform is safely manageable from Claude Code, Cowork, Codex, etc. RBAC applies identically to humans, agents, MCP, and CLI.
@@ -85,7 +85,7 @@ Deployable by any organization on any cloud (containers + Postgres + object stor
 
 1. **Feel in control**: every screen answers "what is running, what does it cost, what needs me?" The inbox is the home page.
 2. **Two gates, one glance**: gate actions are one tap, with the evidence (plan, diff, receipts) inline.
-3. **Defaults that ship**: kickstart a greenfield repo to a working factory in minutes with zero required configuration; every default is the production-proven tam-os/v0.2 shape.
+3. **Defaults that ship**: kickstart a greenfield repo to a working factory in minutes with zero required configuration; every default follows the production-proven v0.2 shape.
 4. **Numbers, never adjectives**: live metrics straight from the pipeline (site rule), agent yellow marks agent work and nothing else.
 5. **Nothing hidden**: any resource can be inspected as its underlying config/JSON; the UI is a lens, not a wrapper.
 
@@ -94,5 +94,5 @@ Deployable by any organization on any cloud (containers + Postgres + object stor
 1. Monorepo with control-plane API, web app, LLM gateway, sandbox orchestrator, GitHub App integration, MCP server, CLI, registry, analytics/watchtower, HITL inbox, PO+learning harnesses — implemented, tested, documented.
 2. TAM-50 visual identity throughout; responsive; docs site (Docusaurus) in the same brand.
 3. Self-host path: `docker compose up` brings the platform up with good defaults; Terraform module proves AWS deployment.
-4. tam-os imported as tenant #1: its real SDLC configuration represented natively (agents, workflows, skills, budgets, KB), validated end-to-end against a mirror repo, with a prepared production cutover (human-gated).
+4. An existing production repository can be adopted end to end through a mirror, with its agents, workflows, skills, budgets, and knowledge represented natively before a human-gated cutover.
 5. Security review passed: sealed secrets, RBAC enforced on every route, audit coverage, sandbox isolation, hardening notes carried over.

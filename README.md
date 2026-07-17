@@ -234,7 +234,7 @@ The [existing-repository guide](apps/docs/docs/guides/existing-repo.md),
 
 ## Current status
 
-Facility v0.3 is a private preview. The repository installer and delivery method
+Facility v0.3 is a pre-1.0 release. The repository installer and delivery method
 precede the platform; the control plane is newer and its APIs and file layout may
 still change.
 
@@ -245,8 +245,8 @@ the complete platform surface, with focused subsets exposed through the CLI and
 MCP. Production deployments require WorkOS for human SSO and a separately
 configured GitHub App for repository automation.
 
-For the detailed implementation inventory, limitations, and verification
-record, read [the platform status](docs/platform/STATUS.md).
+The [architecture document](docs/platform/ARCHITECTURE.md) describes the
+platform topology, security boundaries, and major design decisions.
 
 ## Repository map
 

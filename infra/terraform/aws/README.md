@@ -128,11 +128,11 @@ headers until DNS is configured.
 
 ## Validation status
 
-Validated on 2026-07-03 against account 746486153337 (us-east-1):
+The reference module has been checked with:
 
 - `terraform init` / `validate` / `fmt -check` — pass.
-- `terraform plan` (playground vars, HTTP-only, no domain) — clean plan,
-  **89 resources to add**, 0 to change, 0 to destroy. The module applies.
+- `terraform plan` using the example variables in HTTP-only mode without a
+  domain.
 - The `api` container image builds from the root `Dockerfile` and health-checks
   green in a container against Postgres; the same images back this stack.
 

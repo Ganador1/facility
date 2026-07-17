@@ -2,9 +2,9 @@
 
 Facility is a **TAM-50** product of The Agile Monkeys' brand system: its own
 face on the TAM technical layer, with the TAM relationship named in the footer
-signature. It is the open-source packaging of the system shown at the
-theam-ai-sdlc site — the two must stay visually and verbally aligned; when in
-doubt, the site wins.
+signature. It is the open-source packaging of the system shown at
+[sdlc.theagilemonkeys.com](https://sdlc.theagilemonkeys.com/) — the two must
+stay visually and verbally aligned; when in doubt, the site wins.
 
 ## Name
 

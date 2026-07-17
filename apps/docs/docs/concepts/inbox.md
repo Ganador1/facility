@@ -15,8 +15,7 @@ GitHub's protected-branch boundary.
 
 ## How it works
 
-Facility implements the HITL model The Agile Monkeys converged on in
-production (the AUTO-202 design):
+Facility implements a typed, auditable HITL model:
 
 - **Action types** declare what can be proposed: a JSON schema for the
   payload, a resolver for who may decide (explicit emails, a permission, a

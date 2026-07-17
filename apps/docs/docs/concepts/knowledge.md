@@ -6,9 +6,8 @@ title: Knowledge & the Project Owner
 
 Every project can run a **Project Owner agent**: a scheduled, sandboxed agent
 that owns the project's domain knowledge and turns validated needs into
-implementation-ready tasks. The harness productizes the
-[Limina](https://github.com/theam/limina) pattern that already runs The Agile
-Monkeys' automation mission in production.
+implementation-ready tasks. Its harness combines narrow recoverable state,
+typed knowledge artifacts, mechanical validation, and human approval gates.
 
 ## The knowledge base
 

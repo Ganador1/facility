@@ -23,7 +23,7 @@ highest-value, lowest-risk move.
 ## Step 3 — telemetry
 
 Point the receipt collector's sink at the platform ingest endpoint (the
-`facility.run.v1` schema is a superset of the tam-os production schema —
+`facility.run.v1` schema remains compatible with the legacy receipt schema, so
 existing collectors keep working). Outcomes, health, and analytics light up.
 
 ## Step 4 — lanes, one trigger at a time

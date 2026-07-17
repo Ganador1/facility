@@ -49,4 +49,3 @@ makes those decisions cheap to exercise — it never makes them optional.
 - [Self-host quickstart](self-host/quickstart) — up in one compose file.
 - [Kickstart a project](guides/kickstart) — greenfield or an existing repo.
 - [Roadmap](roadmap) — what is available now and what is planned.
-- [The tam-os migration](guides/tam-os) — the first production tenant.
