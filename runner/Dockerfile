@@ -7,22 +7,22 @@ RUN apt-get update \
 # Pinned 2026-07-19 after `npm view`: claude-code 2.1.215, codex 0.144.6.
 RUN npm i -g @anthropic-ai/claude-code@2.1.215 @openai/codex@0.144.6
 
+# Create the package-manager shims while the image is still writable. Runtime
+# sandboxes mount /work as a writable tmpfs and keep the image root read-only;
+# baking the shims makes a later `corepack enable` idempotent instead of trying
+# (and failing) to write /usr/local/bin. Package downloads still use $HOME in
+# writable /work.
+RUN corepack enable
+
 WORKDIR /app
 COPY package.json tsconfig.json ./
 COPY src ./src
 RUN npm install && npm run build && npm prune --omit=dev
 
 # Run non-root: agent CLIs (Claude Code) refuse bypass-permissions as root, and
-# a rogue agent process should never hold uid 0. Corepack normally installs its
-# shims beside /usr/local/bin/corepack, which is read-only to this user. Put a
-# discoverable Corepack link in a writable bin directory so common provision
-# commands such as `corepack enable && pnpm install` remain non-root safe.
-RUN mkdir -p /work/bin \
-  && ln -s "$(command -v corepack)" /work/bin/corepack \
-  && printf '%s\n' 'export PATH="/work/bin:$PATH"' > /work/.bash_profile \
-  && chown -R node:node /work /app
+# a rogue agent process should never hold uid 0.
+RUN mkdir -p /work && chown -R node:node /work /app
 USER node
 ENV HOME=/work
-ENV PATH="/work/bin:${PATH}"
 WORKDIR /work
 ENTRYPOINT ["node", "/app/dist/index.js"]
