@@ -227,6 +227,16 @@ test("init installs the method end to end", async (t) => {
 
   // Doctor watches facility-review (no other workflows exist in the fixture).
   const doctorWf = readFileSync(join(dir, ".github/workflows/facility-doctor.yml"), "utf8");
+  assert.match(
+    doctorWf,
+    /path: \.facility-doctor\/\s+include-hidden-files: true/,
+    "doctor must upload its hidden repair context",
+  );
+  assert.match(
+    securitySweep,
+    /path: \.facility-sweep\/\s+include-hidden-files: true/,
+    "security sweep must upload its hidden audit context",
+  );
   assert.ok(doctorWf.includes("- facility-review"), "doctor watch list must include facility-review");
   assert.ok(!/\{\{[A-Z0-9_]+\}\}/.test(doctorWf), "unrendered placeholder in doctor workflow");
 

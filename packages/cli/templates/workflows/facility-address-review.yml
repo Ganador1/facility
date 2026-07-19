@@ -77,7 +77,7 @@ jobs:
 {{ANTHROPIC_AUTH_INPUTS}}
           # Permit only the automated reviewers you intentionally consume; keep
           # both bare and [bot] login forms (GitHub APIs surface either).
-          allowed_bots: "claude,claude[bot]"
+          allowed_bots: "claude,claude[bot],${{ vars.FACILITY_BOT_LOGIN }}"
           use_commit_signing: true
           claude_args: |
             --max-turns 1000
@@ -138,7 +138,7 @@ jobs:
           node "$trusted"
 
       - name: Attest agent run receipt
-        if: always() && steps.receipt.outcome == 'success'
+        if: always() && steps.receipt.outcome == 'success' && vars.FACILITY_ENABLE_ATTESTATIONS == 'true'
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: ${{ steps.receipt.outputs.path }}

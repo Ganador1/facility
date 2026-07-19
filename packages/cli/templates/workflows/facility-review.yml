@@ -66,8 +66,8 @@ jobs:
           # commits carry the squattable default author email.
           use_commit_signing: true
           # Permit only trusted automation that can originate same-repo PRs.
-          # Avoid "*": bot-authored PR text is untrusted.
-          allowed_bots: "claude,claude[bot]"
+          # Set FACILITY_BOT_LOGIN to the GitHub App slug (without [bot]).
+          allowed_bots: "claude,claude[bot],${{ vars.FACILITY_BOT_LOGIN }}"
           prompt: |
             Review this pull request against STANDARD.md. Treat it as the
             development standard for every contributor, not only for agents.
@@ -119,7 +119,7 @@ jobs:
           node "$trusted"
 
       - name: Attest agent run receipt
-        if: always() && steps.receipt.outcome == 'success'
+        if: always() && steps.receipt.outcome == 'success' && vars.FACILITY_ENABLE_ATTESTATIONS == 'true'
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: ${{ steps.receipt.outputs.path }}

@@ -1,4 +1,5 @@
-import { mkdtemp, readdir, readFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,8 +7,17 @@ import {
   buildClaudeCodeArgs,
   buildCodexArgs,
   composedPrompt,
+  exitCode,
   handleControlMessage,
+  parseGitNameStatus,
   prepareWorkspace,
+  publishVerifiedGithubBranchUpdate,
+  publishVerifiedGithubChanges,
+  readAgentDeliveryMetadata,
+  readAgentProgress,
+  readAgentUpdateMetadata,
+  requiresAgentProgress,
+  semanticDeliveryBranch,
   terminateChild,
 } from "../src/index.js";
 import type { RunBundle } from "../src/types.js";
@@ -32,9 +42,19 @@ function bundle(overrides: Partial<RunBundle> = {}): RunBundle {
 }
 
 describe("workspace preparation", () => {
+  it("observes a child exit even when close happened before the waiter was attached", async () => {
+    const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
+      stdio: "ignore",
+    });
+    await new Promise<void>((resolve) => child.once("close", () => resolve()));
+
+    await expect(exitCode(child)).resolves.toBe(0);
+  });
+
   it("writes harness files into the workspace and points the prompt at SESSION.md", async () => {
     const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
     const runBundle = bundle({
+      skills: [{ name: "validation evidence", content: "# Validation evidence" }],
       harness: {
         files: {
           "harness/SESSION.md": "# Session",
@@ -61,10 +81,186 @@ describe("workspace preparation", () => {
     await expect(readFile(join(root, "scratch", "harness", "CHARTER.md"), "utf8")).resolves.toBe(
       "# Charter",
     );
+    await expect(
+      readFile(
+        join(root, "scratch", ".agents", "skills", "validation_evidence", "SKILL.md"),
+        "utf8",
+      ),
+    ).resolves.toContain(
+      '---\nname: "validation_evidence"\ndescription: "Project-managed Facility skill: validation evidence"\n---\n\n# Validation evidence',
+    );
     expect(composedPrompt(runBundle)).toContain(
       "Project harness/KB context is in ./harness/SESSION.md - read it first.",
     );
     expect(composedPrompt(bundle())).not.toContain("./harness/SESSION.md");
+    expect(composedPrompt(bundle())).toContain(".agent-sdlc/progress.md");
+    expect(composedPrompt(bundle({ mode: "custom" }))).not.toContain(".agent-sdlc/progress.md");
+    expect(composedPrompt(bundle())).toContain(".agent-sdlc/delivery.json");
+    expect(composedPrompt(bundle({ mode: "architect" }))).not.toContain(
+      ".agent-sdlc/delivery.json",
+    );
+    expect(
+      composedPrompt(
+        bundle({
+          repo: {
+            cloneUrl: "https://github.com/acme/widget.git",
+            branch: "main",
+            installationTokenRef: "installation",
+          },
+        }),
+      ),
+    ).toContain("Never emit sandbox-local paths");
+    expect(composedPrompt(bundle())).not.toContain("Never emit sandbox-local paths");
+    expect(
+      composedPrompt(
+        bundle({ skills: [{ name: "validation evidence", content: "# Validation evidence" }] }),
+      ),
+    ).toContain(".agents/skills/validation_evidence/SKILL.md");
+    expect(
+      composedPrompt(
+        bundle({ mode: "review", scope: { type: "github_event", deliveryContext: {} } }),
+      ),
+    ).toContain("sandbox clone credential is intentionally contents-only");
+  });
+
+  it("validates agent-owned branch, commit, and pull request metadata", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, "delivery.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/2-integer-subtraction",
+        commitMessage: "feat: add integer subtraction",
+        pullRequest: {
+          title: "feat: add integer subtraction",
+          body: "## Summary\n- Add subtraction.\n\n## Verification\n- `pnpm test`",
+        },
+      }),
+    );
+
+    await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+      branch: "feature/2-integer-subtraction",
+      commitMessage: "feat: add integer subtraction",
+    });
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "facility/run-123",
+        commitMessage: "generic message",
+        pullRequest: { title: "Builder result", body: "Result" },
+      }),
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("branch_not_semantic");
+  });
+
+  it("publishes agent-owned metadata through GitHub's signed commit mutation", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (init?.method === "POST" && url.endsWith("/git/refs")) {
+        return new Response(JSON.stringify({ ref: "refs/heads/feature/task" }), { status: 201 });
+      }
+      if (url.endsWith("/graphql")) {
+        return new Response(
+          JSON.stringify({ data: { createCommitOnBranch: { commit: { oid: "signed_sha" } } } }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+    };
+
+    await expect(
+      publishVerifiedGithubChanges({
+        repo: "acme/widget",
+        token: "installation-token",
+        requestedBranch: "feature/task",
+        baseSha: "base_sha",
+        headline: "feat: deliver task",
+        changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
+        runId: "run_12345678",
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ branch: "feature/task", headSha: "signed_sha" });
+    const mutation = JSON.parse(String(requests[2]?.init?.body));
+    expect(mutation.variables.input.message.headline).toBe("feat: deliver task");
+    expect(mutation.variables.input.fileChanges.additions[0]).toEqual({
+      path: "src/task.js",
+      contents: "Y29udGVudA==",
+    });
+    expect(requests[1]?.init?.headers).toMatchObject({
+      authorization: "Bearer installation-token",
+    });
+  });
+
+  it("updates the existing PR branch without creating a generic branch", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(
+        JSON.stringify({ data: { createCommitOnBranch: { commit: { oid: "updated_sha" } } } }),
+        { status: 200 },
+      );
+    };
+    await expect(
+      publishVerifiedGithubBranchUpdate({
+        repo: "acme/widget",
+        token: "installation-token",
+        branch: "automation/dependency-refresh",
+        expectedHeadSha: "current_sha",
+        headline: "fix: address review",
+        changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
+        runId: "run_12345678",
+        fetchImpl,
+      }),
+    ).resolves.toEqual({ branch: "automation/dependency-refresh", headSha: "updated_sha" });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe("https://api.github.com/graphql");
+    const mutation = JSON.parse(String(requests[0]?.init?.body));
+    expect(mutation.variables.input.branch.branchName).toBe("automation/dependency-refresh");
+    expect(mutation.variables.input.expectedHeadOid).toBe("current_sha");
+  });
+
+  it("parses null-delimited git changes and preserves semantic branches", () => {
+    expect(parseGitNameStatus("M\0src/math.js\0D\0old.js\0")).toEqual([
+      { status: "M", path: "src/math.js" },
+      { status: "D", path: "old.js" },
+    ]);
+    expect(semanticDeliveryBranch("feature/2-subtract", "main")).toBe("feature/2-subtract");
+    expect(() => semanticDeliveryBranch("main", "main")).toThrow("branch_not_semantic");
+  });
+
+  it("accepts minimal agent-owned metadata for an existing PR update", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, "delivery.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "automation/dependency-refresh",
+        commitMessage: "fix: address review",
+      }),
+    );
+    await expect(readAgentUpdateMetadata(path)).resolves.toEqual({
+      branch: "automation/dependency-refresh",
+      commitMessage: "fix: address review",
+    });
+    await writeFile(
+      path,
+      JSON.stringify({ branch: "bad..branch", commitMessage: "fix: address review" }),
+    );
+    await expect(readAgentUpdateMetadata(path)).rejects.toThrow("branch_invalid");
+  });
+
+  it("reads bounded task-specific progress and requires it for governed agents", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, ".agent-sdlc", "progress.md");
+    await mkdir(join(root, ".agent-sdlc"), { recursive: true });
+    await writeFile(path, "Context\n\n- [x] Inspect\n- [ ] Verify\n");
+
+    await expect(readAgentProgress(path)).resolves.toContain("- [ ] Verify");
+    expect(requiresAgentProgress("codex-builder")).toBe(true);
+    expect(requiresAgentProgress("ci-doctor")).toBe(true);
+    expect(requiresAgentProgress("custom")).toBe(false);
   });
 
   it("installs registry skills as discoverable SKILL.md packages for both engines", async () => {
@@ -87,8 +283,58 @@ describe("workspace preparation", () => {
           join(root, "scratch", engineRoot, "skills", "working_to_standard", "SKILL.md"),
           "utf8",
         ),
-      ).resolves.toBe("# Working to standard");
+      ).resolves.toContain(
+        '---\nname: "working_to_standard"\ndescription: "Project-managed Facility skill: working to standard"\n---\n\n# Working to standard',
+      );
     }
+  });
+
+  it("keeps platform-managed skills and harness context out of a cloned repository diff", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const origin = join(root, "origin");
+    await mkdir(origin);
+    execFileSync("git", ["init", "--initial-branch=main"], { cwd: origin });
+    execFileSync("git", ["config", "user.email", "facility@example.invalid"], { cwd: origin });
+    execFileSync("git", ["config", "user.name", "Facility Test"], { cwd: origin });
+    await writeFile(join(origin, "README.md"), "# Fixture\n");
+    execFileSync("git", ["add", "README.md"], { cwd: origin });
+    execFileSync("git", ["commit", "-m", "test: initialize fixture"], { cwd: origin });
+
+    await prepareWorkspace(
+      bundle({
+        repo: { cloneUrl: origin, branch: "main", installationTokenRef: null },
+        skills: [{ name: "validation evidence", content: "# Validation evidence" }],
+        harness: {
+          files: {
+            "harness/SESSION.md": "# Session",
+            "harness/ACTIVE.md": "## Objective",
+          },
+        },
+      }),
+      "virtual-key",
+      {
+        platformKey: null,
+        platformApiUrl: "https://api.test",
+        projectId: "proj_test",
+        repoToken: null,
+      },
+      root,
+    );
+
+    const cloned = join(root, "repo");
+    expect(execFileSync("git", ["status", "--short"], { cwd: cloned, encoding: "utf8" })).toBe("");
+    await expect(readFile(join(cloned, ".git", "info", "exclude"), "utf8")).resolves.toContain(
+      ".agents/skills/validation_evidence/",
+    );
+    await expect(readFile(join(cloned, ".git", "info", "exclude"), "utf8")).resolves.toContain(
+      "harness/SESSION.md",
+    );
+    await expect(readFile(join(cloned, ".git", "info", "exclude"), "utf8")).resolves.toContain(
+      ".agent-sdlc/progress.md",
+    );
+    await expect(readFile(join(cloned, "harness", "ACTIVE.md"), "utf8")).resolves.toBe(
+      "## Objective",
+    );
   });
 
   it("does not write live engine or platform key values into the agent cwd", async () => {
@@ -231,6 +477,30 @@ describe("Codex model controls", () => {
     expect(args).toContain("--model");
     expect(args).toContain("gpt-5.6");
     expect(args).toContain('model_reasoning_effort="high"');
+    expect(args).toContain('model_provider="facility_gateway"');
+    expect(args).toContain('model_providers.facility_gateway.base_url="https://openai.test/v1"');
+    expect(args).toContain('model_providers.facility_gateway.env_key="OPENAI_API_KEY"');
+    expect(args).toContain("model_providers.facility_gateway.supports_websockets=false");
+    expect(args.at(-1)).toBe("-");
+    expect(args.some((value) => value.includes("Do the work."))).toBe(false);
+  });
+
+  it("does not duplicate an existing gateway API version", () => {
+    const args = buildCodexArgs(
+      bundle({
+        gatewayUrls: { anthropic: "https://anthropic.test", openai: "https://openai.test/v1" },
+      }),
+    );
+    expect(args).toContain('model_providers.facility_gateway.base_url="https://openai.test/v1"');
+    expect(args.join(" ")).not.toContain("/v1/v1");
+  });
+
+  it("keeps large learning packets out of argv", () => {
+    const args = buildCodexArgs(
+      bundle({ mode: "learning", scope: { packet: "x".repeat(512_000) } }),
+    );
+    expect(args.at(-1)).toBe("-");
+    expect(Math.max(...args.map((value) => value.length))).toBeLessThan(2_000);
   });
 });
 

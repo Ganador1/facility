@@ -28,6 +28,7 @@ const steerFile = join(workRoot, "STEERING.md");
 const transcriptFile = join(workRoot, "engine.stream.jsonl");
 const sessionStateDir = join(workRoot, ".claude");
 const sessionStateArchive = join(workRoot, "claude-session-state.tgz");
+const AGENT_PROGRESS_MAX_BYTES = 16 * 1024;
 const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
 let engineSessionId: string | null = null;
 let activeEngineChild: ReturnType<typeof spawn> | null = null;
@@ -54,12 +55,15 @@ async function main() {
   const startedAt = Date.now();
   let bundle: RunBundle | null = null;
   let steerStop: (() => void) | undefined;
+  let progressStop: (() => Promise<boolean>) | undefined;
   secretsToRedact.add(runnerToken());
   try {
     const hello = await api<Record<string, unknown>>(`/internal/runs/${currentRunId()}/hello`, {
       method: "POST",
     });
-    bundle = (await fetchJson(String(hello.bundleUrl))) as RunBundle;
+    bundle = (await fetchJson(String(hello.bundleUrl), {
+      headers: { authorization: `Bearer ${runnerToken()}` },
+    })) as RunBundle;
     await prepareWorkspace(bundle, String(hello.virtualKey), {
       platformKey: hello.platformKey ? String(hello.platformKey) : null,
       platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl(),
@@ -80,7 +84,10 @@ async function main() {
       }
     }
     await writeFile(transcriptFile, "");
+    progressStop = startAgentProgressPoll(cwdFor(bundle));
     const engineCode = await runEngine(bundle, startedAt);
+    const progressPublished = await progressStop();
+    progressStop = undefined;
     await uploadTranscript();
     await uploadSessionState(bundle);
     if (interruptRequested) {
@@ -88,6 +95,20 @@ async function main() {
       return;
     }
     await emitChecks(cwdFor(bundle));
+    const progressConfigured = !requiresAgentProgress(bundle.mode) || progressPublished;
+    if (requiresAgentProgress(bundle.mode)) {
+      await emit([
+        {
+          type: "check",
+          data: {
+            self_reported: false,
+            name: "task-specific GitHub progress",
+            status: progressConfigured ? "passed" : "failed",
+            ...(progressConfigured ? {} : { reason: "agent_progress_missing" }),
+          },
+        },
+      ]);
+    }
     // Platform-owned acceptance gates run independently of the engine's own
     // exit code and self-report: a run only succeeds if the engine succeeded AND
     // every configured check command passes. Skip them when the engine already
@@ -108,7 +129,9 @@ async function main() {
       ]);
     }
     const checksPassed =
-      engineCode === 0 && checksConfigured ? await runChecks(bundle, cwdFor(bundle)) : false;
+      engineCode === 0 && checksConfigured && progressConfigured
+        ? await runChecks(bundle, cwdFor(bundle))
+        : false;
     const engineAndChecksSucceeded = engineCode === 0 && checksPassed;
     const git = engineAndChecksSucceeded ? await shipGitChanges(bundle) : undefined;
     const deliveryError = engineAndChecksSucceeded ? deliveryFailure(bundle, git) : null;
@@ -123,9 +146,11 @@ async function main() {
           ? { code: engineCode }
           : !checksConfigured
             ? { code: "checks_not_configured" }
-            : deliveryError
-              ? { code: deliveryError }
-              : { code: "checks_failed" },
+            : !progressConfigured
+              ? { code: "agent_progress_missing" }
+              : deliveryError
+                ? { code: deliveryError }
+                : { code: "checks_failed" },
       git,
     );
   } catch (error) {
@@ -134,6 +159,7 @@ async function main() {
     );
     process.exitCode = 1;
   } finally {
+    await progressStop?.().catch(() => false);
     steerStop?.();
   }
 }
@@ -152,6 +178,12 @@ export async function prepareWorkspace(
   await mkdir(root, { recursive: true });
   await writeFile(join(root, "contract.md"), bundle.contract);
   const cwd = cwdFor(bundle, root);
+  // Deduplicate by target filename: bundle assembly already sends one active
+  // version per skill, but a duplicate name would otherwise write the same file
+  // twice (order-dependent last-write-wins). Keep the last occurrence, once.
+  const skillsByFile = new Map(bundle.skills.map((skill) => [safeName(skill.name), skill]));
+  const harnessFiles = Object.keys(bundle.harness?.files ?? {});
+  for (const relativePath of harnessFiles) safeRepositoryPath(relativePath);
   if (bundle.repo.cloneUrl) {
     // Inject a token for private clones (x-access-token is how both PATs and
     // GitHub App installation tokens authenticate to github.com over HTTPS).
@@ -170,20 +202,38 @@ export async function prepareWorkspace(
     if (bundle.resume?.branch) {
       await checkoutResumeBranch(repoDirFor(root), bundle.resume.branch);
     }
+    // Provisioning and live-agent metadata must never leak into the delivered
+    // diff. The runner owns these paths even when a repository has no
+    // .gitignore (a common case for small/new projects).
+    await appendFile(
+      join(cwd, ".git", "info", "exclude"),
+      [
+        "",
+        "node_modules/",
+        ".agent-sdlc/progress.md",
+        ".agent-sdlc/checks.jsonl",
+        ".agent-sdlc/delivery.json",
+        ...[...skillsByFile.keys()].flatMap((fileBase) => [
+          `.claude/skills/${fileBase}/`,
+          `.agents/skills/${fileBase}/`,
+        ]),
+        ...harnessFiles,
+        "",
+      ].join("\n"),
+    );
   } else {
     await mkdir(scratchDirFor(root), { recursive: true });
     await runCommand("git", ["init"], scratchDirFor(root)).catch(() => undefined);
   }
-  // Deduplicate by target filename: bundle assembly already sends one active
-  // version per skill, but a duplicate name would otherwise write the same file
-  // twice (order-dependent last-write-wins). Keep the last occurrence, once.
-  const skillsByFile = new Map(bundle.skills.map((skill) => [safeName(skill.name), skill]));
   for (const root of [join(cwd, ".claude", "skills"), join(cwd, ".agents", "skills")]) {
     await mkdir(root, { recursive: true });
     for (const [fileBase, skill] of skillsByFile) {
       const skillDir = join(root, fileBase);
       await mkdir(skillDir, { recursive: true });
-      await writeFile(join(skillDir, "SKILL.md"), skill.content);
+      await writeFile(
+        join(skillDir, "SKILL.md"),
+        materializedSkillContent(skill.name, skill.content),
+      );
     }
   }
   if (bundle.harness?.files) {
@@ -232,6 +282,7 @@ async function runEngine(bundle: RunBundle, startedAt: number) {
       parseCodexSessionId,
       timeoutMin,
       startedAt,
+      composedPrompt(bundle),
     );
   }
   const cmd = typeof bundle.engineConfig.cmd === "string" ? bundle.engineConfig.cmd : "printf ''";
@@ -277,13 +328,30 @@ async function runJsonProcess(
   parseSessionId: (line: string) => string | null,
   timeoutMin: number,
   startedAt: number,
+  stdin?: string,
 ) {
-  const child = spawn(command, args, { cwd, env: engineEnv(), stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(command, args, {
+    cwd,
+    env: engineEnv(),
+    stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+  });
+  if (stdin !== undefined && child.stdin) {
+    // Large learning packets exceed the OS argv limit. Stream the prompt so
+    // the same bounded packet can reach Codex without truncation or E2BIG.
+    child.stdin.on("error", () => undefined);
+    child.stdin.end(stdin);
+  }
   activeEngineChild = child;
+  const stdout = child.stdout;
+  const stderrStream = child.stderr;
+  if (!stdout || !stderrStream) {
+    child.kill();
+    throw new Error("engine_stdio_unavailable");
+  }
   const stderr = createWriteStream(join(workRoot, "engine.stderr.log"), { flags: "a" });
-  child.stderr.pipe(stderr);
+  stderrStream.pipe(stderr);
   const clearTimers = armEngineTimeout(child, timeoutMin);
-  const rl = createInterface({ input: child.stdout });
+  const rl = createInterface({ input: stdout });
   for await (const line of rl) {
     await appendFile(transcriptFile, `${redactSecrets(line)}\n`);
     if (!engineSessionId) {
@@ -306,6 +374,44 @@ async function runJsonProcess(
     return 124;
   }
   return code;
+}
+
+function startAgentProgressPoll(cwd: string) {
+  const path = join(cwd, ".agent-sdlc", "progress.md");
+  let stopped = false;
+  let published = false;
+  let last = "";
+  let active = Promise.resolve();
+  const poll = async () => {
+    const markdown = await readAgentProgress(path);
+    if (!markdown || markdown === last) return;
+    last = markdown;
+    published = true;
+    await emit([{ type: "agent_progress", data: { markdown } }]);
+  };
+  const schedule = () => {
+    active = active.then(poll).catch(() => undefined);
+  };
+  schedule();
+  const timer = setInterval(() => {
+    if (!stopped) schedule();
+  }, 1_500);
+  return async () => {
+    if (!stopped) {
+      stopped = true;
+      clearInterval(timer);
+      await active;
+      await poll().catch(() => undefined);
+    }
+    return published;
+  };
+}
+
+export async function readAgentProgress(path: string) {
+  const info = await stat(path).catch(() => null);
+  if (!info?.isFile() || info.size > AGENT_PROGRESS_MAX_BYTES) return null;
+  const markdown = (await readFile(path, "utf8")).trim();
+  return markdown || null;
 }
 
 async function uploadTranscript() {
@@ -639,66 +745,466 @@ export function requiresDelivery(mode: string) {
   return mode === "builder" || mode.endsWith("-builder");
 }
 
+export function requiresAgentProgress(mode: string) {
+  const normalized = mode.replace(/^codex-/, "").replace(/-/g, "_");
+  return [
+    "architect",
+    "builder",
+    "review",
+    "address_review",
+    "ci_doctor",
+    "security_sweep",
+    "po",
+    "learning",
+  ].includes(normalized);
+}
+
 export function deliveryFailure(
   bundle: Pick<RunBundle, "mode" | "repo">,
   git: Record<string, unknown> | undefined,
 ): string | null {
-  if (!requiresDelivery(bundle.mode)) return null;
+  const mode = normalizedMode(bundle.mode);
+  if (readOnlyRepositoryMode(mode) && git?.changed === true) {
+    return "repository_changes_not_allowed";
+  }
+  if (repairRepositoryMode(mode)) {
+    if (git?.changed !== true) return null;
+    if (typeof git.pushError === "string" && git.pushError) return "delivery_push_failed";
+    if (typeof git.branch !== "string" || !git.branch) return "delivery_branch_missing";
+    if (typeof git.headSha !== "string" || !git.headSha) return "delivery_commit_missing";
+    return null;
+  }
+  if (!requiresDelivery(bundle.mode)) {
+    return git?.changed === true ? "repository_changes_not_allowed" : null;
+  }
   if (!bundle.repo.cloneUrl) return "delivery_repo_not_configured";
   if (git?.changed !== true) return "delivery_no_changes";
   if (typeof git.pushError === "string" && git.pushError) return "delivery_push_failed";
   if (typeof git.branch !== "string" || !git.branch) return "delivery_branch_missing";
   if (typeof git.headSha !== "string" || !git.headSha) return "delivery_commit_missing";
+  if (typeof git.pullRequestTitle !== "string" || !git.pullRequestTitle.trim()) {
+    return "delivery_pr_title_missing";
+  }
+  if (typeof git.pullRequestBody !== "string" || !git.pullRequestBody.trim()) {
+    return "delivery_pr_body_missing";
+  }
   return null;
 }
 
 async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown> | undefined> {
-  if (!bundle.repo.cloneUrl || bundle.mode === "architect") return undefined;
+  if (!bundle.repo.cloneUrl) return undefined;
   const cwd = cwdFor(bundle);
   const baseBranch = bundle.repo.branch ?? "main";
   try {
-    const status = (await gitOutput(cwd, ["status", "--porcelain"])).trim();
-    if (status) {
-      await gitOutput(cwd, ["add", "-A"]);
-      await gitOutput(cwd, [
-        "-c",
-        "user.name=Facility Runner",
-        "-c",
-        "user.email=runner@facility.local",
-        "commit",
-        "-m",
-        `facility: ${bundle.mode} run ${currentRunId()}`,
-      ]);
+    // Stage the final workspace snapshot so this captures both agent commits and
+    // uncommitted work while respecting .git/info/exclude for runner-managed files.
+    await gitOutput(cwd, ["add", "-A"]);
+    const baseRef = `origin/${baseBranch}`;
+    const changes = await collectGithubFileChanges(cwd, baseRef);
+    if (changes.length === 0) return { changed: false };
+    const mode = normalizedMode(bundle.mode);
+    if (
+      readOnlyRepositoryMode(mode) ||
+      (!requiresDelivery(bundle.mode) && !repairRepositoryMode(mode))
+    ) {
+      throw new Error("repository_changes_not_allowed");
     }
-    const ahead = Number(
-      (await gitOutput(cwd, ["rev-list", "--count", `origin/${baseBranch}..HEAD`])).trim(),
-    );
-    if (!status && ahead <= 0) return { changed: false };
-    const branch = `facility/run-${currentRunId().slice(-8)}`;
-    const headSha = (await gitOutput(cwd, ["rev-parse", "HEAD"])).trim();
-    await gitOutput(cwd, ["branch", "-f", branch, headSha]);
-    try {
-      const { token } = await api<{ token: string }>(
-        `/internal/runs/${currentRunId()}/push-token`,
-        { method: "POST" },
+    const delivery = repairRepositoryMode(mode)
+      ? await readAgentUpdateMetadata(join(cwd, ".agent-sdlc", "delivery.json"))
+      : await readAgentDeliveryMetadata(join(cwd, ".agent-sdlc", "delivery.json"));
+    const currentBranch = (await gitOutput(cwd, ["branch", "--show-current"])).trim();
+    if (
+      (repairRepositoryMode(mode) &&
+        (currentBranch !== baseBranch || delivery.branch !== baseBranch)) ||
+      (!repairRepositoryMode(mode) &&
+        currentBranch !== baseBranch &&
+        currentBranch !== delivery.branch)
+    ) {
+      throw new Error(
+        `agent_delivery_branch_mismatch: current ${currentBranch}, manifest ${delivery.branch}`,
       );
-      secretsToRedact.add(token);
-      await gitOutput(cwd, [
-        "push",
-        pushUrlFor(bundle.repo.cloneUrl, token),
-        `${headSha}:refs/heads/${branch}`,
-      ]);
-      return { branch, headSha, changed: true };
-    } catch (error) {
-      const pushError = errorMessage(error);
-      await emit([{ type: "artifact_error", data: { kind: "git_push_failed", error: pushError } }]);
-      return { branch, headSha, changed: true, pushError };
     }
+    // Builders choose a new semantic branch. Repair agents must update the exact
+    // existing PR branch, which may legitimately use a repository-specific name
+    // that does not follow Facility's new-branch convention.
+    const requestedBranch = repairRepositoryMode(mode)
+      ? existingGithubBranch(delivery.branch)
+      : semanticDeliveryBranch(delivery.branch, baseBranch);
+    const baseSha = (await gitOutput(cwd, ["rev-parse", baseRef])).trim();
+    const repo = githubRepositoryName(bundle.repo.cloneUrl);
+    const { token } = await api<{ token: string }>(`/internal/runs/${currentRunId()}/push-token`, {
+      method: "POST",
+    });
+    secretsToRedact.add(token);
+    const published = repairRepositoryMode(mode)
+      ? await publishVerifiedGithubBranchUpdate({
+          repo,
+          token,
+          branch: requestedBranch,
+          expectedHeadSha: baseSha,
+          headline: delivery.commitMessage,
+          changes,
+          runId: currentRunId(),
+        })
+      : await publishVerifiedGithubChanges({
+          repo,
+          token,
+          requestedBranch,
+          baseSha,
+          headline: delivery.commitMessage,
+          changes,
+          runId: currentRunId(),
+        });
+    const pullRequest = requiresDelivery(bundle.mode)
+      ? (delivery as AgentDeliveryMetadata).pullRequest
+      : null;
+    return {
+      branch: published.branch,
+      headSha: published.headSha,
+      changed: true,
+      ...(pullRequest
+        ? {
+            pullRequestTitle: pullRequest.title,
+            pullRequestBody: pullRequest.body,
+          }
+        : {}),
+    };
   } catch (error) {
     const pushError = errorMessage(error);
     await emit([{ type: "artifact_error", data: { kind: "git_push_failed", error: pushError } }]);
     return { changed: true, pushError };
   }
+}
+
+type GithubFileChange =
+  | { kind: "addition"; path: string; contents: string }
+  | { kind: "deletion"; path: string };
+
+const SEMANTIC_BRANCH =
+  /^(feature|fix|chore|ci|docs|refactor|perf|test|build|revert)\/[a-z0-9][a-z0-9._/-]*$/;
+const CONVENTIONAL_SUBJECT =
+  /^(feat|fix|chore|ci|docs|refactor|perf|test|build|revert)(\([^)]+\))?!?: .+/;
+const GITHUB_CHANGE_BATCH = 100;
+
+export function semanticDeliveryBranch(current: string, base: string) {
+  if (current !== base && SEMANTIC_BRANCH.test(current)) return current;
+  throw new Error("agent_delivery_branch_not_semantic");
+}
+
+function existingGithubBranch(branch: string) {
+  if (
+    !branch ||
+    branch.length > 255 ||
+    branch.startsWith("/") ||
+    branch.endsWith("/") ||
+    branch.endsWith(".") ||
+    branch.includes("..") ||
+    branch.includes("@{") ||
+    [...branch].some((char) => {
+      const code = char.codePointAt(0) ?? 0;
+      return code <= 32 || code === 127;
+    }) ||
+    ["~", "^", ":", "?", "*", "[", "\\"].some((char) => branch.includes(char))
+  ) {
+    throw new Error("agent_delivery_branch_invalid");
+  }
+  return branch;
+}
+
+function normalizedMode(mode: string) {
+  return mode.replace(/^codex-/, "").replace(/-/g, "_");
+}
+
+function repairRepositoryMode(mode: string) {
+  return mode === "address_review" || mode === "ci_doctor";
+}
+
+function readOnlyRepositoryMode(mode: string) {
+  return mode === "architect" || mode === "review" || mode === "security_sweep";
+}
+
+export function parseGitNameStatus(raw: string) {
+  const fields = raw.split("\0").filter(Boolean);
+  if (fields.length % 2 !== 0) throw new Error("git_name_status_malformed");
+  const entries: Array<{ status: string; path: string }> = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    entries.push({ status: fields[index] ?? "", path: fields[index + 1] ?? "" });
+  }
+  return entries;
+}
+
+async function collectGithubFileChanges(cwd: string, baseRef: string) {
+  const modeChanges = (await gitOutput(cwd, ["diff", "--cached", "--summary", baseRef, "--"]))
+    .split("\n")
+    .filter((line) => line.trim().startsWith("mode change"));
+  if (modeChanges.length > 0) {
+    throw new Error(`github_signed_delivery_mode_change_unsupported: ${modeChanges.join(", ")}`);
+  }
+  const raw = await gitOutput(cwd, [
+    "diff",
+    "--cached",
+    "--name-status",
+    "-z",
+    "--no-renames",
+    baseRef,
+    "--",
+  ]);
+  const changes: GithubFileChange[] = [];
+  for (const entry of parseGitNameStatus(raw)) {
+    safeRepositoryPath(entry.path);
+    if (entry.status.startsWith("D")) {
+      changes.push({ kind: "deletion", path: entry.path });
+      continue;
+    }
+    const path = join(cwd, entry.path);
+    const metadata = await lstat(path);
+    if (metadata.isSymbolicLink()) {
+      throw new Error(`github_signed_delivery_symlink_unsupported: ${entry.path}`);
+    }
+    if (!metadata.isFile()) throw new Error(`github_signed_delivery_not_a_file: ${entry.path}`);
+    changes.push({
+      kind: "addition",
+      path: entry.path,
+      contents: (await readFile(path)).toString("base64"),
+    });
+  }
+  return changes;
+}
+
+function safeRepositoryPath(path: string) {
+  if (!path || path.startsWith("/") || path.split("/").includes("..")) {
+    throw new Error(`github_signed_delivery_invalid_path: ${path}`);
+  }
+}
+
+function githubRepositoryName(cloneUrl: string) {
+  const match = cloneUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/);
+  if (!match) throw new Error("github_signed_delivery_requires_github_repo");
+  return `${match[1]}/${match[2]}`;
+}
+
+export type AgentDeliveryMetadata = {
+  branch: string;
+  commitMessage: string;
+  pullRequest: { title: string; body: string };
+};
+
+export async function readAgentDeliveryMetadata(path: string): Promise<AgentDeliveryMetadata> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    throw new Error(`agent_delivery_metadata_missing_or_invalid: ${errorMessage(error)}`);
+  }
+  const root = objectValue(parsed);
+  const pullRequest = objectValue(root.pullRequest);
+  const branch = typeof root.branch === "string" ? root.branch.trim() : "";
+  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage.trim() : "";
+  const title = typeof pullRequest.title === "string" ? pullRequest.title.trim() : "";
+  const body = typeof pullRequest.body === "string" ? pullRequest.body.trim() : "";
+  if (!SEMANTIC_BRANCH.test(branch)) throw new Error("agent_delivery_branch_not_semantic");
+  if (!CONVENTIONAL_SUBJECT.test(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
+    throw new Error("agent_delivery_commit_not_conventional");
+  }
+  if (!CONVENTIONAL_SUBJECT.test(title) || title.length > 256) {
+    throw new Error("agent_delivery_pr_title_not_conventional");
+  }
+  if (!body || body.length > 60_000) throw new Error("agent_delivery_pr_body_invalid");
+  return { branch, commitMessage, pullRequest: { title, body } };
+}
+
+export async function readAgentUpdateMetadata(
+  path: string,
+): Promise<Pick<AgentDeliveryMetadata, "branch" | "commitMessage">> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    throw new Error(`agent_delivery_metadata_missing_or_invalid: ${errorMessage(error)}`);
+  }
+  const root = objectValue(parsed);
+  const branch = typeof root.branch === "string" ? root.branch.trim() : "";
+  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage.trim() : "";
+  existingGithubBranch(branch);
+  if (!CONVENTIONAL_SUBJECT.test(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
+    throw new Error("agent_delivery_commit_not_conventional");
+  }
+  return { branch, commitMessage };
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export async function publishVerifiedGithubChanges(input: {
+  repo: string;
+  token: string;
+  requestedBranch: string;
+  baseSha: string;
+  headline: string;
+  changes: GithubFileChange[];
+  runId: string;
+  fetchImpl?: typeof fetch;
+}) {
+  const request = input.fetchImpl ?? fetch;
+  const branch = await availableGithubBranch(
+    request,
+    input.repo,
+    input.requestedBranch,
+    input.runId,
+    input.token,
+  );
+  await githubRequest(request, `https://api.github.com/repos/${input.repo}/git/refs`, input.token, {
+    method: "POST",
+    body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: input.baseSha }),
+  });
+  const headSha = await commitVerifiedGithubChanges({
+    ...input,
+    request,
+    branch,
+    expectedHeadSha: input.baseSha,
+  });
+  return { branch, headSha };
+}
+
+export async function publishVerifiedGithubBranchUpdate(input: {
+  repo: string;
+  token: string;
+  branch: string;
+  expectedHeadSha: string;
+  headline: string;
+  changes: GithubFileChange[];
+  runId: string;
+  fetchImpl?: typeof fetch;
+}) {
+  existingGithubBranch(input.branch);
+  const request = input.fetchImpl ?? fetch;
+  const headSha = await commitVerifiedGithubChanges({ ...input, request });
+  return { branch: input.branch, headSha };
+}
+
+async function commitVerifiedGithubChanges(input: {
+  repo: string;
+  token: string;
+  branch: string;
+  expectedHeadSha: string;
+  headline: string;
+  changes: GithubFileChange[];
+  runId: string;
+  request: typeof fetch;
+}) {
+  const batches = chunk(input.changes, GITHUB_CHANGE_BATCH);
+  let expectedHeadOid = input.expectedHeadSha;
+  for (const [index, changes] of batches.entries()) {
+    const additions = changes
+      .filter(
+        (change): change is Extract<GithubFileChange, { kind: "addition" }> =>
+          change.kind === "addition",
+      )
+      .map(({ path, contents }) => ({ path, contents }));
+    const deletions = changes
+      .filter(
+        (change): change is Extract<GithubFileChange, { kind: "deletion" }> =>
+          change.kind === "deletion",
+      )
+      .map(({ path }) => ({ path }));
+    const multipart = batches.length > 1 ? ` (part ${index + 1}/${batches.length})` : "";
+    const data = await githubRequest<{
+      data?: { createCommitOnBranch?: { commit?: { oid?: string } } };
+      errors?: Array<{ message?: string }>;
+    }>(input.request, "https://api.github.com/graphql", input.token, {
+      method: "POST",
+      body: JSON.stringify({
+        query:
+          "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+        variables: {
+          input: {
+            branch: { repositoryNameWithOwner: input.repo, branchName: input.branch },
+            expectedHeadOid,
+            message: {
+              headline: `${input.headline}${multipart}`.slice(0, 120),
+              body: `Delivered by Facility run ${input.runId}.`,
+            },
+            fileChanges: {
+              ...(additions.length > 0 ? { additions } : {}),
+              ...(deletions.length > 0 ? { deletions } : {}),
+            },
+          },
+        },
+      }),
+    });
+    if (data.errors?.length) {
+      throw new Error(
+        `github_signed_delivery_graphql_failed: ${data.errors.map((error) => error.message).join("; ")}`,
+      );
+    }
+    const oid = data.data?.createCommitOnBranch?.commit?.oid;
+    if (!oid) throw new Error("github_signed_delivery_missing_commit_oid");
+    expectedHeadOid = oid;
+  }
+  return expectedHeadOid;
+}
+
+async function availableGithubBranch(
+  request: typeof fetch,
+  repo: string,
+  requested: string,
+  runId: string,
+  token: string,
+) {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const suffix = attempt === 0 ? "" : `-${runId.slice(-8)}${attempt === 1 ? "" : `-${attempt}`}`;
+    const candidate = `${requested}${suffix}`;
+    const response = await request(
+      `https://api.github.com/repos/${repo}/git/ref/heads/${candidate
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`,
+      { headers: githubHeaders(token) },
+    );
+    if (response.status === 404) return candidate;
+    if (!response.ok) {
+      throw new Error(`github_ref_lookup_failed_${response.status}: ${await response.text()}`);
+    }
+  }
+  throw new Error("github_semantic_branch_unavailable");
+}
+
+async function githubRequest<T = Record<string, unknown>>(
+  request: typeof fetch,
+  url: string,
+  token: string,
+  init: RequestInit,
+) {
+  const response = await request(url, {
+    ...init,
+    headers: {
+      ...githubHeaders(token),
+      "content-type": "application/json",
+      ...(init.headers ?? {}),
+    },
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`github_signed_delivery_http_${response.status}: ${text}`);
+  return (text ? JSON.parse(text) : {}) as T;
+}
+
+function githubHeaders(token: string) {
+  return {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${token}`,
+    "x-github-api-version": "2022-11-28",
+    "user-agent": "facility-runner",
+  };
+}
+
+function chunk<T>(items: T[], size: number) {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size)
+    chunks.push(items.slice(index, index + size));
+  return chunks;
 }
 
 async function gitOutput(cwd: string, args: string[]) {
@@ -714,11 +1220,6 @@ async function gitOutput(cwd: string, args: string[]) {
   const code = await exitCode(child);
   if (code !== 0) throw new Error(redactSecrets(`git ${args[0]} exited ${code}: ${stderr}`));
   return stdout;
-}
-
-function pushUrlFor(cloneUrl: string, token: string) {
-  if (!cloneUrl.startsWith("https://github.com/")) return cloneUrl;
-  return cloneUrl.replace("https://github.com/", `https://x-access-token:${token}@github.com/`);
 }
 
 // Recursively scrub injected secrets from every string in a value — the engine's
@@ -807,8 +1308,12 @@ async function runCommand(command: string, args: string[], cwd: string) {
   if (code !== 0) throw new Error(`${command} exited ${code}`);
 }
 
-function exitCode(child: ReturnType<typeof spawn>) {
-  return new Promise<number>((resolve) => child.on("close", (code) => resolve(code ?? 1)));
+export function exitCode(child: ReturnType<typeof spawn>) {
+  // A stdout consumer can observe EOF after the child has already emitted
+  // `close`. Subscribing only afterwards leaves the runner waiting forever and
+  // prevents final checks/results (including the GitHub plan) from publishing.
+  if (child.exitCode !== null) return Promise.resolve(child.exitCode);
+  return new Promise<number>((resolve) => child.once("close", (code) => resolve(code ?? 1)));
 }
 
 // Arm the engine timeout: SIGTERM at (timeout - 2min), then escalate to SIGKILL
@@ -866,19 +1371,72 @@ export function composedPrompt(bundle: RunBundle) {
     bundle.scope.type === "conversation" && typeof bundle.scope.message === "string"
       ? `\n\n## Conversation\n${bundle.scope.message}`
       : "";
-  return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}${steeringNote}${conversationNote}`;
+  const progressNote = requiresAgentProgress(bundle.mode)
+    ? `\n\n## Live GitHub progress\nBefore substantive work, create \`.agent-sdlc/progress.md\` with a short task-specific context and a Markdown checkbox list of the steps you decided this task needs. Update it whenever you start or finish a step so a reviewer can understand real progress from GitHub. Keep it accurate and concise; do not put secrets, generic lifecycle milestones, or the final response in it. Facility transports this file into the existing GitHub progress comment.`
+    : "";
+  const repositoryOutputNote = bundle.repo.cloneUrl
+    ? `\n\n## Repository output\nYour final response may be published directly on GitHub. Refer to repository files with relative paths or inline code. Never emit sandbox-local paths such as \`/work/repo/...\`.`
+    : "";
+  const githubEventNote =
+    bundle.scope.type === "github_event"
+      ? `\n\n## GitHub event context\nTreat the Scope JSON below as the authoritative, platform-captured GitHub event packet. It includes the pull request or failure, review feedback, and—when Facility produced the branch—the original issue request, accepted plan, producing run, receipt checks, and successful follow-up repair history. A verified follow-up may legitimately extend the original plan when it implements explicit review feedback; judge the current diff against the full governed chain. Do not depend on \`gh\` or direct GitHub API access: the sandbox clone credential is intentionally contents-only, and Facility publishes your progress and final response through the installed GitHub App.`
+      : "";
+  const projectSkillsNote = bundle.skills.length
+    ? `\n\n## Active project skills\nFacility materialized the following active registry skills for this run. Read and apply each relevant \`SKILL.md\`; these are managed inputs, so do not modify or commit them.\n${[
+        ...new Map(bundle.skills.map((skill) => [safeName(skill.name), skill.name])).entries(),
+      ]
+        .map(
+          ([fileBase, name]) =>
+            `- ${name}: \`.agents/skills/${fileBase}/SKILL.md\` (also available at \`.claude/skills/${fileBase}/SKILL.md\`)`,
+        )
+        .join("\n")}`
+    : "";
+  const deliveryNote = requiresDelivery(bundle.mode)
+    ? `\n\n## Agent-owned delivery\nFacility will create the signed commit, push, and non-draft pull request with the GitHub App after your engine exits. You own all delivery metadata. Before finishing, create \`.agent-sdlc/delivery.json\` with exactly this shape:\n\n\`\`\`json\n{\n  "branch": "feature/task-slug",\n  "commitMessage": "feat: describe the change",\n  "pullRequest": {\n    "title": "feat: describe the change",\n    "body": "## Summary\\n- ...\\n\\n## Context\\n- ...\\n\\n## Verification\\n- ...\\n\\n## Linked issues\\n- Closes #123"\n  }\n}\n\`\`\`\n\nThe branch must be semantic; the commit and PR title must use Conventional Commits; the PR body must be your complete team-lead-ready description. Do not commit this managed file. Do not require \`gh\`, a writable clone token, or a local signing key: Facility transports your exact metadata and fails closed if it is absent or invalid.`
+    : "";
+  const repairDeliveryNote = repairRepositoryMode(normalizedMode(bundle.mode))
+    ? `\n\n## Agent-owned PR update\nIf and only if you make verified repository changes, create \`.agent-sdlc/delivery.json\` before finishing with exactly \`{"branch":"<the existing PR branch>","commitMessage":"fix: describe the correction"}\`. Facility will add a signed commit to that same branch through the GitHub App. The branch must exactly match the checked-out PR branch and the message must use Conventional Commits. Do not run \`git push\`, create another branch or pull request, force-push, or depend on \`gh\`. If no code change is needed, do not create the manifest.`
+    : "";
+  return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}${steeringNote}${conversationNote}${progressNote}${repositoryOutputNote}${githubEventNote}${projectSkillsNote}${deliveryNote}${repairDeliveryNote}`;
 }
 
 export function buildCodexArgs(bundle: RunBundle) {
-  const args = ["exec", "--json", "-s", "danger-full-access"];
+  const provider = "facility_gateway";
+  const providerBaseUrl = codexProviderBaseUrl(bundle.gatewayUrls.openai);
+  const args = [
+    "exec",
+    "--json",
+    "--ephemeral",
+    "-s",
+    "danger-full-access",
+    "--config",
+    `model_provider=${JSON.stringify(provider)}`,
+    "--config",
+    `model_providers.${provider}.name="Facility Gateway"`,
+    "--config",
+    `model_providers.${provider}.base_url=${JSON.stringify(providerBaseUrl)}`,
+    "--config",
+    `model_providers.${provider}.env_key="OPENAI_API_KEY"`,
+    "--config",
+    `model_providers.${provider}.wire_api="responses"`,
+    "--config",
+    `model_providers.${provider}.supports_websockets=false`,
+  ];
   const model = configuredModel(bundle.engineConfig);
   if (model) args.push("--model", model);
   const effort = bundle.engineConfig.reasoning_effort ?? bundle.engineConfig.reasoningEffort;
   if (typeof effort === "string" && effort) {
     args.push("--config", `model_reasoning_effort=${JSON.stringify(effort)}`);
   }
-  args.push(composedPrompt(bundle));
+  // `codex exec -` reads the prompt from stdin. Keeping run scope out of argv
+  // avoids E2BIG for the intentionally rich nightly learning packet.
+  args.push("-");
   return args;
+}
+
+function codexProviderBaseUrl(value: string) {
+  const base = value.replace(/\/$/, "");
+  return base.endsWith("/v1") ? base : `${base}/v1`;
 }
 
 function addModelFlags(args: string[], config: Record<string, unknown>) {
@@ -918,6 +1476,19 @@ function receiptMode(mode: string | undefined) {
 
 function safeName(name: string) {
   return name.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+
+function materializedSkillContent(name: string, content: string) {
+  const trimmed = content.trimStart();
+  if (trimmed.startsWith("---\n") || trimmed.startsWith("---\r\n")) return content;
+  return [
+    "---",
+    `name: ${JSON.stringify(safeName(name))}`,
+    `description: ${JSON.stringify(`Project-managed Facility skill: ${name}`)}`,
+    "---",
+    "",
+    content,
+  ].join("\n");
 }
 
 function requiredEnv(key: string) {

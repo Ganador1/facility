@@ -26,7 +26,12 @@ Edit `playground.tfvars`:
 - Set `app_hostname` and `api_hostname`.
 - Set `acm_certificate_arn` for HTTPS, or leave it empty for HTTP-only testing.
 - Set `route53_zone_id` if Terraform should create alias records.
+- Set `enable_cloudfront_api_endpoint = true` to get an AWS-managed HTTPS API
+  and webhook URL without a public DNS zone. This is intended for validation;
+  use your own hostname and ACM certificate for production.
 - Set image tags matching the images you push.
+- Set `enable_workos = false` only for a non-interactive webhook validation
+  deployment. Production login and protected previews require WorkOS.
 - Set `mcp_oauth_audience` (with the WorkOS secrets) to enable interactive-client
   MCP OAuth 2.1, or leave it empty for `fak_`-key-only MCP; tune
   `envelope_retention_days` for your data-retention policy.
@@ -61,7 +66,11 @@ AWS_REGION=us-east-1 IMAGE_TAG=$(git rev-parse --short HEAD) ./infra/build-image
 
 The script expects Dockerfiles for `api`, `worker`, `gateway`, `web`, and
 `runner`. Override paths or image URIs with environment variables documented in
-the script when a service image is built elsewhere.
+the script when a service image is built elsewhere. It builds `linux/amd64` by
+default, matching Terraform's default `task_cpu_architecture = "X86_64"`. To
+deploy on Graviton, set `CPU_ARCHITECTURE=ARM64` while building and set
+`task_cpu_architecture = "ARM64"` in Terraform. The build exits early if an
+explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
 
 Apply again with matching `container_image_tags`.
 
@@ -72,7 +81,7 @@ Populate them with `aws secretsmanager put-secret-value`.
 
 Required runtime values:
 
-- `database_url`: `postgres://facility:<password>@<rds_endpoint>:5432/facility`
+- `database_url`: `postgres://facility:<password>@<rds_endpoint>:5432/facility?sslmode=verify-full`
 - `secret_master_key`: 32-byte base64 value from `openssl rand -base64 32`
 - `workos_api_key`
 - `workos_client_id`
@@ -87,6 +96,10 @@ Required runtime values:
 The `dev_anthropic_api_key` and `dev_openai_api_key` secrets exist only for
 local/bootstrap fallback compatibility. Prefer provider credentials stored
 through the Facility API after boot.
+
+The production service image loads Amazon's published global RDS CA bundle so
+`sslmode=verify-full` encrypts the connection and verifies the database
+hostname. Do not downgrade this to a non-verifying TLS mode.
 
 Fetch the RDS managed password:
 
@@ -125,6 +138,12 @@ curl -fsS "https://${app_hostname}/"
 
 For HTTP-only test deployments, use `http://` and the ALB DNS name with `Host`
 headers until DNS is configured.
+
+Repeated validation deployments can set
+`target_deregistration_delay_seconds = 15` to avoid waiting the production
+default of five minutes for every replaced API target. Keep the default `300`
+for production unless all in-flight requests are safely bounded below the
+shorter drain window.
 
 ## Validation status
 

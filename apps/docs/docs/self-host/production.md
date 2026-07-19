@@ -138,16 +138,15 @@ serve` with `MCP_PUBLIC_URL` (this MCP server's public URL) and
 
 ## GitHub App
 
-Create a GitHub App in your org (the platform is installed **in your
-environment** — no third-party App trust required):
+Create a GitHub App in your organization; the platform is installed **in your
+environment**, so no third-party App trust is required. The App needs separate
+permissions for repository contents, workflow files, Actions runs, checks,
+deployments, issues, and pull requests. Its webhook URL is the public API origin
+plus `/webhooks/github`.
 
-- Permissions: contents RW, pull requests RW, issues RW, workflows R,
-  checks R, members R (org), metadata R.
-- Webhooks → `https://<api-host>/webhooks/github`, secret =
-  `GITHUB_APP_WEBHOOK_SECRET`.
-- Subscribe: installation, push, issues, issue_comment, pull_request,
-  workflow_run.
-- Set `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_SLUG`.
+Follow the [complete GitHub App guide](github-app) for the current permission
+matrix, event subscriptions, private key and webhook-secret setup, installation
+order, and end-to-end verification.
 
 ## Hardening checklist
 

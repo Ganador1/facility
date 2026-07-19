@@ -47,10 +47,8 @@ resource "aws_ecs_task_definition" "service" {
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
 
-  # Graviton/ARM64 Fargate — cheaper, and matches images built on Apple Silicon.
-  # Set to X86_64 if you build images on an x86 host.
   runtime_platform {
-    cpu_architecture        = "ARM64"
+    cpu_architecture        = var.task_cpu_architecture
     operating_system_family = "LINUX"
   }
   cpu                = tostring(var.task_cpu[each.key])
@@ -92,10 +90,8 @@ resource "aws_ecs_task_definition" "runner" {
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
 
-  # Graviton/ARM64 Fargate — cheaper, and matches images built on Apple Silicon.
-  # Set to X86_64 if you build images on an x86 host.
   runtime_platform {
-    cpu_architecture        = "ARM64"
+    cpu_architecture        = var.task_cpu_architecture
     operating_system_family = "LINUX"
   }
   cpu                = tostring(var.task_cpu.runner)
@@ -131,10 +127,8 @@ resource "aws_ecs_task_definition" "migrate" {
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
 
-  # Graviton/ARM64 Fargate — cheaper, and matches images built on Apple Silicon.
-  # Set to X86_64 if you build images on an x86 host.
   runtime_platform {
-    cpu_architecture        = "ARM64"
+    cpu_architecture        = var.task_cpu_architecture
     operating_system_family = "LINUX"
   }
   cpu                = tostring(var.task_cpu.migrate)
@@ -150,7 +144,11 @@ resource "aws_ecs_task_definition" "migrate" {
       # Migrate AND seed: bundled roles/action-types/default sandbox profile must
       # exist before the first WorkOS bootstrap and before `facility doctor`
       # passes. Seed is idempotent (ON CONFLICT) so re-running each deploy is safe.
-      command     = ["sh", "-c", "node packages/db/dist/migrate.js && node packages/db/dist/seed.js"]
+      command = [
+        "sh",
+        "-c",
+        "node node_modules/@facility/db/dist/bin/migrate.js && node node_modules/@facility/db/dist/bin/seed.js",
+      ]
       environment = concat(local.common_environment, [{ name = "FACILITY_SEED_DEMO", value = "0" }])
       secrets     = local.common_secrets
       logConfiguration = {

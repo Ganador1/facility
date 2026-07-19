@@ -24,6 +24,16 @@ export function parseCodexJsonlLine(line: string): RunEvent | null {
   const parsed = parseJson(line);
   if (!parsed) return null;
   const type = stringField(parsed, "type") ?? stringField(parsed, "event");
+  const item = objectField(parsed, "item");
+  const itemType = item ? stringField(item, "type") : null;
+  // Codex 0.144+ emits typed items inside item.completed envelopes. Preserve
+  // the semantic assistant event instead of storing the final plan as opaque
+  // engine data; GitHub publication and conversation completion both consume
+  // the last assistant event.
+  if (type === "item.completed" && itemType === "agent_message") {
+    const text = item ? extractText(item) : null;
+    return text ? { type: "assistant", data: { text } } : null;
+  }
   if (type === "assistant_message" || type === "assistant") {
     const text = extractText(parsed);
     return text ? { type: "assistant", data: { text } } : null;
@@ -31,10 +41,17 @@ export function parseCodexJsonlLine(line: string): RunEvent | null {
   if (type === "tool_call" || type === "tool_use") {
     return { type: "tool", data: toolData(parsed) };
   }
-  if (type === "task_complete" || type === "result") {
+  if (type === "task_complete" || type === "result" || type === "turn.completed") {
     return { type: "engine_result", data: parsed };
   }
   return { type: "engine", data: parsed };
+}
+
+function objectField(value: Record<string, unknown>, key: string) {
+  const candidate = value[key];
+  return candidate && typeof candidate === "object" && !Array.isArray(candidate)
+    ? (candidate as Record<string, unknown>)
+    : null;
 }
 
 export function parseClaudeSessionId(line: string): string | null {

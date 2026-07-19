@@ -13,6 +13,11 @@ output "api_url" {
   value       = local.public_urls.api
 }
 
+output "github_webhook_url" {
+  description = "Public GitHub App webhook URL."
+  value       = "${local.public_urls.api}/webhooks/github"
+}
+
 output "gateway_internal_url" {
   description = "Internal-only gateway URL reachable from ECS services."
   value       = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}"

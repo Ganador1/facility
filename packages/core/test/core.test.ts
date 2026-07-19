@@ -69,6 +69,25 @@ describe("pricing", () => {
       costCents({ model: "gpt-5.5-2025-11-01", inputTokens: 1_000_000, outputTokens: 0 }),
     ).toBe(1000);
   });
+
+  it("prices the default GPT-5.6 family and its alias", () => {
+    expect(
+      costCents({
+        model: "gpt-5.6-sol",
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 1_000_000,
+        cacheWriteTokens: 1_000_000,
+      }),
+    ).toBe(4175);
+    expect(costCents({ model: "gpt-5.6", inputTokens: 1_000_000, outputTokens: 0 })).toBe(500);
+    expect(
+      costCents({ model: "gpt-5.6-terra", inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+    ).toBe(1750);
+    expect(
+      costCents({ model: "gpt-5.6-luna", inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+    ).toBe(700);
+  });
 });
 
 describe("provider base URL validation", () => {
@@ -242,6 +261,21 @@ describe("render", () => {
     for (const [path, cliFile] of cliFiles) {
       expect(coreFiles.get(path), path).toEqual(cliFile);
     }
+  });
+
+  it("keeps platform-lane slash commands out of repo workflows", async () => {
+    const rendered = await renderFacilityInit({
+      defaultBranch: "main",
+      execution_lane: { architect: "platform", builder: "platform" },
+    });
+    const byPath = new Map(rendered.files.map((file) => [file.path, file.content]));
+    const crew = byPath.get(".github/workflows/facility-crew.yml") ?? "";
+    const codex = byPath.get(".github/workflows/facility-codex.yml") ?? "";
+
+    expect(crew).toContain("false && contains(github.event.comment.body, '/builder')");
+    expect(crew).toContain("false && contains(github.event.comment.body, '/architect')");
+    expect(codex).toContain("false && contains(github.event.comment.body, '/codex-builder')");
+    expect(codex).toContain("false && contains(github.event.comment.body, '/codex-architect')");
   });
 });
 

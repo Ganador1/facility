@@ -79,8 +79,9 @@ AWS S3, R2, and other S3-compatible endpoints.
 1. **Providers** — add your Anthropic/OpenAI keys (sealed at rest) with
    `facility providers create --provider openai --name primary --secret …` or
    `POST /v1/providers`.
-2. **GitHub App** — create your own App installation (see
-   [Production](production)) so kickstart and triggers work against your org.
+2. **GitHub App** — create your own App installation using the
+   [GitHub App guide](github-app) so kickstart, webhook triggers, outcomes, and
+   repository delivery work against your organization.
 3. **Kickstart** — connect a repo and open the kickstart PR.
 4. **Protected previews** — in production, finish the WorkOS AuthKit settings
    before enabling previews. Configure the project with an immutable review

@@ -23,9 +23,7 @@ import { raisePlatformIssue } from "../watchtower/issues.js";
 import { FacilityGithubClient, type GithubClientFactory, type TreeItem } from "./client.js";
 import { readRepoFiles } from "./repo-files.js";
 
-export type KickstartAnswers = RenderAnswers & {
-  execution_lane?: Record<string, "repo" | "platform">;
-};
+export type KickstartAnswers = RenderAnswers;
 
 export type RepoRow = typeof repos.$inferSelect;
 

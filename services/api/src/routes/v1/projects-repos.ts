@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import { createGithubClientFactory } from "../../github/client.js";
+import { ensureProjectKbSpace } from "../../harness.js";
 import { projectHealth } from "../../watchtower/health.js";
 import {
   AnyObject,
@@ -413,6 +414,9 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
     const productChain = byName.get("product-chain");
     const poContract = byName.get("po-agent");
     const learningContract = byName.get("learning-agent");
+    if (productChain && (poContract || learningContract)) {
+      await ensureProjectKbSpace(db, orgId, projectId);
+    }
     const existingAgentNames = new Set(
       (
         await db
@@ -445,7 +449,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       {
         name: "codex-architect",
         engine: "codex",
-        model: { primary: "gpt-5.6", reasoning_effort: "high" },
+        model: { primary: "gpt-5.6-sol", reasoning_effort: "high" },
         contract: "prompts/architect",
         triggers: [
           { type: "github", command: "codex-architect" },
@@ -455,7 +459,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       {
         name: "codex-builder",
         engine: "codex",
-        model: { primary: "gpt-5.6", reasoning_effort: "high" },
+        model: { primary: "gpt-5.6-sol", reasoning_effort: "high" },
         contract: "prompts/builder",
         triggers: [
           { type: "github", command: "codex-builder" },

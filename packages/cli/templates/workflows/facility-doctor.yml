@@ -58,6 +58,7 @@ jobs:
         with:
           name: facility-doctor-context-${{ github.run_id }}
           path: .facility-doctor/
+          include-hidden-files: true
           retention-days: 3
 
   repair:
@@ -139,7 +140,7 @@ jobs:
           node "$trusted"
 
       - name: Attest agent run receipt
-        if: always() && steps.receipt.outcome == 'success'
+        if: always() && steps.receipt.outcome == 'success' && vars.FACILITY_ENABLE_ATTESTATIONS == 'true'
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: ${{ steps.receipt.outputs.path }}

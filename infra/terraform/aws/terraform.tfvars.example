@@ -9,6 +9,19 @@ api_hostname = "api.example.com"
 acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/placeholder"
 route53_zone_id     = "ZPLACEHOLDER"
 
+# Validation shortcut when no public DNS zone is available. CloudFront provides
+# an AWS-managed HTTPS API URL and GitHub webhook URL; leave false when using
+# your own hostname and ACM certificate.
+enable_cloudfront_api_endpoint = false
+
+# WorkOS is required for production interactive login and protected previews.
+# A webhook-only validation deployment can leave it disabled.
+enable_workos = true
+
+# Local/bootstrap provider fallback only. Production gateways should load
+# provider credentials through the Facility API instead.
+enable_dev_provider_fallback = false
+
 # Restrict this for non-public test deployments.
 allowed_http_cidr_blocks = ["0.0.0.0/0"]
 
@@ -36,3 +49,10 @@ container_image_tags = {
 
 # Use only when images live outside the ECR repositories created by this module.
 image_overrides = {}
+
+# Must match CPU_ARCHITECTURE used by infra/build-images.sh.
+task_cpu_architecture = "X86_64"
+
+# Keep 300 for production unless your request-duration SLO allows a shorter
+# drain. Ephemeral validation stacks can use 15 to speed repeated deployments.
+target_deregistration_delay_seconds = 300

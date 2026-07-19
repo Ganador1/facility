@@ -23,7 +23,12 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { Octokit } from "../src/github/client.js";
-import { assembleLearningPacket, attachGithubReviewEvidence } from "../src/learning.js";
+import {
+  assembleLearningPacket,
+  attachGithubReviewEvidence,
+  boundLearningPacket,
+  LEARNING_PACKET_MAX_CHARS,
+} from "../src/learning.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -344,6 +349,14 @@ describe("learning evidence packet", async () => {
 
     expect(packet.schema).toBe("facility.learning.packet.v2");
     expect(packet.window.days).toBe(30);
+    expect(packet.proposalActionTypes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "skill_proposal" }),
+        expect.objectContaining({ name: "rule_proposal" }),
+        expect.objectContaining({ name: "guard_candidate" }),
+        expect.objectContaining({ name: "kb_amendment" }),
+      ]),
+    );
     expect(packet.receipts).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ runId, integrity: { ok: true, errors: [] } }),
@@ -382,5 +395,27 @@ describe("learning evidence packet", async () => {
     ]);
     expect(packet.digestMd).toContain("GitHub review packets: 1");
     expect(packet.digestMd).toContain("Accepted improvements measured: 1");
+
+    const bounded = boundLearningPacket({
+      ...packet,
+      runs: [
+        ...packet.runs,
+        {
+          trigger: {
+            type: "schedule",
+            packet: { runEvents: Array.from({ length: 1_000 }, () => "x".repeat(10_000)) },
+          },
+        },
+      ],
+      runEvents: Array.from({ length: 1_000 }, (_, index) => ({
+        index,
+        output: "verbose evidence ".repeat(1_000),
+      })),
+    });
+    expect(JSON.stringify(bounded).length).toBeLessThanOrEqual(LEARNING_PACKET_MAX_CHARS);
+    expect(JSON.stringify(bounded.runs)).toContain("prior learning packet omitted");
+    expect(bounded.evidenceWarnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("runEvents records")]),
+    );
   });
 });

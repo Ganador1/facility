@@ -24,13 +24,16 @@ export function modelFrom(body: unknown): string | null {
   return typeof model === "string" ? model : null;
 }
 
-export function prepareOpenAiBody(body: unknown): { raw: Buffer; recordedBody: unknown } {
+export function prepareOpenAiBody(
+  body: unknown,
+  options: { injectChatStreamUsage?: boolean } = {},
+): { raw: Buffer; recordedBody: unknown } {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { raw: Buffer.from(JSON.stringify(body ?? {})), recordedBody: body ?? {} };
   }
   const input = body as Record<string, unknown>;
   const recorded = structuredClone(input);
-  if (input.stream !== true) {
+  if (input.stream !== true || options.injectChatStreamUsage === false) {
     return { raw: Buffer.from(JSON.stringify(input)), recordedBody: recorded };
   }
   const streamOptions =

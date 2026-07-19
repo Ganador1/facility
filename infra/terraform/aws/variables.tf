@@ -50,6 +50,24 @@ variable "acm_certificate_arn" {
   default     = ""
 }
 
+variable "enable_cloudfront_api_endpoint" {
+  description = "Expose the API through an AWS-managed CloudFront HTTPS hostname when no public DNS zone is available."
+  type        = bool
+  default     = false
+}
+
+variable "enable_workos" {
+  description = "Inject WorkOS secrets into API, worker, gateway, and migrate tasks. Disable only for a non-interactive validation deployment."
+  type        = bool
+  default     = true
+}
+
+variable "enable_dev_provider_fallback" {
+  description = "Inject DEV_ANTHROPIC_API_KEY and DEV_OPENAI_API_KEY into the gateway. Keep false for production."
+  type        = bool
+  default     = false
+}
+
 variable "database_name" {
   description = "Initial RDS database name."
   type        = string
@@ -116,6 +134,17 @@ variable "image_overrides" {
   default     = {}
 }
 
+variable "task_cpu_architecture" {
+  description = "CPU architecture for ECS tasks. Images must be built for the matching platform."
+  type        = string
+  default     = "X86_64"
+
+  validation {
+    condition     = contains(["X86_64", "ARM64"], var.task_cpu_architecture)
+    error_message = "task_cpu_architecture must be X86_64 or ARM64."
+  }
+}
+
 variable "api_desired_count" {
   description = "Desired ECS task count for the API service."
   type        = number
@@ -138,6 +167,17 @@ variable "web_desired_count" {
   description = "Desired ECS task count for the web service."
   type        = number
   default     = 2
+}
+
+variable "target_deregistration_delay_seconds" {
+  description = "Seconds ALB target groups wait for in-flight requests before completing an ECS rollout. Keep the 300-second default for normal production traffic; validation stacks may use a shorter value."
+  type        = number
+  default     = 300
+
+  validation {
+    condition     = var.target_deregistration_delay_seconds >= 0 && var.target_deregistration_delay_seconds <= 3600
+    error_message = "target_deregistration_delay_seconds must be between 0 and 3600."
+  }
 }
 
 variable "task_cpu" {

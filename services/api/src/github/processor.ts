@@ -1,5 +1,6 @@
 import { newId } from "@facility/core";
 import {
+  agentDefs,
   type FacilityDb,
   githubInstallations,
   inboundEvents,
@@ -8,9 +9,10 @@ import {
   outcomes,
   previewSandboxes,
   repos,
+  runEvents,
   runs,
 } from "@facility/db";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { applyFacilitySignal } from "../integrations/signals.js";
 import type { AppConfig } from "../types.js";
 import {
@@ -25,6 +27,7 @@ import {
 } from "./issues-sync.js";
 import { verifyFingerprints } from "./kickstart.js";
 import { routeTrigger, type TriggerPayload } from "./router.js";
+import { renderGithubRunProgress } from "./run-progress.js";
 
 type WebhookPayload = TriggerPayload & {
   action?: string;
@@ -38,12 +41,26 @@ type WebhookPayload = TriggerPayload & {
   repository?: TriggerPayload["repository"] & { full_name?: string; default_branch?: string };
   pull_request?: {
     number?: number;
+    title?: string;
+    body?: string | null;
+    draft?: boolean;
+    html_url?: string;
     merged?: boolean;
-    head?: { ref?: string };
+    base?: { ref?: string };
+    head?: { ref?: string; sha?: string };
     created_at?: string;
     closed_at?: string;
   };
-  workflow_run?: { name?: string; conclusion?: string; html_url?: string };
+  review?: { id?: number; body?: string | null; state?: string; user?: { login?: string } };
+  workflow_run?: {
+    id?: number;
+    name?: string;
+    conclusion?: string;
+    html_url?: string;
+    head_branch?: string;
+    head_sha?: string;
+    pull_requests?: Array<{ number?: number; head?: { ref?: string }; base?: { ref?: string } }>;
+  };
   deployment_status?: {
     id?: number;
     state?: string;
@@ -100,12 +117,30 @@ export async function processGithubWebhook(
       await processPullRequest(
         db,
         event.orgId,
+        event.id,
+        payload,
+        factory ?? createGithubClientFactory(config),
+        enqueue,
+      );
+    } else if (event.eventType === "pull_request_review") {
+      await processGithubAgentEvent(
+        db,
+        event.orgId,
+        event.id,
+        "pull_request_review",
         payload,
         factory ?? createGithubClientFactory(config),
         enqueue,
       );
     } else if (event.eventType === "workflow_run") {
-      await processWorkflowRun(db, event.orgId, payload);
+      await processWorkflowRun(
+        db,
+        event.orgId,
+        event.id,
+        payload,
+        factory ?? createGithubClientFactory(config),
+        enqueue,
+      );
     } else if (event.eventType === "deployment_status" || event.eventType === "check_run") {
       await processOperationalSignal(db, event.orgId, event.eventType, payload);
     }
@@ -271,11 +306,15 @@ async function processTrigger(
 async function processPullRequest(
   db: FacilityDb,
   orgId: string,
+  eventId: string,
   payload: WebhookPayload,
   factory: GithubClientFactory,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
-  if (payload.action !== "closed") return;
+  if (payload.action !== "closed") {
+    await processGithubAgentEvent(db, orgId, eventId, "pull_request", payload, factory, enqueue);
+    return;
+  }
   const head = payload.pull_request?.head?.ref ?? "";
   const owner = payload.repository?.owner?.login;
   const name = payload.repository?.name;
@@ -392,7 +431,14 @@ async function pullRequestMetrics(
   return { reviewRounds, fixupCommits };
 }
 
-async function processWorkflowRun(db: FacilityDb, orgId: string, payload: WebhookPayload) {
+async function processWorkflowRun(
+  db: FacilityDb,
+  orgId: string,
+  eventId: string,
+  payload: WebhookPayload,
+  factory: GithubClientFactory,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+) {
   if (payload.action !== "completed" || !payload.workflow_run?.name?.startsWith("facility-"))
     return;
   const owner = payload.repository?.owner?.login;
@@ -411,6 +457,276 @@ async function processWorkflowRun(db: FacilityDb, orgId: string, payload: Webhoo
     workflow: payload.workflow_run.name,
     url: payload.workflow_run.html_url,
   });
+  await processGithubAgentEvent(db, orgId, eventId, "workflow_run", payload, factory, enqueue);
+}
+
+type GithubAgentEvent = "pull_request" | "pull_request_review" | "workflow_run";
+
+async function processGithubAgentEvent(
+  db: FacilityDb,
+  orgId: string,
+  eventId: string,
+  eventType: GithubAgentEvent,
+  payload: WebhookPayload,
+  factory: GithubClientFactory,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+) {
+  const owner = payload.repository?.owner?.login;
+  const name = payload.repository?.name;
+  const installationId = payload.installation?.id;
+  if (!owner || !name || !installationId) return;
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
+      .limit(1)
+  )[0];
+  if (!repo) return;
+  const agents = await db
+    .select()
+    .from(agentDefs)
+    .where(
+      and(
+        eq(agentDefs.orgId, orgId),
+        eq(agentDefs.projectId, repo.projectId),
+        eq(agentDefs.enabled, true),
+      ),
+    );
+  const agent = agents.find((candidate) =>
+    githubEventMatches(candidate.triggers, eventType, payload),
+  );
+  if (!agent) return;
+  const pullRequest = pullRequestContext(eventType, payload);
+  const pullNumber = pullRequest.number;
+  const branch = pullRequest.head;
+  const deliveryContext = branch ? await githubDeliveryContext(db, repo, branch) : null;
+  const run = (
+    await db
+      .insert(runs)
+      .values({
+        id: newId("run"),
+        orgId,
+        projectId: repo.projectId,
+        agentDefId: agent.id,
+        mode: agent.name.replace(/-/g, "_"),
+        engine: agent.engine,
+        trigger: {
+          type: "github_event",
+          event: eventType,
+          action: payload.action ?? null,
+          delivery: eventId,
+          repository: { owner, name, defaultBranch: repo.defaultBranch },
+          pullRequest,
+          review: payload.review ?? null,
+          workflowRun: payload.workflow_run ?? null,
+          deliveryContext,
+        },
+        gh: {
+          owner,
+          repo: name,
+          ...(pullNumber ? { issueNumber: pullNumber } : {}),
+          ...(branch ? { branch } : {}),
+        },
+        createdBy: {
+          type: "github",
+          id: payload.sender?.login ?? `${eventType}-webhook`,
+        },
+      })
+      .returning()
+  )[0];
+  if (!run) return;
+  await db.insert(runEvents).values({
+    orgId,
+    runId: run.id,
+    seq: 1,
+    type: "queued",
+    data: { queue: "runs.dispatch", source: "github_event", event: eventType },
+  });
+  if (pullNumber) {
+    try {
+      const client = new FacilityGithubClient(await factory(installationId), {
+        owner,
+        repo: name,
+        defaultBranch: repo.defaultBranch,
+      });
+      const progress = await client.createIssueComment(
+        pullNumber,
+        renderGithubRunProgress({
+          runId: run.id,
+          mode: run.mode,
+          command: agent.name,
+          phase: "queued",
+          issueNumber: pullNumber,
+          issueTitle: pullRequest.title,
+          sender: payload.sender?.login,
+        }),
+      );
+      await db
+        .update(runs)
+        .set({
+          gh: {
+            ...(run.gh as Record<string, unknown>),
+            progressComment: {
+              id: progress.id,
+              url: progress.url ?? null,
+              command: agent.name,
+              sender: payload.sender?.login ?? null,
+              issueTitle: pullRequest.title ?? null,
+            },
+          },
+          updatedAt: new Date(),
+        })
+        .where(and(eq(runs.orgId, orgId), eq(runs.id, run.id)));
+    } catch (error) {
+      await db.insert(runEvents).values({
+        orgId,
+        runId: run.id,
+        seq: 2,
+        type: "artifact_error",
+        data: {
+          kind: "github_progress_comment_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+  await auditGithub(db, orgId, "github.agent.dispatched", repo, {
+    runId: run.id,
+    agent: agent.name,
+    event: eventType,
+    action: payload.action,
+  });
+  await enqueue?.("runs.dispatch", { runId: run.id, orgId });
+}
+
+async function githubDeliveryContext(
+  db: FacilityDb,
+  repo: typeof repos.$inferSelect,
+  branch: string,
+) {
+  const [producingRun, followUpRuns] = await Promise.all([
+    db
+      .select({ id: runs.id, trigger: runs.trigger, receipt: runs.receipt })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.orgId, repo.orgId),
+          eq(runs.projectId, repo.projectId),
+          sql`${runs.gh}->>'branch' = ${branch}`,
+          // The builder run owns the accepted plan and original request. Newer
+          // review/repair runs on the same branch must not erase that lineage.
+          sql`${runs.mode} in ('builder', 'codex-builder')`,
+        ),
+      )
+      .orderBy(desc(runs.createdAt))
+      .limit(1)
+      .then((rows) => rows[0]),
+    db
+      .select({
+        id: runs.id,
+        mode: runs.mode,
+        trigger: runs.trigger,
+        receipt: runs.receipt,
+      })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.orgId, repo.orgId),
+          eq(runs.projectId, repo.projectId),
+          eq(runs.status, "succeeded"),
+          sql`${runs.gh}->>'branch' = ${branch}`,
+          inArray(runs.mode, ["address_review", "address-review", "ci_doctor", "ci-doctor"]),
+        ),
+      )
+      .orderBy(desc(runs.createdAt))
+      .limit(10),
+  ]);
+  if (!producingRun) return null;
+  const trigger = objectValue(producingRun.trigger);
+  const architectTrigger =
+    trigger.source === "plan_acceptance" ? objectValue(trigger.architectTrigger) : trigger;
+  const receipt = objectValue(producingRun.receipt);
+  const integrity = objectValue(receipt.integrity);
+  return {
+    producingRunId: producingRun.id,
+    originalRequest: objectValue(architectTrigger.request),
+    approvedPlan: typeof trigger.approvedPlan === "string" ? trigger.approvedPlan : null,
+    receipt: {
+      result: typeof receipt.result === "string" ? receipt.result : null,
+      checks: Array.isArray(receipt.checks) ? receipt.checks : [],
+      payloadSha256: typeof integrity.payload_sha256 === "string" ? integrity.payload_sha256 : null,
+    },
+    followUpRuns: followUpRuns.map((followUp) => {
+      const followUpTrigger = objectValue(followUp.trigger);
+      const followUpReceipt = objectValue(followUp.receipt);
+      const followUpIntegrity = objectValue(followUpReceipt.integrity);
+      return {
+        runId: followUp.id,
+        mode: followUp.mode,
+        review: objectValue(followUpTrigger.review),
+        workflowRun: objectValue(followUpTrigger.workflowRun),
+        receipt: {
+          result: typeof followUpReceipt.result === "string" ? followUpReceipt.result : null,
+          checks: Array.isArray(followUpReceipt.checks) ? followUpReceipt.checks : [],
+          payloadSha256:
+            typeof followUpIntegrity.payload_sha256 === "string"
+              ? followUpIntegrity.payload_sha256
+              : null,
+        },
+      };
+    }),
+  };
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function githubEventMatches(
+  triggers: unknown,
+  eventType: GithubAgentEvent,
+  payload: WebhookPayload,
+) {
+  if (!Array.isArray(triggers)) return false;
+  return triggers.some((raw) => {
+    if (!raw || typeof raw !== "object") return false;
+    const trigger = raw as { type?: unknown; event?: unknown; action?: unknown };
+    if (trigger.type !== "github" || trigger.event !== eventType) return false;
+    if (trigger.action === payload.action) return true;
+    return (
+      eventType === "pull_request" &&
+      trigger.action === "ready_for_review" &&
+      payload.action === "opened" &&
+      payload.pull_request?.draft !== true
+    );
+  });
+}
+
+function pullRequestContext(eventType: GithubAgentEvent, payload: WebhookPayload) {
+  if (eventType === "workflow_run") {
+    const pull = payload.workflow_run?.pull_requests?.[0];
+    return {
+      number: pull?.number ?? null,
+      title: null,
+      body: null,
+      url: payload.workflow_run?.html_url ?? null,
+      head: pull?.head?.ref ?? payload.workflow_run?.head_branch ?? null,
+      headSha: payload.workflow_run?.head_sha ?? null,
+      base: pull?.base?.ref ?? null,
+    };
+  }
+  return {
+    number: payload.pull_request?.number ?? payload.issue?.number ?? null,
+    title: payload.pull_request?.title ?? payload.issue?.title ?? null,
+    body: payload.pull_request?.body ?? payload.issue?.body ?? null,
+    url: payload.pull_request?.html_url ?? null,
+    head: payload.pull_request?.head?.ref ?? null,
+    headSha: payload.pull_request?.head?.sha ?? null,
+    base: payload.pull_request?.base?.ref ?? null,
+  };
 }
 
 async function processOperationalSignal(

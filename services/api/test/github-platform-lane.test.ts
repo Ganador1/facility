@@ -29,6 +29,12 @@ import type { AppConfig } from "../src/types.js";
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@127.0.0.1:5461/facility_test";
 const masterKey = Buffer.alloc(32, 10).toString("base64");
+let installationSequence = Date.now() * 1000;
+
+function nextInstallationId() {
+  installationSequence += 1;
+  return installationSequence;
+}
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
@@ -319,7 +325,7 @@ describe("github platform lane", async () => {
     await db
       .insert(orgs)
       .values({ id: otherOrgId, name: "Other Inst", slug: `inst-${Date.now()}` });
-    const otherInstallationId = 9_999_000 + Math.floor(Math.random() * 1000);
+    const otherInstallationId = nextInstallationId();
     await db.insert(githubInstallations).values({
       id: newId("int"),
       orgId: otherOrgId,
@@ -447,12 +453,19 @@ describe("github platform lane", async () => {
       status: "running",
       gh: { owner: repo.owner, repo: repo.name, issueNumber: 55 },
     });
+    const createdPulls: Array<Record<string, unknown>> = [];
     const finished = await finishRun(
       db,
       run,
       {
         status: "succeeded",
-        git: { changed: true, branch: "facility/run-12345678", headSha: "abc123" },
+        git: {
+          changed: true,
+          branch: "feature/agent-owned-delivery",
+          headSha: "abc123",
+          pullRequestTitle: "feat: deliver agent-owned metadata",
+          pullRequestBody: "## Summary\n\n- Preserve the builder's exact PR metadata.",
+        },
       },
       {
         config,
@@ -460,9 +473,12 @@ describe("github platform lane", async () => {
           ({
             rest: {
               pulls: {
-                create: async () => ({
-                  data: { number: 12, html_url: "https://github.com/o/r/pull/12" },
-                }),
+                create: async (input: Record<string, unknown>) => {
+                  createdPulls.push(input);
+                  return {
+                    data: { number: 12, html_url: "https://github.com/o/r/pull/12" },
+                  };
+                },
               },
               issues: {
                 createComment: async () => ({ data: { id: 1 } }),
@@ -474,6 +490,13 @@ describe("github platform lane", async () => {
       },
     );
     expect(finished.status).toBe("succeeded");
+    expect(createdPulls).toContainEqual(
+      expect.objectContaining({
+        head: "feature/agent-owned-delivery",
+        title: "feat: deliver agent-owned metadata",
+        body: "## Summary\n\n- Preserve the builder's exact PR metadata.",
+      }),
+    );
     const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
     expect((stored?.gh as { pr?: { number?: number } }).pr?.number).toBe(12);
     const [outcome] = await db.select().from(outcomes).where(eq(outcomes.runId, run.id));
@@ -510,7 +533,13 @@ describe("github platform lane", async () => {
       run,
       {
         status: "succeeded",
-        git: { changed: true, branch: "facility/run-preview", headSha: "preview123" },
+        git: {
+          changed: true,
+          branch: "feature/preview",
+          headSha: "preview123",
+          pullRequestTitle: "feat: deliver preview",
+          pullRequestBody: "## Summary\n\n- Deliver a preview environment.",
+        },
       },
       {
         config,
@@ -614,7 +643,13 @@ describe("github platform lane", async () => {
       run,
       {
         status: "succeeded",
-        git: { changed: true, branch: "facility/run-deadbeef", headSha: "deadbeef" },
+        git: {
+          changed: true,
+          branch: "fix/github-delivery",
+          headSha: "deadbeef",
+          pullRequestTitle: "fix: deliver pull request",
+          pullRequestBody: "## Summary\n\n- Exercise PR delivery failure handling.",
+        },
       },
       {
         config,
@@ -655,7 +690,7 @@ describe("github platform lane", async () => {
         .values({
           id: newId("int"),
           orgId,
-          installationId: Math.floor(Math.random() * 2_000_000_000) + 1,
+          installationId: nextInstallationId(),
           accountLogin: owner,
           targetType: "Organization",
         })

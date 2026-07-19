@@ -156,6 +156,21 @@ describe("sandbox api", async () => {
     expect(seqs).toEqual(Array.from({ length: count }, (_, i) => i + 1));
   });
 
+  it("persists large run events without exceeding PostgreSQL NOTIFY limits", async () => {
+    const runId = newId("run");
+    await insertRunnerRun("frt_large_event", "running", runId, {});
+    const text = "event-output-".repeat(2_000);
+
+    await expect(
+      appendRunEvents(db, orgId, runId, [{ type: "engine", data: { text } }]),
+    ).resolves.toHaveLength(1);
+
+    const stored = (
+      await db.select({ data: runEvents.data }).from(runEvents).where(eq(runEvents.runId, runId))
+    )[0];
+    expect((stored?.data as { text?: string })?.text).toBe(text);
+  });
+
   it("aws driver fails loudly as not_configured when env is missing", async () => {
     await expect(
       new AwsSandboxDriver().launch({
@@ -526,7 +541,18 @@ describe("sandbox api", async () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().repoToken).toBe("installation-token");
+    const hello = response.json();
+    expect(hello.repoToken).toBe("installation-token");
+    expect(hello.bundleUrl).not.toContain("?");
+    const bundlePath = new URL(hello.bundleUrl).pathname;
+    expect((await app.inject({ method: "GET", url: bundlePath })).statusCode).toBe(401);
+    const bundleResponse = await app.inject({
+      method: "GET",
+      url: bundlePath,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(bundleResponse.statusCode).toBe(200);
+    expect(bundleResponse.json().runId).toBe(runId);
     expect(tokenInput).toEqual({
       installationId: installationNumber,
       owner,

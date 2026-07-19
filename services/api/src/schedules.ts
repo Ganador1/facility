@@ -74,7 +74,7 @@ export async function runAgentSchedules(config: AppConfig, enqueue: Enqueue, now
                   orgId: agent.orgId,
                   projectId: agent.projectId,
                   agentDefId: agent.id,
-                  mode: "scheduled",
+                  mode: agent.name,
                   engine: agent.engine,
                   trigger: {
                     type: "schedule",

@@ -436,7 +436,7 @@ async function sessions(args, ctx, flags, command = "sessions") {
     if (!agent) throw new CliError("Usage: facility sessions trigger <project> <agent> [--input]");
     const input = parseInput(flags.input);
     const result = await api(ctx, "POST", `/v1/projects/${project.id}/runs`, {
-      body: { mode: "manual", agent, trigger: { source: "cli", agentName: agent, input } },
+      body: { mode: agent, agent, trigger: { source: "cli", agentName: agent, input } },
       idempotencyKey: flagString(flags["idempotency-key"], "--idempotency-key"),
     });
     output(ctx, result, () => `  ${accent("run")} ${result.id || "(queued)"} triggered\n`);

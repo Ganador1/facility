@@ -1,4 +1,5 @@
 import { App } from "@octokit/app";
+import { Octokit as RestOctokit } from "@octokit/rest";
 import type { AppConfig } from "../types.js";
 
 export type Octokit = {
@@ -58,6 +59,9 @@ export type Octokit = {
       createComment: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { id: number; html_url?: string } }>;
+      updateComment: (
+        args: Record<string, unknown>,
+      ) => Promise<{ data: { id: number; html_url?: string } }>;
       listForRepo: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
     };
     gitignore?: unknown;
@@ -79,6 +83,10 @@ export function createGithubClientFactory(config: AppConfig): GithubClientFactor
   const app = new App({
     appId: config.githubAppId,
     privateKey: config.githubAppPrivateKey,
+    // @octokit/app intentionally ships the lightweight core client. Facility's
+    // GitHub adapter uses the typed REST endpoint helpers, so install that client
+    // explicitly instead of relying on a type cast that is false at runtime.
+    Octokit: RestOctokit,
   });
   return async (installationId: number) =>
     (await app.getInstallationOctokit(installationId)) as unknown as Octokit;
@@ -336,6 +344,15 @@ export class FacilityGithubClient {
       body,
     });
     return { id: response.data.id, url: response.data.html_url };
+  }
+
+  async updateIssueComment(commentId: number, body: string): Promise<void> {
+    await this.octokit.rest.issues.updateComment({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      comment_id: commentId,
+      body,
+    });
   }
 
   async listIssues(params: {

@@ -10,8 +10,7 @@ import {
 } from "../envelopes.js";
 import { ApiError, notFound } from "../errors.js";
 import { createGithubInstallationTokenFactory } from "../github/client.js";
-import { signedBundleToken, verifyBundleToken } from "../sandbox/bundle-url.js";
-import { finishRun } from "../sandbox/orchestrator.js";
+import { finishRun, updateGithubRunProgress } from "../sandbox/orchestrator.js";
 import {
   appendRunEvents,
   type RunSandboxState,
@@ -104,11 +103,14 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         throw new ApiError(409, "run_terminal", "Run is no longer active");
       }
       await appendRunEvents(db, run.orgId, run.id, [{ type: "hello", data: {} }]);
-      const token = signedBundleToken(run.id, config.secretMasterKey);
+      await updateGithubRunProgress(db, run.id, "running", {
+        config,
+        githubClientFactory: app.githubClientFactory,
+      }).catch(() => undefined);
       return {
         // Sandbox-facing URL — the container reaches the API via this host, not
         // the operator's public URL (which may be localhost).
-        bundleUrl: `${config.sandboxApiUrl.replace(/\/$/, "")}/internal/runs/${run.id}/bundle?token=${token}`,
+        bundleUrl: `${config.sandboxApiUrl.replace(/\/$/, "")}/internal/runs/${run.id}/bundle`,
         virtualKey: await open(sandbox.sealedVirtualKey, config.secretMasterKey),
         // Least-privilege platform key (KB + tasks, project-scoped) for a
         // harness agent to maintain the KB via the /v1 API. Revoked at run end.
@@ -130,21 +132,15 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
     "/internal/runs/:runId/bundle",
     {
       config: { public: true },
+      preHandler: authenticate,
       schema: {
         params: Params,
-        querystring: z.object({ token: z.string() }),
         response: { 200: z.record(z.string(), z.unknown()) },
       },
     },
     async (request) => {
-      const { runId } = request.params as { runId: string };
-      const { token } = request.query as { token: string };
-      if (!verifyBundleToken(token, runId, config.secretMasterKey)) {
-        throw new ApiError(401, "unauthorized", "Invalid bundle token");
-      }
-      const run = (await db.select().from(runs).where(eq(runs.id, runId)).limit(1))[0];
-      if (!run || terminalStatus(run.status))
-        throw new ApiError(409, "run_terminal", "Run is terminal");
+      const run = (request as RunnerRequest).runnerRun;
+      if (!run) throw notFound("Run not found");
       const bundle = readSandbox(run.sandbox).bundle;
       if (!bundle) throw notFound("Bundle not found");
       return bundle as unknown as Record<string, unknown>;
@@ -171,6 +167,12 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         run.id,
         request.body as z.infer<typeof EventBatch>,
       );
+      if (events.some((event) => event.type === "agent_progress")) {
+        await updateGithubRunProgress(db, run.id, "running", {
+          config,
+          githubClientFactory: app.githubClientFactory,
+        }).catch(() => undefined);
+      }
       return { count: events.length };
     },
   );
@@ -385,6 +387,8 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
               headSha: z.string().optional(),
               changed: z.boolean(),
               pushError: z.string().optional(),
+              pullRequestTitle: z.string().optional(),
+              pullRequestBody: z.string().optional(),
             })
             .optional(),
           engineSessionId: z.string().optional(),
@@ -399,7 +403,14 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         status: "succeeded" | "failed" | "canceled";
         receipt?: Record<string, unknown>;
         error?: string;
-        git?: { branch?: string; headSha?: string; changed: boolean; pushError?: string };
+        git?: {
+          branch?: string;
+          headSha?: string;
+          changed: boolean;
+          pushError?: string;
+          pullRequestTitle?: string;
+          pullRequestBody?: string;
+        };
         engineSessionId?: string;
       };
       return (await finishRun(db, run, body, {

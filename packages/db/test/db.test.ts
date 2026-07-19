@@ -170,6 +170,10 @@ describe("db", async () => {
       .select()
       .from(schema.projects)
       .where(eq(schema.projects.orgId, orgId));
+    const bundledItems = await db
+      .select()
+      .from(schema.registryItems)
+      .where(eq(schema.registryItems.orgId, orgId));
     expect(seededActionTypes.map((action) => action.name).sort()).toEqual([
       "budget_override",
       "guard_candidate",
@@ -190,6 +194,31 @@ describe("db", async () => {
       },
     );
     expect(seededProjects).toHaveLength(0);
+    expect(bundledItems).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "learning-agent", kind: "agent_contract" }),
+        expect.objectContaining({ name: "product-chain", kind: "harness" }),
+      ]),
+    );
+
+    const learningItem = bundledItems.find((item) => item.name === "learning-agent");
+    if (!learningItem) throw new Error("learning-agent fixture missing");
+    await db
+      .update(schema.registryVersions)
+      .set({ content: "stale bundled contract", contentHash: "stale" })
+      .where(eq(schema.registryVersions.itemId, learningItem.id));
+    await seed(databaseUrl, { includeDemoData: false });
+    const refreshedLearning = (
+      await db
+        .select()
+        .from(schema.registryVersions)
+        .where(eq(schema.registryVersions.itemId, learningItem.id))
+        .limit(1)
+    )[0];
+    expect(refreshedLearning?.content).toContain("<progress_protocol>");
+    expect(refreshedLearning?.content).toContain(".agent-sdlc/progress.md");
+    expect(refreshedLearning?.content).toContain("<submission_protocol>");
+    expect(refreshedLearning?.contentHash).not.toBe("stale");
 
     const planAcceptance = seededActionTypes.find((action) => action.name === "plan_acceptance");
     if (!planAcceptance) throw new Error("plan_acceptance fixture missing");

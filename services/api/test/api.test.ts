@@ -17,6 +17,7 @@ import {
   inboundEvents,
   insertAuditEvent,
   integrations,
+  kbSpaces,
   llmRequests,
   migrate,
   orgMembers,
@@ -46,6 +47,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp, mintSessionCookie } from "../src/app.js";
 import type { GithubClientFactory } from "../src/github/client.js";
+import { validateProjectKb } from "../src/harness.js";
 import { deliverPendingWebhooks } from "../src/integrations/outbound.js";
 import { ensureWorkosUser } from "../src/routes/auth.js";
 import { runAgentSchedules } from "../src/schedules.js";
@@ -545,6 +547,15 @@ describe("api", async () => {
     });
     expect(created.statusCode).toBe(200);
     projectId = created.json().id;
+    const projectSpaces = await db
+      .select()
+      .from(kbSpaces)
+      .where(and(eq(kbSpaces.orgId, orgId), eq(kbSpaces.projectId, projectId)));
+    expect(projectSpaces).toHaveLength(1);
+    expect(await validateProjectKb(db, orgId, projectId)).toMatchObject({
+      ok: true,
+      errors: [],
+    });
     let listedProject = false;
     for (let offset = 0; !listedProject; offset += 100) {
       const listed = await app.inject({
@@ -1545,6 +1556,10 @@ describe("api", async () => {
       agentDefId: codexBuilder.id,
       engine: codexBuilder.engine,
       gh: architectRun.gh,
+      trigger: {
+        approvedPlan: "Approve the implementation plan",
+        architectTrigger: architectRun.trigger,
+      },
     });
     const queued = await db
       .select()
@@ -1723,14 +1738,20 @@ describe("api", async () => {
   });
 
   it("discovers action types and rejects invalid proposal dates and run/project mismatches", async () => {
-    const listed = await app.inject({
-      method: "GET",
-      url: "/v1/action-types",
-      headers: { cookie },
-    });
-    expect(listed.statusCode).toBe(200);
-    const actionType = listed.json().find((row: { name: string }) => row.name === "task_creation");
+    let actionType: { id: string; name: string } | undefined;
+    for (let offset = 0; !actionType; offset += 200) {
+      const listed = await app.inject({
+        method: "GET",
+        url: `/v1/action-types?limit=200&offset=${offset}`,
+        headers: { cookie },
+      });
+      expect(listed.statusCode).toBe(200);
+      const page = listed.json() as Array<{ id: string; name: string }>;
+      actionType = page.find((row) => row.name === "task_creation");
+      if (page.length < 200) break;
+    }
     expect(actionType?.id).toBeTruthy();
+    if (!actionType) throw new Error("task_creation action type missing");
     const loaded = await app.inject({
       method: "GET",
       url: `/v1/action-types/${actionType.id}`,
@@ -2990,16 +3011,22 @@ describe("api", async () => {
   });
 
   it("returns null for a project whose KB space has not been created", async () => {
-    const project = await app.inject({
-      method: "POST",
-      url: "/v1/projects",
-      headers: { cookie },
-      payload: { name: "Empty KB", slug: `empty-kb-${Date.now()}` },
-    });
-    expect(project.statusCode).toBe(200);
+    const legacyProject = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Legacy empty KB",
+          slug: `legacy-empty-kb-${Date.now()}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    expect(legacyProject).toBeTruthy();
     const space = await app.inject({
       method: "GET",
-      url: `/v1/projects/${project.json().id}/kb/space`,
+      url: `/v1/projects/${legacyProject?.id}/kb/space`,
       headers: { cookie },
     });
     expect(space.statusCode, space.body).toBe(200);
@@ -4408,6 +4435,7 @@ describe("api", async () => {
 
     expect(run.statusCode).toBe(200);
     expect(run.json().engine).toBe("claude_code");
+    expect(run.json().mode).toBe(agent.name);
   });
 
   it("creates and dispatches each scheduled run exactly once per UTC minute", async () => {
@@ -4442,7 +4470,7 @@ describe("api", async () => {
     const scheduled = await db.select().from(runs).where(eq(runs.agentDefId, target.agent.id));
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0]).toMatchObject({
-      mode: "scheduled",
+      mode: target.agent.name,
       engine: target.agent.engine,
       status: "queued",
       trigger: {

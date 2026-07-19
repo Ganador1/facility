@@ -47,6 +47,7 @@ import {
   upgradeRepo,
 } from "./github/kickstart.js";
 import { findAgentDef, laneFor } from "./github/router.js";
+import { renderGithubRunProgress } from "./github/run-progress.js";
 import {
   ensureActive,
   ensureLinks,
@@ -217,6 +218,8 @@ async function executePlanAcceptance(
   const builderCommand = architectRun.engine === "codex" ? "codex-builder" : "builder";
   const builder = await findAgentDef(db, proposal.orgId, proposal.projectId, builderCommand);
   if (!builder) throw new Error("plan_acceptance_builder_not_configured");
+  const builderGh = { ...objectOrEmpty(architectRun.gh) };
+  delete builderGh.progressComment;
 
   const createdRun = (
     await db
@@ -233,8 +236,9 @@ async function executePlanAcceptance(
           proposalId: proposal.id,
           architectRunId: architectRun.id,
           architectTrigger: architectRun.trigger,
+          approvedPlan: proposal.contextMd,
         },
-        gh: architectRun.gh,
+        gh: builderGh,
         createdBy: { type: actor.type, id: actor.id, proposalId: proposal.id },
       })
       .onConflictDoNothing()
@@ -256,8 +260,107 @@ async function executePlanAcceptance(
         architectRunId: architectRun.id,
       },
     });
+    await createBuilderProgressComment(db, createdRun, architectRun, builderCommand, options);
   }
   await options.enqueue?.("runs.dispatch", { runId: run.id, orgId: proposal.orgId });
+}
+
+async function createBuilderProgressComment(
+  db: Db,
+  run: typeof runs.$inferSelect,
+  architectRun: typeof runs.$inferSelect,
+  command: string,
+  options: ExecuteApprovedProposalOptions,
+) {
+  const gh = objectOrEmpty(run.gh);
+  const owner = stringField(gh.owner);
+  const name = stringField(gh.repo);
+  const issueNumber =
+    typeof gh.issueNumber === "number" && Number.isInteger(gh.issueNumber) ? gh.issueNumber : null;
+  if (!owner || !name || !issueNumber) return;
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(
+        and(
+          eq(repos.orgId, run.orgId),
+          eq(repos.projectId, run.projectId),
+          eq(repos.owner, owner),
+          eq(repos.name, name),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!repo?.installationId) return;
+  const installation = (
+    await db
+      .select()
+      .from(githubInstallations)
+      .where(
+        and(
+          eq(githubInstallations.orgId, run.orgId),
+          eq(githubInstallations.id, repo.installationId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!installation || installation.suspendedAt) return;
+  const factory =
+    options.githubFactory ??
+    (options.config?.githubAppId && options.config.githubAppPrivateKey
+      ? createGithubClientFactory(options.config)
+      : null);
+  if (!factory) return;
+  const architectTrigger = objectOrEmpty(architectRun.trigger);
+  const request = objectOrEmpty(architectTrigger.request);
+  const architectProgress = objectOrEmpty(objectOrEmpty(architectRun.gh).progressComment);
+  try {
+    const client = new FacilityGithubClient(await factory(installation.installationId), {
+      owner,
+      repo: name,
+      defaultBranch: repo.defaultBranch,
+    });
+    const progress = await client.createIssueComment(
+      issueNumber,
+      renderGithubRunProgress({
+        runId: run.id,
+        mode: "builder",
+        command: `/${command}`,
+        phase: "queued",
+        issueNumber,
+        issueTitle: stringField(request.title) ?? stringField(architectProgress.issueTitle),
+        sender: stringField(architectProgress.sender),
+      }),
+    );
+    await db
+      .update(runs)
+      .set({
+        gh: {
+          ...gh,
+          progressComment: {
+            id: progress.id,
+            url: progress.url ?? null,
+            command: `/${command}`,
+            sender: stringField(architectProgress.sender) ?? null,
+            issueTitle:
+              stringField(request.title) ?? stringField(architectProgress.issueTitle) ?? null,
+          },
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
+  } catch (error) {
+    await appendRunEvents(db, run.orgId, run.id, [
+      {
+        type: "artifact_error",
+        data: {
+          kind: "github_progress_comment_failed",
+          error: error instanceof Error ? error.message : String(error),
+        },
+      },
+    ]);
+  }
 }
 
 async function loadPlanBuilderRun(db: Db, proposal: typeof proposals.$inferSelect) {
@@ -477,7 +580,7 @@ async function executeKnownMcpTool(
           orgId,
           projectId,
           agentDefId: agent.id,
-          mode: "manual",
+          mode: agent.name,
           engine: agent.engine,
           trigger: { source: "mcp", agentName, input: args.input },
           createdBy: actor,

@@ -58,6 +58,23 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https" {
   to_port           = 443
 }
 
+data "aws_ec2_managed_prefix_list" "cloudfront_origin" {
+  count = var.enable_cloudfront_api_endpoint ? 1 : 0
+
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "alb_http_cloudfront" {
+  count = var.enable_cloudfront_api_endpoint ? 1 : 0
+
+  security_group_id = aws_security_group.alb.id
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront_origin[0].id
+  from_port         = 80
+  ip_protocol       = "tcp"
+  to_port           = 80
+  description       = "CloudFront origin traffic to the API"
+}
+
 resource "aws_vpc_security_group_egress_rule" "alb_to_api" {
   security_group_id            = aws_security_group.alb.id
   referenced_security_group_id = aws_security_group.service.id

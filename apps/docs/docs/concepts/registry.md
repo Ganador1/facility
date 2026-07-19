@@ -8,6 +8,10 @@ Skills, rules, agent contracts, harnesses, guards, modules, and template
 sets are **registry items** — scoped bundled, organization, or project, with
 immutable published versions.
 
+Skill bodies may be stored as plain Markdown or as a complete `SKILL.md` with
+YAML frontmatter. At run start Facility materializes a valid skill package for
+both supported agent discovery paths; existing frontmatter is preserved.
+
 ## Scopes
 
 - **bundled** — ships with the platform: the crew contracts (architect,

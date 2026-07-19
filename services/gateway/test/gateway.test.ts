@@ -278,6 +278,26 @@ describe("gateway", async () => {
     expect(row?.costCents).toBe(225);
   });
 
+  it("3b. OpenAI Responses streaming preserves the native request shape", async () => {
+    const setup = await setupVirtualKey({ provider: "openai", baseUrl: `${stubOrigin}/openai/v1` });
+    const response = await postOpenAiResponses(setup.secret, {
+      model: "gpt-5.6-sol",
+      stream: true,
+      input: "hello",
+    });
+    expect(response.status).toBe(200);
+    await response.json();
+    await waitForRequestCount(1);
+    expect(stubState.lastOpenAiRequest).toMatchObject({
+      model: "gpt-5.6-sol",
+      stream: true,
+      input: "hello",
+    });
+    expect(
+      (stubState.lastOpenAiRequest as { stream_options?: unknown }).stream_options,
+    ).toBeUndefined();
+  });
+
   it("4. Hard budget exceeded returns 402 and skips upstream", async () => {
     const setup = await setupVirtualKey({
       provider: "anthropic",
@@ -889,6 +909,14 @@ describe("gateway", async () => {
     });
   }
 
+  async function postOpenAiResponses(secret: string, body: unknown) {
+    return fetch(`${gatewayOrigin}/openai/v1/responses`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
   async function waitForRequestCount(count: number) {
     await waitFor(async () => {
       const rows = await db
@@ -979,11 +1007,16 @@ async function buildStub(state: StubState) {
     };
   });
 
-  app.post("/openai/v1/responses", async () => ({
-    id: "resp_stub",
-    output: [],
-    usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
-  }));
+  app.post("/openai/v1/responses", async (request) => {
+    state.openaiCalls += 1;
+    expect(request.headers.authorization).toBe("Bearer real-openai");
+    state.lastOpenAiRequest = request.body;
+    return {
+      id: "resp_stub",
+      output: [],
+      usage: { input_tokens: 1_000_000, output_tokens: 1_000_000 },
+    };
+  });
 
   return app;
 }

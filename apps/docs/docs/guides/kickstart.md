@@ -8,8 +8,9 @@ From zero to a working factory:
 
 1. **Create the project** in the web app or through the API. The CLI can list
    and get projects, but it does not create them.
-2. **Connect the repo.** Install your GitHub App on the repository; it
-   appears in the project's repo picker.
+2. **Connect the repo.** Configure and install your GitHub App using the
+   [self-hosting guide](../self-host/github-app); it then appears in the
+   project's repo picker.
 3. **Answer the six questions.** Default branch, provision command, check
    commands, modules, model tier, board (optional). The platform pre-fills
    what it can detect — a Node repo with pnpm and Playwright gets the right
@@ -32,7 +33,30 @@ From zero to a working factory:
    preview, review the PR, and squash-merge it in GitHub. On merge the
    fingerprint baseline is recorded and the project reports **system ok**.
 
-Now open an issue and comment `/architect`.
+Now open an issue and comment `/architect`. The agent's task-specific checklist
+and final plan appear in one comment. Continue entirely from GitHub: comment
+`/builder` to approve that plan, or `/architect <feedback>` to request another
+planning pass. The builder owns the delivered semantic branch, commit message,
+PR title, and PR description; Facility signs and publishes that exact delivery
+through the installed GitHub App.
+
+## Choose one execution lane per role
+
+Architect and builder commands can run in repository CI (`repo`) or in a
+Facility sandbox (`platform`). Choose exactly one owner for each role during
+kickstart. When the platform owns a role, the generated GitHub workflow keeps
+the same job as a visible fallback but gates it off, so a slash command cannot
+start duplicate agents.
+
+```bash
+facility kickstart payments \
+  --repo acme/payments \
+  --execution-lane '{"architect":"platform","builder":"platform"}'
+```
+
+After merging the kickstart PR, follow the
+[complete delivery-loop validation](validate-delivery-loop) before onboarding a
+production repository.
 
 ## Defaults that ship
 

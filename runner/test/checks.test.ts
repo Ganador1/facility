@@ -82,13 +82,56 @@ describe("builder delivery invariant", () => {
     ).toBe("delivery_push_failed");
   });
 
-  it("accepts a changed commit pushed to a delivery branch", () => {
+  it("accepts a changed commit with agent-owned pull request metadata", () => {
     expect(
       deliveryFailure(
         { mode: "builder", repo },
-        { changed: true, branch: "facility/run-1", headSha: "abc" },
+        {
+          changed: true,
+          branch: "feature/task",
+          headSha: "abc",
+          pullRequestTitle: "feat: deliver task",
+          pullRequestBody: "## Summary\n\n- Deliver the requested task.",
+        },
       ),
     ).toBeNull();
+  });
+
+  it("rejects a builder result that drops the agent-owned PR title or body", () => {
+    const delivered = { changed: true, branch: "feature/task", headSha: "abc" };
+    expect(deliveryFailure({ mode: "builder", repo }, delivered)).toBe("delivery_pr_title_missing");
+    expect(
+      deliveryFailure(
+        { mode: "builder", repo },
+        { ...delivered, pullRequestTitle: "feat: deliver task" },
+      ),
+    ).toBe("delivery_pr_body_missing");
+  });
+
+  it("fails read-only agents that alter the repository", () => {
+    expect(deliveryFailure({ mode: "review", repo }, { changed: true })).toBe(
+      "repository_changes_not_allowed",
+    );
+    expect(deliveryFailure({ mode: "security-sweep", repo }, { changed: false })).toBeNull();
+    expect(deliveryFailure({ mode: "learning", repo }, { changed: true })).toBe(
+      "repository_changes_not_allowed",
+    );
+    expect(deliveryFailure({ mode: "custom", repo }, { changed: true })).toBe(
+      "repository_changes_not_allowed",
+    );
+  });
+
+  it("accepts a no-op repair or a signed update to the existing PR branch", () => {
+    expect(deliveryFailure({ mode: "address-review", repo }, { changed: false })).toBeNull();
+    expect(
+      deliveryFailure(
+        { mode: "ci-doctor", repo },
+        { changed: true, branch: "feature/task", headSha: "signed" },
+      ),
+    ).toBeNull();
+    expect(deliveryFailure({ mode: "ci-doctor", repo }, { changed: true })).toBe(
+      "delivery_branch_missing",
+    );
   });
 });
 

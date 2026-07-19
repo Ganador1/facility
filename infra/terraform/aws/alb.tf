@@ -14,8 +14,14 @@ resource "aws_lb" "public" {
 
 resource "aws_lb_target_group" "service" {
   for_each = {
-    api = local.ecs_services.api
-    web = local.ecs_services.web
+    api = {
+      port        = local.ports.api
+      health_path = "/health"
+    }
+    web = {
+      port        = local.ports.web
+      health_path = "/"
+    }
   }
 
   name        = "${local.name_prefix}-${each.key}"
@@ -23,6 +29,8 @@ resource "aws_lb_target_group" "service" {
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = aws_vpc.facility.id
+
+  deregistration_delay = var.target_deregistration_delay_seconds
 
   health_check {
     enabled             = true
@@ -41,12 +49,17 @@ resource "aws_lb_listener" "http" {
   protocol          = "HTTP"
 
   default_action {
-    type = "fixed-response"
+    type             = var.enable_cloudfront_api_endpoint ? "forward" : "fixed-response"
+    target_group_arn = var.enable_cloudfront_api_endpoint ? aws_lb_target_group.service["api"].arn : null
 
-    fixed_response {
-      content_type = "text/plain"
-      message_body = "Facility hostname not configured"
-      status_code  = "404"
+    dynamic "fixed_response" {
+      for_each = var.enable_cloudfront_api_endpoint ? [] : [1]
+
+      content {
+        content_type = "text/plain"
+        message_body = "Facility hostname not configured"
+        status_code  = "404"
+      }
     }
   }
 }

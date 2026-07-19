@@ -1,12 +1,23 @@
 import { newId } from "@facility/core";
-import { agentDefs, type FacilityDb, repos, runEvents, runs } from "@facility/db";
-import { and, eq } from "drizzle-orm";
+import {
+  actionTypes,
+  agentDefs,
+  type FacilityDb,
+  insertAuditEvent,
+  proposalEvents,
+  proposals,
+  repos,
+  runEvents,
+  runs,
+} from "@facility/db";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import type { FacilityGithubClient } from "./client.js";
+import { renderGithubRunProgress } from "./run-progress.js";
 
 export type TriggerPayload = {
   action?: string;
   comment?: { id?: number; body?: string };
-  issue?: { number?: number; pull_request?: unknown };
+  issue?: { number?: number; title?: string; body?: string | null; pull_request?: unknown };
   repository?: { id?: number; name?: string; owner?: { login?: string }; default_branch?: string };
   sender?: { login?: string; type?: string };
 };
@@ -37,7 +48,8 @@ export async function routeTrigger(
   const body = payload.comment?.body ?? "";
   const resolved = resolveSlashCommand(body);
   if (resolved.ambiguous) return { routed: false, reason: "ambiguous_command" };
-  if (!resolved.command) return { routed: false, reason: "no_command" };
+  const command = resolved.command;
+  if (!command) return { routed: false, reason: "no_command" };
   const owner = payload.repository?.owner?.login;
   const name = payload.repository?.name;
   const sender = payload.sender?.login;
@@ -57,37 +69,121 @@ export async function routeTrigger(
   )[0];
   if (!repo) return { routed: false, reason: "repo_unmanaged" };
   if (!(await client.userCanWrite(sender))) return { routed: false, reason: "non_writer" };
-  const lane = laneFor(repo, resolved.command);
+  const lane = laneFor(repo, command);
   if (lane !== "platform") return { routed: false, reason: "repo_lane" };
   const agent = await findAgentDef(
     db,
     repo.orgId,
     repo.projectId,
-    resolved.agentCommand ?? resolved.command,
+    resolved.agentCommand ?? command,
   );
   if (!agent) return { routed: false, reason: "no_agent" };
-  const run = (
-    await db
-      .insert(runs)
-      .values({
-        id: newId("run"),
-        orgId: repo.orgId,
-        projectId: repo.projectId,
-        agentDefId: agent.id,
-        mode: resolved.command,
-        engine: agent.engine,
-        trigger: {
-          type: "github_comment",
-          repo: { id: repo.id, owner, name },
-          issue: { number: issueNumber },
-          comment: { id: commentId },
+  const accepted =
+    command === "builder"
+      ? await githubPlanAcceptance(db, {
+          orgId: repo.orgId,
+          projectId: repo.projectId,
+          owner,
+          repo: name,
+          issueNumber,
+        })
+      : null;
+  if (accepted?.blockedRunId) {
+    return { routed: false, reason: "plan_already_accepted", runId: accepted.blockedRunId };
+  }
+  const githubTrigger = {
+    type: "github_comment",
+    repo: { id: repo.id, owner, name },
+    issue: { number: issueNumber },
+    comment: { id: commentId },
+    // Preserve the end-user request in the immutable run scope. The runner
+    // treats scope as untrusted data beneath the agent contract, but without
+    // this context an agent only received numeric GitHub IDs and could not know
+    // what work the user requested.
+    request: githubRequestContext(payload),
+  };
+  const run = await db.transaction(async (tx) => {
+    if (accepted?.proposal) {
+      const claimed = (
+        await tx
+          .update(proposals)
+          .set({
+            state: "executed",
+            decidedBy: sender,
+            decidedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(proposals.orgId, accepted.proposal.orgId),
+              eq(proposals.id, accepted.proposal.id),
+              eq(proposals.state, "open"),
+            ),
+          )
+          .returning({ id: proposals.id })
+      )[0];
+      if (!claimed) throw new Error("github_plan_acceptance_not_open");
+    }
+    const created = (
+      await tx
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId: repo.orgId,
+          projectId: repo.projectId,
+          agentDefId: agent.id,
+          mode: command,
+          engine: agent.engine,
+          trigger: accepted?.proposal
+            ? {
+                source: "plan_acceptance",
+                proposalId: accepted.proposal.id,
+                architectRunId: accepted.architectRun.id,
+                architectTrigger: accepted.architectRun.trigger,
+                approvedPlan: accepted.proposal.contextMd,
+                approval: { type: "github", login: sender, commentId },
+              }
+            : githubTrigger,
+          gh: { owner, repo: name, issueNumber, commentId },
+          createdBy: { type: "github", login: sender },
+        })
+        .returning()
+    )[0];
+    if (!created) return undefined;
+    if (accepted?.proposal) {
+      const actor = { type: "github", id: sender };
+      await tx.insert(proposalEvents).values([
+        {
+          orgId: accepted.proposal.orgId,
+          proposalId: accepted.proposal.id,
+          seq: 2,
+          type: "approved",
+          actor,
+          data: { source: "github_command" },
         },
-        gh: { owner, repo: name, issueNumber, commentId },
-        createdBy: { type: "github", login: sender },
-      })
-      .returning()
-  )[0];
+        {
+          orgId: accepted.proposal.orgId,
+          proposalId: accepted.proposal.id,
+          seq: 3,
+          type: "executed",
+          actor,
+          data: { source: "github_command", builderRunId: created.id },
+        },
+      ]);
+    }
+    return created;
+  });
   if (!run) return { routed: false, reason: "insert_failed" };
+  if (accepted?.proposal) {
+    await insertAuditEvent(db, {
+      orgId: accepted.proposal.orgId,
+      projectId: accepted.proposal.projectId,
+      actor: { type: "user", id: `github:${sender}`, name: sender },
+      action: "hitl.decided",
+      target: { type: "proposal", id: accepted.proposal.id },
+      payload: { decision: "approve", source: "github_command", builder_run_id: run.id },
+    });
+  }
   await db.insert(runEvents).values({
     orgId: repo.orgId,
     runId: run.id,
@@ -97,12 +193,121 @@ export async function routeTrigger(
   });
   // Actually dispatch to a sandbox — parity with manual run creation. The
   // slash-command path created the run but never enqueued it, so it never ran.
+  // The GitHub comment is the end-user's live surface for this run. Comment
+  // failures are recorded but never duplicate or suppress an already-created
+  // run; the dispatcher/reconciler remains the source of execution truth.
+  try {
+    const progress = await client.createIssueComment(
+      issueNumber,
+      renderGithubRunProgress({
+        runId: run.id,
+        mode: command,
+        command: `/${resolved.agentCommand ?? command}`,
+        phase: "queued",
+        issueNumber,
+        issueTitle: payload.issue?.title,
+        sender,
+      }),
+    );
+    await db
+      .update(runs)
+      .set({
+        gh: {
+          ...objectOrEmpty(run.gh),
+          progressComment: {
+            id: progress.id,
+            url: progress.url ?? null,
+            command: `/${resolved.agentCommand ?? command}`,
+            sender,
+            issueTitle: payload.issue?.title ?? null,
+          },
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(eq(runs.orgId, repo.orgId), eq(runs.id, run.id)));
+  } catch (error) {
+    await db.insert(runEvents).values({
+      orgId: repo.orgId,
+      runId: run.id,
+      seq: 2,
+      type: "artifact_error",
+      data: {
+        kind: "github_progress_comment_failed",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    });
+  }
   await enqueue?.("runs.dispatch", { runId: run.id, orgId: repo.orgId });
-  await client.createIssueComment(
-    issueNumber,
-    `Queued Facility ${resolved.agentCommand ?? resolved.command} run ${run.id}.`,
-  );
   return { routed: true, runId: run.id };
+}
+
+async function githubPlanAcceptance(
+  db: FacilityDb,
+  input: {
+    orgId: string;
+    projectId: string;
+    owner: string;
+    repo: string;
+    issueNumber: number;
+  },
+) {
+  const latest = (
+    await db
+      .select({ proposal: proposals, architectRun: runs })
+      .from(proposals)
+      .innerJoin(actionTypes, eq(actionTypes.id, proposals.actionTypeId))
+      .innerJoin(runs, eq(runs.id, proposals.runId))
+      .where(
+        and(
+          eq(proposals.orgId, input.orgId),
+          eq(proposals.projectId, input.projectId),
+          eq(actionTypes.name, "plan_acceptance"),
+          eq(runs.status, "succeeded"),
+          gt(proposals.expiresAt, new Date()),
+          sql`${runs.gh} ->> 'owner' = ${input.owner}`,
+          sql`${runs.gh} ->> 'repo' = ${input.repo}`,
+          sql`(${runs.gh} ->> 'issueNumber')::int = ${input.issueNumber}`,
+        ),
+      )
+      .orderBy(desc(proposals.createdAt))
+      .limit(1)
+  )[0];
+  if (!latest) return null;
+  if (latest.proposal.state === "open") return { ...latest, blockedRunId: null };
+  if (["approved", "executing", "executed"].includes(latest.proposal.state)) {
+    const existing = (
+      await db
+        .select({ id: runs.id })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.orgId, input.orgId),
+            sql`${runs.trigger} ->> 'proposalId' = ${latest.proposal.id}`,
+          ),
+        )
+        .limit(1)
+    )[0];
+    return { ...latest, blockedRunId: existing?.id ?? latest.architectRun.id };
+  }
+  return null;
+}
+
+export function githubRequestContext(payload: TriggerPayload) {
+  return {
+    title: nullableText(payload.issue?.title),
+    body: nullableText(payload.issue?.body),
+    comment: nullableText(payload.comment?.body),
+  };
+}
+
+function nullableText(value: unknown) {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function objectOrEmpty(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 export function laneFor(repo: typeof repos.$inferSelect, command: string): "repo" | "platform" {

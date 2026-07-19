@@ -30,6 +30,18 @@ describe("engine parsers", () => {
     expect(String(events[1]?.data?.input).length).toBeLessThanOrEqual(503);
   });
 
+  it("maps Codex 0.144 item envelopes into publishable assistant events", () => {
+    expect(
+      parseCodexJsonlLine(
+        '{"type":"item.completed","item":{"id":"item_19","type":"agent_message","text":"Implementation-ready plan"}}',
+      ),
+    ).toEqual({ type: "assistant", data: { text: "Implementation-ready plan" } });
+    expect(
+      parseCodexJsonlLine('{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}')
+        ?.type,
+    ).toBe("engine_result");
+  });
+
   it("extracts the Claude stream-json session id from init/system lines", () => {
     expect(
       parseClaudeSessionId(

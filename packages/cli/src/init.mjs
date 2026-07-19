@@ -401,6 +401,8 @@ export async function init(flags, pkgRoot, version) {
     CODEX_PLAN_MODEL: models.codexPlan,
     CODEX_EFFORT: "xhigh",
     CODEX_VERSION: "0.144.6",
+    ARCHITECT_REPO_LANE: "true",
+    BUILDER_REPO_LANE: "true",
     PROVISION_CMD: provisionCmd,
     CHECKS_INLINE: checksInline,
     CHECKS_RUN: checksRun(checks),

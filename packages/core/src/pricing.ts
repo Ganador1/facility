@@ -12,6 +12,9 @@ export const MODEL_PRICES_USD_PER_1M = {
   "claude-haiku-4-5": { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
   "gpt-5.5": { input: 10, output: 30, cacheRead: 1, cacheWrite: 10 },
   "gpt-5.5-mini": { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0.25 },
+  "gpt-5.6-sol": { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+  "gpt-5.6-terra": { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 },
+  "gpt-5.6-luna": { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 },
   custom: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 } as const satisfies Record<string, ModelPrice>;
 
@@ -29,6 +32,7 @@ const MICRO_CENTS_PER_CENT = 1_000_000;
 // "claude-haiku-4-5-20251001", "gpt-5.5-2025-xx") map to our price keys.
 const MODEL_ALIASES: Record<string, keyof typeof MODEL_PRICES_USD_PER_1M> = {
   "claude-3-5-haiku": "claude-haiku-4-5",
+  "gpt-5.6": "gpt-5.6-sol",
 };
 
 /** Resolve a provider model id to a known price key, tolerating date suffixes. */

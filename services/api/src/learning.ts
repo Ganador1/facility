@@ -1,5 +1,6 @@
 import { FacilityReceiptSchema, newId, verifyFacilityReceipt } from "@facility/core";
 import {
+  actionTypes,
   agentDefs,
   budgets,
   createDb,
@@ -19,6 +20,7 @@ import {
   FacilityGithubClient,
   type GithubClientFactory,
 } from "./github/client.js";
+import { ensureProjectKbSpace } from "./harness.js";
 import type { AppConfig } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -30,6 +32,7 @@ export type LearningPacket = {
   window: { from: string; to: string; days: 30 };
   orgId: string;
   projectId: string;
+  proposalActionTypes: unknown[];
   runs: unknown[];
   receipts: unknown[];
   runEvents: unknown[];
@@ -45,6 +48,8 @@ export type LearningPacket = {
   evidenceWarnings: string[];
   digestMd: string;
 };
+
+export const LEARNING_PACKET_MAX_CHARS = 600_000;
 
 /**
  * Build the deterministic, database-backed portion of a learning packet.
@@ -147,6 +152,26 @@ export async function assembleLearningPacket(
     )
     .orderBy(desc(platformIssues.lastSeen))
     .limit(500);
+  const proposalActionTypes = await db
+    .select({
+      id: actionTypes.id,
+      name: actionTypes.name,
+      payloadSchema: actionTypes.payloadSchema,
+      defaultTtlHours: actionTypes.defaultTtlHours,
+    })
+    .from(actionTypes)
+    .where(
+      and(
+        eq(actionTypes.orgId, orgId),
+        inArray(actionTypes.name, [
+          "skill_proposal",
+          "rule_proposal",
+          "guard_candidate",
+          "kb_amendment",
+        ]),
+      ),
+    )
+    .orderBy(actionTypes.name);
   const projectAgents = await db
     .select({ id: agentDefs.id })
     .from(agentDefs)
@@ -347,10 +372,13 @@ export async function assembleLearningPacket(
     window,
     orgId,
     projectId,
-    runs: windowRuns,
+    proposalActionTypes,
+    // Never nest a prior learning run's packet inside the next packet. Besides
+    // duplicating evidence, that creates exponential request growth over time.
+    runs: windowRuns.map(summarizeLearningRun),
     receipts,
-    runEvents: events,
-    guardResults,
+    runEvents: events.map((event) => sanitizeEvidence(event)),
+    guardResults: guardResults.map((result) => sanitizeEvidence(result)),
     outcomes: projectOutcomes,
     githubReviewThreads: [],
     budgetBreaches,
@@ -437,8 +465,13 @@ export async function runLearningNightly(
       .from(agentDefs)
       .where(and(eq(agentDefs.name, "learning"), eq(agentDefs.enabled, true)));
     for (const agent of agents) {
+      if (agent.harnessItemId) {
+        await ensureProjectKbSpace(db, agent.orgId, agent.projectId);
+      }
       const basePacket = await assembleLearningPacket(db, agent.orgId, agent.projectId);
-      const packet = await attachGithubReviewEvidence(db, basePacket, githubFactory);
+      const packet = boundLearningPacket(
+        await attachGithubReviewEvidence(db, basePacket, githubFactory),
+      );
       const packetUrl = `facility://learning-packets/${agent.projectId}/${packet.date}`;
       const run = (
         await db
@@ -466,6 +499,79 @@ export async function runLearningNightly(
   }
 }
 
+/**
+ * Keep nightly evidence below the model request limit without hiding that a
+ * sample was taken. Collections are newest-first, sanitized, and independently
+ * budgeted so one verbose transcript/event cannot crowd out every other signal.
+ */
+export function boundLearningPacket(
+  packet: LearningPacket,
+  maxChars = LEARNING_PACKET_MAX_CHARS,
+): LearningPacket {
+  const collectionBudgets: Record<
+    keyof Pick<
+      LearningPacket,
+      | "runs"
+      | "receipts"
+      | "runEvents"
+      | "guardResults"
+      | "outcomes"
+      | "githubReviewThreads"
+      | "budgetBreaches"
+      | "proposals"
+      | "proposalEvents"
+      | "historicalRejections"
+      | "improvementEffectiveness"
+      | "issues"
+    >,
+    { items: number; chars: number }
+  > = {
+    runs: { items: 150, chars: 60_000 },
+    receipts: { items: 150, chars: 60_000 },
+    runEvents: { items: 500, chars: 60_000 },
+    guardResults: { items: 250, chars: 30_000 },
+    outcomes: { items: 100, chars: 20_000 },
+    githubReviewThreads: { items: 50, chars: 50_000 },
+    budgetBreaches: { items: 100, chars: 10_000 },
+    proposals: { items: 100, chars: 30_000 },
+    proposalEvents: { items: 200, chars: 30_000 },
+    historicalRejections: { items: 100, chars: 30_000 },
+    improvementEffectiveness: { items: 100, chars: 30_000 },
+    issues: { items: 150, chars: 30_000 },
+  };
+  const bounded = { ...packet };
+  const samplingWarnings: string[] = [];
+  for (const [field, budget] of Object.entries(collectionBudgets) as [
+    keyof typeof collectionBudgets,
+    { items: number; chars: number },
+  ][]) {
+    const source = packet[field] as unknown[];
+    const sample = compactEvidenceCollection(source, budget.items, budget.chars);
+    (bounded[field] as unknown[]) = sample;
+    if (sample.length < source.length) {
+      samplingWarnings.push(
+        `Learning evidence sampled ${sample.length} of ${source.length} ${field} records to stay within the model input budget.`,
+      );
+    }
+  }
+  bounded.evidenceWarnings = [
+    ...new Set([
+      ...packet.evidenceWarnings.map((warning) => truncateText(warning, 2_000)),
+      ...samplingWarnings,
+    ]),
+  ];
+  bounded.digestMd = packet.digestMd.replace(
+    /- Evidence warnings: \d+/,
+    `- Evidence warnings: ${bounded.evidenceWarnings.length}`,
+  );
+  if (JSON.stringify(bounded).length > maxChars) {
+    throw new Error(
+      `bounded learning packet exceeds ${maxChars} characters; reduce collection budgets`,
+    );
+  }
+  return bounded;
+}
+
 function withReviewDigest(packet: LearningPacket, evidence: unknown[], ...warnings: string[]) {
   const evidenceWarnings = [...new Set([...packet.evidenceWarnings, ...warnings])];
   return {
@@ -476,6 +582,69 @@ function withReviewDigest(packet: LearningPacket, evidence: unknown[], ...warnin
       .replace("- GitHub review packets: 0", `- GitHub review packets: ${evidence.length}`)
       .replace(/- Evidence warnings: \d+/, `- Evidence warnings: ${evidenceWarnings.length}`),
   };
+}
+
+function summarizeLearningRun(run: typeof runs.$inferSelect) {
+  return {
+    id: run.id,
+    agentDefId: run.agentDefId,
+    mode: run.mode,
+    engine: run.engine,
+    status: run.status,
+    trigger: sanitizeEvidence(run.trigger),
+    gh: sanitizeEvidence(run.gh),
+    error: run.error ? truncateText(run.error, 2_000) : null,
+    queuedAt: run.queuedAt,
+    startedAt: run.startedAt,
+    endedAt: run.endedAt,
+    createdBy: sanitizeEvidence(run.createdBy),
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  };
+}
+
+function compactEvidenceCollection(values: unknown[], maxItems: number, maxChars: number) {
+  const result: unknown[] = [];
+  let used = 2;
+  for (const value of values.slice(0, maxItems)) {
+    const sanitized = sanitizeEvidence(value);
+    const length = JSON.stringify(sanitized).length + (result.length ? 1 : 0);
+    if (used + length > maxChars) break;
+    result.push(sanitized);
+    used += length;
+  }
+  return result;
+}
+
+function sanitizeEvidence(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) return value ?? null;
+  if (typeof value === "string") return truncateText(value, 2_000);
+  if (typeof value === "number" || typeof value === "boolean") return value;
+  if (value instanceof Date) return value.toISOString();
+  if (depth >= 6) return "[nested evidence omitted]";
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 30).map((item) => sanitizeEvidence(item, depth + 1));
+    if (items.length < value.length) items.push(`[${value.length - items.length} items omitted]`);
+    return items;
+  }
+  if (typeof value !== "object") return String(value);
+  const entries = Object.entries(value as Record<string, unknown>);
+  const result: Record<string, unknown> = {};
+  for (const [childKey, childValue] of entries.slice(0, 60)) {
+    if (childKey === "packet") {
+      result[childKey] = "[prior learning packet omitted; its evidence is sampled separately]";
+      continue;
+    }
+    result[childKey] = sanitizeEvidence(childValue, depth + 1);
+  }
+  if (entries.length > 60) result._omittedFields = entries.length - 60;
+  return result;
+}
+
+function truncateText(value: string, maxChars: number) {
+  return value.length <= maxChars
+    ? value
+    : `${value.slice(0, maxChars)}\n[${value.length - maxChars} characters omitted]`;
 }
 
 function objectOrEmpty(value: unknown): Record<string, unknown> {

@@ -37,6 +37,7 @@ export type RenderAnswers = {
   canaryBot?: string;
   packageManager?: "pnpm" | "yarn" | "npm" | "none";
   workflowNames?: string[];
+  execution_lane?: Record<string, "repo" | "platform">;
   preview?: {
     enabled: boolean;
     image: string;
@@ -61,8 +62,13 @@ export type RenderResult = {
   vars: Record<string, string>;
 };
 
+const moduleRoot = dirname(fileURLToPath(import.meta.url));
+
 function repoRoot(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const packagedRoot = join(moduleRoot, "render-assets");
+  return existsSync(join(packagedRoot, "packages/cli/templates/watchtower/canary.mjs"))
+    ? packagedRoot
+    : join(moduleRoot, "../../..");
 }
 
 function defaultTemplateRoot(): string {
@@ -425,6 +431,16 @@ export async function renderFacilityInit(
     CODEX_PLAN_MODEL: models.codexPlan,
     CODEX_EFFORT: "xhigh",
     CODEX_VERSION: "0.144.6",
+    ARCHITECT_REPO_LANE:
+      answers.execution_lane?.architect === "platform" ||
+      answers.execution_lane?.["/architect"] === "platform"
+        ? "false"
+        : "true",
+    BUILDER_REPO_LANE:
+      answers.execution_lane?.builder === "platform" ||
+      answers.execution_lane?.["/builder"] === "platform"
+        ? "false"
+        : "true",
     PROVISION_CMD: provision,
     CHECKS_INLINE: checks.length ? checks.join(" ; ") : "the checks configured in STANDARD.md",
     CHECKS_LIST: checksList(checks),

@@ -1,3 +1,4 @@
+import { newId } from "@facility/core";
 import type { createDb } from "@facility/db";
 import { kbEntries, kbLinks, kbSpaces } from "@facility/db";
 import {
@@ -13,6 +14,64 @@ import { and, eq } from "drizzle-orm";
 import type { AppConfig } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
+
+export const DEFAULT_PROJECT_CHARTER_MD = `# Project charter
+
+## Blocked Stop Condition
+
+Stop when progress requires missing authority, credentials, or human judgment.
+`;
+
+export const DEFAULT_PROJECT_ACTIVE_MD = `## Objective
+
+## Next Step
+
+## Blocker
+
+## Links
+`;
+
+/**
+ * Ensure every project that runs a harness-backed agent has a valid recovery
+ * space. This is deliberately idempotent so scheduled agents can repair
+ * projects created before the default was introduced.
+ */
+export async function ensureProjectKbSpace(db: Db, orgId: string, projectId: string) {
+  const existing = (
+    await db
+      .select()
+      .from(kbSpaces)
+      .where(and(eq(kbSpaces.orgId, orgId), eq(kbSpaces.projectId, projectId)))
+      .limit(1)
+  )[0];
+  if (existing) return existing;
+
+  const created = (
+    await db
+      .insert(kbSpaces)
+      .values({
+        id: newId("kb"),
+        orgId,
+        projectId,
+        charterMd: DEFAULT_PROJECT_CHARTER_MD,
+        activeMd: DEFAULT_PROJECT_ACTIVE_MD,
+        config: {},
+      })
+      .onConflictDoNothing({ target: kbSpaces.projectId })
+      .returning()
+  )[0];
+  if (created) return created;
+
+  const concurrent = (
+    await db
+      .select()
+      .from(kbSpaces)
+      .where(and(eq(kbSpaces.orgId, orgId), eq(kbSpaces.projectId, projectId)))
+      .limit(1)
+  )[0];
+  if (!concurrent) throw new Error(`kb_space_create_failed:${projectId}`);
+  return concurrent;
+}
 
 export async function loadKbGraph(db: Db, orgId: string, projectId: string) {
   const space = (

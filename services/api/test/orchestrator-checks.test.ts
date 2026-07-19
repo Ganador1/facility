@@ -1,5 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { resolveCheckCmds, runSafePermissions } from "../src/sandbox/orchestrator.js";
+import {
+  platformDeliveryFailure,
+  renderRunContract,
+  resolveCheckCmds,
+  resolveProvisionCmd,
+  runSafePermissions,
+} from "../src/sandbox/orchestrator.js";
+
+describe("platform delivery boundaries", () => {
+  it("fails non-delivery agents that alter a repository", () => {
+    expect(platformDeliveryFailure({ mode: "learning", gh: {} }, { changed: true })).toBe(
+      "repository_changes_not_allowed",
+    );
+    expect(platformDeliveryFailure({ mode: "custom", gh: {} }, { changed: false })).toBeNull();
+  });
+});
 
 describe("resolveCheckCmds — acceptance-gate source of truth", () => {
   it("uses the project's configured checks when the sandbox profile has none", () => {
@@ -26,6 +41,32 @@ describe("resolveCheckCmds — acceptance-gate source of truth", () => {
       "ok",
       "fine",
     ]);
+  });
+});
+
+describe("platform run repository setup", () => {
+  it("uses the kickstart provision command when the profile has no override", () => {
+    expect(resolveProvisionCmd({ setup: {} }, { provisionCmd: "pnpm install" })).toBe(
+      "pnpm install",
+    );
+  });
+
+  it("lets an explicit sandbox-profile provision command win", () => {
+    expect(
+      resolveProvisionCmd(
+        { setup: { provision_cmd: "make bootstrap" } },
+        { provisionCmd: "pnpm install" },
+      ),
+    ).toBe("make bootstrap");
+  });
+
+  it("renders repository setup and gates into platform contracts", () => {
+    expect(
+      renderRunContract("Provision: {{PROVISION_CMD}}\nChecks: {{CHECKS_INLINE}}", "pnpm install", [
+        "pnpm test",
+        "pnpm lint",
+      ]),
+    ).toBe("Provision: pnpm install\nChecks: pnpm test && pnpm lint");
   });
 });
 

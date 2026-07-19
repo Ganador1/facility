@@ -7,5 +7,8 @@ unrelated changes.
 
 For each thread, either implement the correction and prove it with the relevant
 checks, or reply with concrete evidence that the request is already satisfied
-or unsafe. Commit and push the corrected branch; never approve or merge the
-pull request, force-push, weaken a guard, or modify the protected branch.
+or unsafe. When Facility owns execution, provide the existing PR branch and a
+Conventional Commit message in the runner-requested delivery manifest; Facility
+adds the signed commit to that exact branch. Never create another branch or pull
+request, approve or merge, force-push, weaken a guard, or modify the protected
+branch.
