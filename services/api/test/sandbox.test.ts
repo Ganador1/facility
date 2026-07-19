@@ -214,6 +214,123 @@ describe("sandbox api", async () => {
     expect(stored?.engineSessionId).toBe("sess_finish_123");
   });
 
+  it("finishRun synchronizes only trusted qualifying security findings", async () => {
+    const suffix = Date.now();
+    const installation = (
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId,
+          installationId: Math.floor(Math.random() * 2_000_000_000) + 1,
+          accountLogin: `security-${suffix}`,
+          targetType: "Organization",
+        })
+        .returning()
+    )[0];
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId,
+      installationId: installation?.id,
+      owner: `security-${suffix}`,
+      name: "repo",
+      defaultBranch: "main",
+    });
+    const inserted = await insertRunnerRun("frt_security", "running");
+    const run = (
+      await db
+        .update(runs)
+        .set({
+          mode: "security_sweep",
+          gh: { owner: `security-${suffix}`, repo: "repo" },
+        })
+        .where(eq(runs.id, inserted.id))
+        .returning()
+    )[0];
+    if (!run) throw new Error("security run fixture missing");
+    const observed: Record<string, unknown> = {};
+    const githubClientFactory = (async () => ({
+      rest: {
+        issues: {
+          listForRepo: async () => ({ data: [] }),
+          createLabel: async () => ({ data: {} }),
+          create: async (input: Record<string, unknown>) => {
+            observed.issue = input;
+            return { data: { number: 31, html_url: "https://github.test/issues/31" } };
+          },
+        },
+      },
+    })) as never;
+
+    const finished = await finishRun(
+      db,
+      run,
+      {
+        status: "succeeded",
+        securityReport: {
+          schema: "facility.security.findings.v1",
+          findings: [
+            {
+              fingerprint: "reachable-auth-bypass",
+              title: "Authorization bypass",
+              severity: "high",
+              confidence: "high",
+              actionable: true,
+              risk: "A reachable route skips authorization.",
+              locations: ["src/admin.ts:42"],
+              smallest_fix: "Apply the shared authorization guard.",
+              evidence: [],
+            },
+            {
+              fingerprint: "low-severity",
+              title: "Low severity observation",
+              severity: "low",
+              confidence: "high",
+              actionable: true,
+              risk: "Low impact.",
+              locations: ["src/info.ts:1"],
+              smallest_fix: "Optional hardening.",
+              evidence: [],
+            },
+          ],
+          dismissed: ["Credential ghp_abcdefghijklmnopqrstuvwxyz123456 was not reachable."],
+        },
+      },
+      { githubClientFactory },
+    );
+
+    expect(finished.status).toBe("succeeded");
+    expect(observed.issue).toMatchObject({
+      title: "[Security] Authorization bypass",
+      labels: ["facility-security", "needs-security-triage"],
+    });
+    const securityEvent = (
+      await db.select({ data: runEvents.data }).from(runEvents).where(eq(runEvents.runId, run.id))
+    ).find((event) => (event.data as { report?: unknown }).report);
+    expect(securityEvent?.data).toMatchObject({
+      report: {
+        dismissed: ["Credential «redacted» was not reachable."],
+      },
+      reported: 2,
+      eligible: 1,
+    });
+  });
+
+  it("does not accept a successful security run without a valid findings artifact", async () => {
+    const inserted = await insertRunnerRun("frt_security_missing", "running");
+    const run = (
+      await db
+        .update(runs)
+        .set({ mode: "security_sweep" })
+        .where(eq(runs.id, inserted.id))
+        .returning()
+    )[0];
+    if (!run) throw new Error("security run fixture missing");
+    const finished = await finishRun(db, run, { status: "succeeded" });
+    expect(finished).toMatchObject({ status: "failed", error: "security_report_invalid" });
+  });
+
   it("finishRun appends the assistant reply to a conversation and marks it idle", async () => {
     const contract = (
       await db

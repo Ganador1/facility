@@ -9,7 +9,7 @@
 // unassessed rather than guessed.
 //
 // Privacy: numbers, enums, and PR numbers only. Never titles, bodies, diffs.
-// Env: GH_TOKEN (rw issues), GITHUB_REPOSITORY, WINDOW_HOURS (26),
+// Env: GH_TOKEN (read-only), GITHUB_REPOSITORY, WINDOW_HOURS (26),
 //      PR_LIMIT (100), OUTPUT_DIR (optional artifact dir),
 //      WATCHTOWER_WEBHOOK_URL (optional JSON sink).
 import { execFileSync } from "node:child_process";
@@ -177,103 +177,6 @@ if (process.env.WATCHTOWER_WEBHOOK_URL) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(summary),
   }).catch((error) => console.error(`webhook sink failed (non-fatal): ${error.message}`));
-}
-
-// --- Dashboard issue (label: facility-watchtower) ---
-const MARK_START = "<!-- facility-watchtower:latest -->";
-const MARK_END = "<!-- /facility-watchtower:latest -->";
-const TABLE_HEADER =
-  "| date | agent PRs | merged | rejected | assessed | accepted | not accepted | unassessed | acceptance | one-shot |";
-const TABLE_SEPARATOR = "|---|---|---|---|---|---|---|---|---|---|";
-const line = `| ${summary.collectedAt.slice(0, 10)} | ${summary.agentPrs} | ${summary.merged} | ${summary.rejected} | ${summary.assessed} | ${summary.accepted} | ${summary.notAccepted} | ${summary.unassessed} | ${summary.acceptance ?? "—"}% | ${summary.oneShot} |`;
-const latest = [
-  MARK_START,
-  `**Last ${windowHours}h** (updated ${summary.collectedAt}):`,
-  `${summary.agentPrs} agent PRs terminal · ${summary.merged} merged / ${summary.rejected} rejected · ${summary.accepted} accepted / ${summary.notAccepted} not accepted / ${summary.unassessed} unassessed · acceptance ${summary.acceptance ?? "—"}% · ${summary.oneShot} one-shot`,
-  MARK_END,
-].join("\n");
-
-try {
-  gh([
-    "label",
-    "create",
-    "facility-watchtower",
-    "--force",
-    "--color",
-    "FFD923",
-    "--description",
-    "the SDLC watching itself",
-  ]);
-} catch {}
-const open = JSON.parse(
-  gh([
-    "issue",
-    "list",
-    "--label",
-    "facility-watchtower",
-    "--state",
-    "open",
-    "--json",
-    "number,body",
-    "--limit",
-    "1",
-  ]),
-);
-if (open.length === 0) {
-  const body = [
-    "The watchtower's rolling record of agent outcomes. Updated nightly by `facility-watchtower.yml` — nobody curates these for a slide.",
-    "",
-    latest,
-    "",
-    "### Evidence-backed outcomes (v2)",
-    "",
-    TABLE_HEADER,
-    TABLE_SEPARATOR,
-    line,
-  ].join("\n");
-  gh([
-    "issue",
-    "create",
-    "--title",
-    "Watchtower — agent outcomes",
-    "--label",
-    "facility-watchtower",
-    "--body",
-    body,
-  ]);
-} else {
-  let body = open[0].body ?? "";
-  const start = body.indexOf(MARK_START);
-  const end = body.indexOf(MARK_END);
-  if (start !== -1 && end !== -1)
-    body = body.slice(0, start) + latest + body.slice(end + MARK_END.length);
-  const rows = body.split("\n");
-  const tableHeaderIndex = rows.findIndex((row) => row.startsWith("| date | agent PRs |"));
-  if (tableHeaderIndex === -1) {
-    rows.push("", "### Evidence-backed outcomes (v2)", "", TABLE_HEADER, TABLE_SEPARATOR, line);
-  } else if (rows[tableHeaderIndex] !== TABLE_HEADER) {
-    // v1 had different columns and treated every merge as accepted. Those rows
-    // cannot be relabeled safely. Preserve them under an explicit legacy
-    // heading and insert a separate evidence-backed table above them.
-    rows.splice(
-      tableHeaderIndex,
-      0,
-      "### Evidence-backed outcomes (v2)",
-      "",
-      TABLE_HEADER,
-      TABLE_SEPARATOR,
-      line,
-      "",
-      "### Legacy outcomes (v1 · merge counted as acceptance)",
-      "",
-    );
-  } else {
-    const separatorIndex = tableHeaderIndex + 1;
-    if (rows[separatorIndex] === TABLE_SEPARATOR) rows.splice(separatorIndex + 1, 0, line);
-    else rows.splice(separatorIndex, 0, TABLE_SEPARATOR, line);
-  }
-  body = rows.slice(0, 400).join("\n"); // cap history so the issue never grows unbounded
-  gh(["issue", "edit", String(open[0].number), "--body", body]);
 }
 
 console.log(

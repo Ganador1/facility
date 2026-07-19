@@ -392,6 +392,7 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
             })
             .optional(),
           engineSessionId: z.string().optional(),
+          securityReport: z.unknown().optional(),
         }),
         response: { 200: z.record(z.string(), z.unknown()) },
       },
@@ -412,6 +413,7 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
           pullRequestBody?: string;
         };
         engineSessionId?: string;
+        securityReport?: unknown;
       };
       return (await finishRun(db, run, body, {
         config,

@@ -56,6 +56,10 @@ export type Octokit = {
       create: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { number: number; html_url: string } }>;
+      update?: (
+        args: Record<string, unknown>,
+      ) => Promise<{ data: { number: number; html_url: string } }>;
+      createLabel?: (args: Record<string, unknown>) => Promise<{ data: unknown }>;
       createComment: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { id: number; html_url?: string } }>;
@@ -278,6 +282,45 @@ export class FacilityGithubClient {
     return { number: response.data.number, url: response.data.html_url };
   }
 
+  async updateIssue(
+    number: number,
+    input: {
+      title: string;
+      body: string;
+      labels?: string[];
+      state?: "open" | "closed";
+    },
+  ): Promise<{ number: number; url: string }> {
+    if (!this.octokit.rest.issues.update) throw new Error("GitHub issue updates are unavailable");
+    const response = await this.octokit.rest.issues.update({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      issue_number: number,
+      title: input.title,
+      body: input.body,
+      labels: input.labels,
+      state: input.state,
+    });
+    return { number: response.data.number, url: response.data.html_url };
+  }
+
+  async ensureLabel(input: { name: string; color: string; description: string }): Promise<void> {
+    if (!this.octokit.rest.issues.createLabel) return;
+    try {
+      await this.octokit.rest.issues.createLabel({
+        owner: this.repo.owner,
+        repo: this.repo.repo,
+        name: input.name,
+        color: input.color,
+        description: input.description,
+      });
+    } catch (error) {
+      // GitHub returns 422 when the label already exists. That is the desired
+      // state, while permission/network failures must stay loud.
+      if (statusCode(error) !== 422) throw error;
+    }
+  }
+
   async closePullRequest(number: number): Promise<void> {
     await this.octokit.rest.pulls.update({
       owner: this.repo.owner,
@@ -398,4 +441,10 @@ function objectRecord(value: unknown): Record<string, unknown> {
 function boundedText(value: unknown) {
   if (typeof value !== "string") return null;
   return value.length > 2_000 ? `${value.slice(0, 2_000)}…` : value;
+}
+
+function statusCode(error: unknown) {
+  return error && typeof error === "object" && "status" in error
+    ? Number((error as { status?: unknown }).status)
+    : undefined;
 }

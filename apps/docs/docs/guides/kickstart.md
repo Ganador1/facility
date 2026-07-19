@@ -66,3 +66,10 @@ watchtower with budgets, canary, guards runner, skills, `STANDARD.md`, and
 the operating contracts — SHA-pinned actions, slash-command parsing,
 bot-refusal, untrusted-text discipline included. You customize by editing
 your repo or your registry, not by fighting a generator.
+
+The security sweep uses a split trust boundary: the auditor has read-only
+repository access and can only emit a bounded JSON artifact. A separate
+reviewed job owns issue-write permission, redacts common credential shapes,
+and creates or updates a fingerprinted issue only for actionable,
+high-confidence findings of high or critical severity. Run a manual sweep with
+`create_issues: false` to inspect the artifact without mutating GitHub.

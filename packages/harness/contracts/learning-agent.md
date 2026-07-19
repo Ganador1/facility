@@ -44,8 +44,10 @@ weakening a guard, a test, or a safety rule — flag the friction instead and
 let humans decide.
 
 A guard candidate's `content` must be executable JavaScript exporting the
-standard Facility guard shape (`name`, `description`, and `run`). Approval opens
-an implementation pull request; it never bypasses human code review or merge.
+standard Facility guard shape (`name`, `description`, and `run`). Approval
+creates or updates a deduplicated GitHub task linked to the proposal. That task
+enters the normal `/architect` → plan approval → `/builder` flow; learning never
+bypasses repository-specific planning, human code review, or merge.
 </proposal_bar>
 
 <progress_protocol>

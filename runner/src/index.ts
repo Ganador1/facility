@@ -29,6 +29,7 @@ const transcriptFile = join(workRoot, "engine.stream.jsonl");
 const sessionStateDir = join(workRoot, ".claude");
 const sessionStateArchive = join(workRoot, "claude-session-state.tgz");
 const AGENT_PROGRESS_MAX_BYTES = 16 * 1024;
+const SECURITY_REPORT_MAX_BYTES = 256 * 1024;
 const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
 let engineSessionId: string | null = null;
 let activeEngineChild: ReturnType<typeof spawn> | null = null;
@@ -88,6 +89,23 @@ async function main() {
     const engineCode = await runEngine(bundle, startedAt);
     const progressPublished = await progressStop();
     progressStop = undefined;
+    const securityReport = isSecurityMode(bundle.mode)
+      ? await readSecurityReport(join(cwdFor(bundle), ".agent-sdlc", "security-findings.json"))
+      : undefined;
+    const securityReportConfigured = !isSecurityMode(bundle.mode) || securityReport !== null;
+    if (isSecurityMode(bundle.mode)) {
+      await emit([
+        {
+          type: "check",
+          data: {
+            self_reported: false,
+            name: "structured security findings",
+            status: securityReportConfigured ? "passed" : "failed",
+            ...(securityReportConfigured ? {} : { reason: "security_report_invalid" }),
+          },
+        },
+      ]);
+    }
     await uploadTranscript();
     await uploadSessionState(bundle);
     if (interruptRequested) {
@@ -132,7 +150,7 @@ async function main() {
       engineCode === 0 && checksConfigured && progressConfigured
         ? await runChecks(bundle, cwdFor(bundle))
         : false;
-    const engineAndChecksSucceeded = engineCode === 0 && checksPassed;
+    const engineAndChecksSucceeded = engineCode === 0 && checksPassed && securityReportConfigured;
     const git = engineAndChecksSucceeded ? await shipGitChanges(bundle) : undefined;
     const deliveryError = engineAndChecksSucceeded ? deliveryFailure(bundle, git) : null;
     const succeeded = engineAndChecksSucceeded && deliveryError === null;
@@ -148,10 +166,13 @@ async function main() {
             ? { code: "checks_not_configured" }
             : !progressConfigured
               ? { code: "agent_progress_missing" }
-              : deliveryError
-                ? { code: deliveryError }
-                : { code: "checks_failed" },
+              : !securityReportConfigured
+                ? { code: "security_report_invalid" }
+                : deliveryError
+                  ? { code: deliveryError }
+                  : { code: "checks_failed" },
       git,
+      securityReport ?? undefined,
     );
   } catch (error) {
     await postResult(bundle, "failed", startedAt, { error: errorMessage(error) }).catch(
@@ -213,6 +234,7 @@ export async function prepareWorkspace(
         ".agent-sdlc/progress.md",
         ".agent-sdlc/checks.jsonl",
         ".agent-sdlc/delivery.json",
+        ".agent-sdlc/security-findings.json",
         ...[...skillsByFile.keys()].flatMap((fileBase) => [
           `.claude/skills/${fileBase}/`,
           `.agents/skills/${fileBase}/`,
@@ -412,6 +434,45 @@ export async function readAgentProgress(path: string) {
   if (!info?.isFile() || info.size > AGENT_PROGRESS_MAX_BYTES) return null;
   const markdown = (await readFile(path, "utf8")).trim();
   return markdown || null;
+}
+
+export async function readSecurityReport(path: string): Promise<Record<string, unknown> | null> {
+  const info = await stat(path).catch(() => null);
+  if (!info?.isFile() || info.size <= 0 || info.size > SECURITY_REPORT_MAX_BYTES) return null;
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8"));
+    if (!isSecurityReport(parsed)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function isSecurityReport(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const report = value as Record<string, unknown>;
+  if (report.schema !== "facility.security.findings.v1" || !Array.isArray(report.findings)) {
+    return false;
+  }
+  if (report.findings.length > 20) return false;
+  return report.findings.every((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const finding = value as Record<string, unknown>;
+    return (
+      typeof finding.fingerprint === "string" &&
+      /^[a-z0-9][a-z0-9._:/-]*$/i.test(finding.fingerprint) &&
+      typeof finding.title === "string" &&
+      ["low", "medium", "high", "critical"].includes(String(finding.severity)) &&
+      ["low", "medium", "high"].includes(String(finding.confidence)) &&
+      typeof finding.actionable === "boolean" &&
+      typeof finding.risk === "string" &&
+      Array.isArray(finding.locations) &&
+      finding.locations.length > 0 &&
+      finding.locations.every((location) => typeof location === "string") &&
+      typeof finding.smallest_fix === "string" &&
+      Array.isArray(finding.evidence)
+    );
+  });
 }
 
 async function uploadTranscript() {
@@ -703,6 +764,7 @@ async function postResult(
   startedAt: number,
   error?: Record<string, unknown> | string,
   git?: Record<string, unknown>,
+  securityReport?: Record<string, unknown>,
 ) {
   const stderrTail = await readFile(join(workRoot, "engine.stderr.log"), "utf8").catch(() => "");
   await api(`/internal/runs/${currentRunId()}/result`, {
@@ -737,12 +799,17 @@ async function postResult(
             : undefined,
       git,
       engineSessionId: engineSessionId ?? undefined,
+      securityReport,
     }),
   });
 }
 
 export function requiresDelivery(mode: string) {
   return mode === "builder" || mode.endsWith("-builder");
+}
+
+function isSecurityMode(mode: string) {
+  return ["security", "security_sweep"].includes(normalizedMode(mode));
 }
 
 export function requiresAgentProgress(mode: string) {

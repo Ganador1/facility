@@ -44,7 +44,7 @@ For an existing-repository lifecycle, set these **Repository permissions**:
 | Checks | Read-only | receive CI check results |
 | Contents | Read and write | clone, read files, create commits, and update governed branches |
 | Deployments | Read-only | receive deployment health signals |
-| Issues | Read and write | sync issues and publish agent plans, receipts, and comments |
+| Issues | Read and write | sync work issues, publish agent plans/comments, and project qualifying security or learning work through trusted code (receipts/outcomes do not create issues) |
 | Metadata | Read-only | repository identity and collaborator metadata; GitHub normally selects this automatically |
 | Pull requests | Read and write | open and close PRs and collect review evidence |
 | Workflows | Read and write | install or update files under `.github/workflows` during kickstart |

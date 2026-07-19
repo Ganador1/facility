@@ -103,36 +103,20 @@ function fakeGithubFactory(onCreate?: () => Promise<void> | void): GithubClientF
 }
 
 function fakeGuardGithubFactory(observed: {
-  blob?: Record<string, unknown>;
-  tree?: Record<string, unknown>;
-  ref?: Record<string, unknown>;
-  pull?: Record<string, unknown>;
+  issue?: Record<string, unknown>;
+  labels?: Record<string, unknown>[];
 }): GithubClientFactory {
   const octokit = {
     rest: {
-      repos: {
-        getBranch: async () => ({ data: { commit: { sha: "base-sha" } } }),
-      },
-      git: {
-        getCommit: async () => ({ data: { sha: "base-sha", tree: { sha: "base-tree" } } }),
-        createBlob: async (args: Record<string, unknown>) => {
-          observed.blob = args;
-          return { data: { sha: "guard-blob" } };
-        },
-        createTree: async (args: Record<string, unknown>) => {
-          observed.tree = args;
-          return { data: { sha: "guard-tree" } };
-        },
-        createCommit: async () => ({ data: { sha: "guard-commit" } }),
-        createRef: async (args: Record<string, unknown>) => {
-          observed.ref = args;
+      issues: {
+        listForRepo: async () => ({ data: [] }),
+        createLabel: async (args: Record<string, unknown>) => {
+          observed.labels = [...(observed.labels ?? []), args];
           return { data: {} };
         },
-      },
-      pulls: {
         create: async (args: Record<string, unknown>) => {
-          observed.pull = args;
-          return { data: { number: 73, html_url: "https://github.test/guard/pull/73" } };
+          observed.issue = args;
+          return { data: { number: 73, html_url: "https://github.test/guard/issues/73" } };
         },
       },
     },
@@ -1346,7 +1330,7 @@ describe("api", async () => {
     expect(version).toMatchObject({ status: "active", version: 1 });
   });
 
-  it("turns an approved guard candidate into a human-mergeable implementation PR", async () => {
+  it("turns an approved guard candidate into a task for the architect/builder loop", async () => {
     const suffix = Date.now();
     const guardProject = await app.inject({
       method: "POST",
@@ -1410,16 +1394,17 @@ describe("api", async () => {
       });
       expect(approved.statusCode).toBe(200);
       expect(approved.json().state).toBe("executed");
-      expect(observed.blob?.content).toContain("export default");
-      expect(observed.tree?.tree).toEqual([
-        expect.objectContaining({ path: "guards/no-skipped-delivery-checks.mjs" }),
-      ]);
-      expect(observed.ref?.ref).toMatch(/^refs\/heads\/facility\/guard-/);
-      expect(observed.pull).toMatchObject({
-        base: "main",
-        title: "test(guards): enforce No skipped delivery checks",
+      expect(observed.issue).toMatchObject({
+        title: "[Facility learning] No skipped delivery checks",
+        labels: ["facility-learning", "type:task"],
       });
-      expect(String(observed.pull?.body)).toContain("A human must review and merge");
+      expect(String(observed.issue?.body)).toContain("Run `/architect`");
+      expect(String(observed.issue?.body)).toContain("then use `/builder`");
+      expect(String(observed.issue?.body)).toContain("facility-learning-fingerprint");
+      expect(observed.labels?.map((label) => label.name)).toEqual([
+        "facility-learning",
+        "type:task",
+      ]);
     } finally {
       app.githubClientFactory = previousFactory;
     }

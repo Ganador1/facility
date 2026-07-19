@@ -39,5 +39,6 @@ fork of the platform.
 
 Recurring failures become guards; craft that turns out to be checkable
 graduates from prose to deterministic checks. Learning mode drafts these
-promotions nightly — humans approve them in the inbox, and the approved
-version lands here, in the registry, where every project can adopt it.
+promotions nightly. Humans approve them in the inbox. Skill and rule versions
+land here; repository guard work becomes a deduplicated GitHub task and follows
+the normal architect/builder delivery loop before the reviewed guard lands.

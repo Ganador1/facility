@@ -40,4 +40,12 @@ Nightly, per project, a learning agent studies the day — receipts, reviews,
 failures, rejected proposals — and drafts improvements: a skill edit, a rule,
 a guard candidate, a knowledge entry. Five proposals a night, maximum, each
 with evidence and an expected effect. Every one is validated by a human
-before it becomes real. The ratchet turns; people hold the handle.
+before it becomes real.
+
+Approved skill, rule, and knowledge amendments remain versioned Facility
+registry/KB changes. Approved guard candidates and other repository work are
+different: Facility creates or updates one fingerprinted GitHub task, links the
+proposal and evidence, and stops. The task then follows the ordinary
+`/architect` → plan approval → `/builder` path. Learning does not write product
+code or open an implementation pull request directly. The ratchet turns;
+people hold the handle.

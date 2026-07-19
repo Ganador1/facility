@@ -44,6 +44,12 @@ import {
   progressCommentId,
   renderGithubRunProgress,
 } from "../github/run-progress.js";
+import {
+  type SecurityReport,
+  SecurityReportSchema,
+  sanitizeSecurityReport,
+  syncSecurityFindings,
+} from "../github/security-findings.js";
 import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
 import { assertPreviewProvisioningAvailable, createPreviewRecord } from "../previews.js";
 import type { AppConfig } from "../types.js";
@@ -218,6 +224,7 @@ export async function finishRun(
       pullRequestBody?: string;
     };
     engineSessionId?: string;
+    securityReport?: unknown;
   },
   deps?: FinishRunDeps,
 ) {
@@ -228,6 +235,15 @@ export async function finishRun(
   // leaking the sandbox + virtual key (finding #3).
   let { status } = input;
   let { error } = input;
+  let securityReport: SecurityReport | undefined;
+  if (status === "succeeded" && isSecurityMode(run.mode)) {
+    const parsed = SecurityReportSchema.safeParse(input.securityReport);
+    if (parsed.success) securityReport = sanitizeSecurityReport(parsed.data);
+    else {
+      status = "failed";
+      error = "security_report_invalid";
+    }
+  }
   const deliveryError = status === "succeeded" ? platformDeliveryFailure(run, input.git) : null;
   if (deliveryError) {
     status = "failed";
@@ -324,6 +340,47 @@ export async function finishRun(
         fingerprint: `plan_publication_failed:${run.id}`,
         title: "Failed to publish architect plan",
         bodyMd: `Architect run ${run.id} completed, but Facility could not publish its plan and human approval gate.\n\n${message}`,
+      });
+    }
+  }
+  if (status === "succeeded" && securityReport) {
+    try {
+      const sync = await publishSecurityFindings(db, claimed, securityReport, deps);
+      await appendRunEvents(db, run.orgId, run.id, [
+        {
+          type: "security_findings",
+          data: {
+            report: securityReport,
+            reported: securityReport.findings.length,
+            eligible: sync.eligible,
+            issues: sync.synced.map((issue) => ({
+              number: issue.number,
+              url: issue.url,
+              created: issue.created,
+            })),
+          },
+        },
+      ]);
+    } catch (syncError) {
+      const message = errorMessage(syncError);
+      status = "failed";
+      error = `security_issue_sync_failed:${message}`;
+      receipt = await canonicalRunReceipt(db, run, input.receipt, aggregate, status);
+      await db
+        .update(runs)
+        .set({ status, receipt, error, updatedAt: new Date() })
+        .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
+      await appendRunEvents(db, run.orgId, run.id, [
+        { type: "artifact_error", data: { kind: "security_issue_sync_failed", error: message } },
+      ]);
+      await raisePlatformIssue(db, {
+        orgId: run.orgId,
+        projectId: run.projectId,
+        kind: "security_issue_sync_failed",
+        severity: "error",
+        fingerprint: `security_issue_sync_failed:${run.id}`,
+        title: "Failed to synchronize security findings",
+        bodyMd: `Security run ${run.id} completed its audit, but Facility could not synchronize qualifying findings to GitHub.\n\n${message}`,
       });
     }
   }
@@ -642,6 +699,54 @@ async function openArchitectPlanAcceptance(
     target: { type: "proposal", id: proposal.id },
     payload: { action_type: "plan_acceptance", issue: issueNumber },
   });
+}
+
+async function publishSecurityFindings(
+  db: ReturnType<typeof createDb>["db"],
+  run: RunRow,
+  report: SecurityReport,
+  deps?: FinishRunDeps,
+) {
+  const repo = await repoForGithubRun(db, run);
+  if (!repo?.installationId) throw new Error("run_repo_missing_installation");
+  const installation = (
+    await db
+      .select()
+      .from(githubInstallations)
+      .where(
+        and(
+          eq(githubInstallations.orgId, run.orgId),
+          eq(githubInstallations.id, repo.installationId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!installation || installation.suspendedAt) throw new Error("run_installation_unavailable");
+  const factory =
+    deps?.githubClientFactory ??
+    (deps?.config?.githubAppId && deps.config.githubAppPrivateKey
+      ? createGithubClientFactory(deps.config)
+      : null);
+  if (!factory) throw new Error("github_app_unconfigured");
+  const client = new FacilityGithubClient(await factory(installation.installationId), {
+    owner: repo.owner,
+    repo: repo.name,
+    defaultBranch: repo.defaultBranch,
+  });
+  const result = await syncSecurityFindings(client, report, { runId: run.id });
+  await insertAuditEvent(db, {
+    orgId: run.orgId,
+    projectId: run.projectId,
+    actor: { type: "system", id: "security-finding-sync" },
+    action: "github.security_findings.synced",
+    target: { type: "run", id: run.id },
+    payload: {
+      reported: report.findings.length,
+      eligible: result.eligible,
+      issues: result.synced.map((issue) => ({ number: issue.number, created: issue.created })),
+    },
+  });
+  return result;
 }
 
 async function lastAgentProgress(db: ReturnType<typeof createDb>["db"], run: RunRow) {
@@ -1722,6 +1827,10 @@ function isBuilderMode(mode: string) {
 
 function isArchitectMode(mode: string) {
   return mode === "architect" || mode.endsWith("-architect");
+}
+
+function isSecurityMode(mode: string) {
+  return ["security", "security_sweep"].includes(mode.replace(/^codex-/, "").replace(/-/g, "_"));
 }
 
 function repairPullRequestMode(mode: string) {

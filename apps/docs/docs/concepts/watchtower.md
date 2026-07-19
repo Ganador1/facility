@@ -23,7 +23,8 @@ scripts, per project, with the same non-negotiable design rules:
   from issue creation to merge. If GitHub cannot prove the merge method,
   Facility reports the outcome as unassessed instead of guessing. **One-shot**
   means merged with zero change requests and zero human fixup commits.
-  Acceptance and one-shot rates are metrics, not anecdotes.
+  Acceptance and one-shot rates are metrics, not anecdotes. Outcomes are
+  telemetry and immutable run artifacts; they never create work issues.
 - **Health** (daily) — failure streaks and run budgets per workflow and per
   platform agent; breaches open a single deduped issue and resolve themselves
   on recovery.
@@ -39,3 +40,9 @@ Everything that goes wrong across the lifecycle — drift, budget breaches,
 run failures, stuck sessions, guard failures, canary failures — is a
 first-class platform issue with a fingerprint (deduped), a state, and a
 trail. The Actions-tab glance becomes an org-wide view.
+
+The issue boundary is deliberate. Health maintains one incident only while
+the system is unhealthy. The read-only security agent emits structured
+findings; trusted code creates or updates issues only for actionable,
+high-confidence, high/critical findings. Receipts and outcomes remain evidence,
+not backlog generators.

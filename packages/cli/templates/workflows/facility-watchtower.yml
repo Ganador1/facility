@@ -7,7 +7,7 @@
 #
 #   outcomes (nightly)  proves acceptance from a human squash merge, links the
 #                       issue lead time, and reports ambiguous evidence as
-#                       unassessed on the watchtower dashboard issue.
+#                       unassessed telemetry and an immutable run artifact.
 #   health   (daily)    failure streaks and run budgets per workflow
 #                       (budgets: .github/facility/watchtower/budgets.json);
 #                       maintains a single incident issue and goes RED when
@@ -40,34 +40,18 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  watch:
+  outcomes:
+    if: github.event.schedule == '25 5 * * *' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'outcomes')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
-      actions: read
       pull-requests: read
-      issues: write
+      issues: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Resolve mode
-        id: mode
-        shell: bash
-        env:
-          DISPATCH_MODE: ${{ inputs.mode }}
-          SCHEDULE: ${{ github.event.schedule }}
-        run: |
-          if [ -n "${DISPATCH_MODE:-}" ]; then
-            echo "mode=$DISPATCH_MODE" >> "$GITHUB_OUTPUT"
-          elif [ "$SCHEDULE" = "25 5 * * *" ]; then
-            echo "mode=outcomes" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=health" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Collect agent PR outcomes
-        if: steps.mode.outputs.mode == 'outcomes'
         env:
           GH_TOKEN: ${{ github.token }}
           WINDOW_HOURS: ${{ inputs.window_hours || '26' }}
@@ -75,17 +59,27 @@ jobs:
           WATCHTOWER_WEBHOOK_URL: ${{ vars.WATCHTOWER_WEBHOOK_URL }}
         run: node .github/facility/watchtower/outcomes.mjs
 
-      - name: Run health monitor
-        if: steps.mode.outputs.mode == 'health'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node .github/facility/watchtower/health.mjs
-
       - name: Upload outcomes artifact
-        if: always() && steps.mode.outputs.mode == 'outcomes'
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: facility-watchtower-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/watchtower/
           if-no-files-found: ignore
           retention-days: 30
+
+  health:
+    if: github.event.schedule == '40 6 * * *' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'health')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Run health monitor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/facility/watchtower/health.mjs

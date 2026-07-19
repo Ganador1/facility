@@ -87,6 +87,7 @@ test("init installs the method end to end", async (t) => {
     ".github/facility/delivery/verify.mjs",
     ".github/facility/receipts/collect.mjs",
     ".github/facility/review/finalize.mjs",
+    ".github/facility/security/sync-findings.mjs",
     ".github/facility/watchtower/outcomes.mjs",
     ".github/facility/watchtower/health.mjs",
     ".github/facility/watchtower/canary.mjs",
@@ -217,6 +218,19 @@ test("init installs the method end to end", async (t) => {
   const healthSource = readFileSync(join(dir, ".github/facility/watchtower/health.mjs"), "utf8");
   assert.ok(healthSource.includes('"facility-codex"'), "health must watch the Codex lane");
   assert.ok(healthSource.includes('"degraded"'), "health must classify partial failures");
+  assert.ok(healthSource.includes('"--limit", "1"'), "health must keep one incident issue");
+  const outcomesSource = readFileSync(
+    join(dir, ".github/facility/watchtower/outcomes.mjs"),
+    "utf8",
+  );
+  assert.ok(!outcomesSource.includes('"issue", "create"'), "outcomes must stay telemetry-only");
+  const watchtowerWorkflow = readFileSync(
+    join(dir, ".github/workflows/facility-watchtower.yml"),
+    "utf8",
+  );
+  const outcomesJob = watchtowerWorkflow.match(/\n  outcomes:\n([\s\S]*?)\n  health:/)?.[1] ?? "";
+  assert.ok(outcomesJob, "watchtower must contain an outcomes job");
+  assert.ok(!outcomesJob.includes("issues: write"), "outcomes job must not receive issue-write permission");
   const securitySweep = readFileSync(
     join(dir, ".github/workflows/facility-security-sweep.yml"),
     "utf8",
@@ -224,6 +238,19 @@ test("init installs the method end to end", async (t) => {
   assert.ok(securitySweep.includes("secret-scanning/alerts"), "security sweep needs secret alerts");
   assert.ok(securitySweep.includes("dependency-graph/sbom"), "security sweep needs SBOM evidence");
   assert.ok(securitySweep.includes("workflow-permissions.txt"), "security sweep needs permission evidence");
+  const securityAudit = securitySweep.match(/\n  audit:\n([\s\S]*?)\n  sync-findings:/)?.[1] ?? "";
+  assert.ok(securityAudit, "security sweep must contain an audit job");
+  assert.ok(!securityAudit.includes("issues: write"), "security auditor must not receive issue-write permission");
+  assert.ok(securitySweep.includes("sync-findings:"), "trusted job must synchronize findings");
+  assert.ok(
+    securitySweep.includes("security-findings.json"),
+    "security sweep must publish a structured findings artifact",
+  );
+  assert.match(
+    securitySweep,
+    /path: \.agent-sdlc\/security-findings\.json\s+include-hidden-files: true/,
+    "security sweep must include the hidden findings artifact",
+  );
 
   // Doctor watches facility-review (no other workflows exist in the fixture).
   const doctorWf = readFileSync(join(dir, ".github/workflows/facility-doctor.yml"), "utf8");

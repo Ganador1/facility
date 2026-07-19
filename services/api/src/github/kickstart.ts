@@ -48,6 +48,7 @@ const MANAGED_FACILITY_PATHS = [
   ".github/facility/delivery/verify.mjs",
   ".github/facility/receipts/collect.mjs",
   ".github/facility/review/finalize.mjs",
+  ".github/facility/security/sync-findings.mjs",
   ".github/facility/watchtower/outcomes.mjs",
   ".github/facility/watchtower/health.mjs",
   ".github/facility/watchtower/canary.mjs",

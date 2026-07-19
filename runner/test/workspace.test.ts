@@ -16,6 +16,7 @@ import {
   readAgentDeliveryMetadata,
   readAgentProgress,
   readAgentUpdateMetadata,
+  readSecurityReport,
   requiresAgentProgress,
   semanticDeliveryBranch,
   terminateChild,
@@ -42,6 +43,37 @@ function bundle(overrides: Partial<RunBundle> = {}): RunBundle {
 }
 
 describe("workspace preparation", () => {
+  it("accepts only a bounded structured security findings artifact", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, "security-findings.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        schema: "facility.security.findings.v1",
+        findings: [
+          {
+            fingerprint: "auth-bypass",
+            title: "Authorization bypass",
+            severity: "high",
+            confidence: "high",
+            actionable: true,
+            risk: "Reachable privileged path",
+            locations: ["src/admin.ts:4"],
+            smallest_fix: "Apply the shared guard",
+            evidence: [],
+          },
+        ],
+        dismissed: [],
+        scanners_not_enabled: [],
+      }),
+    );
+    await expect(readSecurityReport(path)).resolves.toMatchObject({
+      schema: "facility.security.findings.v1",
+    });
+    await writeFile(path, JSON.stringify({ schema: "wrong", findings: [] }));
+    await expect(readSecurityReport(path)).resolves.toBeNull();
+  });
+
   it("observes a child exit even when close happened before the waiter was attached", async () => {
     const child = spawn(process.execPath, ["-e", "process.exit(0)"], {
       stdio: "ignore",

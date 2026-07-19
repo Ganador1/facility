@@ -446,6 +446,7 @@ export async function init(flags, pkgRoot, version) {
     { to: ".github/facility/delivery/verify.mjs", content: template("delivery/verify.mjs") },
     { to: ".github/facility/receipts/collect.mjs", content: template("receipts/collect.mjs") },
     { to: ".github/facility/review/finalize.mjs", content: template("review/finalize.mjs") },
+    { to: ".github/facility/security/sync-findings.mjs", content: template("security/sync-findings.mjs") },
     { to: ".github/facility/watchtower/outcomes.mjs", content: template("watchtower/outcomes.mjs") },
     { to: ".github/facility/watchtower/health.mjs", content: template("watchtower/health.mjs") },
     { to: ".github/facility/watchtower/canary.mjs", content: template("watchtower/canary.mjs") },
@@ -559,7 +560,7 @@ export async function init(flags, pkgRoot, version) {
   );
   steps.push(`Commit, push, open an issue, and comment ${accent("/architect")} on it. That's the whole onboarding.`);
   steps.push(
-    `The watchtower starts reporting on its own: nightly outcomes on the ${bold("facility-watchtower")} dashboard issue, daily health with budgets from .github/facility/watchtower/budgets.json.`
+    `The watchtower starts reporting on its own: nightly outcomes as telemetry/artifacts, daily health as one incident issue while unhealthy, with budgets from .github/facility/watchtower/budgets.json.`
   );
   steps.forEach((step, index) => item(`${bold(String(index + 1) + ".")} ${step}`));
   console.log("");

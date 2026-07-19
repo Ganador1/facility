@@ -513,6 +513,10 @@ export async function renderFacilityInit(
     { path: ".github/facility/receipts/collect.mjs", content: template("receipts/collect.mjs") },
     { path: ".github/facility/review/finalize.mjs", content: template("review/finalize.mjs") },
     {
+      path: ".github/facility/security/sync-findings.mjs",
+      content: template("security/sync-findings.mjs"),
+    },
+    {
       path: ".github/facility/watchtower/outcomes.mjs",
       content: template("watchtower/outcomes.mjs"),
     },
