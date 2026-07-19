@@ -10,6 +10,7 @@ import { registerIntegrationRoutes } from "./v1/integrations.js";
 import { registerAnalyticsRoutes, registerIssuesAuditRoutes } from "./v1/issues-audit-analytics.js";
 import { registerKbTasksRoutes } from "./v1/kb-tasks.js";
 import { registerMeMembersRolesRoutes } from "./v1/me-members-roles.js";
+import { registerPreviewRoutes } from "./v1/previews.js";
 import { registerProjectsReposRoutes } from "./v1/projects-repos.js";
 import { registerProvidersBudgetsSpendRoutes } from "./v1/providers-budgets-spend.js";
 import { registerRegistryRoutes } from "./v1/registry.js";
@@ -33,6 +34,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
   await registerConversationsRoutes(app, context);
   await registerGithubV1Routes(app, context);
   await registerProvidersBudgetsSpendRoutes(app, context);
+  await registerPreviewRoutes(app, context);
   await registerAnalyticsRoutes(app, context);
   await registerHitlRoutes(app, context);
   await registerIntegrationRoutes(app, context);

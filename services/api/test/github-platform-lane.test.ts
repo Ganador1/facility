@@ -9,7 +9,9 @@ import {
   orgs,
   outcomes,
   platformIssues,
+  previewSandboxes,
   projects,
+  proposals,
   registryItems,
   repos,
   runEvents,
@@ -27,6 +29,12 @@ import type { AppConfig } from "../src/types.js";
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@127.0.0.1:5461/facility_test";
 const masterKey = Buffer.alloc(32, 10).toString("base64");
+let installationSequence = Date.now() * 1000;
+
+function nextInstallationId() {
+  installationSequence += 1;
+  return installationSequence;
+}
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
@@ -317,7 +325,7 @@ describe("github platform lane", async () => {
     await db
       .insert(orgs)
       .values({ id: otherOrgId, name: "Other Inst", slug: `inst-${Date.now()}` });
-    const otherInstallationId = 9_999_000 + Math.floor(Math.random() * 1000);
+    const otherInstallationId = nextInstallationId();
     await db.insert(githubInstallations).values({
       id: newId("int"),
       orgId: otherOrgId,
@@ -445,19 +453,32 @@ describe("github platform lane", async () => {
       status: "running",
       gh: { owner: repo.owner, repo: repo.name, issueNumber: 55 },
     });
+    const createdPulls: Array<Record<string, unknown>> = [];
     const finished = await finishRun(
       db,
       run,
-      { status: "succeeded", git: { changed: true, branch: "facility/run-12345678" } },
+      {
+        status: "succeeded",
+        git: {
+          changed: true,
+          branch: "feature/agent-owned-delivery",
+          headSha: "abc123",
+          pullRequestTitle: "feat: deliver agent-owned metadata",
+          pullRequestBody: "## Summary\n\n- Preserve the builder's exact PR metadata.",
+        },
+      },
       {
         config,
         githubClientFactory: async () =>
           ({
             rest: {
               pulls: {
-                create: async () => ({
-                  data: { number: 12, html_url: "https://github.com/o/r/pull/12" },
-                }),
+                create: async (input: Record<string, unknown>) => {
+                  createdPulls.push(input);
+                  return {
+                    data: { number: 12, html_url: "https://github.com/o/r/pull/12" },
+                  };
+                },
               },
               issues: {
                 createComment: async () => ({ data: { id: 1 } }),
@@ -469,19 +490,167 @@ describe("github platform lane", async () => {
       },
     );
     expect(finished.status).toBe("succeeded");
+    expect(createdPulls).toContainEqual(
+      expect.objectContaining({
+        head: "feature/agent-owned-delivery",
+        title: "feat: deliver agent-owned metadata",
+        body: "## Summary\n\n- Preserve the builder's exact PR metadata.",
+      }),
+    );
     const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
     expect((stored?.gh as { pr?: { number?: number } }).pr?.number).toBe(12);
     const [outcome] = await db.select().from(outcomes).where(eq(outcomes.runId, run.id));
     expect(outcome?.prNumber).toBe(12);
   });
 
-  it("finishRun PR failures leave the run succeeded and raise an artifact issue", async () => {
+  it("finishRun attaches an SSO-only Facility preview to a delivered PR", async () => {
+    const repo = await insertRepoWithInstallation(`preview-${Date.now()}`);
+    await db
+      .update(repos)
+      .set({
+        renderAnswers: {
+          preview: {
+            enabled: true,
+            image: ["ghcr.io/example/review-app:$", "{{ steps.delivery.outputs.head_sha }}"].join(
+              "",
+            ),
+            command: ["node", "server.mjs"],
+            port: 3000,
+            readinessPath: "/healthz",
+            ttlHours: 12,
+          },
+        },
+      })
+      .where(eq(repos.id, repo.id));
+    const run = await insertRun({
+      status: "running",
+      gh: { owner: repo.owner, repo: repo.name, issueNumber: 56 },
+    });
+    const enqueued: Array<{ queue: string; data: Record<string, unknown> }> = [];
+    const comments: string[] = [];
+    await finishRun(
+      db,
+      run,
+      {
+        status: "succeeded",
+        git: {
+          changed: true,
+          branch: "feature/preview",
+          headSha: "preview123",
+          pullRequestTitle: "feat: deliver preview",
+          pullRequestBody: "## Summary\n\n- Deliver a preview environment.",
+        },
+      },
+      {
+        config,
+        enqueue: async (queue, data) => {
+          enqueued.push({ queue, data });
+          return null;
+        },
+        githubClientFactory: async () =>
+          ({
+            rest: {
+              pulls: {
+                create: async () => ({
+                  data: { number: 13, html_url: "https://github.com/o/r/pull/13" },
+                }),
+              },
+              issues: {
+                createComment: async ({ body }: { body: string }) => {
+                  comments.push(body);
+                  return { data: { id: 1 } };
+                },
+              },
+              repos: {},
+              git: {},
+            },
+          }) as never,
+      },
+    );
+    const [preview] = await db
+      .select()
+      .from(previewSandboxes)
+      .where(eq(previewSandboxes.runId, run.id));
+    expect(preview).toMatchObject({
+      repoId: repo.id,
+      prNumber: 13,
+      commitSha: "preview123",
+      status: "provisioning",
+      authMode: "workos_sso",
+      config: {
+        image: "ghcr.io/example/review-app:preview123",
+        port: 3000,
+        readinessPath: "/healthz",
+      },
+    });
+    expect(enqueued).toContainEqual({
+      queue: "previews.provision",
+      data: { previewId: preview?.id },
+    });
+    expect(comments.some((body) => body.includes(`/preview/${preview?.id}/`))).toBe(true);
+    expect(comments.some((body) => body.includes("organization SSO"))).toBe(true);
+  });
+
+  it("finishRun publishes an architect plan and opens the human Gate 1 proposal", async () => {
+    const repo = await insertRepoWithInstallation(`plan-${Date.now()}`);
+    const run = await insertRun({
+      mode: "architect",
+      status: "running",
+      gh: { owner: repo.owner, repo: repo.name, issueNumber: 71 },
+    });
+    await db.insert(runEvents).values({
+      orgId,
+      runId: run.id,
+      seq: 1,
+      type: "assistant",
+      data: { text: "1. Add the behavior.\n2. Prove it with the mirror test." },
+    });
+    const comments: string[] = [];
+    const finished = await finishRun(
+      db,
+      run,
+      { status: "succeeded" },
+      {
+        config,
+        githubClientFactory: async () =>
+          ({
+            rest: {
+              issues: {
+                createComment: async ({ body }: { body: string }) => {
+                  comments.push(body);
+                  return { data: { id: 1 } };
+                },
+              },
+              repos: {},
+              pulls: {},
+              git: {},
+            },
+          }) as never,
+      },
+    );
+    expect(finished.status).toBe("succeeded");
+    expect(comments[0]).toContain("Human Gate 1");
+    expect(comments[0]).toContain("Prove it with the mirror test");
+    const [proposal] = await db.select().from(proposals).where(eq(proposals.runId, run.id));
+    expect(proposal?.state).toBe("open");
+  });
+
+  it("finishRun PR failures fail delivery and raise an artifact issue", async () => {
     const repo = await insertRepoWithInstallation(`finish-fail-${Date.now()}`);
     const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
     await finishRun(
       db,
       run,
-      { status: "succeeded", git: { changed: true, branch: "facility/run-deadbeef" } },
+      {
+        status: "succeeded",
+        git: {
+          changed: true,
+          branch: "fix/github-delivery",
+          headSha: "deadbeef",
+          pullRequestTitle: "fix: deliver pull request",
+          pullRequestBody: "## Summary\n\n- Exercise PR delivery failure handling.",
+        },
+      },
       {
         config,
         githubClientFactory: async () =>
@@ -500,7 +669,8 @@ describe("github platform lane", async () => {
       },
     );
     const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
-    expect(stored?.status).toBe("succeeded");
+    expect(stored?.status).toBe("failed");
+    expect(stored?.error).toContain("pr_open_failed:github down");
     const [artifact] = await db
       .select()
       .from(runEvents)
@@ -520,7 +690,7 @@ describe("github platform lane", async () => {
         .values({
           id: newId("int"),
           orgId,
-          installationId: Math.floor(Math.random() * 2_000_000_000) + 1,
+          installationId: nextInstallationId(),
           accountLogin: owner,
           targetType: "Organization",
         })
@@ -613,6 +783,7 @@ describe("github platform lane", async () => {
 
   async function insertRun(
     input: {
+      mode?: string;
       status?: string;
       gh?: Record<string, unknown>;
       sandbox?: Record<string, unknown>;
@@ -625,7 +796,7 @@ describe("github platform lane", async () => {
           id: newId("run"),
           orgId,
           projectId,
-          mode: "builder",
+          mode: input.mode ?? "builder",
           engine: "codex",
           status: input.status ?? "queued",
           trigger: {},

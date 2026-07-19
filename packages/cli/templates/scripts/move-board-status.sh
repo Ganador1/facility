@@ -7,6 +7,7 @@
 #
 #   /architect -> Planning      (only advances from empty/Backlog; never backward)
 #   /builder   -> In Progress   (invoking /builder is acceptance of the plan)
+#   verified delivery -> In Review
 #
 # Forward-only: the board is never moved backward (an issue already in
 # "In Review"/"Done" is left alone). The script no-ops cleanly when the
@@ -16,11 +17,12 @@
 # Requires: gh, jq. Auth via GH_TOKEN (a PAT/App token with org Projects
 # read+write; the default GITHUB_TOKEN cannot write org-level Projects v2).
 #
-# Env: MODE (builder|architect), ISSUE_NODE_ID, ORG, PROJECT_NUMBER.
+# Env: MODE (builder|architect|review), ISSUE_NODE_ID, ORG, PROJECT_NUMBER.
 # Optional env to adapt to your board's column names:
 #   STATUS_COLUMNS    ordered, comma-separated (default below)
 #   ARCHITECT_STATUS  target column for /architect (default "Planning")
 #   BUILDER_STATUS    target column for /builder (default "In Progress")
+#   REVIEW_STATUS     target column after verified delivery (default "In Review")
 set -euo pipefail
 
 : "${MODE:?MODE required}"
@@ -30,6 +32,7 @@ set -euo pipefail
 STATUS_COLUMNS="${STATUS_COLUMNS:-Backlog,Planning,Ready,In Progress,In Review,Done}"
 ARCHITECT_STATUS="${ARCHITECT_STATUS:-Planning}"
 BUILDER_STATUS="${BUILDER_STATUS:-In Progress}"
+REVIEW_STATUS="${REVIEW_STATUS:-In Review}"
 
 if [ -z "${GH_TOKEN:-}" ]; then
   echo "::notice::PROJECTS_PAT not configured — skipping Project #${PROJECT_NUMBER} status move."
@@ -39,6 +42,7 @@ fi
 case "$MODE" in
   architect) TARGET="$ARCHITECT_STATUS" ;;
   builder)   TARGET="$BUILDER_STATUS" ;;
+  review)    TARGET="$REVIEW_STATUS" ;;
   *) echo "::notice::mode '$MODE' has no status mapping — skipping."; exit 0 ;;
 esac
 

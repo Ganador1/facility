@@ -2,16 +2,14 @@
 
 Facility is a **TAM-50** product of The Agile Monkeys' brand system: its own
 face on the TAM technical layer, with the TAM relationship named in the footer
-signature. It is the open-source packaging of the system shown at
-[sdlc.theagilemonkeys.com](https://sdlc.theagilemonkeys.com/) — the two must
-stay visually and verbally aligned; when in doubt, the site wins.
+signature. Its public language and visuals follow the open-source product
+principles and documentation in this repository.
 
 ## Name
 
 **facility** — always lowercase in the wordmark, sentence case ("Facility") in
-prose. The name comes from the site's own world: *"This is our software
-factory."* A facility is where units of work enter as signals and leave as
-shipped, inspected, signed-off software. The vocabulary is product-wide:
+prose. A facility is where units of work enter as signals and leave as shipped,
+inspected, signed-off software. The vocabulary is product-wide:
 
 | the facility | in the product |
 |---|---|
@@ -24,10 +22,10 @@ shipped, inspected, signed-off software. The vocabulary is product-wide:
 
 Tagline: **"The AI software factory for your repo."**
 Method line: **"Agents build. People decide twice. Everything gets measured."**
-Proof line (from the site hero): *"We taught AI to ship like our engineers.
-Then we made it prove it."*
+Product promise: *"We taught AI to ship like our engineers. Then we made it
+prove it."*
 
-## Palette (roles, per TAM-50 — aligned with the site)
+## Palette (roles, per TAM-50)
 
 | role | value | use |
 |---|---|---|
@@ -37,7 +35,7 @@ Then we made it prove it."*
 | gate (ink on dark) | `#F0F3F6` | text on dark, the two gate marks |
 | **agent yellow** | `#FFD923` | **reserved for agent work** — the pulse, CLI accent, badges. Never decoration. |
 
-The yellow rule is inherited from the site and is the palette's one law:
+The yellow rule is the palette's one law:
 yellow marks something an agent did or is doing. A yellow element with no
 agent behind it is off-brand.
 

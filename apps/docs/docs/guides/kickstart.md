@@ -8,8 +8,9 @@ From zero to a working factory:
 
 1. **Create the project** in the web app or through the API. The CLI can list
    and get projects, but it does not create them.
-2. **Connect the repo.** Install your GitHub App on the repository; it
-   appears in the project's repo picker.
+2. **Connect the repo.** Configure and install your GitHub App using the
+   [self-hosting guide](../self-host/github-app); it then appears in the
+   project's repo picker.
 3. **Answer the six questions.** Default branch, provision command, check
    commands, modules, model tier, board (optional). The platform pre-fills
    what it can detect — a Node repo with pnpm and Playwright gets the right
@@ -20,18 +21,42 @@ From zero to a working factory:
 5. **Open the PR.** The platform commits the rendered assets to
    `facility/kickstart` and opens a pull request. Manual steps that only you
    can do are in the PR body: create the agent token secret, protect the
-   default branch, confirm App permissions, and require the deployment
-   provider's per-PR live preview check.
-6. **Configure a live PR preview.** Connect the repo to a deployment provider
-   that creates an isolated environment for each pull request. Make its URL and
-   status visible on the PR so Gate 2 can validate behavior, not only a diff.
-   Facility requires this validation surface now; native orchestration is
-   [planned](../roadmap#native-preview-environments).
+   default branch, confirm App permissions, and complete preview configuration.
+6. **Configure a live PR preview.** Choose a Facility-owned preview or an
+   external deployment adapter. For a native preview, provide an immutable
+   image, optional command, internal port, readiness path, and TTL. Add
+   `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
+   `FACILITY_PREVIEW_KEY` to the repo. In production, WorkOS SSO must be fully
+   configured before Facility accepts preview creation. The private origin is
+   never returned to callers.
 7. **Merge it.** That's Gate 2 muscle memory from day zero. Validate the live
    preview, review the PR, and squash-merge it in GitHub. On merge the
    fingerprint baseline is recorded and the project reports **system ok**.
 
-Now open an issue and comment `/architect`.
+Now open an issue and comment `/architect`. The agent's task-specific checklist
+and final plan appear in one comment. Continue entirely from GitHub: comment
+`/builder` to approve that plan, or `/architect <feedback>` to request another
+planning pass. The builder owns the delivered semantic branch, commit message,
+PR title, and PR description; Facility signs and publishes that exact delivery
+through the installed GitHub App.
+
+## Choose one execution lane per role
+
+Architect and builder commands can run in repository CI (`repo`) or in a
+Facility sandbox (`platform`). Choose exactly one owner for each role during
+kickstart. When the platform owns a role, the generated GitHub workflow keeps
+the same job as a visible fallback but gates it off, so a slash command cannot
+start duplicate agents.
+
+```bash
+facility kickstart payments \
+  --repo acme/payments \
+  --execution-lane '{"architect":"platform","builder":"platform"}'
+```
+
+After merging the kickstart PR, follow the
+[complete delivery-loop validation](validate-delivery-loop) before onboarding a
+production repository.
 
 ## Defaults that ship
 

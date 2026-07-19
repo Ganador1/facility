@@ -1,5 +1,16 @@
-import { generateApiKey, hashKey, newId, seal } from "@facility/core";
 import {
+  type FacilityReceipt,
+  FacilityReceiptSchema,
+  generateApiKey,
+  hashKey,
+  newId,
+  receiptContentDigest,
+  seal,
+  sealFacilityReceipt,
+  verifyFacilityReceipt,
+} from "@facility/core";
+import {
+  actionTypes,
   agentDefs,
   apiKeys,
   conversationMessages,
@@ -11,6 +22,8 @@ import {
   llmRequests,
   outcomes,
   projects,
+  proposalEvents,
+  proposals,
   registryItems,
   registryVersions,
   repos,
@@ -26,7 +39,13 @@ import {
   FacilityGithubClient,
   type GithubClientFactory,
 } from "../github/client.js";
+import {
+  type GithubRunProgressPhase,
+  progressCommentId,
+  renderGithubRunProgress,
+} from "../github/run-progress.js";
 import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
+import { assertPreviewProvisioningAvailable, createPreviewRecord } from "../previews.js";
 import type { AppConfig } from "../types.js";
 import { raisePlatformIssue } from "../watchtower/issues.js";
 import { DockerSandboxDriver } from "./docker.js";
@@ -44,6 +63,11 @@ import {
 
 type DispatchJob = { runId?: string; orgId?: string };
 type RunRow = typeof runs.$inferSelect;
+type FinishRunDeps = {
+  config?: AppConfig;
+  githubClientFactory?: GithubClientFactory;
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>;
+};
 
 export async function dispatchRun(config: AppConfig, job: DispatchJob) {
   if (!job.runId || !job.orgId) throw new Error("runs.dispatch requires runId and orgId");
@@ -159,10 +183,12 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob) {
     await appendRunEvents(db, run.orgId, run.id, [
       { type: "sandbox", data: { driver: driver.name, ref: launched.ref } },
     ]);
+    await updateGithubRunProgress(db, run.id, "provisioning", { config }).catch(() => undefined);
   } catch (error) {
     await failRun(db, job.orgId, job.runId, errorMessage(error), "provision_failed").catch(
       () => undefined,
     );
+    await updateGithubRunProgress(db, job.runId, "failed", { config }).catch(() => undefined);
     // failRun revokes by the persisted sandbox, which on a pre-persist failure
     // wouldn't carry these — so revoke every key we minted, and destroy the
     // sandbox if it launched before the failure, directly.
@@ -183,10 +209,17 @@ export async function finishRun(
     status: "succeeded" | "failed" | "canceled";
     receipt?: Record<string, unknown>;
     error?: string;
-    git?: { branch?: string; headSha?: string; changed: boolean; pushError?: string };
+    git?: {
+      branch?: string;
+      headSha?: string;
+      changed: boolean;
+      pushError?: string;
+      pullRequestTitle?: string;
+      pullRequestBody?: string;
+    };
     engineSessionId?: string;
   },
-  deps?: { config?: AppConfig; githubClientFactory?: GithubClientFactory },
+  deps?: FinishRunDeps,
 ) {
   if (terminalStatus(run.status)) return run;
   // A harness run that succeeds must leave the KB valid. If the checkpoint
@@ -195,6 +228,11 @@ export async function finishRun(
   // leaking the sandbox + virtual key (finding #3).
   let { status } = input;
   let { error } = input;
+  const deliveryError = status === "succeeded" ? platformDeliveryFailure(run, input.git) : null;
+  if (deliveryError) {
+    status = "failed";
+    error = deliveryError;
+  }
   if (status === "succeeded" && (await runUsesHarness(db, run))) {
     const checkpoint = await validateProjectKb(db, run.orgId, run.projectId);
     if (!checkpoint.ok) {
@@ -204,23 +242,7 @@ export async function finishRun(
   }
   const sandbox = readSandbox(run.sandbox);
   const aggregate = await gatewayAggregate(db, run.id);
-  const receipt = {
-    ...(input.receipt ?? {}),
-    usage: {
-      ...(typeof input.receipt?.usage === "object" && input.receipt.usage !== null
-        ? input.receipt.usage
-        : {}),
-      input_tokens: aggregate.inputTokens,
-      output_tokens: aggregate.outputTokens,
-      cache_read: aggregate.cacheRead,
-      cache_write: aggregate.cacheWrite,
-      cost_cents: aggregate.costCents,
-      cost_source: "gateway",
-    },
-    events: { count: aggregate.eventCount, checks: aggregate.checkCount },
-    checks: aggregate.checks,
-    checks_truncated: aggregate.checkCount > aggregate.checks.length,
-  };
+  let receipt = await canonicalRunReceipt(db, run, input.receipt, aggregate, status);
   const claimed = (
     await db
       .update(runs)
@@ -245,21 +267,21 @@ export async function finishRun(
     await driver.destroy(sandbox.ref).catch(() => undefined);
   }
   await revokeRunKeys(db, sandbox);
-  await appendRunEvents(db, run.orgId, run.id, [{ type: "result", data: { status, error } }]);
-  await insertAuditEvent(db, {
-    orgId: run.orgId,
-    projectId: run.projectId,
-    actor: { type: "agent", id: run.id },
-    action: "run.finished",
-    target: { type: "run", id: run.id },
-    payload: { status, error },
-  });
-  if (status === "succeeded" && input.git?.branch) {
-    await openRunPullRequest(db, claimed, receipt, input.git, deps).catch(async (prError) => {
+  if (status === "succeeded" && input.git?.branch && isBuilderMode(run.mode)) {
+    try {
+      await openRunPullRequest(db, claimed, input.git, deps);
+    } catch (prError) {
       const message = errorMessage(prError);
+      status = "failed";
+      error = `pr_open_failed:${message}`;
+      receipt = await canonicalRunReceipt(db, run, input.receipt, aggregate, status);
+      await db
+        .update(runs)
+        .set({ status, receipt, error, updatedAt: new Date() })
+        .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
       await appendRunEvents(db, run.orgId, run.id, [
         { type: "artifact_error", data: { kind: "pr_open_failed", error: message } },
-      ]).catch(() => undefined);
+      ]);
       await raisePlatformIssue(db, {
         orgId: run.orgId,
         projectId: run.projectId,
@@ -267,10 +289,58 @@ export async function finishRun(
         severity: "error",
         fingerprint: `pr_open_failed:${run.id}`,
         title: "Failed to open run pull request",
-        bodyMd: `Run ${run.id} succeeded and pushed ${input.git?.branch}, but Facility could not open a pull request.\n\n${message}`,
-      }).catch(() => undefined);
-    });
+        bodyMd: `Run ${run.id} pushed ${input.git?.branch}, but delivery failed because Facility could not open a pull request.\n\n${message}`,
+      });
+    }
   }
+  if (
+    status === "succeeded" &&
+    input.git?.changed === true &&
+    input.git.branch &&
+    repairPullRequestMode(run.mode)
+  ) {
+    await recordRunPullRequestUpdate(db, claimed, input.git.branch, input.git.headSha);
+  }
+  if (status === "succeeded" && isArchitectMode(run.mode)) {
+    try {
+      await openArchitectPlanAcceptance(db, claimed, receipt, deps);
+    } catch (planError) {
+      const message = errorMessage(planError);
+      status = "failed";
+      error = `plan_publication_failed:${message}`;
+      receipt = await canonicalRunReceipt(db, run, input.receipt, aggregate, status);
+      await db
+        .update(runs)
+        .set({ status, receipt, error, updatedAt: new Date() })
+        .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
+      await appendRunEvents(db, run.orgId, run.id, [
+        { type: "artifact_error", data: { kind: "plan_publication_failed", error: message } },
+      ]);
+      await raisePlatformIssue(db, {
+        orgId: run.orgId,
+        projectId: run.projectId,
+        kind: "plan_publication_failed",
+        severity: "error",
+        fingerprint: `plan_publication_failed:${run.id}`,
+        title: "Failed to publish architect plan",
+        bodyMd: `Architect run ${run.id} completed, but Facility could not publish its plan and human approval gate.\n\n${message}`,
+      });
+    }
+  }
+  await appendRunEvents(db, run.orgId, run.id, [{ type: "result", data: { status, error } }]);
+  await updateGithubRunProgress(db, run.id, status, deps).catch(() => undefined);
+  await insertAuditEvent(db, {
+    orgId: run.orgId,
+    projectId: run.projectId,
+    actor: { type: "agent", id: run.id },
+    action: "run.finished",
+    target: { type: "run", id: run.id },
+    payload: {
+      status,
+      error,
+      receipt_sha256: receipt.integrity?.payload_sha256 ?? receiptContentDigest(receipt),
+    },
+  });
   await finishConversationTurn(db, claimed, input.engineSessionId).catch(
     async (conversationError) => {
       const message = errorMessage(conversationError);
@@ -288,7 +358,7 @@ export async function finishRun(
       }).catch(() => undefined);
     },
   );
-  return claimed;
+  return { ...claimed, status, receipt, error };
 }
 
 async function finishConversationTurn(
@@ -368,12 +438,263 @@ async function lastAssistantText(db: ReturnType<typeof createDb>["db"], run: Run
   return typeof data.text === "string" && data.text.trim() ? data.text : null;
 }
 
+export async function updateGithubRunProgress(
+  db: ReturnType<typeof createDb>["db"],
+  runId: string,
+  phase: GithubRunProgressPhase,
+  deps?: Pick<FinishRunDeps, "config" | "githubClientFactory">,
+) {
+  const run = (await db.select().from(runs).where(eq(runs.id, runId)).limit(1))[0];
+  if (!run || !progressCommentId(run.gh)) return false;
+  const repo = await repoForGithubRun(db, run);
+  if (!repo?.installationId) return false;
+  const installation = (
+    await db
+      .select()
+      .from(githubInstallations)
+      .where(
+        and(
+          eq(githubInstallations.orgId, run.orgId),
+          eq(githubInstallations.id, repo.installationId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!installation || installation.suspendedAt) return false;
+  const config = deps?.config;
+  const factory =
+    deps?.githubClientFactory ??
+    (config?.githubAppId && config.githubAppPrivateKey ? createGithubClientFactory(config) : null);
+  if (!factory) return false;
+  const client = new FacilityGithubClient(await factory(installation.installationId), {
+    owner: repo.owner,
+    repo: repo.name,
+    defaultBranch: repo.defaultBranch,
+  });
+  const proposal = isArchitectMode(run.mode)
+    ? (
+        await db
+          .select({ id: proposals.id })
+          .from(proposals)
+          .where(and(eq(proposals.orgId, run.orgId), eq(proposals.runId, run.id)))
+          .orderBy(desc(proposals.createdAt))
+          .limit(1)
+      )[0]
+    : undefined;
+  const finalText = ["succeeded", "failed", "canceled"].includes(phase)
+    ? await lastAssistantText(db, run)
+    : null;
+  const agentProgress = await lastAgentProgress(db, run);
+  const commentId = progressCommentId(run.gh);
+  if (!commentId) return false;
+  await client.updateIssueComment(
+    commentId,
+    renderProgressForRun(run, phase, {
+      finalText,
+      agentProgress,
+      proposalId: proposal?.id,
+    }),
+  );
+  return true;
+}
+
+function renderProgressForRun(
+  run: RunRow,
+  phase: GithubRunProgressPhase,
+  result: {
+    finalText?: string | null;
+    agentProgress?: string | null;
+    proposalId?: string | null;
+  } = {},
+) {
+  const gh = objectOrEmpty(run.gh);
+  const progress = objectOrEmpty(gh.progressComment);
+  const trigger = objectOrEmpty(run.trigger);
+  const requestTrigger =
+    trigger.source === "plan_acceptance" ? objectOrEmpty(trigger.architectTrigger) : trigger;
+  const request = objectOrEmpty(requestTrigger.request);
+  const pr = objectOrEmpty(gh.pr);
+  const prNumber = numberOrUndefined(pr.number);
+  const prUrl = stringValue(pr.url);
+  return renderGithubRunProgress({
+    runId: run.id,
+    mode: run.mode,
+    command: stringValue(progress.command),
+    phase,
+    issueNumber: numberOrUndefined(gh.issueNumber) ?? 0,
+    issueTitle: stringValue(request.title) ?? stringValue(progress.issueTitle),
+    sender: stringValue(progress.sender),
+    agentProgress: result.agentProgress,
+    finalText: result.finalText,
+    proposalId: result.proposalId,
+    pullRequest: prNumber && prUrl ? { number: prNumber, url: prUrl } : null,
+  });
+}
+
+async function openArchitectPlanAcceptance(
+  db: ReturnType<typeof createDb>["db"],
+  run: RunRow,
+  receipt: FacilityReceipt,
+  deps?: FinishRunDeps,
+) {
+  const gh = objectOrEmpty(run.gh);
+  const issueNumber = numberOrUndefined(gh.issueNumber);
+  if (!issueNumber) return;
+  const plan = await lastAssistantText(db, run);
+  if (!plan) throw new Error("architect_plan_missing");
+  const actionType = (
+    await db
+      .select()
+      .from(actionTypes)
+      .where(and(eq(actionTypes.orgId, run.orgId), eq(actionTypes.name, "plan_acceptance")))
+      .limit(1)
+  )[0];
+  if (!actionType) throw new Error("plan_acceptance_action_missing");
+  const existing = (
+    await db
+      .select()
+      .from(proposals)
+      .where(
+        and(
+          eq(proposals.orgId, run.orgId),
+          eq(proposals.projectId, run.projectId),
+          eq(proposals.runId, run.id),
+          eq(proposals.actionTypeId, actionType.id),
+        ),
+      )
+      .limit(1)
+  )[0];
+  const proposal =
+    existing ??
+    (
+      await db
+        .insert(proposals)
+        .values({
+          id: newId("prop"),
+          orgId: run.orgId,
+          projectId: run.projectId,
+          runId: run.id,
+          actionTypeId: actionType.id,
+          payload: {
+            architectRunId: run.id,
+            issueNumber,
+            receiptSha256: receipt.integrity?.payload_sha256,
+          },
+          contextMd: plan,
+          expiresAt: new Date(Date.now() + actionType.defaultTtlHours * 3_600_000),
+        })
+        .returning()
+    )[0];
+  if (!proposal) throw new Error("plan_acceptance_create_failed");
+  if (!existing) {
+    await db.insert(proposalEvents).values({
+      orgId: run.orgId,
+      proposalId: proposal.id,
+      seq: 1,
+      type: "open",
+      actor: { type: "agent", id: run.id },
+      data: { source: "architect_run" },
+    });
+  }
+
+  const repo = await repoForGithubRun(db, run);
+  if (!repo?.installationId) throw new Error("run_repo_missing_installation");
+  const installation = (
+    await db
+      .select()
+      .from(githubInstallations)
+      .where(
+        and(
+          eq(githubInstallations.orgId, run.orgId),
+          eq(githubInstallations.id, repo.installationId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!installation || installation.suspendedAt) throw new Error("run_installation_unavailable");
+  const factory =
+    deps?.githubClientFactory ??
+    (deps?.config?.githubAppId && deps.config.githubAppPrivateKey
+      ? createGithubClientFactory(deps.config)
+      : null);
+  if (!factory) throw new Error("github_app_unconfigured");
+  const client = new FacilityGithubClient(await factory(installation.installationId), {
+    owner: repo.owner,
+    repo: repo.name,
+    defaultBranch: repo.defaultBranch,
+  });
+  const body = renderProgressForRun(run, "succeeded", {
+    finalText: plan,
+    agentProgress: await lastAgentProgress(db, run),
+    proposalId: proposal.id,
+  });
+  const commentId = progressCommentId(run.gh);
+  if (commentId) {
+    await client.updateIssueComment(commentId, body);
+  } else {
+    await client.createIssueComment(issueNumber, body);
+  }
+  await insertAuditEvent(db, {
+    orgId: run.orgId,
+    projectId: run.projectId,
+    actor: { type: "agent", id: run.id },
+    action: "hitl.proposed",
+    target: { type: "proposal", id: proposal.id },
+    payload: { action_type: "plan_acceptance", issue: issueNumber },
+  });
+}
+
+async function lastAgentProgress(db: ReturnType<typeof createDb>["db"], run: RunRow) {
+  const row = (
+    await db
+      .select({ data: runEvents.data })
+      .from(runEvents)
+      .where(
+        and(
+          eq(runEvents.orgId, run.orgId),
+          eq(runEvents.runId, run.id),
+          eq(runEvents.type, "agent_progress"),
+        ),
+      )
+      .orderBy(desc(runEvents.seq))
+      .limit(1)
+  )[0];
+  const data = objectOrEmpty(row?.data);
+  return typeof data.markdown === "string" && data.markdown.trim() ? data.markdown : null;
+}
+
+async function repoForGithubRun(db: ReturnType<typeof createDb>["db"], run: RunRow) {
+  const gh = objectOrEmpty(run.gh);
+  const owner = stringValue(gh.owner);
+  const name = stringValue(gh.repo);
+  return (
+    await db
+      .select()
+      .from(repos)
+      .where(
+        and(
+          eq(repos.orgId, run.orgId),
+          eq(repos.projectId, run.projectId),
+          ...(owner && name ? [eq(repos.owner, owner), eq(repos.name, name)] : []),
+        ),
+      )
+      .orderBy(repos.createdAt)
+      .limit(1)
+  )[0];
+}
+
 async function openRunPullRequest(
   db: ReturnType<typeof createDb>["db"],
   run: RunRow,
-  receipt: Record<string, unknown>,
-  git: { branch?: string; headSha?: string; changed: boolean; pushError?: string },
-  deps?: { config?: AppConfig; githubClientFactory?: GithubClientFactory },
+  git: {
+    branch?: string;
+    headSha?: string;
+    changed: boolean;
+    pushError?: string;
+    pullRequestTitle?: string;
+    pullRequestBody?: string;
+  },
+  deps?: FinishRunDeps,
 ) {
   if (!git.branch || git.pushError) return;
   // Resolve the repo the run actually worked on: the trigger recorded it in
@@ -429,8 +750,8 @@ async function openRunPullRequest(
   const pr = await client.createPullRequest({
     head: git.branch,
     base: repo.defaultBranch,
-    title: issueNumber ? `${run.mode}: #${issueNumber}` : `${run.mode}: run ${run.id}`,
-    body: prBody(run, receipt, issueNumber),
+    title: git.pullRequestTitle as string,
+    body: git.pullRequestBody as string,
   });
   const nextGh = { ...gh, branch: git.branch, pr: { number: pr.number, url: pr.url } };
   await db.update(runs).set({ gh: nextGh, updatedAt: new Date() }).where(eq(runs.id, run.id));
@@ -451,9 +772,13 @@ async function openRunPullRequest(
       set: { runId: run.id, updatedAt: new Date() },
     });
   if (issueNumber) {
-    await client
-      .createIssueComment(issueNumber, `Facility opened PR #${pr.number}: ${pr.url}`)
-      .catch(() => undefined);
+    // New platform-lane runs have a live progress comment that is updated at
+    // the terminal transition. Keep a short fallback for older/manual runs.
+    if (!progressCommentId(run.gh)) {
+      await client
+        .createIssueComment(issueNumber, `Facility opened PR #${pr.number}: ${pr.url}`)
+        .catch(() => undefined);
+    }
   }
   await insertAuditEvent(db, {
     orgId: run.orgId,
@@ -463,21 +788,114 @@ async function openRunPullRequest(
     target: { type: "run", id: run.id },
     payload: { runId: run.id, branch: git.branch, pr },
   });
+  await requestConfiguredPreview(db, run, repo, pr.number, git.headSha, client, deps).catch(
+    async (error) => {
+      const message = errorMessage(error);
+      await raisePlatformIssue(db, {
+        orgId: run.orgId,
+        projectId: run.projectId,
+        kind: "preview_request_failed",
+        severity: "error",
+        fingerprint: `preview_request_failed:${run.id}`,
+        title: "Failed to request the configured protected preview",
+        bodyMd: `Run ${run.id} delivered PR #${pr.number}, but Facility could not request its SSO-protected preview.\n\n${message}`,
+      });
+    },
+  );
 }
 
-function prBody(run: RunRow, receipt: Record<string, unknown>, issueNumber: number | undefined) {
-  const usage = objectOrEmpty(receipt.usage);
-  const cost = usage.cost_cents;
-  return [
-    `Facility run: ${run.id}`,
-    `Mode: ${run.mode}`,
-    `Engine: ${run.engine}`,
-    `Cost: ${typeof cost === "number" ? `${cost} cents` : "unknown"}`,
-    "",
-    issueNumber ? `Closes #${issueNumber}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+async function recordRunPullRequestUpdate(
+  db: ReturnType<typeof createDb>["db"],
+  run: RunRow,
+  branch: string,
+  headSha?: string,
+) {
+  const gh = objectOrEmpty(run.gh);
+  const expectedBranch = stringValue(gh.branch);
+  if (!expectedBranch || branch !== expectedBranch) throw new Error("delivery_branch_mismatch");
+  await db
+    .update(runs)
+    .set({ gh: { ...gh, branch, ...(headSha ? { headSha } : {}) }, updatedAt: new Date() })
+    .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
+  await insertAuditEvent(db, {
+    orgId: run.orgId,
+    projectId: run.projectId,
+    actor: { type: "agent", id: run.id },
+    action: "github.pr.updated",
+    target: { type: "run", id: run.id },
+    payload: {
+      runId: run.id,
+      branch,
+      headSha: headSha ?? null,
+      pullRequest: numberOrUndefined(gh.issueNumber) ?? null,
+    },
+  });
+}
+
+async function requestConfiguredPreview(
+  db: ReturnType<typeof createDb>["db"],
+  run: RunRow,
+  repo: typeof repos.$inferSelect,
+  prNumber: number,
+  commitSha: string | undefined,
+  github: FacilityGithubClient,
+  deps?: FinishRunDeps,
+) {
+  const answers = objectOrEmpty(repo.renderAnswers);
+  const preview = objectOrEmpty(answers.preview);
+  if (preview.enabled !== true) return;
+  const config = deps?.config;
+  if (!config) throw new Error("preview_platform_config_unavailable");
+  assertPreviewProvisioningAvailable(config);
+  if (!deps.enqueue) throw new Error("preview_queue_unavailable");
+  const configuredImage = stringValue(preview.image);
+  const port = numberOrUndefined(preview.port);
+  if (!configuredImage || !port) throw new Error("preview_configuration_invalid");
+  const image = previewImageForCommit(configuredImage, commitSha);
+  const command = Array.isArray(preview.command)
+    ? preview.command.filter((part): part is string => typeof part === "string")
+    : undefined;
+  const ttlHours = numberOrUndefined(preview.ttlHours) ?? 24;
+  const readinessPath = stringValue(preview.readinessPath);
+  const created = await createPreviewRecord(db, {
+    orgId: run.orgId,
+    projectId: run.projectId,
+    repoId: repo.id,
+    runId: run.id,
+    prNumber,
+    commitSha,
+    image,
+    command,
+    port,
+    readinessPath,
+    ttlHours: Math.min(168, ttlHours),
+    driver: config.sandboxDriver,
+    createdBy: { type: "agent", id: run.id },
+  });
+  if (!created) throw new Error("preview_record_create_failed");
+  await deps.enqueue("previews.provision", { previewId: created.id });
+  const previewUrl = `${config.publicUrl.replace(/\/$/, "")}/preview/${created.id}/`;
+  await github
+    .createIssueComment(
+      prNumber,
+      `Facility protected preview requested: ${previewUrl}\n\nAccess requires your organization SSO session.`,
+    )
+    .catch(() => undefined);
+  await insertAuditEvent(db, {
+    orgId: run.orgId,
+    projectId: run.projectId,
+    actor: { type: "agent", id: run.id },
+    action: "preview.requested",
+    target: { type: "preview", id: created.id },
+    payload: { runId: run.id, repoId: repo.id, prNumber, commitSha, auth_mode: "workos_sso" },
+  });
+}
+
+function previewImageForCommit(image: string, commitSha: string | undefined) {
+  if (!commitSha) return image;
+  return image
+    .replace(/\$\{\{\s*steps\.delivery\.outputs\.head_sha\s*\}\}/g, commitSha)
+    .replace(/\{\{\s*commit_sha\s*\}\}/g, commitSha);
 }
 
 export async function cancelRun(config: AppConfig, run: RunRow) {
@@ -490,6 +908,7 @@ export async function cancelRun(config: AppConfig, run: RunRow) {
   const { db, client } = createDb(config.databaseUrl);
   try {
     await revokeRunKeys(db, sandbox);
+    await updateGithubRunProgress(db, run.id, "canceled", { config }).catch(() => undefined);
   } finally {
     await client.end();
   }
@@ -633,11 +1052,13 @@ export async function reconcileSandboxes(
         if (deadline !== null && Date.now() > deadline) {
           await driver.destroy(sandbox.ref).catch(() => undefined);
           await failRun(db, run.orgId, run.id, "sandbox_timeout", "sandbox_timeout");
+          await updateGithubRunProgress(db, run.id, "failed", { config }).catch(() => undefined);
           continue;
         }
         const status = await driver.status(sandbox.ref);
         if (status === "exited" || status === "lost") {
           await failRun(db, run.orgId, run.id, "sandbox_lost", "sandbox_lost");
+          await updateGithubRunProgress(db, run.id, "failed", { config }).catch(() => undefined);
         }
       } catch {
         // Driver unreachable for this run; leave it for the next tick.
@@ -747,7 +1168,7 @@ async function buildRunBundle(
       .where(and(eq(projects.orgId, run.orgId), eq(projects.id, run.projectId)))
       .limit(1)
   )[0];
-  const contract = await activeRegistryContent(db, run.orgId, agent.contractItemId);
+  const rawContract = await activeRegistryContent(db, run.orgId, agent.contractItemId);
   const skills = await activeSkills(db, run.orgId, run.projectId);
   const space = (
     await db
@@ -757,9 +1178,14 @@ async function buildRunBundle(
       .limit(1)
   )[0];
   const timeoutMin = resourceNumber(profile.resources, "timeout_min", 60);
-  // Point the agent's SDKs directly at the gateway service. Its routes are
-  // /anthropic/v1/* and /openai/v1/*, so the base URL is {gateway}/anthropic
-  // and the SDK appends /v1/messages (Anthropic) or /v1/chat/completions.
+  const provisionCmd = resolveProvisionCmd(profile, repo?.renderAnswers);
+  const checkCmds = resolveCheckCmds(profile, project?.settings);
+  const contract = renderRunContract(rawContract, provisionCmd, checkCmds);
+  const githubBranch = typeof runGh.branch === "string" ? runGh.branch : null;
+  const checkoutBranch = githubPullRequestMode(run.mode) && githubBranch ? githubBranch : null;
+  // Point the agent CLIs directly at the gateway service. Anthropic's SDK
+  // appends /v1/messages, while Codex appends /responses to a provider base
+  // URL that must already include /v1.
   const gatewayBase = config.sandboxGatewayUrl.replace(/\/$/, "");
   const bundle: RunBundle = {
     runId: run.id,
@@ -771,21 +1197,20 @@ async function buildRunBundle(
     repo: repo
       ? {
           cloneUrl: `https://github.com/${repo.owner}/${repo.name}.git`,
-          branch: repo.defaultBranch,
+          branch: checkoutBranch ?? repo.defaultBranch,
           installationTokenRef: repo.installationId,
         }
       : { cloneUrl: null, branch: null, installationTokenRef: null },
-    provisionCmd:
-      stringField(profile.setup, "provision_cmd") ?? stringField(profile.setup, "provisionCmd"),
+    provisionCmd,
     // Acceptance gates: a sandbox profile's setup.check_cmds is an explicit
     // platform-level override; otherwise fall back to the project's own configured
     // checks (projects.settings.check_cmds — what kickstart detects, the web project
     // page shows, and the repo lane runs), so gates configured for a project also
     // run in the platform lane instead of silently doing nothing.
-    checkCmds: resolveCheckCmds(profile, project?.settings),
+    checkCmds,
     gatewayUrls: {
       anthropic: `${gatewayBase}/anthropic`,
-      openai: `${gatewayBase}/openai`,
+      openai: `${gatewayBase}/openai/v1`,
     },
     scope: objectOrEmpty(run.trigger),
     timeoutMin,
@@ -1104,7 +1529,22 @@ async function gatewayAggregate(db: ReturnType<typeof createDb>["db"], runId: st
   const events = await db.execute(sql`
     select
       count(*)::int as event_count,
-      count(*) filter (where type = 'check')::int as check_count
+      count(*) filter (where type = 'check')::int as check_count,
+      count(*) filter (where type = 'assistant')::int as turns,
+      count(*) filter (where type = 'tool')::int as tool_calls,
+      count(*) filter (
+        where type = 'tool'
+          and lower(coalesce(data->>'name', '')) in ('bash', 'shell', 'exec_command', 'terminal')
+      )::int as shell_commands,
+      count(*) filter (
+        where type = 'tool'
+          and lower(coalesce(data->>'name', '')) like '%mcp%'
+      )::int as mcp_tool_calls,
+      count(*) filter (
+        where type = 'tool'
+          and lower(coalesce(data->>'name', '')) in ('web_search', 'websearch', 'search_query')
+      )::int as web_searches,
+      count(*) filter (where type in ('artifact_error', 'engine_error'))::int as errors
     from run_events
     where run_id = ${runId}
   `);
@@ -1114,7 +1554,18 @@ async function gatewayAggregate(db: ReturnType<typeof createDb>["db"], runId: st
     .where(and(eq(runEvents.runId, runId), eq(runEvents.type, "check")))
     .orderBy(runEvents.seq)
     .limit(200);
-  const eventRow = (events as unknown as Array<{ event_count: number; check_count: number }>)[0];
+  const eventRow = (
+    events as unknown as Array<{
+      event_count: number;
+      check_count: number;
+      turns: number;
+      tool_calls: number;
+      shell_commands: number;
+      mcp_tool_calls: number;
+      web_searches: number;
+      errors: number;
+    }>
+  )[0];
   return {
     inputTokens: Number(usage?.inputTokens ?? 0),
     outputTokens: Number(usage?.outputTokens ?? 0),
@@ -1123,8 +1574,208 @@ async function gatewayAggregate(db: ReturnType<typeof createDb>["db"], runId: st
     costCents: Number(usage?.costCents ?? 0),
     eventCount: Number(eventRow?.event_count ?? 0),
     checkCount: Number(eventRow?.check_count ?? 0),
+    activity: {
+      turns: Number(eventRow?.turns ?? 0),
+      shell_commands: Number(eventRow?.shell_commands ?? 0),
+      mcp_tool_calls: Number(eventRow?.mcp_tool_calls ?? 0),
+      web_searches: Number(eventRow?.web_searches ?? 0),
+      tool_calls: Number(eventRow?.tool_calls ?? 0),
+      errors: Number(eventRow?.errors ?? 0),
+    },
     checks: checkEvents.map(({ data }) => receiptCheck(data)),
   };
+}
+
+async function canonicalRunReceipt(
+  db: ReturnType<typeof createDb>["db"],
+  run: RunRow,
+  runnerReceipt: Record<string, unknown> | undefined,
+  aggregate: Awaited<ReturnType<typeof gatewayAggregate>>,
+  status: "succeeded" | "failed" | "canceled",
+): Promise<FacilityReceipt> {
+  const runner = objectOrEmpty(runnerReceipt);
+  const runnerTiming = objectOrEmpty(runner.timing);
+  const runnerActivity = objectOrEmpty(runner.activity);
+  const gh = objectOrEmpty(run.gh);
+  const endedAt = new Date();
+  const startedAt = run.startedAt ?? run.queuedAt;
+  const receipt = FacilityReceiptSchema.parse({
+    schema: "facility.run.v1",
+    run_id: run.id,
+    project_id: run.projectId,
+    agent_id: run.agentDefId ?? undefined,
+    provider: receiptProvider(run.engine),
+    model: stringValue(runner.model),
+    mode: receiptMode(run.mode),
+    result: status,
+    usage: {
+      input_tokens: aggregate.inputTokens,
+      output_tokens: aggregate.outputTokens,
+      cache_read: aggregate.cacheRead,
+      cache_write: aggregate.cacheWrite,
+      cost_cents: aggregate.costCents,
+      cost_source: "gateway",
+    },
+    activity: {
+      turns: Math.max(aggregate.activity.turns, nonnegativeInt(runnerActivity.turns)),
+      shell_commands: Math.max(
+        aggregate.activity.shell_commands,
+        nonnegativeInt(runnerActivity.shell_commands),
+      ),
+      file_changes: nonnegativeInt(runnerActivity.file_changes),
+      mcp_tool_calls: Math.max(
+        aggregate.activity.mcp_tool_calls,
+        nonnegativeInt(runnerActivity.mcp_tool_calls),
+      ),
+      web_searches: Math.max(
+        aggregate.activity.web_searches,
+        nonnegativeInt(runnerActivity.web_searches),
+      ),
+      tool_calls: Math.max(
+        aggregate.activity.tool_calls,
+        nonnegativeInt(runnerActivity.tool_calls),
+      ),
+      errors: Math.max(
+        aggregate.activity.errors + (status === "failed" ? 1 : 0),
+        nonnegativeInt(runnerActivity.errors),
+      ),
+    },
+    github: {
+      owner: stringValue(gh.owner),
+      repo: stringValue(gh.repo),
+      issue: integerValue(gh.issueNumber),
+      pr: integerValue(objectOrEmpty(gh.pr).number),
+    },
+    timing: {
+      started_at: stringValue(runnerTiming.started_at) ?? startedAt.toISOString(),
+      ended_at: endedAt.toISOString(),
+      duration_ms: Math.max(0, endedAt.getTime() - startedAt.getTime()),
+    },
+    events: { count: aggregate.eventCount, checks: aggregate.checkCount },
+    checks: aggregate.checks,
+    checks_truncated: aggregate.checkCount > aggregate.checks.length,
+  });
+  return sealFacilityReceipt(receipt, await previousReceiptDigest(db, run));
+}
+
+async function previousReceiptDigest(db: ReturnType<typeof createDb>["db"], run: RunRow) {
+  const candidates = await db
+    .select({ receipt: runs.receipt })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.orgId, run.orgId),
+        eq(runs.projectId, run.projectId),
+        sql`${runs.id} <> ${run.id}`,
+        sql`${runs.receipt} is not null`,
+      ),
+    )
+    .orderBy(desc(runs.endedAt))
+    .limit(100);
+  for (const candidate of candidates) {
+    const parsed = FacilityReceiptSchema.safeParse(candidate.receipt);
+    if (parsed.success && verifyFacilityReceipt(parsed.data)) {
+      return parsed.data.integrity?.payload_sha256 ?? null;
+    }
+  }
+  return null;
+}
+
+export function platformDeliveryFailure(
+  run: Pick<RunRow, "mode" | "gh">,
+  git:
+    | {
+        branch?: string;
+        headSha?: string;
+        changed: boolean;
+        pushError?: string;
+        pullRequestTitle?: string;
+        pullRequestBody?: string;
+      }
+    | undefined,
+) {
+  if (readOnlyRepositoryMode(run.mode) && git?.changed) return "repository_changes_not_allowed";
+  if (repairPullRequestMode(run.mode)) {
+    if (!git?.changed) return null;
+    if (git.pushError) return "delivery_push_failed";
+    if (!git.branch) return "delivery_branch_missing";
+    if (!git.headSha) return "delivery_commit_missing";
+    const expectedBranch = stringValue(objectOrEmpty(run.gh).branch);
+    if (!expectedBranch || git.branch !== expectedBranch) return "delivery_branch_mismatch";
+    return null;
+  }
+  if (!isBuilderMode(run.mode)) {
+    return git?.changed ? "repository_changes_not_allowed" : null;
+  }
+  if (!git?.changed) return "delivery_no_changes";
+  if (git.pushError) return "delivery_push_failed";
+  if (!git.branch) return "delivery_branch_missing";
+  if (!git.headSha) return "delivery_commit_missing";
+  if (!git.pullRequestTitle) return "delivery_pr_title_missing";
+  if (!git.pullRequestBody) return "delivery_pr_body_missing";
+  return null;
+}
+
+function isBuilderMode(mode: string) {
+  return mode === "builder" || mode.endsWith("-builder");
+}
+
+function isArchitectMode(mode: string) {
+  return mode === "architect" || mode.endsWith("-architect");
+}
+
+function repairPullRequestMode(mode: string) {
+  return ["address_review", "ci_doctor"].includes(mode.replace(/^codex-/, "").replace(/-/g, "_"));
+}
+
+function readOnlyRepositoryMode(mode: string) {
+  return ["architect", "review", "security_sweep"].includes(
+    mode.replace(/^codex-/, "").replace(/-/g, "_"),
+  );
+}
+
+function githubPullRequestMode(mode: string) {
+  return ["review", "address_review", "ci_doctor"].includes(mode.replace(/-/g, "_"));
+}
+
+function receiptProvider(engine: string): FacilityReceipt["provider"] {
+  if (engine === "claude" || engine === "claude_code") return "claude_code";
+  if (engine === "codex" || engine === "codex_cli") return "codex_cli";
+  return "byo";
+}
+
+function receiptMode(mode: string): FacilityReceipt["mode"] {
+  const normalized = mode.replace(/^codex-/, "").replace(/-/g, "_");
+  if (normalized === "doctor") return "ci_doctor";
+  if (normalized === "security") return "security_sweep";
+  if (normalized === "project_owner") return "po";
+  if (
+    [
+      "architect",
+      "builder",
+      "review",
+      "address_review",
+      "ci_doctor",
+      "security_sweep",
+      "po",
+      "learning",
+    ].includes(normalized)
+  ) {
+    return normalized as FacilityReceipt["mode"];
+  }
+  return "custom";
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function integerValue(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+}
+
+function nonnegativeInt(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 function receiptCheck(value: unknown) {
@@ -1176,6 +1827,33 @@ function arrayField(value: unknown, key: string) {
 export function resolveCheckCmds(profile: { setup: unknown }, projectSettings: unknown): string[] {
   const profileChecks = arrayField(profile.setup, "check_cmds");
   return profileChecks.length > 0 ? profileChecks : arrayField(projectSettings, "check_cmds");
+}
+
+// The sandbox profile is an explicit platform override. Otherwise use the
+// repository-specific command detected/confirmed during kickstart.
+export function resolveProvisionCmd(profile: { setup: unknown }, renderAnswers: unknown) {
+  return (
+    stringField(profile.setup, "provision_cmd") ??
+    stringField(profile.setup, "provisionCmd") ??
+    stringField(renderAnswers, "provisionCmd") ??
+    stringField(renderAnswers, "provision_cmd")
+  );
+}
+
+// Seed contracts are also used by the repository lane, where these placeholders
+// are rendered into workflow files. Resolve the same values for platform runs so
+// agents never receive literal {{...}} instructions.
+export function renderRunContract(
+  contract: string,
+  provisionCmd: string | null,
+  checkCmds: string[],
+) {
+  return contract
+    .replaceAll("{{PROVISION_CMD}}", provisionCmd ?? "No provision command is configured.")
+    .replaceAll(
+      "{{CHECKS_INLINE}}",
+      checkCmds.length ? checkCmds.join(" && ") : "No checks configured.",
+    );
 }
 
 function command(value: unknown) {

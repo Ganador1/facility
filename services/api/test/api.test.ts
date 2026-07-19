@@ -17,6 +17,7 @@ import {
   inboundEvents,
   insertAuditEvent,
   integrations,
+  kbSpaces,
   llmRequests,
   migrate,
   orgMembers,
@@ -46,6 +47,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp, mintSessionCookie } from "../src/app.js";
 import type { GithubClientFactory } from "../src/github/client.js";
+import { validateProjectKb } from "../src/harness.js";
 import { deliverPendingWebhooks } from "../src/integrations/outbound.js";
 import { ensureWorkosUser } from "../src/routes/auth.js";
 import { runAgentSchedules } from "../src/schedules.js";
@@ -93,6 +95,44 @@ function fakeGithubFactory(onCreate?: () => Promise<void> | void): GithubClientF
           return {
             data: { number: 1, html_url: "https://github.com/facility/repo/issues/1" },
           };
+        },
+      },
+    },
+  };
+  return (async () => octokit) as unknown as GithubClientFactory;
+}
+
+function fakeGuardGithubFactory(observed: {
+  blob?: Record<string, unknown>;
+  tree?: Record<string, unknown>;
+  ref?: Record<string, unknown>;
+  pull?: Record<string, unknown>;
+}): GithubClientFactory {
+  const octokit = {
+    rest: {
+      repos: {
+        getBranch: async () => ({ data: { commit: { sha: "base-sha" } } }),
+      },
+      git: {
+        getCommit: async () => ({ data: { sha: "base-sha", tree: { sha: "base-tree" } } }),
+        createBlob: async (args: Record<string, unknown>) => {
+          observed.blob = args;
+          return { data: { sha: "guard-blob" } };
+        },
+        createTree: async (args: Record<string, unknown>) => {
+          observed.tree = args;
+          return { data: { sha: "guard-tree" } };
+        },
+        createCommit: async () => ({ data: { sha: "guard-commit" } }),
+        createRef: async (args: Record<string, unknown>) => {
+          observed.ref = args;
+          return { data: {} };
+        },
+      },
+      pulls: {
+        create: async (args: Record<string, unknown>) => {
+          observed.pull = args;
+          return { data: { number: 73, html_url: "https://github.test/guard/pull/73" } };
         },
       },
     },
@@ -181,6 +221,10 @@ describe("api", async () => {
     });
     expect(approverLogin.statusCode).toBe(200);
     approverCookie = approverLogin.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
+    // Every integration file uses the seeded dev org. This suite deliberately
+    // mutates and repairs the audit chain, so isolate it from receipts and audit
+    // rows left by an earlier file or a prior local run as one atomic fixture reset.
+    await db.update(runs).set({ receipt: null }).where(eq(runs.orgId, orgId));
     await db.delete(auditEvents).where(eq(auditEvents.orgId, orgId));
     const setupProject = (
       await db
@@ -258,7 +302,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(119);
+    ).toBe(122);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },
@@ -503,6 +547,15 @@ describe("api", async () => {
     });
     expect(created.statusCode).toBe(200);
     projectId = created.json().id;
+    const projectSpaces = await db
+      .select()
+      .from(kbSpaces)
+      .where(and(eq(kbSpaces.orgId, orgId), eq(kbSpaces.projectId, projectId)));
+    expect(projectSpaces).toHaveLength(1);
+    expect(await validateProjectKb(db, orgId, projectId)).toMatchObject({
+      ok: true,
+      errors: [],
+    });
     let listedProject = false;
     for (let offset = 0; !listedProject; offset += 100) {
       const listed = await app.inject({
@@ -1224,6 +1277,154 @@ describe("api", async () => {
     expect(loaded.json().events.map((event: { seq: number }) => event.seq)).toEqual([1, 2]);
   });
 
+  it("activates a learned skill only after a separate human approves it", async () => {
+    const skillAction = (
+      await db
+        .select()
+        .from(actionTypes)
+        .where(and(eq(actionTypes.orgId, orgId), eq(actionTypes.name, "skill_proposal")))
+        .limit(1)
+    )[0];
+    if (!skillAction) throw new Error("skill proposal action missing");
+    const name = `review-invariant-${Date.now()}`;
+    const proposed = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: { cookie },
+      payload: {
+        projectId,
+        actionTypeId: skillAction.id,
+        payload: {
+          name,
+          content: "Always preserve an existing failing regression test as evidence.",
+          evidence_refs: ["github://theam/facility/pull/1#discussion_r1"],
+        },
+        contextMd: "Observed across three rejected changes.",
+      },
+    });
+    expect(proposed.statusCode).toBe(200);
+    expect(proposed.json().state).toBe("open");
+    expect(
+      await db
+        .select()
+        .from(registryItems)
+        .where(and(eq(registryItems.orgId, orgId), eq(registryItems.name, name))),
+    ).toHaveLength(0);
+
+    const approved = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/decide`,
+      headers: { cookie: approverCookie },
+      payload: { decision: "approve" },
+    });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json().state).toBe("executed");
+    const item = (
+      await db
+        .select()
+        .from(registryItems)
+        .where(
+          and(
+            eq(registryItems.orgId, orgId),
+            eq(registryItems.projectId, projectId),
+            eq(registryItems.kind, "skill"),
+            eq(registryItems.name, name),
+          ),
+        )
+        .limit(1)
+    )[0];
+    const version = item
+      ? (
+          await db
+            .select()
+            .from(registryVersions)
+            .where(eq(registryVersions.itemId, item.id))
+            .limit(1)
+        )[0]
+      : null;
+    expect(item?.latestVersion).toBe(1);
+    expect(version).toMatchObject({ status: "active", version: 1 });
+  });
+
+  it("turns an approved guard candidate into a human-mergeable implementation PR", async () => {
+    const suffix = Date.now();
+    const guardProject = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Learned guard", slug: `learned-guard-${suffix}` },
+    });
+    const installation = (
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId,
+          installationId: Math.floor(Math.random() * 2_000_000_000) + 1,
+          accountLogin: `learned-guard-${suffix}`,
+          targetType: "Organization",
+        })
+        .returning()
+    )[0];
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId: guardProject.json().id,
+      installationId: installation?.id,
+      owner: `learned-guard-${suffix}`,
+      name: "repo",
+      defaultBranch: "main",
+    });
+    const guardAction = (
+      await db
+        .select()
+        .from(actionTypes)
+        .where(and(eq(actionTypes.orgId, orgId), eq(actionTypes.name, "guard_candidate")))
+        .limit(1)
+    )[0];
+    if (!guardAction) throw new Error("guard candidate action missing");
+    const proposed = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: { cookie },
+      payload: {
+        projectId: guardProject.json().id,
+        actionTypeId: guardAction.id,
+        payload: {
+          title: "No skipped delivery checks",
+          content: "```js\nexport default { run() { return []; } };\n```",
+          evidence_refs: ["receipt://run_failed/checks"],
+        },
+        contextMd: "A skipped check repeatedly produced undeliverable builder runs.",
+      },
+    });
+    const observed: Parameters<typeof fakeGuardGithubFactory>[0] = {};
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = fakeGuardGithubFactory(observed);
+    try {
+      const approved = await app.inject({
+        method: "POST",
+        url: `/v1/proposals/${proposed.json().id}/decide`,
+        headers: { cookie: approverCookie },
+        payload: { decision: "approve" },
+      });
+      expect(approved.statusCode).toBe(200);
+      expect(approved.json().state).toBe("executed");
+      expect(observed.blob?.content).toContain("export default");
+      expect(observed.tree?.tree).toEqual([
+        expect.objectContaining({ path: "guards/no-skipped-delivery-checks.mjs" }),
+      ]);
+      expect(observed.ref?.ref).toMatch(/^refs\/heads\/facility\/guard-/);
+      expect(observed.pull).toMatchObject({
+        base: "main",
+        title: "test(guards): enforce No skipped delivery checks",
+      });
+      expect(String(observed.pull?.body)).toContain("A human must review and merge");
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
+  });
+
   it("dispatches an approved platform plan to the linked builder", async () => {
     const { projectId: planProjectId, agent: baseAgent } =
       await createProjectWithAgent("Plan Dispatch");
@@ -1337,10 +1538,28 @@ describe("api", async () => {
         ),
       );
     expect(builderRuns).toHaveLength(1);
+    const codexBuilder = (
+      await db
+        .select()
+        .from(agentDefs)
+        .where(
+          and(
+            eq(agentDefs.orgId, orgId),
+            eq(agentDefs.projectId, planProjectId),
+            eq(agentDefs.name, "codex-builder"),
+          ),
+        )
+        .limit(1)
+    )[0];
+    if (!codexBuilder) throw new Error("codex builder fixture missing");
     expect(builderRuns[0]).toMatchObject({
-      agentDefId: builder.id,
-      engine: builder.engine,
+      agentDefId: codexBuilder.id,
+      engine: codexBuilder.engine,
       gh: architectRun.gh,
+      trigger: {
+        approvedPlan: "Approve the implementation plan",
+        architectTrigger: architectRun.trigger,
+      },
     });
     const queued = await db
       .select()
@@ -1386,19 +1605,19 @@ describe("api", async () => {
 
     // A retry must reuse the architect-plan-linked run even if the configured
     // builder definition changed after the original dispatch.
-    await db.update(agentDefs).set({ enabled: false }).where(eq(agentDefs.id, builder.id));
+    await db.update(agentDefs).set({ enabled: false }).where(eq(agentDefs.id, codexBuilder.id));
     await db.insert(agentDefs).values({
       id: newId("agent"),
       orgId,
       projectId: planProjectId,
-      name: "builder",
-      engine: baseAgent.engine,
-      model: baseAgent.model,
-      contractItemId: baseAgent.contractItemId,
-      harnessItemId: baseAgent.harnessItemId,
-      triggers: [{ type: "command", command: "builder" }],
-      sandboxProfileId: baseAgent.sandboxProfileId,
-      permissions: baseAgent.permissions,
+      name: "codex-builder",
+      engine: codexBuilder.engine,
+      model: codexBuilder.model,
+      contractItemId: codexBuilder.contractItemId,
+      harnessItemId: codexBuilder.harnessItemId,
+      triggers: [{ type: "command", command: "codex-builder" }],
+      sandboxProfileId: codexBuilder.sandboxProfileId,
+      permissions: codexBuilder.permissions,
     });
     await db
       .update(proposals)
@@ -1424,7 +1643,7 @@ describe("api", async () => {
         ),
       );
     expect(retriedBuilderRuns).toHaveLength(1);
-    expect(retriedBuilderRuns[0]?.agentDefId).toBe(builder.id);
+    expect(retriedBuilderRuns[0]?.agentDefId).toBe(codexBuilder.id);
 
     await db
       .update(repos)
@@ -1519,14 +1738,20 @@ describe("api", async () => {
   });
 
   it("discovers action types and rejects invalid proposal dates and run/project mismatches", async () => {
-    const listed = await app.inject({
-      method: "GET",
-      url: "/v1/action-types",
-      headers: { cookie },
-    });
-    expect(listed.statusCode).toBe(200);
-    const actionType = listed.json().find((row: { name: string }) => row.name === "task_creation");
+    let actionType: { id: string; name: string } | undefined;
+    for (let offset = 0; !actionType; offset += 200) {
+      const listed = await app.inject({
+        method: "GET",
+        url: `/v1/action-types?limit=200&offset=${offset}`,
+        headers: { cookie },
+      });
+      expect(listed.statusCode).toBe(200);
+      const page = listed.json() as Array<{ id: string; name: string }>;
+      actionType = page.find((row) => row.name === "task_creation");
+      if (page.length < 200) break;
+    }
     expect(actionType?.id).toBeTruthy();
+    if (!actionType) throw new Error("task_creation action type missing");
     const loaded = await app.inject({
       method: "GET",
       url: `/v1/action-types/${actionType.id}`,
@@ -2786,16 +3011,22 @@ describe("api", async () => {
   });
 
   it("returns null for a project whose KB space has not been created", async () => {
-    const project = await app.inject({
-      method: "POST",
-      url: "/v1/projects",
-      headers: { cookie },
-      payload: { name: "Empty KB", slug: `empty-kb-${Date.now()}` },
-    });
-    expect(project.statusCode).toBe(200);
+    const legacyProject = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Legacy empty KB",
+          slug: `legacy-empty-kb-${Date.now()}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    expect(legacyProject).toBeTruthy();
     const space = await app.inject({
       method: "GET",
-      url: `/v1/projects/${project.json().id}/kb/space`,
+      url: `/v1/projects/${legacyProject?.id}/kb/space`,
       headers: { cookie },
     });
     expect(space.statusCode, space.body).toBe(200);
@@ -4204,6 +4435,7 @@ describe("api", async () => {
 
     expect(run.statusCode).toBe(200);
     expect(run.json().engine).toBe("claude_code");
+    expect(run.json().mode).toBe(agent.name);
   });
 
   it("creates and dispatches each scheduled run exactly once per UTC minute", async () => {
@@ -4238,7 +4470,7 @@ describe("api", async () => {
     const scheduled = await db.select().from(runs).where(eq(runs.agentDefId, target.agent.id));
     expect(scheduled).toHaveLength(1);
     expect(scheduled[0]).toMatchObject({
-      mode: "scheduled",
+      mode: target.agent.name,
       engine: target.agent.engine,
       status: "queued",
       trigger: {

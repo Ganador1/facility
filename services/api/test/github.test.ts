@@ -1,23 +1,28 @@
 import { createHmac } from "node:crypto";
 import { newId } from "@facility/core";
 import {
+  agentDefs,
   createDb,
   githubInstallations,
   inboundEvents,
   integrations,
   migrate,
   orgs,
+  platformIssues,
   projects,
+  registryItems,
   repos,
+  runs,
   seed,
 } from "@facility/db";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { FacilityGithubClient } from "../src/github/client.js";
-import { processGithubWebhook } from "../src/github/processor.js";
-import { resolveSlashCommand } from "../src/github/router.js";
+import { githubEventMatches, processGithubWebhook } from "../src/github/processor.js";
+import { githubRequestContext, resolveSlashCommand } from "../src/github/router.js";
+import { createPreviewRecord } from "../src/previews.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -65,6 +70,25 @@ describe("FacilityGithubClient", () => {
       body: "Body",
       labels: ["type:task"],
     });
+  });
+
+  it("updates the existing run-progress comment in place", async () => {
+    let args: Record<string, unknown> | undefined;
+    const client = new FacilityGithubClient(
+      {
+        rest: {
+          issues: {
+            updateComment: async (input: Record<string, unknown>) => {
+              args = input;
+              return { data: { id: 77 } };
+            },
+          },
+        },
+      } as never,
+      { owner: "octo", repo: "repo", defaultBranch: "main" },
+    );
+    await client.updateIssueComment(77, "completed");
+    expect(args).toEqual({ owner: "octo", repo: "repo", comment_id: 77, body: "completed" });
   });
 });
 
@@ -240,17 +264,376 @@ describe("github integration", async () => {
     expect(verify?.data.repoId).not.toBe(other.repoId);
   });
 
+  it("adapts GitHub deployment telemetry into a recoverable project signal", async () => {
+    const org = (await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(1))[0];
+    if (!org) throw new Error("seeded org missing");
+    const suffix = newId("evt");
+    const projectId = newId("proj");
+    const repoId = newId("repo");
+    const repoName = `deploy-${suffix}`;
+    await db.insert(projects).values({
+      id: projectId,
+      orgId: org.id,
+      name: "Deploy signals",
+      slug: `deploy-signals-${suffix}`,
+      settings: {},
+    });
+    await db.insert(repos).values({
+      id: repoId,
+      orgId: org.id,
+      projectId,
+      owner: "octo",
+      name: repoName,
+      defaultBranch: "main",
+    });
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({ id: newId("int"), orgId: org.id, kind: "github", name: suffix })
+        .returning()
+    )[0];
+    if (!integration) throw new Error("integration fixture missing");
+
+    const deliver = async (state: string) => {
+      const id = newId("evt");
+      await db.insert(inboundEvents).values({
+        id,
+        orgId: org.id,
+        integrationId: integration.id,
+        verified: true,
+        eventType: "deployment_status",
+        payload: {
+          repository: { owner: { login: "octo" }, name: repoName },
+          deployment_status: {
+            state,
+            environment: "production",
+            target_url: "https://example.test/deployment",
+          },
+        },
+      });
+      await processGithubWebhook(db, config, { inboundEventId: id });
+    };
+
+    await deliver("failure");
+    const fingerprint = `deployment:${repoId}:production`;
+    let issue = (
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
+    )[0];
+    expect(issue).toMatchObject({ projectId, state: "open", severity: "error" });
+    await deliver("success");
+    issue = (
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
+    )[0];
+    expect(issue?.state).toBe("resolved");
+
+    const preview = await createPreviewRecord(db, {
+      orgId: org.id,
+      projectId,
+      repoId,
+      prNumber: 17,
+      image: "ghcr.io/example/app:sha",
+      port: 3000,
+      ttlHours: 24,
+      createdBy: { type: "system", id: "test" },
+    });
+    if (!preview) throw new Error("preview fixture missing");
+    const closedId = newId("evt");
+    await db.insert(inboundEvents).values({
+      id: closedId,
+      orgId: org.id,
+      integrationId: integration.id,
+      verified: true,
+      eventType: "pull_request",
+      payload: {
+        action: "closed",
+        repository: { owner: { login: "octo" }, name: repoName },
+        pull_request: {
+          number: 17,
+          merged: true,
+          head: { ref: "feature/semantic-preview-branch" },
+          created_at: "2026-07-19T00:00:00Z",
+          closed_at: "2026-07-19T01:00:00Z",
+        },
+      },
+    });
+    const lifecycleJobs: Array<{ queue: string; data: Record<string, unknown> }> = [];
+    await processGithubWebhook(
+      db,
+      config,
+      { inboundEventId: closedId },
+      async () =>
+        ({
+          rest: {
+            pulls: {
+              listReviews: async () => ({ data: [] }),
+              listCommits: async () => ({ data: [] }),
+            },
+          },
+        }) as never,
+      async (queue, data) => {
+        lifecycleJobs.push({ queue, data });
+        return null;
+      },
+    );
+    expect(lifecycleJobs).toContainEqual({
+      queue: "previews.destroy",
+      data: { previewId: preview.id },
+    });
+  });
+
+  it("dispatches the configured review agent for a newly opened non-draft PR", async () => {
+    const org = (await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(1))[0];
+    if (!org) throw new Error("seeded org missing");
+    const installation = (
+      await db
+        .select()
+        .from(githubInstallations)
+        .where(eq(githubInstallations.orgId, org.id))
+        .limit(1)
+    )[0];
+    const contract = (
+      await db
+        .select()
+        .from(registryItems)
+        .where(and(eq(registryItems.orgId, org.id), eq(registryItems.name, "prompts/review")))
+        .limit(1)
+    )[0];
+    if (!installation || !contract) throw new Error("review fixtures missing");
+    const suffix = newId("evt");
+    const projectId = newId("proj");
+    const repoName = `review-${suffix}`;
+    await db.insert(projects).values({
+      id: projectId,
+      orgId: org.id,
+      name: "Review dispatch",
+      slug: `review-dispatch-${suffix}`,
+      settings: {},
+    });
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId: org.id,
+      projectId,
+      installationId: installation.id,
+      owner: "octo",
+      name: repoName,
+      defaultBranch: "main",
+    });
+    const agent = (
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId: org.id,
+          projectId,
+          name: "review",
+          engine: "codex",
+          model: { primary: "gpt-test" },
+          contractItemId: contract.id,
+          triggers: [{ type: "github", event: "pull_request", action: "ready_for_review" }],
+          permissions: ["runs:read"],
+        })
+        .returning()
+    )[0];
+    if (!agent) throw new Error("review agent fixture missing");
+    const producingRunId = newId("run");
+    await db.insert(runs).values({
+      id: producingRunId,
+      orgId: org.id,
+      projectId,
+      mode: "builder",
+      engine: "codex",
+      status: "succeeded",
+      trigger: {
+        source: "plan_acceptance",
+        approvedPlan: "1. Add subtract.\n2. Prove it with the configured checks.",
+        architectTrigger: {
+          request: {
+            title: "Add integer subtraction",
+            body: "Support negative results.",
+            comment: "/codex-architect",
+          },
+        },
+      },
+      gh: { owner: "octo", repo: repoName, branch: "feature/2-subtraction" },
+      createdBy: { type: "github", id: "facility-bot" },
+    });
+    await db.insert(runs).values({
+      id: newId("run"),
+      orgId: org.id,
+      projectId,
+      mode: "review",
+      engine: "codex",
+      status: "succeeded",
+      trigger: { type: "github_event", event: "pull_request", action: "opened" },
+      gh: { owner: "octo", repo: repoName, branch: "feature/2-subtraction" },
+      createdBy: { type: "github", id: "facility-bot" },
+      createdAt: new Date(Date.now() + 1_000),
+    });
+    const repairRunId = newId("run");
+    await db.insert(runs).values({
+      id: repairRunId,
+      orgId: org.id,
+      projectId,
+      mode: "address_review",
+      engine: "codex",
+      status: "succeeded",
+      trigger: {
+        type: "github_event",
+        event: "pull_request_review",
+        action: "submitted",
+        review: { id: 77, body: "Add negative and zero cases.", state: "changes_requested" },
+      },
+      receipt: {
+        result: "succeeded",
+        checks: [{ name: "pnpm test", status: "passed" }],
+        integrity: { payload_sha256: "repair-sha" },
+      },
+      gh: { owner: "octo", repo: repoName, branch: "feature/2-subtraction" },
+      createdBy: { type: "github", id: "facility-bot" },
+      createdAt: new Date(Date.now() + 2_000),
+    });
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({ id: newId("int"), orgId: org.id, kind: "github", name: suffix })
+        .returning()
+    )[0];
+    if (!integration) throw new Error("integration fixture missing");
+    const eventId = newId("evt");
+    await db.insert(inboundEvents).values({
+      id: eventId,
+      orgId: org.id,
+      integrationId: integration.id,
+      verified: true,
+      eventType: "pull_request",
+      payload: {
+        action: "opened",
+        installation: { id: installation.installationId },
+        sender: { login: "facility-bot", type: "Bot" },
+        repository: { owner: { login: "octo" }, name: repoName },
+        pull_request: {
+          number: 4,
+          title: "feat: subtraction",
+          body: "Closes #2",
+          draft: false,
+          html_url: `https://github.com/octo/${repoName}/pull/4`,
+          base: { ref: "main" },
+          head: { ref: "feature/2-subtraction", sha: "abc123" },
+        },
+      },
+    });
+    const jobs: Array<{ queue: string; data: Record<string, unknown> }> = [];
+    await processGithubWebhook(
+      db,
+      config,
+      { inboundEventId: eventId },
+      async () =>
+        ({
+          rest: {
+            issues: {
+              createComment: async () => ({
+                data: { id: 91, html_url: `https://github.com/octo/${repoName}/pull/4#comment-91` },
+              }),
+            },
+          },
+        }) as never,
+      async (queue, data) => {
+        jobs.push({ queue, data });
+        return null;
+      },
+    );
+    const [run] = await db.select().from(runs).where(eq(runs.agentDefId, agent.id));
+    expect(run).toMatchObject({
+      mode: "review",
+      engine: "codex",
+      gh: {
+        owner: "octo",
+        repo: repoName,
+        issueNumber: 4,
+        branch: "feature/2-subtraction",
+        progressComment: { id: 91 },
+      },
+      trigger: {
+        type: "github_event",
+        event: "pull_request",
+        action: "opened",
+        pullRequest: { number: 4, head: "feature/2-subtraction", headSha: "abc123" },
+        deliveryContext: {
+          producingRunId,
+          originalRequest: {
+            title: "Add integer subtraction",
+            body: "Support negative results.",
+            comment: "/codex-architect",
+          },
+          approvedPlan: "1. Add subtract.\n2. Prove it with the configured checks.",
+          followUpRuns: [
+            {
+              runId: repairRunId,
+              mode: "address_review",
+              review: {
+                id: 77,
+                body: "Add negative and zero cases.",
+                state: "changes_requested",
+              },
+              workflowRun: {},
+              receipt: {
+                result: "succeeded",
+                checks: [{ name: "pnpm test", status: "passed" }],
+                payloadSha256: "repair-sha",
+              },
+            },
+          ],
+        },
+      },
+    });
+    expect(jobs).toContainEqual({
+      queue: "runs.dispatch",
+      data: { runId: run?.id, orgId: org.id },
+    });
+  });
+
   it("matches only start-of-line slash commands and detects ambiguity", () => {
     expect(resolveSlashCommand("please ask /architect")).toEqual({ ambiguous: false });
     expect(resolveSlashCommand("/architect\n\ncontext")).toEqual({
       command: "architect",
+      agentCommand: "architect",
       ambiguous: false,
     });
     expect(resolveSlashCommand("/architect\n/builder")).toEqual({ ambiguous: true });
     expect(resolveSlashCommand("/codex-builder: go")).toEqual({
       command: "builder",
+      agentCommand: "codex-builder",
       ambiguous: false,
     });
+  });
+
+  it("preserves the end-user GitHub request for the platform agent", () => {
+    expect(
+      githubRequestContext({
+        issue: { number: 42, title: "Add subtraction", body: "Support negative results." },
+        comment: { id: 7, body: "/codex-architect\nKeep the public API stable." },
+      }),
+    ).toEqual({
+      title: "Add subtraction",
+      body: "Support negative results.",
+      comment: "/codex-architect\nKeep the public API stable.",
+    });
+  });
+
+  it("treats an opened non-draft PR as ready for review but leaves drafts alone", () => {
+    const triggers = [{ type: "github", event: "pull_request", action: "ready_for_review" }];
+    expect(
+      githubEventMatches(triggers, "pull_request", {
+        action: "opened",
+        pull_request: { draft: false },
+      }),
+    ).toBe(true);
+    expect(
+      githubEventMatches(triggers, "pull_request", {
+        action: "opened",
+        pull_request: { draft: true },
+      }),
+    ).toBe(false);
   });
 
   it("refuses write operations against the default branch", async () => {

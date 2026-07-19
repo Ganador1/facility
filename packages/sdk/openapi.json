@@ -4430,6 +4430,14 @@
                         "red"
                       ]
                     },
+                    "classification": {
+                      "type": "string",
+                      "enum": [
+                        "healthy",
+                        "degraded",
+                        "unhealthy"
+                      ]
+                    },
                     "signals": {
                       "type": "array",
                       "items": {
@@ -4440,6 +4448,7 @@
                   },
                   "required": [
                     "status",
+                    "classification",
                     "signals"
                   ],
                   "additionalProperties": false
@@ -6567,8 +6576,6 @@
                             "required": [
                               "input_tokens",
                               "output_tokens",
-                              "cache_read",
-                              "cache_write",
                               "cost_cents",
                               "cost_source"
                             ],
@@ -6898,8 +6905,6 @@
                           "required": [
                             "input_tokens",
                             "output_tokens",
-                            "cache_read",
-                            "cache_write",
                             "cost_cents",
                             "cost_source"
                           ],
@@ -7213,8 +7218,6 @@
                             "required": [
                               "input_tokens",
                               "output_tokens",
-                              "cache_read",
-                              "cache_write",
                               "cost_cents",
                               "cost_source"
                             ],
@@ -7526,8 +7529,6 @@
                           "required": [
                             "input_tokens",
                             "output_tokens",
-                            "cache_read",
-                            "cache_write",
                             "cost_cents",
                             "cost_source"
                           ],
@@ -7828,8 +7829,6 @@
                           "required": [
                             "input_tokens",
                             "output_tokens",
-                            "cache_read",
-                            "cache_write",
                             "cost_cents",
                             "cost_source"
                           ],
@@ -8922,8 +8921,6 @@
                           "required": [
                             "input_tokens",
                             "output_tokens",
-                            "cache_read",
-                            "cache_write",
                             "cost_cents",
                             "cost_source"
                           ],
@@ -11062,8 +11059,6 @@
                           "required": [
                             "input_tokens",
                             "output_tokens",
-                            "cache_read",
-                            "cache_write",
                             "cost_cents",
                             "cost_source"
                           ],
@@ -13447,6 +13442,961 @@
           }
         ],
         "x-facility-permission": "spend:read"
+      }
+    },
+    "/v1/projects/{projectId}/previews": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "orgId": {
+                        "type": "string"
+                      },
+                      "projectId": {
+                        "type": "string"
+                      },
+                      "repoId": {
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "runId": {
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "prNumber": {
+                        "nullable": true,
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "commitSha": {
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "driver": {
+                        "type": "string"
+                      },
+                      "status": {
+                        "type": "string"
+                      },
+                      "authMode": {
+                        "type": "string",
+                        "enum": [
+                          "workos_sso"
+                        ]
+                      },
+                      "config": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      },
+                      "error": {
+                        "nullable": true,
+                        "type": "string"
+                      },
+                      "expiresAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "lastHealthAt": {
+                        "nullable": true,
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "createdBy": {},
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "updatedAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "orgId",
+                      "projectId",
+                      "repoId",
+                      "runId",
+                      "prNumber",
+                      "commitSha",
+                      "driver",
+                      "status",
+                      "authMode",
+                      "config",
+                      "error",
+                      "expiresAt",
+                      "lastHealthAt",
+                      "createdBy",
+                      "createdAt",
+                      "updatedAt",
+                      "url"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getProjectsByProjectIdPreviews",
+        "summary": "List previews",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "runs:read"
+      },
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "repoId": {
+                    "type": "string"
+                  },
+                  "runId": {
+                    "type": "string"
+                  },
+                  "prNumber": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "exclusiveMinimum": true,
+                    "maximum": 9007199254740991
+                  },
+                  "commitSha": {
+                    "type": "string",
+                    "minLength": 7,
+                    "maxLength": 128,
+                    "pattern": "^[a-f0-9]+$"
+                  },
+                  "image": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "command": {
+                    "maxItems": 30,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 500
+                    }
+                  },
+                  "port": {
+                    "default": 3000,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "readinessPath": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200,
+                    "pattern": "^\\/.*"
+                  },
+                  "ttlHours": {
+                    "default": 24,
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 168
+                  }
+                },
+                "required": [
+                  "image"
+                ]
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Replays the original response for the same principal, path, key, and request body for 24 hours.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "orgId": {
+                      "type": "string"
+                    },
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "repoId": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "runId": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "prNumber": {
+                      "nullable": true,
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "commitSha": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "driver": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "authMode": {
+                      "type": "string",
+                      "enum": [
+                        "workos_sso"
+                      ]
+                    },
+                    "config": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "error": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "lastHealthAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "createdBy": {},
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "orgId",
+                    "projectId",
+                    "repoId",
+                    "runId",
+                    "prNumber",
+                    "commitSha",
+                    "driver",
+                    "status",
+                    "authMode",
+                    "config",
+                    "error",
+                    "expiresAt",
+                    "lastHealthAt",
+                    "createdBy",
+                    "createdAt",
+                    "updatedAt",
+                    "url"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postProjectsByProjectIdPreviews",
+        "summary": "Create preview",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "runs:write"
+      }
+    },
+    "/v1/projects/{projectId}/previews/{previewId}": {
+      "delete": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "previewId",
+            "required": true
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Replays the original response for the same principal, path, key, and request body for 24 hours.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "orgId": {
+                      "type": "string"
+                    },
+                    "projectId": {
+                      "type": "string"
+                    },
+                    "repoId": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "runId": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "prNumber": {
+                      "nullable": true,
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "commitSha": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "driver": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string"
+                    },
+                    "authMode": {
+                      "type": "string",
+                      "enum": [
+                        "workos_sso"
+                      ]
+                    },
+                    "config": {
+                      "type": "object",
+                      "additionalProperties": {}
+                    },
+                    "error": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "lastHealthAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "createdBy": {},
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "updatedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "orgId",
+                    "projectId",
+                    "repoId",
+                    "runId",
+                    "prNumber",
+                    "commitSha",
+                    "driver",
+                    "status",
+                    "authMode",
+                    "config",
+                    "error",
+                    "expiresAt",
+                    "lastHealthAt",
+                    "createdBy",
+                    "createdAt",
+                    "updatedAt",
+                    "url"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteProjectsByProjectIdPreviewsByPreviewId",
+        "summary": "Delete preview",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "runs:write"
+      }
+    },
+    "/preview/{previewId}": {
+      "get": {
+        "operationId": "getProtectedPreviewRoot",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "previewId",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get preview",
+        "tags": [
+          "Facility"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "runs:read"
+      }
+    },
+    "/preview/{previewId}/{*}": {
+      "get": {
+        "operationId": "getProtectedPreviewPath",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "previewId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "*",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Get preview",
+        "tags": [
+          "Facility"
+        ],
+        "security": []
       }
     },
     "/v1/analytics": {
@@ -24510,6 +25460,34 @@
                             "type": "string"
                           }
                         },
+                        "deploymentProviders": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "board": {
+                          "nullable": true,
+                          "type": "object",
+                          "properties": {
+                            "org": {
+                              "type": "string"
+                            },
+                            "project": {
+                              "type": "integer",
+                              "minimum": -9007199254740991,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "org",
+                            "project"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "previewConfigured": {
+                          "type": "boolean"
+                        },
                         "suggestedModules": {
                           "type": "array",
                           "items": {
@@ -24549,6 +25527,9 @@
                         "provision",
                         "org",
                         "workflowNames",
+                        "deploymentProviders",
+                        "board",
+                        "previewConfigured",
                         "suggestedModules",
                         "existing"
                       ],
@@ -24777,6 +25758,49 @@
                             "platform"
                           ]
                         }
+                      },
+                      "preview": {
+                        "type": "object",
+                        "properties": {
+                          "enabled": {
+                            "type": "boolean"
+                          },
+                          "image": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 300
+                          },
+                          "command": {
+                            "maxItems": 30,
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 500
+                            }
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "readinessPath": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 200,
+                            "pattern": "^\\/.*"
+                          },
+                          "ttlHours": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 168
+                          }
+                        },
+                        "required": [
+                          "enabled",
+                          "image",
+                          "port"
+                        ]
                       }
                     }
                   },
@@ -25605,6 +26629,10 @@
     {
       "name": "Cost and analytics",
       "description": "Budgets, spend, model requests, outcomes, and operational analytics."
+    },
+    {
+      "name": "Facility",
+      "description": "Facility control-plane operations."
     },
     {
       "name": "GitHub",

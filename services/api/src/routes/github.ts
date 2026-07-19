@@ -25,6 +25,16 @@ const Answers = z.object({
     .nullable()
     .optional(),
   execution_lane: z.record(z.string(), z.enum(["repo", "platform"])).optional(),
+  preview: z
+    .object({
+      enabled: z.boolean(),
+      image: z.string().min(1).max(300),
+      command: z.array(z.string().min(1).max(500)).max(30).optional(),
+      port: z.number().int().min(1).max(65_535),
+      readinessPath: z.string().min(1).max(200).startsWith("/").optional(),
+      ttlHours: z.number().int().min(1).max(168).optional(),
+    })
+    .optional(),
 });
 
 const DetectionSchema = z.object({
@@ -35,6 +45,9 @@ const DetectionSchema = z.object({
   provision: z.string(),
   org: z.string(),
   workflowNames: z.array(z.string()),
+  deploymentProviders: z.array(z.string()),
+  board: z.object({ org: z.string(), project: z.number().int() }).nullable(),
+  previewConfigured: z.boolean(),
   suggestedModules: z.array(z.string()),
   existing: z.object({
     agentsMd: z.boolean(),

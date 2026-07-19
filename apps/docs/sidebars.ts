@@ -23,13 +23,18 @@ const sidebars: SidebarsConfig = {
       type: "category",
       label: "self-hosting",
       collapsed: false,
-      items: ["self-host/quickstart", "self-host/production", "self-host/aws"],
+      items: [
+        "self-host/quickstart",
+        "self-host/production",
+        "self-host/github-app",
+        "self-host/aws",
+      ],
     },
     {
       type: "category",
       label: "guides",
       collapsed: false,
-      items: ["guides/kickstart", "guides/existing-repo"],
+      items: ["guides/kickstart", "guides/validate-delivery-loop", "guides/existing-repo"],
     },
     {
       type: "category",

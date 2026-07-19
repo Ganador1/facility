@@ -2,10 +2,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   checkEvent,
+  deliveryFailure,
   engineEnv,
   parseSelfReportedChecks,
   redactEventData,
   redactSecrets,
+  requiresDelivery,
   runCheckCommand,
 } from "../src/index.js";
 
@@ -48,6 +50,88 @@ describe("platform acceptance checks", () => {
   it("caps the failure output at 2000 chars", () => {
     const event = checkEvent("x", 1, "z".repeat(5000));
     expect((event.output as string).length).toBe(2000);
+  });
+});
+
+describe("builder delivery invariant", () => {
+  const repo = {
+    cloneUrl: "https://github.com/example/project.git",
+    branch: "main",
+    installationTokenRef: "installation",
+  };
+
+  it("requires delivery only for builder modes", () => {
+    expect(requiresDelivery("builder")).toBe(true);
+    expect(requiresDelivery("codex-builder")).toBe(true);
+    expect(requiresDelivery("architect")).toBe(false);
+    expect(requiresDelivery("review")).toBe(false);
+  });
+
+  it("rejects no-op, unpushed, and push-failed builder results", () => {
+    expect(deliveryFailure({ mode: "builder", repo }, { changed: false })).toBe(
+      "delivery_no_changes",
+    );
+    expect(deliveryFailure({ mode: "builder", repo }, { changed: true })).toBe(
+      "delivery_branch_missing",
+    );
+    expect(
+      deliveryFailure(
+        { mode: "builder", repo },
+        { changed: true, branch: "facility/run-1", headSha: "abc", pushError: "denied" },
+      ),
+    ).toBe("delivery_push_failed");
+  });
+
+  it("accepts a changed commit with agent-owned pull request metadata", () => {
+    expect(
+      deliveryFailure(
+        { mode: "builder", repo },
+        {
+          changed: true,
+          branch: "feature/task",
+          headSha: "abc",
+          pullRequestTitle: "feat: deliver task",
+          pullRequestBody: "## Summary\n\n- Deliver the requested task.",
+        },
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects a builder result that drops the agent-owned PR title or body", () => {
+    const delivered = { changed: true, branch: "feature/task", headSha: "abc" };
+    expect(deliveryFailure({ mode: "builder", repo }, delivered)).toBe("delivery_pr_title_missing");
+    expect(
+      deliveryFailure(
+        { mode: "builder", repo },
+        { ...delivered, pullRequestTitle: "feat: deliver task" },
+      ),
+    ).toBe("delivery_pr_body_missing");
+  });
+
+  it("fails read-only agents that alter the repository", () => {
+    expect(deliveryFailure({ mode: "review", repo }, { changed: true })).toBe(
+      "repository_changes_not_allowed",
+    );
+    expect(deliveryFailure({ mode: "security-sweep", repo }, { changed: false })).toBeNull();
+    expect(deliveryFailure({ mode: "learning", repo }, { changed: true })).toBe(
+      "repository_changes_not_allowed",
+    );
+    expect(deliveryFailure({ mode: "custom", repo }, { changed: true })).toBe(
+      "repository_changes_not_allowed",
+    );
+  });
+
+  it("accepts a no-op repair or a signed update to the existing PR branch", () => {
+    expect(deliveryFailure({ mode: "address-review", repo }, { changed: false })).toBeNull();
+    expect(
+      deliveryFailure(
+        { mode: "ci-doctor", repo },
+        { changed: true, branch: "feature/task", headSha: "signed" },
+      ),
+    ).toBeNull();
+    expect(deliveryFailure({ mode: "ci-doctor", repo }, { changed: true })).toBe(
+      "delivery_branch_missing",
+    );
   });
 });
 

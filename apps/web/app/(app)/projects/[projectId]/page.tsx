@@ -25,6 +25,16 @@ function healthTone(status: string | undefined): "ok" | "bad" | "machine" {
   return "machine";
 }
 
+function isHealthSignal(value: Record<string, unknown>): value is HealthSignal {
+  return (
+    typeof value.kind === "string" &&
+    typeof value.severity === "string" &&
+    typeof value.title === "string" &&
+    typeof value.state === "string" &&
+    typeof value.lastSeen === "string"
+  );
+}
+
 function prLink(gh: Record<string, unknown> | null | undefined): string | null {
   const pr = gh && typeof gh === "object" ? (gh as { pr?: unknown }).pr : null;
   if (pr && typeof pr === "object" && typeof (pr as { url?: unknown }).url === "string") {
@@ -77,10 +87,8 @@ export default async function ProjectOverviewPage({
   const openPrs = outcomes.ok ? outcomes.data : [];
   const needsYou = blocked.length + proposals.length + openPrs.length;
 
-  const healthData = health.ok
-    ? (health.data as { status?: string; signals?: HealthSignal[] })
-    : null;
-  const signals = healthData?.signals ?? [];
+  const healthData = health.ok ? health.data : null;
+  const signals = (healthData?.signals ?? []).filter(isHealthSignal);
 
   const agentRows = agentsStatus.ok ? agentsStatus.data : [];
   const agentNameById = new Map(agentRows.map((row) => [row.agentId, row.name]));

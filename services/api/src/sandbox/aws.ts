@@ -52,7 +52,7 @@ export class AwsSandboxDriver implements SandboxDriver {
     this.env = env;
   }
 
-  async launch(spec: LaunchSpec): Promise<{ ref: string }> {
+  async launch(spec: LaunchSpec): Promise<{ ref: string; endpoint?: string }> {
     const config = this.config();
     const output = (await this.ecs.send(
       new RunTaskCommand({
@@ -89,7 +89,15 @@ export class AwsSandboxDriver implements SandboxDriver {
     }
     const taskArn = output.tasks?.[0]?.taskArn;
     if (!taskArn) throw new Error("ECS RunTask did not return a taskArn");
-    return { ref: taskArn };
+    const privateIp = output.tasks?.[0]?.attachments
+      ?.flatMap((attachment) => attachment.details ?? [])
+      .find((detail) => detail.name === "privateIPv4Address")?.value;
+    return {
+      ref: taskArn,
+      ...(spec.servicePort && privateIp
+        ? { endpoint: `http://${privateIp}:${spec.servicePort}` }
+        : {}),
+    };
   }
 
   async status(ref: string): Promise<"starting" | "running" | "exited" | "lost"> {

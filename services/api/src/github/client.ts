@@ -1,4 +1,5 @@
 import { App } from "@octokit/app";
+import { Octokit as RestOctokit } from "@octokit/rest";
 import type { AppConfig } from "../types.js";
 
 export type Octokit = {
@@ -48,6 +49,7 @@ export type Octokit = {
       ) => Promise<{ data: { number: number; html_url: string } }>;
       update: (args: Record<string, unknown>) => Promise<{ data: unknown }>;
       listReviews?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
+      listReviewComments?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
       listCommits?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
     };
     issues: {
@@ -55,6 +57,9 @@ export type Octokit = {
         args: Record<string, unknown>,
       ) => Promise<{ data: { number: number; html_url: string } }>;
       createComment: (
+        args: Record<string, unknown>,
+      ) => Promise<{ data: { id: number; html_url?: string } }>;
+      updateComment: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { id: number; html_url?: string } }>;
       listForRepo: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
@@ -78,6 +83,10 @@ export function createGithubClientFactory(config: AppConfig): GithubClientFactor
   const app = new App({
     appId: config.githubAppId,
     privateKey: config.githubAppPrivateKey,
+    // @octokit/app intentionally ships the lightweight core client. Facility's
+    // GitHub adapter uses the typed REST endpoint helpers, so install that client
+    // explicitly instead of relying on a type cast that is false at runtime.
+    Octokit: RestOctokit,
   });
   return async (installationId: number) =>
     (await app.getInstallationOctokit(installationId)) as unknown as Octokit;
@@ -278,6 +287,52 @@ export class FacilityGithubClient {
     });
   }
 
+  async listReviewThreads(number: number) {
+    const reviews = this.octokit.rest.pulls.listReviews
+      ? (
+          await this.octokit.rest.pulls.listReviews({
+            owner: this.repo.owner,
+            repo: this.repo.repo,
+            pull_number: number,
+            per_page: 100,
+          })
+        ).data
+      : [];
+    const comments = this.octokit.rest.pulls.listReviewComments
+      ? (
+          await this.octokit.rest.pulls.listReviewComments({
+            owner: this.repo.owner,
+            repo: this.repo.repo,
+            pull_number: number,
+            per_page: 100,
+          })
+        ).data
+      : [];
+    return {
+      pr: number,
+      reviews: reviews.map((value) => {
+        const review = objectRecord(value);
+        return {
+          id: review.id,
+          state: review.state,
+          submitted_at: review.submitted_at,
+          body: boundedText(review.body),
+        };
+      }),
+      threads: comments.map((value) => {
+        const comment = objectRecord(value);
+        return {
+          id: comment.id,
+          in_reply_to_id: comment.in_reply_to_id,
+          path: comment.path,
+          line: comment.line ?? comment.original_line,
+          created_at: comment.created_at,
+          body: boundedText(comment.body),
+        };
+      }),
+    };
+  }
+
   async createIssueComment(
     issueNumber: number,
     body: string,
@@ -289,6 +344,15 @@ export class FacilityGithubClient {
       body,
     });
     return { id: response.data.id, url: response.data.html_url };
+  }
+
+  async updateIssueComment(commentId: number, body: string): Promise<void> {
+    await this.octokit.rest.issues.updateComment({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      comment_id: commentId,
+      body,
+    });
   }
 
   async listIssues(params: {
@@ -323,4 +387,15 @@ export class FacilityGithubClient {
       throw new Error(`Refusing to write to default branch ${this.repo.defaultBranch}`);
     }
   }
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function boundedText(value: unknown) {
+  if (typeof value !== "string") return null;
+  return value.length > 2_000 ? `${value.slice(0, 2_000)}…` : value;
 }

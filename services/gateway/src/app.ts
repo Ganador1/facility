@@ -138,10 +138,14 @@ async function handleProvider(
   const priced = normalizedModel !== null;
   const zeroCostPolicy = isZeroCostVirtualKey(key, model);
   const budgets = await applicableBudgets(db, key, now());
-  // Prepare the OpenAI body once (it clones + reserializes to inject
-  // stream_options.include_usage); both the recorded and upstream bodies reuse it
-  // rather than paying the transform twice on the hot path.
-  const prepared = provider === "openai" ? prepareOpenAiBody(parsed.json) : null;
+  // Chat Completions accepts stream_options.include_usage; Responses does not.
+  // Prepare once so the recorded and upstream bodies reuse the same transform.
+  const prepared =
+    provider === "openai"
+      ? prepareOpenAiBody(parsed.json, {
+          injectChatStreamUsage: suffix === "/chat/completions",
+        })
+      : null;
   const recordedBody = prepared ? prepared.recordedBody : parsed.json;
   const requestBody = sanitizedRequest(recordedBody, request.headers);
 

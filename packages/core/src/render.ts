@@ -25,12 +25,27 @@ export type RenderAnswers = {
   checkCmds?: string[];
   modules?: string[];
   modelTier?: string;
-  models?: { build?: string; review?: string; plan?: string };
+  models?: {
+    build?: string;
+    review?: string;
+    plan?: string;
+    codexBuild?: string;
+    codexPlan?: string;
+  };
   authMode?: "api-key" | "oauth" | "wif" | "bedrock" | "vertex";
   board?: { org: string; project: number | string } | null;
   canaryBot?: string;
   packageManager?: "pnpm" | "yarn" | "npm" | "none";
   workflowNames?: string[];
+  execution_lane?: Record<string, "repo" | "platform">;
+  preview?: {
+    enabled: boolean;
+    image: string;
+    command?: string[];
+    port: number;
+    readinessPath?: string;
+    ttlHours?: number;
+  };
 };
 
 export type RenderOptions = {
@@ -47,8 +62,13 @@ export type RenderResult = {
   vars: Record<string, string>;
 };
 
+const moduleRoot = dirname(fileURLToPath(import.meta.url));
+
 function repoRoot(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const packagedRoot = join(moduleRoot, "render-assets");
+  return existsSync(join(packagedRoot, "packages/cli/templates/watchtower/canary.mjs"))
+    ? packagedRoot
+    : join(moduleRoot, "../../..");
 }
 
 function defaultTemplateRoot(): string {
@@ -186,6 +206,23 @@ function boardStep(board?: RenderAnswers["board"]): string {
   ].join("\n");
 }
 
+function boardReviewStep(board?: RenderAnswers["board"]): string {
+  if (!board?.project) return "";
+  return [
+    "",
+    "      - name: Move delivered work to In Review",
+    "        if: steps.delivery.outcome == 'success' && github.event.issue.pull_request == null",
+    "        env:",
+    "          GH_TOKEN: " + "$" + "{{ secrets.PROJECTS_PAT }}",
+    "          MODE: review",
+    "          ISSUE_NODE_ID: " + "$" + "{{ github.event.issue.node_id }}",
+    `          ORG: '${board.org}'`,
+    `          PROJECT_NUMBER: '${board.project}'`,
+    "        run: bash .github/facility/move-board-status.sh",
+    "",
+  ].join("\n");
+}
+
 function doctorWatch(workflowNames: string[]): string {
   const watched = [...new Set([...workflowNames, "facility-review"])];
   const lines = watched.map((name) => `      - ${name}`);
@@ -218,6 +255,31 @@ function checksRun(checks: string[]): string {
   return [
     '          echo "::error::No verification commands are configured in .facility.json."',
     "          exit 1",
+  ].join("\n");
+}
+
+function previewStep(preview?: RenderAnswers["preview"]): string {
+  if (!preview?.enabled) return "";
+  return [
+    "",
+    "      - name: Request Facility SSO-protected preview",
+    "        if: steps.delivery.outcome == 'success'",
+    "        shell: bash",
+    "        env:",
+    "          FACILITY_API_URL: ${{ secrets.FACILITY_API_URL }}",
+    "          FACILITY_PROJECT_ID: ${{ secrets.FACILITY_PROJECT_ID }}",
+    "          FACILITY_PREVIEW_KEY: ${{ secrets.FACILITY_PREVIEW_KEY }}",
+    `          PREVIEW_IMAGE: ${JSON.stringify(preview.image)}`,
+    `          PREVIEW_COMMAND_JSON: ${JSON.stringify(JSON.stringify(preview.command ?? []))}`,
+    `          PREVIEW_PORT: ${JSON.stringify(String(preview.port))}`,
+    `          PREVIEW_READINESS_PATH: ${JSON.stringify(preview.readinessPath ?? "")}`,
+    `          PREVIEW_TTL_HOURS: ${JSON.stringify(String(preview.ttlHours ?? 24))}`,
+    "        run: |",
+    "          set -euo pipefail",
+    '          test -n "$FACILITY_API_URL" && test -n "$FACILITY_PROJECT_ID" && test -n "$FACILITY_PREVIEW_KEY"',
+    '          payload="$(jq -nc --arg image "$PREVIEW_IMAGE" --argjson command "$PREVIEW_COMMAND_JSON" --argjson port "$PREVIEW_PORT" --arg readiness "$PREVIEW_READINESS_PATH" --argjson ttl "$PREVIEW_TTL_HOURS" --argjson pr \'${{ steps.delivery.outputs.pr_number }}\' --arg commit \'${{ steps.delivery.outputs.head_sha }}\' \'{image:$image,command:$command,port:$port,ttlHours:$ttl,prNumber:$pr,commitSha:$commit} + if $readiness == "" then {} else {readinessPath:$readiness} end\')"',
+    '          curl --fail-with-body --silent --show-error -X POST "$FACILITY_API_URL/v1/projects/$FACILITY_PROJECT_ID/previews" -H "authorization: Bearer $FACILITY_PREVIEW_KEY" -H "content-type: application/json" -H "idempotency-key: preview-${{ github.run_id }}-${{ github.run_attempt }}" --data "$payload"',
+    "",
   ].join("\n");
 }
 
@@ -300,7 +362,20 @@ function anthropicAuthInputs(mode: RenderAnswers["authMode"]): string {
 }
 
 function formatManifest(manifest: Record<string, unknown> & { checks: string[] }): string {
-  const text = JSON.stringify(manifest, null, 2);
+  let text = JSON.stringify(manifest, null, 2).replace(
+    '  "engines": [\n    "claude-code",\n    "codex"\n  ],',
+    '  "engines": ["claude-code", "codex"],',
+  );
+  const preview = manifest.preview as { command?: string[] } | undefined;
+  if (preview?.command?.length) {
+    const expanded = `    "command": [\n${preview.command
+      .map((part) => `      ${JSON.stringify(part)}`)
+      .join(",\n")}\n    ],`;
+    text = text.replace(
+      expanded,
+      `    "command": [${preview.command.map((part) => JSON.stringify(part)).join(", ")}],`,
+    );
+  }
   const compactChecks = `  "checks": [${manifest.checks.map((check) => JSON.stringify(check)).join(", ")}],`;
   if (compactChecks.length > 100 || manifest.checks.length === 0) return `${text}\n`;
   const lines = text.split("\n");
@@ -338,6 +413,8 @@ export async function renderFacilityInit(
     build: answers.models?.build ?? "opusplan",
     review: answers.models?.review ?? "claude-sonnet-4-6",
     plan: answers.models?.plan ?? "claude-opus-4-8",
+    codexBuild: answers.models?.codexBuild ?? "gpt-5.6-sol",
+    codexPlan: answers.models?.codexPlan ?? "gpt-5.6-sol",
   };
   const checks = answers.checkCmds ?? [];
   const authMode = answers.authMode ?? "api-key";
@@ -350,6 +427,20 @@ export async function renderFacilityInit(
     BUILD_MODEL: models.build,
     REVIEW_MODEL: models.review,
     PLAN_MODEL: models.plan,
+    CODEX_BUILD_MODEL: models.codexBuild,
+    CODEX_PLAN_MODEL: models.codexPlan,
+    CODEX_EFFORT: "xhigh",
+    CODEX_VERSION: "0.144.6",
+    ARCHITECT_REPO_LANE:
+      answers.execution_lane?.architect === "platform" ||
+      answers.execution_lane?.["/architect"] === "platform"
+        ? "false"
+        : "true",
+    BUILDER_REPO_LANE:
+      answers.execution_lane?.builder === "platform" ||
+      answers.execution_lane?.["/builder"] === "platform"
+        ? "false"
+        : "true",
     PROVISION_CMD: provision,
     CHECKS_INLINE: checks.length ? checks.join(" ; ") : "the checks configured in STANDARD.md",
     CHECKS_LIST: checksList(checks),
@@ -360,6 +451,7 @@ export async function renderFacilityInit(
       conditional: true,
     }),
     BOARD_STEP: boardStep(answers.board),
+    BOARD_REVIEW_STEP: boardReviewStep(answers.board),
     CANARY_BOT: answers.canaryBot ?? "facility-canary[bot]",
     CANARY_SHA256: await canarySha256(templateRoot),
     DOCTOR_WATCH: doctorWatch(answers.workflowNames ?? []),
@@ -373,12 +465,17 @@ export async function renderFacilityInit(
       "steps.workflow-change.outputs.changed != 'true'",
     ),
     ANTHROPIC_AUTH_INPUTS: anthropicAuthInputs(authMode),
+    PREVIEW_STEP: previewStep(answers.preview),
   };
   const template = (relPath: string) => readFileSync(join(templateRoot, relPath), "utf8");
   const plan: RenderedFile[] = [
     {
       path: ".github/workflows/facility-crew.yml",
       content: render(template("workflows/facility-crew.yml"), vars),
+    },
+    {
+      path: ".github/workflows/facility-codex.yml",
+      content: render(template("workflows/facility-codex.yml"), vars),
     },
     {
       path: ".github/workflows/facility-review.yml",
@@ -413,6 +510,7 @@ export async function renderFacilityInit(
     { path: ".github/facility/sweep.md", content: render(template("prompts/sweep.md"), vars) },
     { path: ".github/facility/doctor/resolve.mjs", content: template("doctor/resolve.mjs") },
     { path: ".github/facility/delivery/verify.mjs", content: template("delivery/verify.mjs") },
+    { path: ".github/facility/receipts/collect.mjs", content: template("receipts/collect.mjs") },
     { path: ".github/facility/review/finalize.mjs", content: template("review/finalize.mjs") },
     {
       path: ".github/facility/watchtower/outcomes.mjs",
@@ -505,11 +603,17 @@ export async function renderFacilityInit(
   const manifest = {
     facility: version,
     engine: "claude-code",
-    auth: { provider: "anthropic", mode: authMode },
+    engines: ["claude-code", "codex"],
+    auth: {
+      provider: "anthropic",
+      mode: authMode,
+      codex: { provider: "openai", mode: "api-key" },
+    },
     defaultBranch: answers.defaultBranch,
     provision: answers.provisionCmd || null,
     checks,
     models,
+    preview: answers.preview,
     canaryBot: answers.canaryBot ?? "facility-canary[bot]",
     board: answers.board?.project
       ? { org: answers.board.org, project: Number(answers.board.project) }

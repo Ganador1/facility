@@ -187,7 +187,10 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
             orgId: p.orgId,
             projectId,
             agentDefId: agent.id,
-            mode: body.mode,
+            // The selected agent owns its governed role. Caller labels such as
+            // "manual" must not bypass role-specific progress, delivery, receipt,
+            // or read-only invariants in the runner.
+            mode: agent.name,
             // The agent definition owns execution engine selection. Persisting a
             // caller-supplied default made CLI/MCP-triggered Claude/BYO runs look
             // like Codex runs even though orchestration correctly used the agent.

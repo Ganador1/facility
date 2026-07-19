@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,8 +8,16 @@ import { config as loadDotenv } from "dotenv";
 import { sql as drizzleSql, type SQL } from "drizzle-orm";
 import postgres from "postgres";
 
-const repoRoot = join(fileURLToPath(new URL(".", import.meta.url)), "../../..");
-loadDotenv({ path: join(repoRoot, ".env"), quiet: true });
+const moduleRoot = fileURLToPath(new URL(".", import.meta.url));
+const workspaceRoot = join(moduleRoot, "../../..");
+const packagedAssetsRoot = join(moduleRoot, "seed-assets");
+// Workspace builds read the canonical source files. Production deployments use
+// the copy bundled into @facility/db/dist so first-org bootstrap does not depend
+// on the monorepo existing beside node_modules.
+const repoRoot = existsSync(join(packagedAssetsRoot, "packages/harness/contracts/po-agent.md"))
+  ? packagedAssetsRoot
+  : workspaceRoot;
+loadDotenv({ path: join(workspaceRoot, ".env"), quiet: true });
 
 type SeedOptions = {
   includeDemoData?: boolean;
@@ -16,6 +25,13 @@ type SeedOptions = {
 
 type RegistryDb = {
   execute: (query: SQL) => Promise<unknown>;
+};
+
+type BundledRegistryEntry = {
+  kind: string;
+  name: string;
+  description: string;
+  content: string;
 };
 
 const BUNDLED_ACTION_TYPES = [
@@ -115,10 +131,18 @@ export async function seed(
       `;
     }
     const seededOrgs = await sql<{ id: string }[]>`SELECT id FROM orgs`;
-    for (const org of seededOrgs) {
-      await seedOrgEssentialsSql(sql, org.id);
-    }
+    await seedOrgEssentialsForOrgsSql(
+      sql,
+      seededOrgs.map((org) => org.id),
+    );
     if (!includeDemoData) {
+      // Deploy-time seeds refresh bundled contracts and templates for existing
+      // tenants too. Do this set-wise so an upgrade is not one database round
+      // trip per file per tenant.
+      await seedBundledRegistryForOrgsSql(
+        sql,
+        seededOrgs.map((org) => org.id),
+      );
       console.log("seed complete");
       return;
     }
@@ -307,6 +331,80 @@ async function seedOrgEssentialsSql(sql: postgres.Sql, orgId: string): Promise<v
   }
 }
 
+async function seedOrgEssentialsForOrgsSql(sql: postgres.Sql, orgIds: string[]): Promise<void> {
+  if (orgIds.length === 0) return;
+  const orgInputs = orgIds.map((orgId) => ({
+    org_id: orgId,
+    profile_id: defaultSandboxProfileId(orgId),
+  }));
+  await sql`
+    WITH inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text, profile_id text)
+    )
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    SELECT
+      inputs.profile_id,
+      inputs.org_id,
+      'Default runner',
+      ${defaultSandboxDriver()},
+      ${defaultRunnerImage()},
+      '{"deps":[]}'::jsonb,
+      '{"cpu":2,"memory_mb":4096,"timeout_min":60}'::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    FROM inputs
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `;
+  const actionInputs = BUNDLED_ACTION_TYPES.map((actionType) => ({
+    name: actionType.name,
+    payload_schema: { type: "object", required: actionType.required },
+    executor: actionTypeExecutor(actionType.name),
+  }));
+  await sql`
+    WITH org_inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text, profile_id text)
+    ), action_inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(actionInputs)}::jsonb)
+        AS value(name text, payload_schema jsonb, executor jsonb)
+    )
+    INSERT INTO action_types (
+      id, org_id, name, payload_schema, resolver, executor, default_ttl_hours
+    )
+    SELECT
+      'act_' || org_inputs.org_id || '_' || action_inputs.name,
+      org_inputs.org_id,
+      action_inputs.name,
+      action_inputs.payload_schema,
+      '{"type":"permission","config":{"permission":"hitl:decide"}}'::jsonb,
+      action_inputs.executor,
+      72
+    FROM org_inputs
+    CROSS JOIN action_inputs
+    ON CONFLICT (org_id, name) DO UPDATE SET
+      payload_schema = EXCLUDED.payload_schema,
+      resolver = EXCLUDED.resolver,
+      executor = CASE
+        WHEN action_types.name = 'plan_acceptance'
+          AND coalesce(action_types.executor->>'type', 'none') <> 'none'
+          THEN action_types.executor
+        ELSE EXCLUDED.executor
+      END,
+      default_ttl_hours = EXCLUDED.default_ttl_hours,
+      updated_at = now()
+  `;
+}
+
 async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void> {
   await db.execute(drizzleSql`
     INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
@@ -395,6 +493,146 @@ async function seedBundledRegistrySql(sql: postgres.Sql, orgId: string) {
   );
   await seedTemplateRegistrySql(sql, orgId);
   return { poContractId, learningContractId, productChainId };
+}
+
+async function bundledRegistryEntries(): Promise<BundledRegistryEntry[]> {
+  const harnessRoot = join(repoRoot, "packages/harness");
+  const poContract = await readFile(join(harnessRoot, "contracts/po-agent.md"), "utf8");
+  const learningContract = await readFile(join(harnessRoot, "contracts/learning-agent.md"), "utf8");
+  const entries: BundledRegistryEntry[] = [
+    {
+      kind: "agent_contract",
+      name: "po-agent",
+      description: "Bundled Project Owner contract",
+      content: poContract,
+    },
+    {
+      kind: "agent_contract",
+      name: "learning-agent",
+      description: "Bundled learning mode contract",
+      content: learningContract,
+    },
+    {
+      kind: "harness",
+      name: "product-chain",
+      description: "Bundled product owner artifact chain",
+      content: JSON.stringify(productChainSeed(), null, 2),
+    },
+    {
+      kind: "harness",
+      name: "research-chain",
+      description: "Bundled Limina-compatible research artifact chain",
+      content: JSON.stringify(researchChainSeed(), null, 2),
+    },
+  ];
+  const templateRoot = join(repoRoot, "packages/cli/templates");
+  const cliModuleRoot = join(repoRoot, "packages/cli/modules");
+  const files = [...(await walk(templateRoot)), ...(await walk(cliModuleRoot))];
+  entries.push({
+    kind: "template_set",
+    name: "facility-standard",
+    description: "Facility standard template set",
+    content: files.map((file) => relative(repoRoot, file)).join("\n"),
+  });
+  for (const file of files) {
+    const content = await readFile(file, "utf8");
+    const rel = relative(repoRoot, file);
+    entries.push({
+      kind: kindFor(rel),
+      name:
+        rel.replace(/^packages\/cli\/(templates|modules)\//, "").replace(extname(rel), "") ||
+        basename(file),
+      description: rel,
+      content,
+    });
+  }
+  return entries;
+}
+
+async function seedBundledRegistryForOrgsSql(sql: postgres.Sql, orgIds: string[]): Promise<void> {
+  if (orgIds.length === 0) return;
+  const entries = (await bundledRegistryEntries()).map((entry) => ({
+    ...entry,
+    content_hash: hash(entry.content),
+  }));
+  const orgInputs = orgIds.map((orgId) => ({ org_id: orgId }));
+  await sql`
+    WITH org_inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text)
+    ), entry_inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(entries)}::jsonb)
+        AS value(kind text, name text, description text, content text, content_hash text)
+    )
+    INSERT INTO registry_items (
+      id, org_id, scope, kind, name, description, latest_version
+    )
+    SELECT
+      'item_seed_' || md5(org_inputs.org_id || ':' || entry_inputs.kind || ':' || entry_inputs.name),
+      org_inputs.org_id,
+      'bundled',
+      entry_inputs.kind,
+      entry_inputs.name,
+      entry_inputs.description,
+      1
+    FROM org_inputs
+    CROSS JOIN entry_inputs
+    ON CONFLICT (org_id, coalesce(project_id, '__none__'), kind, name)
+    DO UPDATE SET
+      description = EXCLUDED.description,
+      latest_version = GREATEST(registry_items.latest_version, 1),
+      updated_at = CASE
+        WHEN registry_items.description IS DISTINCT FROM EXCLUDED.description
+          OR registry_items.latest_version < 1
+          THEN now()
+        ELSE registry_items.updated_at
+      END
+  `;
+  await sql`
+    WITH org_inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text)
+    ), entry_inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(entries)}::jsonb)
+        AS value(kind text, name text, description text, content text, content_hash text)
+    ), inputs AS (
+      SELECT
+        registry_items.org_id,
+        registry_items.id AS item_id,
+        entry_inputs.content,
+        entry_inputs.content_hash
+      FROM registry_items
+      JOIN org_inputs ON org_inputs.org_id = registry_items.org_id
+      JOIN entry_inputs
+        ON entry_inputs.kind = registry_items.kind
+        AND entry_inputs.name = registry_items.name
+      WHERE registry_items.project_id IS NULL
+    )
+    INSERT INTO registry_versions (
+      id, org_id, item_id, version, content, content_hash, changelog, status, created_by
+    )
+    SELECT
+      'ver_seed_' || md5(inputs.item_id || ':1'),
+      inputs.org_id,
+      inputs.item_id,
+      1,
+      inputs.content,
+      inputs.content_hash,
+      'seeded from CLI templates',
+      'active',
+      'seed'
+    FROM inputs
+    ON CONFLICT (item_id, version)
+    DO UPDATE SET
+      content = EXCLUDED.content,
+      content_hash = EXCLUDED.content_hash,
+      updated_at = now()
+    WHERE registry_versions.content_hash IS DISTINCT FROM EXCLUDED.content_hash
+  `;
 }
 
 async function seedBundledRegistryDb(db: RegistryDb, orgId: string) {

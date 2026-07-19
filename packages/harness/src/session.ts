@@ -67,5 +67,9 @@ least-privilege, run-scoped key revoked when the run ends.
 - Stop gate: POST ${base}/v1/runs/${input.runId}/kb-checkpoint
 - Propose task: POST ${base}/v1/tasks/:taskId/propose
 - Submit proposal: POST ${base}/v1/proposals
+
+Proposal writers receive the allowed action-type IDs and required payload
+fields in their run scope. A proposal is not submitted until POST /v1/proposals
+returns 200; prose in the final response does not create an inbox item.
 `;
 }

@@ -33,8 +33,8 @@ locals {
   }
 
   public_urls = {
-    api = "https://${var.api_hostname}"
-    web = "https://${var.app_hostname}"
+    api = var.enable_cloudfront_api_endpoint ? "https://${aws_cloudfront_distribution.api[0].domain_name}" : "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.api_hostname}"
+    web = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.app_hostname}"
   }
 
   common_environment = [
@@ -101,24 +101,31 @@ locals {
     "dev_openai_api_key",
   ])
 
-  common_secrets = [
+  core_secrets = [
     { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.app["database_url"].arn },
     { name = "SECRET_MASTER_KEY", valueFrom = aws_secretsmanager_secret.app["secret_master_key"].arn },
-    { name = "WORKOS_API_KEY", valueFrom = aws_secretsmanager_secret.app["workos_api_key"].arn },
-    { name = "WORKOS_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["workos_client_id"].arn },
-    { name = "WORKOS_COOKIE_PASSWORD", valueFrom = aws_secretsmanager_secret.app["workos_cookie_password"].arn },
-    { name = "WORKOS_AUTHKIT_DOMAIN", valueFrom = aws_secretsmanager_secret.app["workos_authkit_domain"].arn },
-    { name = "NEXT_PUBLIC_WORKOS_REDIRECT_URI", valueFrom = aws_secretsmanager_secret.app["next_public_workos_redirect_uri"].arn },
     { name = "GITHUB_APP_ID", valueFrom = aws_secretsmanager_secret.app["github_app_id"].arn },
     { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = aws_secretsmanager_secret.app["github_app_private_key"].arn },
     { name = "GITHUB_APP_WEBHOOK_SECRET", valueFrom = aws_secretsmanager_secret.app["github_app_webhook_secret"].arn },
     { name = "GITHUB_APP_SLUG", valueFrom = aws_secretsmanager_secret.app["github_app_slug"].arn },
   ]
 
-  gateway_secrets = concat(local.common_secrets, [
+  workos_secrets = [
+    { name = "WORKOS_API_KEY", valueFrom = aws_secretsmanager_secret.app["workos_api_key"].arn },
+    { name = "WORKOS_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["workos_client_id"].arn },
+    { name = "WORKOS_COOKIE_PASSWORD", valueFrom = aws_secretsmanager_secret.app["workos_cookie_password"].arn },
+    { name = "WORKOS_AUTHKIT_DOMAIN", valueFrom = aws_secretsmanager_secret.app["workos_authkit_domain"].arn },
+    { name = "NEXT_PUBLIC_WORKOS_REDIRECT_URI", valueFrom = aws_secretsmanager_secret.app["next_public_workos_redirect_uri"].arn },
+  ]
+
+  common_secrets = concat(local.core_secrets, var.enable_workos ? local.workos_secrets : [])
+
+  dev_provider_secrets = [
     { name = "DEV_ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.app["dev_anthropic_api_key"].arn },
     { name = "DEV_OPENAI_API_KEY", valueFrom = aws_secretsmanager_secret.app["dev_openai_api_key"].arn },
-  ])
+  ]
+
+  gateway_secrets = concat(local.common_secrets, var.enable_dev_provider_fallback ? local.dev_provider_secrets : [])
 
   log_groups = toset(["api", "worker", "gateway", "web", "runner", "migrate"])
 
@@ -126,7 +133,7 @@ locals {
     api = {
       desired_count = var.api_desired_count
       image         = local.images.api
-      command       = ["node", "services/api/dist/start.js"]
+      command       = ["node", "dist/start.js"]
       port          = local.ports.api
       environment   = local.api_environment
       secrets       = local.common_secrets
@@ -136,7 +143,7 @@ locals {
     worker = {
       desired_count = var.worker_desired_count
       image         = local.images.worker
-      command       = ["node", "services/api/dist/worker.js"]
+      command       = ["node", "dist/worker.js"]
       port          = local.ports.worker
       environment   = local.worker_environment
       secrets       = local.common_secrets
@@ -156,7 +163,7 @@ locals {
     web = {
       desired_count = var.web_desired_count
       image         = local.images.web
-      command       = ["pnpm", "--filter", "@facility/web", "start"]
+      command       = []
       port          = local.ports.web
       environment   = local.web_environment
       secrets       = []

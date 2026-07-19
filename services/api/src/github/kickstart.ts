@@ -23,9 +23,7 @@ import { raisePlatformIssue } from "../watchtower/issues.js";
 import { FacilityGithubClient, type GithubClientFactory, type TreeItem } from "./client.js";
 import { readRepoFiles } from "./repo-files.js";
 
-export type KickstartAnswers = RenderAnswers & {
-  execution_lane?: Record<string, "repo" | "platform">;
-};
+export type KickstartAnswers = RenderAnswers;
 
 export type RepoRow = typeof repos.$inferSelect;
 
@@ -35,6 +33,7 @@ const MANAGED_FACILITY_PATHS = [
   "AGENTS.md",
   "CLAUDE.md",
   ".github/workflows/facility-crew.yml",
+  ".github/workflows/facility-codex.yml",
   ".github/workflows/facility-review.yml",
   ".github/workflows/facility-address-review.yml",
   ".github/workflows/facility-doctor.yml",
@@ -46,6 +45,9 @@ const MANAGED_FACILITY_PATHS = [
   ".github/facility/doctor.md",
   ".github/facility/sweep.md",
   ".github/facility/doctor/resolve.mjs",
+  ".github/facility/delivery/verify.mjs",
+  ".github/facility/receipts/collect.mjs",
+  ".github/facility/review/finalize.mjs",
   ".github/facility/watchtower/outcomes.mjs",
   ".github/facility/watchtower/health.mjs",
   ".github/facility/watchtower/canary.mjs",
@@ -232,7 +234,7 @@ function kickstartPrBody(paths: string[]): string {
     "2. Install the Claude GitHub App on the repo so crew pushes re-trigger CI.",
     "3. Protect the default branch with PR review.",
     "4. Put TEST-tier provider keys in the `facility-crew` Environment when needed.",
-    "5. Connect a deployment provider and require its per-PR live preview check.",
+    "5. If previews are configured, set FACILITY_API_URL, FACILITY_PROJECT_ID, and FACILITY_PREVIEW_KEY so delivered PRs receive an SSO-protected Facility preview.",
     "",
     "Rendered files:",
     ...paths.map((path) => `- \`${path}\``),

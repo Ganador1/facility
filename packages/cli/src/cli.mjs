@@ -88,7 +88,9 @@ function help() {
   console.log("");
   item(dim("init flags: --yes --force --dir=<path> --branch=<name> --provision=<cmd>"));
   item(dim('            --checks="cmd1, cmd2" --auth=<api-key|oauth|wif|bedrock|vertex>'));
-  item(dim('            --build-model=<id> --review-model=<id> --plan-model=<id> --org=<org> --project=<n>'));
+  item(dim('            --build-model=<id> --review-model=<id> --plan-model=<id>'));
+  item(dim('            --codex-build-model=<id> --codex-plan-model=<id> --org=<org> --project=<n>'));
+  item(dim('            --preview-image=<image> --preview-command=<cmd> --preview-port=<n> --preview-readiness-path=</health> --preview-ttl-hours=<n>'));
   item(dim("Run facility <command> --help for precise usage."));
   item(dim("Global platform flags: --profile <name> --json --timeout <seconds>"));
   console.log("");
@@ -200,6 +202,13 @@ function validateLocalFlags(command, flags) {
       "build-model",
       "review-model",
       "plan-model",
+      "codex-build-model",
+      "codex-plan-model",
+      "preview-image",
+      "preview-command",
+      "preview-port",
+      "preview-readiness-path",
+      "preview-ttl-hours",
       "help",
     ]),
     add: new Set(["dir", "help"]),
@@ -239,6 +248,13 @@ function validateLocalFlags(command, flags) {
             "build-model",
             "review-model",
             "plan-model",
+            "codex-build-model",
+            "codex-plan-model",
+            "preview-image",
+            "preview-command",
+            "preview-port",
+            "preview-readiness-path",
+            "preview-ttl-hours",
           ]
         : ["dir"];
   for (const name of valueNames) {

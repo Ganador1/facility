@@ -61,6 +61,10 @@ test("init installs the method end to end", async (t) => {
       '--checks=npm run lint, npm test',
       "--org=acme",
       "--project=7",
+      "--preview-image=ghcr.io/acme/demo:sha-abc123",
+      "--preview-command=npm run start",
+      "--preview-port=4173",
+      "--preview-readiness-path=/healthz",
     ],
     dir
   );
@@ -68,6 +72,7 @@ test("init installs the method end to end", async (t) => {
 
   const expected = [
     ".github/workflows/facility-crew.yml",
+    ".github/workflows/facility-codex.yml",
     ".github/workflows/facility-review.yml",
     ".github/workflows/facility-address-review.yml",
     ".github/workflows/facility-doctor.yml",
@@ -80,6 +85,7 @@ test("init installs the method end to end", async (t) => {
     ".github/facility/sweep.md",
     ".github/facility/doctor/resolve.mjs",
     ".github/facility/delivery/verify.mjs",
+    ".github/facility/receipts/collect.mjs",
     ".github/facility/review/finalize.mjs",
     ".github/facility/watchtower/outcomes.mjs",
     ".github/facility/watchtower/health.mjs",
@@ -117,6 +123,11 @@ test("init installs the method end to end", async (t) => {
   assert.ok(crew.includes("npm run setup"), "provision command not rendered");
   assert.ok(crew.includes("PROJECT_NUMBER: '7'"), "board step not rendered");
   assert.ok(crew.includes("npm ci"), "toolchain steps not rendered for npm");
+  assert.ok(
+    crew.includes("Request Facility SSO-protected preview"),
+    "configured delivery must request a protected preview",
+  );
+  assert.ok(crew.includes("FACILITY_PREVIEW_KEY"), "preview request needs a scoped Facility key");
 
   // Agent triggers are slash commands, never @-mentions (real GitHub users),
   // and bot-authored events can't summon the crew.
@@ -149,6 +160,12 @@ test("init installs the method end to end", async (t) => {
   assert.ok(crew.includes("--model opusplan"), "builder must run on the build tier");
   assert.ok(crew.includes("--model claude-opus-4-8"), "architect must run on the plan tier");
   const review = readFileSync(join(dir, ".github/workflows/facility-review.yml"), "utf8");
+  const codex = readFileSync(join(dir, ".github/workflows/facility-codex.yml"), "utf8");
+  assert.ok(codex.includes("/codex-builder"), "Codex builder command must be installed");
+  assert.ok(codex.includes("/codex-architect"), "Codex architect command must be installed");
+  assert.ok(codex.includes("@openai/codex@0.144.6"), "Codex CLI must be version-pinned");
+  assert.ok(codex.includes("FACILITY_RECEIPT_PROVIDER: codex_cli"), "Codex runs need receipts");
+  assert.ok(codex.includes("actions/attest-build-provenance@43d14"), "Codex receipts must be attested");
   assert.ok(review.includes("--model claude-sonnet-4-6"), "review must run on the review tier");
   assert.ok(review.includes("npm ci"), "reviewer must install the detected toolchain");
   assert.ok(review.includes("npm run setup"), "reviewer must provision before inspection");
@@ -158,6 +175,9 @@ test("init installs the method end to end", async (t) => {
   assert.ok(crew.includes("delivery/verify.mjs discover"), "builder delivery must be checked deterministically");
   assert.ok(crew.includes(".head.sha"), "existing PR delivery must capture its pre-builder head");
   assert.ok(crew.includes("if-no-files-found: error"), "a missing delivery receipt must fail closed");
+  assert.ok(crew.includes("MODE: review"), "verified delivery must move board work to review");
+  const boardScript = readFileSync(join(dir, ".github/facility/move-board-status.sh"), "utf8");
+  assert.ok(boardScript.includes('review)    TARGET="$REVIEW_STATUS"'), "board script needs review mapping");
 
   // The canary hash pinned in the crew workflow is derived from the canonical
   // probe body — the three artifacts can never drift at generation time.
@@ -167,9 +187,56 @@ test("init installs the method end to end", async (t) => {
   const expectedSha = createHash("sha256").update(CANARY_PROBE_BODY.replace(/\r/g, ""), "utf8").digest("hex");
   assert.ok(crew.includes(expectedSha), "crew must pin the sha256 of the canary probe body");
   assert.ok(crew.includes("facility-canary[bot]"), "default canary bot login must be rendered");
+  const canaryWorkflow = readFileSync(
+    join(dir, ".github/workflows/facility-canary.yml"),
+    "utf8",
+  );
+  const canarySource = readFileSync(
+    join(dir, ".github/facility/watchtower/canary.mjs"),
+    "utf8",
+  );
+  assert.ok(canaryWorkflow.includes("attestations: read"), "canary must read attestations");
+  assert.ok(canarySource.includes("facility-run-receipt-${run.id}-crew"));
+  assert.ok(canarySource.includes("verifyReceipt(receipt)"), "canary must verify receipt digest");
+  assert.ok(canarySource.includes('"attestation", "verify"'), "canary must verify OIDC provenance");
+
+  for (const workflow of [
+    "facility-crew.yml",
+    "facility-codex.yml",
+    "facility-review.yml",
+    "facility-address-review.yml",
+    "facility-doctor.yml",
+    "facility-security-sweep.yml",
+  ]) {
+    const source = readFileSync(join(dir, ".github/workflows", workflow), "utf8");
+    assert.ok(source.includes("Collect trusted agent run receipt"), `${workflow} must collect a receipt`);
+    assert.ok(source.includes("actions/attest-build-provenance@43d14"), `${workflow} must attest its receipt`);
+    assert.ok(source.includes("facility-run-receipt-${{ github.run_id }}"), `${workflow} must upload its receipt`);
+  }
+
+  const healthSource = readFileSync(join(dir, ".github/facility/watchtower/health.mjs"), "utf8");
+  assert.ok(healthSource.includes('"facility-codex"'), "health must watch the Codex lane");
+  assert.ok(healthSource.includes('"degraded"'), "health must classify partial failures");
+  const securitySweep = readFileSync(
+    join(dir, ".github/workflows/facility-security-sweep.yml"),
+    "utf8",
+  );
+  assert.ok(securitySweep.includes("secret-scanning/alerts"), "security sweep needs secret alerts");
+  assert.ok(securitySweep.includes("dependency-graph/sbom"), "security sweep needs SBOM evidence");
+  assert.ok(securitySweep.includes("workflow-permissions.txt"), "security sweep needs permission evidence");
 
   // Doctor watches facility-review (no other workflows exist in the fixture).
   const doctorWf = readFileSync(join(dir, ".github/workflows/facility-doctor.yml"), "utf8");
+  assert.match(
+    doctorWf,
+    /path: \.facility-doctor\/\s+include-hidden-files: true/,
+    "doctor must upload its hidden repair context",
+  );
+  assert.match(
+    securitySweep,
+    /path: \.facility-sweep\/\s+include-hidden-files: true/,
+    "security sweep must upload its hidden audit context",
+  );
   assert.ok(doctorWf.includes("- facility-review"), "doctor watch list must include facility-review");
   assert.ok(!/\{\{[A-Z0-9_]+\}\}/.test(doctorWf), "unrendered placeholder in doctor workflow");
 
@@ -178,8 +245,22 @@ test("init installs the method end to end", async (t) => {
   assert.equal(manifest.board.project, 7);
   assert.deepEqual(manifest.checks, ["npm run lint", "npm test"]);
   assert.equal(manifest.models.build, "opusplan");
+  assert.equal(manifest.models.codexBuild, "gpt-5.6-sol");
+  assert.deepEqual(manifest.preview, {
+    enabled: true,
+    image: "ghcr.io/acme/demo:sha-abc123",
+    command: ["sh", "-lc", "npm run start"],
+    port: 4173,
+    readinessPath: "/healthz",
+    ttlHours: 24,
+  });
   assert.equal(manifest.engine, "claude-code");
-  assert.deepEqual(manifest.auth, { provider: "anthropic", mode: "api-key" });
+  assert.deepEqual(manifest.engines, ["claude-code", "codex"]);
+  assert.deepEqual(manifest.auth, {
+    provider: "anthropic",
+    mode: "api-key",
+    codex: { provider: "openai", mode: "api-key" },
+  });
 
   // Generated guards pass on the generated workflows (all actions pinned).
   const guards = spawnSync(process.execPath, ["guards/run.mjs"], { cwd: dir, encoding: "utf8" });

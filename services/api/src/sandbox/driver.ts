@@ -9,11 +9,12 @@ export type LaunchSpec = {
   timeoutMin: number;
   cmd?: string[];
   network?: Record<string, unknown>;
+  servicePort?: number;
 };
 
 export interface SandboxDriver {
   name: SandboxDriverName;
-  launch(spec: LaunchSpec): Promise<{ ref: string }>;
+  launch(spec: LaunchSpec): Promise<{ ref: string; endpoint?: string }>;
   status(ref: string): Promise<"starting" | "running" | "exited" | "lost">;
   logs(ref: string, afterLine?: number): AsyncIterable<string>;
   stop(ref: string, opts?: { kill?: boolean }): Promise<void>;

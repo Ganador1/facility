@@ -81,6 +81,23 @@ function boardStep(org, projectNumber) {
   ].join("\n");
 }
 
+function boardReviewStep(org, projectNumber) {
+  if (!projectNumber) return "";
+  return [
+    "",
+    "      - name: Move delivered work to In Review",
+    "        if: steps.delivery.outcome == 'success' && github.event.issue.pull_request == null",
+    "        env:",
+    "          GH_TOKEN: ${{ secrets.PROJECTS_PAT }}",
+    "          MODE: review",
+    "          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}",
+    `          ORG: '${org}'`,
+    `          PROJECT_NUMBER: '${projectNumber}'`,
+    "        run: bash .github/facility/move-board-status.sh",
+    "",
+  ].join("\n");
+}
+
 function doctorWatch(workflowNames) {
   const watched = [...new Set([...workflowNames, "facility-review"])];
   const lines = watched.map((name) => `      - ${name}`);
@@ -113,6 +130,31 @@ function checksRun(checks) {
   return [
     '          echo "::error::No verification commands are configured in .facility.json."',
     "          exit 1",
+  ].join("\n");
+}
+
+function previewStep(preview) {
+  if (!preview?.enabled) return "";
+  return [
+    "",
+    "      - name: Request Facility SSO-protected preview",
+    "        if: steps.delivery.outcome == 'success'",
+    "        shell: bash",
+    "        env:",
+    "          FACILITY_API_URL: ${{ secrets.FACILITY_API_URL }}",
+    "          FACILITY_PROJECT_ID: ${{ secrets.FACILITY_PROJECT_ID }}",
+    "          FACILITY_PREVIEW_KEY: ${{ secrets.FACILITY_PREVIEW_KEY }}",
+    `          PREVIEW_IMAGE: ${JSON.stringify(preview.image)}`,
+    `          PREVIEW_COMMAND_JSON: ${JSON.stringify(JSON.stringify(preview.command ?? []))}`,
+    `          PREVIEW_PORT: ${JSON.stringify(String(preview.port))}`,
+    `          PREVIEW_READINESS_PATH: ${JSON.stringify(preview.readinessPath ?? "")}`,
+    `          PREVIEW_TTL_HOURS: ${JSON.stringify(String(preview.ttlHours ?? 24))}`,
+    "        run: |",
+    "          set -euo pipefail",
+    '          test -n "$FACILITY_API_URL" && test -n "$FACILITY_PROJECT_ID" && test -n "$FACILITY_PREVIEW_KEY"',
+    "          payload=\"$(jq -nc --arg image \"$PREVIEW_IMAGE\" --argjson command \"$PREVIEW_COMMAND_JSON\" --argjson port \"$PREVIEW_PORT\" --arg readiness \"$PREVIEW_READINESS_PATH\" --argjson ttl \"$PREVIEW_TTL_HOURS\" --argjson pr '${{ steps.delivery.outputs.pr_number }}' --arg commit '${{ steps.delivery.outputs.head_sha }}' '{image:$image,command:$command,port:$port,ttlHours:$ttl,prNumber:$pr,commitSha:$commit} + if $readiness == \"\" then {} else {readinessPath:$readiness} end')\"",
+    '          curl --fail-with-body --silent --show-error -X POST "$FACILITY_API_URL/v1/projects/$FACILITY_PROJECT_ID/previews" -H "authorization: Bearer $FACILITY_PREVIEW_KEY" -H "content-type: application/json" -H "idempotency-key: preview-${{ github.run_id }}-${{ github.run_attempt }}" --data "$payload"',
+    "",
   ].join("\n");
 }
 
@@ -211,7 +253,19 @@ function authOnboardingStep(mode) {
 }
 
 function formatManifest(manifest) {
-  const text = JSON.stringify(manifest, null, 2);
+  let text = JSON.stringify(manifest, null, 2).replace(
+    '  "engines": [\n    "claude-code",\n    "codex"\n  ],',
+    '  "engines": ["claude-code", "codex"],',
+  );
+  if (manifest.preview?.command?.length) {
+    const expanded = `    "command": [\n${manifest.preview.command
+      .map((part) => `      ${JSON.stringify(part)}`)
+      .join(",\n")}\n    ],`;
+    text = text.replace(
+      expanded,
+      `    "command": [${manifest.preview.command.map((part) => JSON.stringify(part)).join(", ")}],`,
+    );
+  }
   const compactChecks = `  \"checks\": [${manifest.checks.map((check) => JSON.stringify(check)).join(", ")}],`;
   if (compactChecks.length > 100 || manifest.checks.length === 0) return `${text}\n`;
   const lines = text.split("\n");
@@ -242,6 +296,9 @@ export async function init(flags, pkgRoot, version) {
   item(`default branch    ${bold(detected.defaultBranch)}`);
   item(`checks            ${detected.checks.length ? bold(detected.checks.join(", ")) : dim("none found")}`);
   item(`check workflows   ${detected.workflowNames.length ? bold(detected.workflowNames.join(", ")) : dim("none — the doctor watch list starts empty")}`);
+  item(`deployments       ${detected.deploymentProviders.length ? bold(detected.deploymentProviders.join(", ")) : dim("none detected")}`);
+  item(`project board     ${detected.board ? bold(`${detected.board.org} #${detected.board.project}`) : dim("none detected")}`);
+  item(`protected preview ${detected.previewConfigured ? bold("configured") : dim("not configured")}`);
   if (detected.suggestedModules.length) item(`suggested modules ${bold(detected.suggestedModules.join(", "))}`);
 
   heading("A few questions");
@@ -264,20 +321,56 @@ export async function init(flags, pkgRoot, version) {
     build: flags["build-model"] || "opusplan",
     review: flags["review-model"] || "claude-sonnet-4-6",
     plan: flags["plan-model"] || "claude-opus-4-8",
+    codexBuild: flags["codex-build-model"] || "gpt-5.6-sol",
+    codexPlan: flags["codex-plan-model"] || "gpt-5.6-sol",
   };
-  item(dim(`model tiering: ${models.build} build · ${models.review} review · ${models.plan} plan/repair/sweep`));
+  item(dim(`model tiering: ${models.build} build · ${models.review} review · ${models.plan} plan/repair/sweep · ${models.codexBuild} Codex build · ${models.codexPlan} Codex plan`));
   const anthropicAuth = String(flags.auth || "api-key").toLowerCase();
   if (!AUTH_MODES.has(anthropicAuth)) {
     throw new Error(`Unsupported --auth=${anthropicAuth}. Use api-key, oauth, wif, bedrock, or vertex.`);
   }
   item(dim(`Anthropic auth: ${anthropicAuth}`));
   const canaryBot = flags["canary-bot"] || "facility-canary[bot]";
+  const preview = flags["preview-image"]
+    ? {
+        enabled: true,
+        image: flags["preview-image"],
+        command: flags["preview-command"] ? ["sh", "-lc", flags["preview-command"]] : undefined,
+        port: Number(flags["preview-port"] || 3000),
+        readinessPath: flags["preview-readiness-path"] || undefined,
+        ttlHours: Number(flags["preview-ttl-hours"] || 24),
+      }
+    : undefined;
+  if (
+    preview &&
+    (!Number.isInteger(preview.port) ||
+      preview.port < 1 ||
+      preview.port > 65_535 ||
+      (preview.readinessPath && !preview.readinessPath.startsWith("/")) ||
+      !Number.isInteger(preview.ttlHours) ||
+      preview.ttlHours < 1 ||
+      preview.ttlHours > 168)
+  ) {
+    throw new Error(
+      "Preview port must be 1-65535, readiness path must start with /, and preview TTL must be 1-168 hours.",
+    );
+  }
   const project =
     flags.project ??
     (interactive
-      ? await ask("Org Project number for board moves (empty to skip)?", "")
-      : "");
-  const org = project ? flags.org || (interactive ? await ask("GitHub org for the Project board?", detected.org) : detected.org) : "";
+      ? await ask(
+          "Org Project number for board moves (empty to skip)?",
+          detected.board ? String(detected.board.project) : "",
+        )
+      : detected.board
+        ? String(detected.board.project)
+        : "");
+  const org = project
+    ? flags.org ||
+      (interactive
+        ? await ask("GitHub org for the Project board?", detected.board?.org ?? detected.org)
+        : (detected.board?.org ?? detected.org))
+    : "";
   const modulesRaw =
     flags.modules ??
     (interactive
@@ -304,6 +397,12 @@ export async function init(flags, pkgRoot, version) {
     BUILD_MODEL: models.build,
     REVIEW_MODEL: models.review,
     PLAN_MODEL: models.plan,
+    CODEX_BUILD_MODEL: models.codexBuild,
+    CODEX_PLAN_MODEL: models.codexPlan,
+    CODEX_EFFORT: "xhigh",
+    CODEX_VERSION: "0.144.6",
+    ARCHITECT_REPO_LANE: "true",
+    BUILDER_REPO_LANE: "true",
     PROVISION_CMD: provisionCmd,
     CHECKS_INLINE: checksInline,
     CHECKS_RUN: checksRun(checks),
@@ -312,6 +411,7 @@ export async function init(flags, pkgRoot, version) {
     TOOLCHAIN_STEPS: toolchainSteps(detected.packageManager),
     TOOLCHAIN_STEPS_CONDITIONAL: toolchainSteps(detected.packageManager, { conditional: true }),
     BOARD_STEP: boardStep(org, project),
+    BOARD_REVIEW_STEP: boardReviewStep(org, project),
     CANARY_BOT: canaryBot,
     CANARY_SHA256: canarySha256,
     DOCTOR_WATCH: doctorWatch(detected.workflowNames),
@@ -325,11 +425,13 @@ export async function init(flags, pkgRoot, version) {
       "steps.workflow-change.outputs.changed != 'true'",
     ),
     ANTHROPIC_AUTH_INPUTS: anthropicAuthInputs(anthropicAuth),
+    PREVIEW_STEP: previewStep(preview),
   };
 
   const template = (relPath) => readFileSync(join(pkgRoot, "templates", relPath), "utf8");
   const plan = [
     { to: ".github/workflows/facility-crew.yml", content: render(template("workflows/facility-crew.yml"), vars) },
+    { to: ".github/workflows/facility-codex.yml", content: render(template("workflows/facility-codex.yml"), vars) },
     { to: ".github/workflows/facility-review.yml", content: render(template("workflows/facility-review.yml"), vars) },
     { to: ".github/workflows/facility-address-review.yml", content: render(template("workflows/facility-address-review.yml"), vars) },
     { to: ".github/workflows/facility-doctor.yml", content: render(template("workflows/facility-doctor.yml"), vars) },
@@ -342,6 +444,7 @@ export async function init(flags, pkgRoot, version) {
     { to: ".github/facility/sweep.md", content: render(template("prompts/sweep.md"), vars) },
     { to: ".github/facility/doctor/resolve.mjs", content: template("doctor/resolve.mjs") },
     { to: ".github/facility/delivery/verify.mjs", content: template("delivery/verify.mjs") },
+    { to: ".github/facility/receipts/collect.mjs", content: template("receipts/collect.mjs") },
     { to: ".github/facility/review/finalize.mjs", content: template("review/finalize.mjs") },
     { to: ".github/facility/watchtower/outcomes.mjs", content: template("watchtower/outcomes.mjs") },
     { to: ".github/facility/watchtower/health.mjs", content: template("watchtower/health.mjs") },
@@ -416,11 +519,17 @@ export async function init(flags, pkgRoot, version) {
   const manifest = {
     facility: version,
     engine: "claude-code",
-    auth: { provider: "anthropic", mode: anthropicAuth },
+    engines: ["claude-code", "codex"],
+    auth: {
+      provider: "anthropic",
+      mode: anthropicAuth,
+      codex: { provider: "openai", mode: "api-key" },
+    },
     defaultBranch,
     provision: provision || null,
     checks,
     models,
+    preview,
     canaryBot,
     board: project ? { org, project: Number(project) } : null,
     modules: [],
@@ -435,6 +544,7 @@ export async function init(flags, pkgRoot, version) {
   heading("Done. The steps only you can do:");
   const steps = [
     authOnboardingStep(anthropicAuth),
+    `Store a spend-capped ${bold("OPENAI_API_KEY")} in the ${bold("facility-codex")} Environment to enable /codex-architect and /codex-builder.`,
     `Install the Claude GitHub App on the repo (github.com/apps/claude) so crew pushes re-trigger CI.`,
     `Protect ${bold(defaultBranch)}: require a PR and one human review. The crew never merges; this makes it structural.`,
   ];

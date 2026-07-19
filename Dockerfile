@@ -7,6 +7,13 @@
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:$PATH
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && curl --fail --silent --show-error --location --retry 3 \
+    https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    --output /etc/ssl/certs/aws-rds-global.pem \
+  && rm -rf /var/lib/apt/lists/*
+ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/aws-rds-global.pem
 RUN corepack enable
 WORKDIR /app
 
@@ -26,41 +33,60 @@ RUN pnpm install --frozen-lockfile --filter '@facility/core...' \
       --filter '@facility/harness...' \
       --filter '@facility/api...' --filter '@facility/gateway...'
 
-# --- build TS to dist ---
-FROM deps AS build
+# --- API build: API + its workspace runtime dependencies ---
+FROM deps AS build-api
 COPY packages ./packages
-COPY services ./services
+COPY services/api ./services/api
 COPY tsconfig.base.json ./
 # @facility/harness is a runtime dependency of the API (KB validation, the
 # Project Owner / learning harness) — it must be built into the image.
-RUN pnpm --filter '@facility/core' --filter '@facility/db' --filter '@facility/sdk' \
-      --filter '@facility/mcp' \
-      --filter '@facility/harness' \
-      --filter '@facility/api' --filter '@facility/gateway' run build
+RUN pnpm --filter '@facility/core' --filter '@facility/db' \
+      --filter '@facility/harness' --filter '@facility/api' run build
 # Produce isolated production trees. `deploy --prod` keeps runtime workspace
 # dependencies and package assets (including DB migrations) while excluding
 # source workspaces, tests, build tools, and every devDependency.
-RUN pnpm --filter '@facility/api' deploy --prod --legacy /prod/api \
-  && pnpm --filter '@facility/gateway' deploy --prod --legacy /prod/gateway \
-  && pnpm --filter '@facility/mcp' deploy --prod --legacy /prod/mcp
+RUN pnpm --filter '@facility/api' deploy --prod --legacy /prod/api
+# First-org seeding and repository kickstart both load bundled source assets at
+# runtime. Fail the image build if pnpm deployment ever omits either package's
+# payload instead of discovering it after a user begins onboarding.
+RUN test -f /prod/api/node_modules/@facility/db/dist/seed-assets/packages/harness/contracts/po-agent.md \
+  && test -f /prod/api/node_modules/@facility/core/dist/render-assets/packages/cli/templates/watchtower/canary.mjs \
+  && test -f /prod/api/node_modules/@facility/core/dist/render-assets/packages/cli/templates/workflows/facility-crew.yml
+
+# --- Gateway build: avoid compiling the much larger API for proxy-only fixes ---
+FROM deps AS build-gateway
+COPY packages ./packages
+COPY services/gateway ./services/gateway
+COPY tsconfig.base.json ./
+RUN pnpm --filter '@facility/core' --filter '@facility/db' \
+      --filter '@facility/gateway' run build
+RUN pnpm --filter '@facility/gateway' deploy --prod --legacy /prod/gateway
+
+# --- MCP build: keep SDK/MCP changes independent from API and gateway ---
+FROM deps AS build-mcp
+COPY packages ./packages
+COPY tsconfig.base.json ./
+RUN pnpm --filter '@facility/core' --filter '@facility/sdk' \
+      --filter '@facility/mcp' run build
+RUN pnpm --filter '@facility/mcp' deploy --prod --legacy /prod/mcp
 
 # --- api (also serves the worker via `node dist/worker.js`) ---
 FROM base AS api
 ENV NODE_ENV=production
-COPY --from=build /prod/api /app
+COPY --from=build-api /prod/api /app
 EXPOSE 4400
 CMD ["node", "dist/start.js"]
 
 # --- gateway ---
 FROM base AS gateway
 ENV NODE_ENV=production
-COPY --from=build /prod/gateway /app
+COPY --from=build-gateway /prod/gateway /app
 EXPOSE 4410
 CMD ["node", "dist/start.js"]
 
 # --- MCP streamable-HTTP gateway ---
 FROM base AS mcp
 ENV NODE_ENV=production
-COPY --from=build /prod/mcp /app
+COPY --from=build-mcp /prod/mcp /app
 EXPOSE 4420
 CMD ["node", "dist/bin/facility-mcp.js", "serve", "--host", "0.0.0.0", "--port", "4420"]

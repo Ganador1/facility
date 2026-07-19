@@ -58,6 +58,7 @@ jobs:
         with:
           name: facility-doctor-context-${{ github.run_id }}
           path: .facility-doctor/
+          include-hidden-files: true
           retention-days: 3
 
   repair:
@@ -70,12 +71,17 @@ jobs:
       contents: write
       pull-requests: write
       id-token: write
+      attestations: write
       actions: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           ref: ${{ needs.resolve.outputs.head_ref }}
           fetch-depth: 0
+
+      - name: Start agent receipt clock
+        id: receipt-start
+        run: echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
       - name: Download repair context
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -95,7 +101,8 @@ jobs:
           git config --global user.name "claude[bot]"
           git config --global user.email "209825114+claude[bot]@users.noreply.github.com"
 
-      - uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1.0.133
+      - id: doctor
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1.0.133
         with:
 {{ANTHROPIC_AUTH_INPUTS}}
           use_commit_signing: true
@@ -111,3 +118,38 @@ jobs:
             .facility-doctor/context.json and follow your operating contract in
             .github/facility/doctor.md: security gate first, smallest repair,
             real verification, one comment with the dedup marker.
+
+      - name: Collect trusted agent run receipt
+        id: receipt
+        if: always()
+        shell: bash
+        env:
+          FACILITY_RECEIPT_PROVIDER: claude_code
+          FACILITY_RECEIPT_MODE: ci_doctor
+          FACILITY_RECEIPT_RESULT: ${{ steps.doctor.outcome }}
+          FACILITY_RECEIPT_STARTED_AT: ${{ steps.receipt-start.outputs.started_at }}
+          FACILITY_RECEIPT_MODEL: "{{PLAN_MODEL}}"
+          FACILITY_RECEIPT_BASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          FACILITY_RECEIPT_CHECKS_FILE: ${{ github.workspace }}/.agent-sdlc/checks.jsonl
+          FACILITY_RECEIPT_OUTPUT: ${{ runner.temp }}/facility-receipt/facility-run.json
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          trusted="$RUNNER_TEMP/facility-receipt-collector.mjs"
+          git show "origin/{{DEFAULT_BRANCH}}:.github/facility/receipts/collect.mjs" > "$trusted" 2>/dev/null || \
+            gh api "repos/$GITHUB_REPOSITORY/contents/.github/facility/receipts/collect.mjs?ref={{DEFAULT_BRANCH}}" --jq .content | base64 -d > "$trusted"
+          node "$trusted"
+
+      - name: Attest agent run receipt
+        if: always() && steps.receipt.outcome == 'success' && vars.FACILITY_ENABLE_ATTESTATIONS == 'true'
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: ${{ steps.receipt.outputs.path }}
+
+      - name: Upload agent run receipt
+        if: always() && steps.receipt.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: facility-run-receipt-${{ github.run_id }}-${{ github.job }}
+          path: ${{ steps.receipt.outputs.path }}
+          if-no-files-found: error
+          retention-days: 90

@@ -11,6 +11,7 @@ import {
 } from "@facility/db";
 import { and, eq } from "drizzle-orm";
 import { type IssueSeverity, normalizeSeverity, raisePlatformIssue } from "../watchtower/issues.js";
+import { applyFacilitySignal, FacilitySignalSchema } from "./signals.js";
 
 type Enqueue = (queue: string, data: Record<string, unknown>) => Promise<unknown>;
 
@@ -33,26 +34,30 @@ export async function processGenericInboundEvent(
     const payload = objectOrEmpty(row.event.payload);
     const config = objectOrEmpty(row.integration.config);
     const projectId = await resolveProjectId(db, row.event.orgId, payload, config);
-    const issue = await raisePlatformIssue(db, {
-      orgId: row.event.orgId,
-      projectId,
-      kind: stringField(payload.issue, "kind") ?? stringField(payload, "kind") ?? "generic_inbound",
-      severity: severityField(payload.issue) ?? severityField(payload) ?? "warn",
-      fingerprint:
-        stringField(payload.issue, "fingerprint") ??
-        stringField(payload, "fingerprint") ??
-        fallbackFingerprint(row.integration.id, row.event.eventType, payload),
-      title:
-        stringField(payload.issue, "title") ??
-        stringField(payload, "title") ??
-        `${row.integration.name} inbound event`,
-      bodyMd:
-        stringField(payload.issue, "bodyMd") ??
-        stringField(payload.issue, "body") ??
-        stringField(payload, "bodyMd") ??
-        stringField(payload, "body") ??
-        "Generic inbound payload received.",
-    });
+    const signalCandidate = objectOrEmpty(payload.signal).schema ? payload.signal : payload;
+    const isTypedSignal = objectOrEmpty(signalCandidate).schema === "facility.signal.v1";
+    const issue = isTypedSignal
+      ? (
+          await applyFacilitySignal(db, {
+            orgId: row.event.orgId,
+            projectId,
+            signal: FacilitySignalSchema.parse(signalCandidate),
+            fallbackFingerprint: fallbackFingerprint(
+              row.integration.id,
+              row.event.eventType,
+              payload,
+            ),
+          })
+        ).issue
+      : await raiseLegacyIssue(
+          db,
+          row.event.orgId,
+          projectId,
+          row.integration.id,
+          row.integration.name,
+          row.event.eventType,
+          payload,
+        );
     const run = await maybeEnqueueRun(db, row.event, row.integration, payload, config, enqueue);
     await db
       .update(inboundEvents)
@@ -68,6 +73,37 @@ export async function processGenericInboundEvent(
   }
 }
 
+async function raiseLegacyIssue(
+  db: FacilityDb,
+  orgId: string,
+  projectId: string | null,
+  integrationId: string,
+  integrationName: string,
+  eventType: string,
+  payload: Record<string, unknown>,
+) {
+  return raisePlatformIssue(db, {
+    orgId,
+    projectId,
+    kind: stringField(payload.issue, "kind") ?? stringField(payload, "kind") ?? "generic_inbound",
+    severity: severityField(payload.issue) ?? severityField(payload) ?? "warn",
+    fingerprint:
+      stringField(payload.issue, "fingerprint") ??
+      stringField(payload, "fingerprint") ??
+      fallbackFingerprint(integrationId, eventType, payload),
+    title:
+      stringField(payload.issue, "title") ??
+      stringField(payload, "title") ??
+      `${integrationName} inbound event`,
+    bodyMd:
+      stringField(payload.issue, "bodyMd") ??
+      stringField(payload.issue, "body") ??
+      stringField(payload, "bodyMd") ??
+      stringField(payload, "body") ??
+      "Generic inbound payload received.",
+  });
+}
+
 async function resolveProjectId(
   db: FacilityDb,
   orgId: string,
@@ -75,6 +111,7 @@ async function resolveProjectId(
   config: Record<string, unknown>,
 ) {
   const projectId =
+    stringField(payload.signal, "projectId") ??
     stringField(payload.issue, "projectId") ??
     stringField(payload, "projectId") ??
     stringField(config, "projectId");

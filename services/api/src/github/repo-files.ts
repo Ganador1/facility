@@ -1,7 +1,7 @@
 import type { FacilityGithubClient } from "./client.js";
 
 type GitHubContent =
-  | { type?: string; content?: string; encoding?: string; path?: string }
+  | { type?: string; content?: string; encoding?: string; path?: string; target?: string }
   | GitHubContent[];
 
 export async function readRepoFiles(
@@ -48,6 +48,10 @@ async function readPath(
           readPath(client, ref, (item as { path: string }).path, files).catch(() => undefined),
         ),
     );
+    return;
+  }
+  if (content.type === "symlink" && typeof content.target === "string") {
+    files.set(content.path ?? path, content.target);
     return;
   }
   if (content.type !== "file" || typeof content.content !== "string") return;

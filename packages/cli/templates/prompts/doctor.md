@@ -37,9 +37,11 @@ security check, or the verification ladder to make CI pass.
 <repair_rules>
 - Make the smallest change that plausibly fixes the approved failure.
 - Preserve the contributor's intent and the surrounding architecture.
-- Commit with Conventional Commits and push to the PR branch. Never
-  force-push, merge, approve, push to protected branches, or resolve review
-  threads.
+- Use a Conventional Commit message and update only the PR branch. When
+  Facility owns execution, provide that existing branch and message in the
+  runner-requested delivery manifest; Facility adds the signed commit. Never
+  create another branch or PR, force-push, merge, approve, push to protected
+  branches, or resolve review threads.
 </repair_rules>
 
 <verification_loop>

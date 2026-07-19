@@ -119,7 +119,9 @@ describe("sandbox docker e2e", () => {
           name: "Runner E2E",
           driver: "docker",
           image: "facility-runner:dev",
-          setup: { provision_cmd: "echo provisioned" },
+          // Reproduce the normal package-manager bootstrap under the runner's
+          // non-root user. Corepack must install shims without writing /usr/local.
+          setup: { provision_cmd: "corepack enable && pnpm --version" },
           resources: { cpu: 1, memory_mb: 512, timeout_min: 5 },
           network: { egress: "unrestricted" },
         })
@@ -152,7 +154,11 @@ describe("sandbox docker e2e", () => {
           orgId,
           projectId,
           agentDefId: agent.id,
-          mode: "builder",
+          // This test proves the sandbox/runner protocol without depending on an
+          // external Git remote. Builder modes deliberately require a configured
+          // repository and pushed commit, so use the custom BYO mode here; the
+          // GitHub delivery path has its own integration coverage.
+          mode: "custom",
           engine: "byo",
           trigger: {},
           createdBy: { type: "user", id: "e2e" },
@@ -169,7 +175,7 @@ describe("sandbox docker e2e", () => {
       payload: { body: "please finish the fixture" },
     });
     expect(steer.statusCode).toBe(200);
-    await waitFor(async () => (await runStatus(run.id)) === "succeeded", 60_000);
+    await waitForRunSuccess(run.id, 60_000);
 
     const finished = requiredRow(
       await db.select().from(runs).where(eq(runs.id, run.id)).limit(1),
@@ -205,6 +211,23 @@ describe("sandbox docker e2e", () => {
 
   async function runStatus(runId: string) {
     return (await db.select().from(runs).where(eq(runs.id, runId)).limit(1))[0]?.status;
+  }
+
+  async function waitForRunSuccess(runId: string, timeoutMs: number) {
+    await waitFor(async () => {
+      const row = (await db.select().from(runs).where(eq(runs.id, runId)).limit(1))[0];
+      if (row?.status === "failed" || row?.status === "canceled") {
+        const result = await db
+          .select()
+          .from(runEvents)
+          .where(and(eq(runEvents.runId, runId), eq(runEvents.type, "result")))
+          .orderBy(runEvents.seq);
+        throw new Error(
+          `runner ended ${row.status}: ${JSON.stringify(result.at(-1)?.data ?? row.receipt)}`,
+        );
+      }
+      return row?.status === "succeeded";
+    }, timeoutMs);
   }
 });
 

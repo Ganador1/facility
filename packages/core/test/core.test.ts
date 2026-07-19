@@ -26,7 +26,12 @@ import { newId } from "../src/ids.js";
 import { can } from "../src/permissions.js";
 import { costCents } from "../src/pricing.js";
 import { validateProviderBaseUrl } from "../src/provider-url.js";
-import { parseTamOsReceipt } from "../src/receipts.js";
+import {
+  parseLegacyAgentReceipt,
+  receiptContentDigest,
+  sealFacilityReceipt,
+  verifyFacilityReceipt,
+} from "../src/receipts.js";
 import { renderFacilityInit } from "../src/render.js";
 
 const masterKey = Buffer.alloc(32, 7).toString("base64");
@@ -63,6 +68,25 @@ describe("pricing", () => {
     expect(
       costCents({ model: "gpt-5.5-2025-11-01", inputTokens: 1_000_000, outputTokens: 0 }),
     ).toBe(1000);
+  });
+
+  it("prices the default GPT-5.6 family and its alias", () => {
+    expect(
+      costCents({
+        model: "gpt-5.6-sol",
+        inputTokens: 1_000_000,
+        outputTokens: 1_000_000,
+        cacheReadTokens: 1_000_000,
+        cacheWriteTokens: 1_000_000,
+      }),
+    ).toBe(4175);
+    expect(costCents({ model: "gpt-5.6", inputTokens: 1_000_000, outputTokens: 0 })).toBe(500);
+    expect(
+      costCents({ model: "gpt-5.6-terra", inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+    ).toBe(1750);
+    expect(
+      costCents({ model: "gpt-5.6-luna", inputTokens: 1_000_000, outputTokens: 1_000_000 }),
+    ).toBe(700);
   });
 });
 
@@ -238,6 +262,21 @@ describe("render", () => {
       expect(coreFiles.get(path), path).toEqual(cliFile);
     }
   });
+
+  it("keeps platform-lane slash commands out of repo workflows", async () => {
+    const rendered = await renderFacilityInit({
+      defaultBranch: "main",
+      execution_lane: { architect: "platform", builder: "platform" },
+    });
+    const byPath = new Map(rendered.files.map((file) => [file.path, file.content]));
+    const crew = byPath.get(".github/workflows/facility-crew.yml") ?? "";
+    const codex = byPath.get(".github/workflows/facility-codex.yml") ?? "";
+
+    expect(crew).toContain("false && contains(github.event.comment.body, '/builder')");
+    expect(crew).toContain("false && contains(github.event.comment.body, '/architect')");
+    expect(codex).toContain("false && contains(github.event.comment.body, '/codex-builder')");
+    expect(codex).toContain("false && contains(github.event.comment.body, '/codex-architect')");
+  });
 });
 
 function collect(root: string): Map<string, { mode: string; content: string }> {
@@ -271,15 +310,15 @@ describe("audit", () => {
 });
 
 describe("receipts", () => {
-  it("maps tam-os receipts to facility receipts", () => {
-    const receipt = parseTamOsReceipt({
-      schema: "tam-os.agent_sdlc.run.v1",
+  it("maps legacy agent receipts to facility receipts", () => {
+    const receipt = parseLegacyAgentReceipt({
+      schema: "example.agent_sdlc.run.v1",
       provider: "codex_cli",
       mode: "builder",
       result: "succeeded",
       usage: { input_tokens: 100, output_tokens: 50, cost_usd: 1.235, cost_source: "provider" },
       activity: { turns: 2, shell_commands: 1, file_changes: 3, mcp_tool_calls: 0, errors: 0 },
-      github: { owner: "theam", repo: "tam-os", actor: "octo" },
+      github: { owner: "example", repo: "product", actor: "octo" },
       timing: { started_at: "2026-01-01T00:00:00Z", duration_ms: 1000 },
       checks: [{ name: "pnpm test", status: "passed", source: "platform", exit_code: 0 }],
     });
@@ -289,5 +328,31 @@ describe("receipts", () => {
     expect(receipt.checks).toEqual([
       { name: "pnpm test", status: "passed", source: "platform", exit_code: 0 },
     ]);
+  });
+
+  it("seals a receipt and detects payload changes", () => {
+    const base = parseLegacyAgentReceipt({
+      schema: "example.agent_sdlc.run.v1",
+      provider: "codex_cli",
+      mode: "builder",
+      result: "succeeded",
+      usage: { input_tokens: 10, output_tokens: 5, cost_usd: 0.01, cost_source: "provider" },
+      activity: {},
+      timing: { started_at: "2026-07-19T00:00:00.000Z" },
+    });
+    const sealed = sealFacilityReceipt(base, "a".repeat(64));
+    expect(sealed.integrity).toEqual({
+      algorithm: "sha256",
+      previous_sha256: "a".repeat(64),
+      payload_sha256: receiptContentDigest(sealed),
+    });
+    expect(verifyFacilityReceipt(sealed)).toBe(true);
+    expect(verifyFacilityReceipt({ ...sealed, result: "failed" })).toBe(false);
+    expect(
+      verifyFacilityReceipt({
+        ...sealed,
+        integrity: { ...sealed.integrity, previous_sha256: null } as never,
+      }),
+    ).toBe(false);
   });
 });

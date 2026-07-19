@@ -323,7 +323,7 @@ test("sessions trigger sends agent identity for API resolution", async () => {
     method: "POST",
     path: "/v1/projects/proj_1/runs",
     body: {
-      mode: "manual",
+      mode: "project-owner",
       agent: "project-owner",
       trigger: { source: "cli", agentName: "project-owner", input: { ok: true } },
     },

@@ -1,4 +1,4 @@
-import { generateApiKey, hashKey, newId, seal } from "@facility/core";
+import { generateApiKey, hashKey, newId, seal, verifyFacilityReceipt } from "@facility/core";
 import {
   agentDefs,
   apiKeys,
@@ -21,6 +21,7 @@ import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import { verifyStoredReceipts } from "../src/receipt-integrity.js";
 import { AwsSandboxDriver } from "../src/sandbox/aws.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
 import { finishRun, reconcileSandboxes } from "../src/sandbox/orchestrator.js";
@@ -153,6 +154,21 @@ describe("sandbox api", async () => {
     const seqs = rows.map((r) => r.seq);
     // All appends landed, with unique + contiguous seqs starting at 1.
     expect(seqs).toEqual(Array.from({ length: count }, (_, i) => i + 1));
+  });
+
+  it("persists large run events without exceeding PostgreSQL NOTIFY limits", async () => {
+    const runId = newId("run");
+    await insertRunnerRun("frt_large_event", "running", runId, {});
+    const text = "event-output-".repeat(2_000);
+
+    await expect(
+      appendRunEvents(db, orgId, runId, [{ type: "engine", data: { text } }]),
+    ).resolves.toHaveLength(1);
+
+    const stored = (
+      await db.select({ data: runEvents.data }).from(runEvents).where(eq(runEvents.runId, runId))
+    )[0];
+    expect((stored?.data as { text?: string })?.text).toBe(text);
   });
 
   it("aws driver fails loudly as not_configured when env is missing", async () => {
@@ -435,10 +451,13 @@ describe("sandbox api", async () => {
       checks?: unknown[];
       checks_truncated?: boolean;
       events?: { checks?: number };
+      integrity?: { payload_sha256?: string };
     };
     expect(receipt.checks).toHaveLength(200);
     expect(receipt.checks_truncated).toBe(true);
     expect(receipt.events?.checks).toBe(201);
+    expect(verifyFacilityReceipt(receipt as never)).toBe(true);
+    await expect(verifyStoredReceipts(db, orgId, [run.id])).resolves.toMatchObject({ ok: true });
   });
 
   it("delivers run events over the NOTIFY-backed SSE path without safety polling", async () => {
@@ -522,7 +541,18 @@ describe("sandbox api", async () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json().repoToken).toBe("installation-token");
+    const hello = response.json();
+    expect(hello.repoToken).toBe("installation-token");
+    expect(hello.bundleUrl).not.toContain("?");
+    const bundlePath = new URL(hello.bundleUrl).pathname;
+    expect((await app.inject({ method: "GET", url: bundlePath })).statusCode).toBe(401);
+    const bundleResponse = await app.inject({
+      method: "GET",
+      url: bundlePath,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(bundleResponse.statusCode).toBe(200);
+    expect(bundleResponse.json().runId).toBe(runId);
     expect(tokenInput).toEqual({
       installationId: installationNumber,
       owner,

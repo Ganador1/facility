@@ -100,5 +100,13 @@ export async function appendRunEvents(
 }
 
 export async function notifyRunEvent(db: FacilityDb, runId: string, event: unknown) {
-  await db.execute(sql`select pg_notify(${`run_events:${runId}`}, ${JSON.stringify(event)})`);
+  // NOTIFY is only a wake-up signal; SSE listeners reload durable rows from
+  // run_events. PostgreSQL caps NOTIFY payloads below 8 KiB, while command and
+  // assistant events can be much larger, so never duplicate the event body here.
+  const seq =
+    event && typeof event === "object" && !Array.isArray(event)
+      ? (event as { seq?: unknown }).seq
+      : undefined;
+  const payload = JSON.stringify({ seq: typeof seq === "number" ? seq : null });
+  await db.execute(sql`select pg_notify(${`run_events:${runId}`}, ${payload})`);
 }

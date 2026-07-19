@@ -13,6 +13,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import { createGithubClientFactory } from "../../github/client.js";
+import { ensureProjectKbSpace } from "../../harness.js";
 import { projectHealth } from "../../watchtower/health.js";
 import {
   AnyObject,
@@ -124,6 +125,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
         response: {
           200: z.object({
             status: z.enum(["ok", "warn", "red"]),
+            classification: z.enum(["healthy", "degraded", "unhealthy"]),
             signals: z.array(AnyObject),
           }),
         },
@@ -412,6 +414,87 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
     const productChain = byName.get("product-chain");
     const poContract = byName.get("po-agent");
     const learningContract = byName.get("learning-agent");
+    if (productChain && (poContract || learningContract)) {
+      await ensureProjectKbSpace(db, orgId, projectId);
+    }
+    const existingAgentNames = new Set(
+      (
+        await db
+          .select({ name: agentDefs.name })
+          .from(agentDefs)
+          .where(and(eq(agentDefs.orgId, orgId), eq(agentDefs.projectId, projectId)))
+      ).map((agent) => agent.name),
+    );
+    const crew = [
+      {
+        name: "architect",
+        engine: "claude_code",
+        model: { model: "claude-sonnet-5" },
+        contract: "prompts/architect",
+        triggers: [
+          { type: "github", command: "architect" },
+          { type: "manual", config: {} },
+        ],
+      },
+      {
+        name: "builder",
+        engine: "claude_code",
+        model: { model: "claude-fable-5" },
+        contract: "prompts/builder",
+        triggers: [
+          { type: "github", command: "builder" },
+          { type: "manual", config: {} },
+        ],
+      },
+      {
+        name: "codex-architect",
+        engine: "codex",
+        model: { primary: "gpt-5.6-sol", reasoning_effort: "high" },
+        contract: "prompts/architect",
+        triggers: [
+          { type: "github", command: "codex-architect" },
+          { type: "manual", config: {} },
+        ],
+      },
+      {
+        name: "codex-builder",
+        engine: "codex",
+        model: { primary: "gpt-5.6-sol", reasoning_effort: "high" },
+        contract: "prompts/builder",
+        triggers: [
+          { type: "github", command: "codex-builder" },
+          { type: "manual", config: {} },
+        ],
+      },
+      {
+        name: "review",
+        engine: "claude_code",
+        model: { model: "claude-sonnet-5" },
+        contract: "prompts/review",
+        triggers: [{ type: "github", event: "pull_request", action: "ready_for_review" }],
+      },
+      {
+        name: "address-review",
+        engine: "claude_code",
+        model: { model: "claude-sonnet-5" },
+        contract: "prompts/address-review",
+        triggers: [{ type: "github", event: "pull_request_review", action: "submitted" }],
+      },
+      {
+        name: "ci-doctor",
+        engine: "claude_code",
+        model: { model: "claude-sonnet-5" },
+        contract: "prompts/doctor",
+        triggers: [{ type: "github", event: "workflow_run", action: "completed" }],
+      },
+      {
+        name: "security-sweep",
+        engine: "claude_code",
+        model: { model: "claude-sonnet-5" },
+        contract: "prompts/sweep",
+        triggers: [{ type: "schedule", config: { cron: "0 5 * * 1", timezone: "UTC" } }],
+      },
+    ] as const;
     if (productChain && poContract) {
       await db
         .insert(agentDefs)
@@ -452,6 +535,23 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
           enabled: true,
         })
         .onConflictDoNothing();
+    }
+    for (const spec of crew) {
+      const contract = byName.get(spec.contract);
+      if (!contract || existingAgentNames.has(spec.name)) continue;
+      await db.insert(agentDefs).values({
+        id: newId("agent"),
+        orgId,
+        projectId,
+        name: spec.name,
+        engine: spec.engine,
+        model: spec.model,
+        contractItemId: contract.id,
+        triggers: [...spec.triggers],
+        sandboxProfileId: sandbox?.id,
+        permissions: ["runs:read"],
+        enabled: true,
+      });
     }
   }
 }

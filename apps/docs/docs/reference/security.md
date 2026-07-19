@@ -42,6 +42,23 @@ Security and privacy are first-class concerns; this page is the contract.
   validation outages fail closed with `503` and `Retry-After`. Accepted caller
   credentials are forwarded to the API, and MCP has no privileged service identity.
 
+## Protected previews
+
+- Preview origins bind only to Docker loopback or an AWS private address;
+  Facility rejects public, credential-bearing, and non-HTTP origins.
+- Production preview creation, listing, viewing, and deletion fail closed until
+  WorkOS SSO is configured. Machine keys can request a preview, but cannot view
+  or delete it.
+- The public URL is an authenticated Facility proxy. It strips cookies and
+  authorization before forwarding only browser-safe `GET` and `HEAD` requests.
+- No provider or production secrets are injected. Projects publish an immutable
+  review image whose command prepares only non-production data.
+- Preview application containers currently have outbound network access. Place
+  production preview workers in a dedicated subnet/network whose policy blocks
+  metadata endpoints and internal services; treat the review image as untrusted.
+- Readiness is a project-defined HTTP path. PR close and retention expiry queue
+  sandbox destruction, and each lifecycle transition enters the audit log.
+
 ## Untrusted text
 
 Issue, PR, review, and comment text is data, never instructions — the rule
