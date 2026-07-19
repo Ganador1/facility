@@ -41,7 +41,7 @@ shared governance or platform-hosted agent runs.
 | Take work from an issue to a pull request | `/architect` investigates and proposes a plan; a human invokes `/builder`; the builder implements, runs the repository's checks, pushes a branch, and opens a PR. | Installer or platform |
 | Keep accountability with people | A person accepts the plan; at Gate 2 a person validates the live preview, reviews the PR, and squash-merges it. Agents cannot approve, merge, or push to protected branches. | Installer or platform |
 | Give agents a usable job site | Each run starts with the repository's provision command, then follows `STANDARD.md`, relevant skills, specialist review, and the configured test/build commands. | Installer or platform |
-| Validate behavior before merge | Every implementation PR must expose a provider-managed live preview today; native provider-agnostic preview orchestration is on the [roadmap](apps/docs/docs/roadmap.md). | Installer or platform |
+| Validate behavior before merge | Facility can provision a private Docker or AWS preview from a project-defined image, wait for its readiness endpoint, and expose it only through the SSO-authenticated proxy. Existing provider previews remain supported. | Installer or platform |
 | Turn team rules into enforcement | Repository-specific invariants live in zero-dependency guards. Repeated review feedback can graduate from prose into a deterministic check. | Installer or platform |
 | Keep repositories on a known system version | The platform fingerprints managed files, reports drift, and delivers template upgrades as reviewable pull requests. | Platform |
 | Control model access and spend | The gateway issues project-scoped virtual keys, enforces budgets, attributes usage by project/agent/task, and can store request/response envelopes in your object store. | Platform |
@@ -60,7 +60,7 @@ the Facility platform.
 git clone https://github.com/theam/facility.git /absolute/path/to/facility
 cd your-repository
 node /absolute/path/to/facility/packages/cli/bin/facility.mjs init
-node /absolute/path/to/facility/packages/cli/bin/facility.mjs doctor
+node /absolute/path/to/facility/packages/cli/bin/facility.mjs doctor --run-guards --github
 ```
 
 The CLI is currently run from a Facility checkout; npm distribution is a later
@@ -101,11 +101,30 @@ The installer skips existing generated destinations unless you explicitly use
 `--force`. `AGENTS.md` and `CLAUDE.md` receive a delimited managed block instead
 of being replaced, and the current answers are written to `.facility.json`.
 
+For a Facility-owned preview, supply an immutable review image, its start
+command, internal port, and readiness path. The image command may seed
+non-production data before it starts the server. The workflow requests the
+preview only after verified builder delivery:
+
+```bash
+node /absolute/path/to/facility/packages/cli/bin/facility.mjs init \
+  --preview-image='ghcr.io/acme/app:${{ steps.delivery.outputs.head_sha }}' \
+  --preview-command='npm run preview' \
+  --preview-port=3000 \
+  --preview-readiness-path=/healthz \
+  --preview-ttl-hours=24
+```
+
+Configure `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
+`FACILITY_PREVIEW_KEY` in GitHub. Production Facility deployments must have a
+complete WorkOS SSO configuration or preview creation fails closed. The review
+image must already exist; Facility does not build application images.
+
 After installation, follow the human-only steps printed by the CLI: configure
 the [selected authentication mode](#repository-automation-authentication),
 install the Claude GitHub App, protect the default branch, and use test-tier
-spend-capped credentials for integration tests. Connect a deployment provider
-and require its per-PR live preview check. Then commit the generated files, open
+spend-capped credentials for integration tests. Choose Facility-owned or
+existing-provider previews and require their readiness check. Then commit the generated files, open
 an issue, and comment `/architect` to start the delivery loop described below.
 
 See the [CLI reference](apps/docs/docs/reference/cli.md) and
@@ -185,7 +204,7 @@ Whichever setup you choose, work follows the same reviewed path:
 3. A human accepts that plan by invoking `/builder`.
 4. `/builder` provisions the environment, implements the complete change, runs
    the configured checks, and opens a pull request.
-5. The deployment provider creates a live, isolated preview for fast validation.
+5. Facility or the configured deployment provider creates a live, isolated preview for fast validation.
 6. Automated review, deterministic guards, and the repository's CI examine the
    result.
 7. At Gate 2, a human validates the preview, reviews the PR, and squash-merges it.

@@ -14,6 +14,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { verifyEnvelopeRoundTrip } from "./envelopes.js";
+import { verifyStoredReceipts } from "./receipt-integrity.js";
 import { DockerSandboxDriver } from "./sandbox/docker.js";
 import type { AppConfig } from "./types.js";
 
@@ -68,7 +69,9 @@ export async function runReadinessDoctor(input: {
     checkSandboxRunner(input.db, input.config, input.orgId),
     checkGithubApp(input.config),
     checkAuthConfig(input.config),
+    checkPreviewProtection(input.config),
     checkAuditHashChain(input.db, input.orgId),
+    checkReceiptIntegrity(input.db, input.orgId),
   ]);
   return {
     ok: checks.every((check) => check.status !== "fail"),
@@ -445,6 +448,32 @@ function checkAuthConfig(config: AppConfig): DoctorCheck {
   );
 }
 
+function checkPreviewProtection(config: AppConfig): DoctorCheck {
+  const configured = Boolean(
+    config.workosApiKey &&
+      config.workosClientId &&
+      config.workosAuthkitDomain &&
+      config.workosRedirectUri &&
+      config.workosCookiePassword,
+  );
+  if (configured) {
+    return pass(
+      "preview_protection",
+      "Protected preview SSO",
+      "Preview creation and access are protected by a complete WorkOS SSO configuration.",
+    );
+  }
+  const level = config.facilityInsecureDev ? warn : fail;
+  return level(
+    "preview_protection",
+    "Protected preview SSO",
+    config.facilityInsecureDev
+      ? "Native previews are available only for local development sessions."
+      : "Native preview creation fails closed because WorkOS SSO is incomplete.",
+    "Set WORKOS_API_KEY, WORKOS_CLIENT_ID, WORKOS_AUTHKIT_DOMAIN, WORKOS_REDIRECT_URI, and WORKOS_COOKIE_PASSWORD.",
+  );
+}
+
 async function checkAuditHashChain(db: Db, orgId: string): Promise<DoctorCheck> {
   const result = await verifyAuditChain(db, orgId);
   if (!result.ok) {
@@ -456,6 +485,23 @@ async function checkAuditHashChain(db: Db, orgId: string): Promise<DoctorCheck> 
     );
   }
   return pass("audit_hash_chain", "Audit hash-chain verification", "Audit chain verifies.");
+}
+
+async function checkReceiptIntegrity(db: Db, orgId: string): Promise<DoctorCheck> {
+  const report = await verifyStoredReceipts(db, orgId);
+  if (!report.ok) {
+    return fail(
+      "receipt_integrity",
+      "Agent receipt integrity",
+      `${report.invalidRunIds.length} invalid and ${report.unauditedRunIds.length} unaudited receipts found across ${report.checked} runs.`,
+      "Stop outcome and learning jobs, preserve audit_events and runs, then investigate receipt mutation or an outdated runner.",
+    );
+  }
+  return pass(
+    "receipt_integrity",
+    "Agent receipt integrity",
+    `${report.checked} stored agent receipts verify against the audit chain.`,
+  );
 }
 
 function pass(id: string, label: string, message: string): DoctorCheck {

@@ -30,7 +30,7 @@ export class DockerSandboxDriver implements SandboxDriver {
     }
   }
 
-  async launch(spec: LaunchSpec): Promise<{ ref: string }> {
+  async launch(spec: LaunchSpec): Promise<{ ref: string; endpoint?: string }> {
     await this.ensureImage(spec.image);
     const network = dockerNetworkMode(spec.network);
     const container = await this.docker.createContainer({
@@ -38,6 +38,7 @@ export class DockerSandboxDriver implements SandboxDriver {
       Cmd: spec.cmd,
       Env: Object.entries(spec.env).map(([key, value]) => `${key}=${value}`),
       Labels: { "facility.run": spec.runId },
+      ...(spec.servicePort ? { ExposedPorts: { [`${spec.servicePort}/tcp`]: {} } } : {}),
       HostConfig: {
         AutoRemove: false,
         Memory: Math.max(128, spec.memoryMb) * 1024 * 1024,
@@ -51,6 +52,13 @@ export class DockerSandboxDriver implements SandboxDriver {
           "/var/tmp": "rw,exec,nosuid,nodev,size=512m",
         },
         ...(network.hostConfig ?? {}),
+        ...(spec.servicePort
+          ? {
+              PortBindings: {
+                [`${spec.servicePort}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: "" }],
+              },
+            }
+          : {}),
         // Contain a rogue agent process: no privilege escalation, no Linux
         // capabilities, bounded process count, read-only rootfs, and a
         // profile-selected network posture.
@@ -64,7 +72,14 @@ export class DockerSandboxDriver implements SandboxDriver {
       ...(network.networkDisabled ? { NetworkDisabled: true } : {}),
     });
     await container.start();
-    return { ref: container.id };
+    if (!spec.servicePort) return { ref: container.id };
+    const info = await container.inspect();
+    const binding = info.NetworkSettings?.Ports?.[`${spec.servicePort}/tcp`]?.[0];
+    if (!binding?.HostPort) {
+      await container.remove({ force: true }).catch(() => undefined);
+      throw new Error(`Docker did not publish preview port ${spec.servicePort}`);
+    }
+    return { ref: container.id, endpoint: `http://127.0.0.1:${binding.HostPort}` };
   }
 
   async status(ref: string): Promise<"starting" | "running" | "exited" | "lost"> {

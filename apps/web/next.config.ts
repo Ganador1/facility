@@ -14,7 +14,10 @@ const nextConfig: NextConfig = {
   async rewrites() {
     // Same-origin proxy to the control plane: session cookies flow without
     // cross-origin ceremony, in dev and behind any reverse proxy in prod.
-    return [{ source: "/api/:path*", destination: `${API_URL}/:path*` }];
+    return [
+      { source: "/api/:path*", destination: `${API_URL}/:path*` },
+      { source: "/preview/:path*", destination: `${API_URL}/preview/:path*` },
+    ];
   },
 };
 

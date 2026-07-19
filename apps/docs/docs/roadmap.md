@@ -9,19 +9,23 @@ Roadmap items have no committed date until they move into a release plan.
 
 ## Native preview environments
 
-**Status: planned.** Fast human validation is a core part of the Facility
-loop, but Facility does not currently create live preview environments.
-Projects must enable their deployment provider's per-PR preview capability
-today and require the preview URL and deployment status on the pull request.
+**Status: available with rough edges.** Facility provisions an isolated Docker
+or AWS sandbox from a project-defined immutable image, waits for an optional
+readiness path, and exposes the private origin only through its SSO-authenticated
+proxy. Production creation fails closed until WorkOS SSO is configured.
 
-Facility's native preview system is intended to:
+The native preview system now:
 
-- create an isolated live environment for every implementation pull request;
-- support provider adapters rather than bind the control plane to one cloud;
-- attach the URL, deployment status, and expiry to the Facility run and PR;
-- support project-defined provisioning, seeded test data, and access policy;
-- make preview readiness part of Gate 2 evidence; and
-- destroy the environment when the PR closes or its retention window expires.
+- creates an isolated live environment for every implementation pull request;
+- supports provider adapters rather than binding the control plane to one cloud;
+- attaches the URL, deployment status, and expiry to the Facility run and PR;
+- runs a project-defined command, which can seed non-production data before
+  starting the service;
+- makes preview readiness part of Gate 2 evidence; and
+- destroys the environment when the PR closes or its retention window expires.
 
-Until this ships, Facility treats an external provider's preview as the live
-validation surface and GitHub as the Gate 2 review and merge boundary.
+Current rough edges are explicit: the project must publish the review image
+before requesting a preview; the proxy supports browser-safe `GET` and `HEAD`
+traffic; and Facility does not inject project secrets. External provider
+previews remain a supported adapter path. GitHub review and branch protection
+remain the Gate 2 merge boundary in either mode.

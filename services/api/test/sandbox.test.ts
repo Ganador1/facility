@@ -1,4 +1,4 @@
-import { generateApiKey, hashKey, newId, seal } from "@facility/core";
+import { generateApiKey, hashKey, newId, seal, verifyFacilityReceipt } from "@facility/core";
 import {
   agentDefs,
   apiKeys,
@@ -21,6 +21,7 @@ import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import { verifyStoredReceipts } from "../src/receipt-integrity.js";
 import { AwsSandboxDriver } from "../src/sandbox/aws.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
 import { finishRun, reconcileSandboxes } from "../src/sandbox/orchestrator.js";
@@ -435,10 +436,13 @@ describe("sandbox api", async () => {
       checks?: unknown[];
       checks_truncated?: boolean;
       events?: { checks?: number };
+      integrity?: { payload_sha256?: string };
     };
     expect(receipt.checks).toHaveLength(200);
     expect(receipt.checks_truncated).toBe(true);
     expect(receipt.events?.checks).toBe(201);
+    expect(verifyFacilityReceipt(receipt as never)).toBe(true);
+    await expect(verifyStoredReceipts(db, orgId, [run.id])).resolves.toMatchObject({ ok: true });
   });
 
   it("delivers run events over the NOTIFY-backed SSE path without safety polling", async () => {

@@ -206,6 +206,31 @@ Facility rejects signatures outside a five-minute clock-skew window. A valid
 delivery is deduplicated per integration and delivery id; a repeat returns
 `202 {"ok":true,"replayed":true}` without processing twice.
 
+For lifecycle telemetry, send the stable `facility.signal.v1` envelope. The
+provider-specific identifier stays in `source`; Facility routes only the typed
+outcome and never requires a particular deployment or monitoring vendor:
+
+```json
+{
+  "schema": "facility.signal.v1",
+  "type": "deployment",
+  "status": "failed",
+  "source": "my-deployer",
+  "fingerprint": "deployment:acme/app:production",
+  "title": "Production deployment failed",
+  "bodyMd": "Release 4f9c did not become ready.",
+  "projectId": "proj_…",
+  "severity": "error",
+  "metadata": { "commit": "4f9c…", "environment": "production" }
+}
+```
+
+`type` is `issue`, `deployment`, `security`, or `check`; `status` is `failed`,
+`recovered`, `pending`, or `succeeded`. Failed signals open or update one
+fingerprinted issue, recovered/succeeded signals resolve it, and pending
+signals are recorded without claiming failure. GitHub deployment-status and
+check-run webhooks are adapted into this same contract.
+
 Outbound webhook integrations receive the same four headers and signing
 formula. Supported events are `run.finished` and `proposal.decided`; set
 `config.events` to an array to subscribe to a subset, or omit it for both.

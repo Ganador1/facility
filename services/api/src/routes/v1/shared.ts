@@ -128,8 +128,8 @@ export const RunSchema = z.object({
         .object({
           input_tokens: z.number().int().nonnegative(),
           output_tokens: z.number().int().nonnegative(),
-          cache_read: z.number().int().nonnegative(),
-          cache_write: z.number().int().nonnegative(),
+          cache_read: z.number().int().nonnegative().optional(),
+          cache_write: z.number().int().nonnegative().optional(),
           cost_cents: z.number().int().nonnegative(),
           cost_source: z.string(),
         })

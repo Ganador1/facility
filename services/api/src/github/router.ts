@@ -14,12 +14,16 @@ export type TriggerPayload = {
 const COMMAND_RE =
   /(?:^|\n)\s*\/(builder|architect|codex-builder|codex-architect)(?=$|[\s,.:;!?)])/g;
 
-export function resolveSlashCommand(body: string): { command?: string; ambiguous: boolean } {
+export function resolveSlashCommand(body: string): {
+  command?: string;
+  agentCommand?: string;
+  ambiguous: boolean;
+} {
   const commands = [...body.matchAll(COMMAND_RE)].map((match) => match[1]).filter(Boolean);
   const unique = [...new Set(commands)];
   if (unique.length !== 1) return { ambiguous: unique.length > 1 };
   const raw = unique[0] ?? "";
-  return { command: raw.replace(/^codex-/, ""), ambiguous: false };
+  return { command: raw.replace(/^codex-/, ""), agentCommand: raw, ambiguous: false };
 }
 
 export async function routeTrigger(
@@ -55,7 +59,12 @@ export async function routeTrigger(
   if (!(await client.userCanWrite(sender))) return { routed: false, reason: "non_writer" };
   const lane = laneFor(repo, resolved.command);
   if (lane !== "platform") return { routed: false, reason: "repo_lane" };
-  const agent = await findAgentDef(db, repo.orgId, repo.projectId, resolved.command);
+  const agent = await findAgentDef(
+    db,
+    repo.orgId,
+    repo.projectId,
+    resolved.agentCommand ?? resolved.command,
+  );
   if (!agent) return { routed: false, reason: "no_agent" };
   const run = (
     await db
@@ -91,7 +100,7 @@ export async function routeTrigger(
   await enqueue?.("runs.dispatch", { runId: run.id, orgId: repo.orgId });
   await client.createIssueComment(
     issueNumber,
-    `Queued Facility ${resolved.command} run ${run.id}.`,
+    `Queued Facility ${resolved.agentCommand ?? resolved.command} run ${run.id}.`,
   );
   return { routed: true, runId: run.id };
 }

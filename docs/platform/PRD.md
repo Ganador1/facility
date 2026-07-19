@@ -1,6 +1,6 @@
 # Facility Platform — Product Requirements
 
-**Status**: v1 draft · source: sdlc.theagilemonkeys.com and [docs/method.md](../method.md)
+**Status**: v1 draft · source: [docs/method.md](../method.md)
 **One-liner**: The self-hostable platform that governs an organization's entire AI SDLC — "Vercel for the AI software factory."
 
 ## 1. Problem
@@ -45,7 +45,7 @@ Deployable by any organization on any cloud using containers, Postgres, and obje
 - Isolated cloud sandboxes for Claude Code agents, Codex agents, and bring-your-own providers; driver-based (local Docker for dev/self-host, AWS driver for cloud; interface open for k8s).
 - Sandbox configuration management: base images, dependencies, runtime config, provision command, resource limits — as reusable, versioned **sandbox profiles** with good defaults.
 - **Live session access**: engineers can open any running (or recorded) agent session from the platform — structured transcript streaming, and steering input to unstick a session. Recorded sessions are replayable.
-- **Live PR previews**: every implementation PR must expose an isolated environment for fast human validation. In the current product this is supplied by the project's deployment provider; native Facility provisioning, lifecycle management, and Gate 2 evidence are a roadmap requirement.
+- **Live PR previews**: every implementation PR must expose an isolated environment for fast human validation. Facility can provision a private Docker/AWS review image behind its SSO proxy and lifecycle controls, or normalize an existing deployment provider's signal into Gate 2 evidence.
 - All platform-run agents (PO, learning mode, platform-triggered crew) execute in these sandboxes — never on the control plane.
 
 ### P3 — Money: keys, budgets, cost

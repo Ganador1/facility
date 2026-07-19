@@ -23,6 +23,54 @@ alias facility='node /absolute/path/to/facility/packages/cli/bin/facility.mjs'
 | `add <module>` | add a quality module (database, analytics, ai-queryability, design-system) |
 | `doctor [--json]` | check the install and list what's left |
 
+### Repository configuration
+
+Interactive `facility init` detects the package manager, checks, deployment
+providers, existing preview configuration, and GitHub Project hints. For a
+reproducible non-interactive install, provide the decisions explicitly:
+
+```bash
+facility init \
+  --branch=main \
+  --provision='pnpm install --frozen-lockfile' \
+  --checks='pnpm lint, pnpm typecheck, pnpm test' \
+  --org=acme \
+  --project=12 \
+  --preview-image='ghcr.io/acme/app:${{ steps.delivery.outputs.head_sha }}' \
+  --preview-command='pnpm start' \
+  --preview-port=3000 \
+  --preview-readiness-path=/healthz \
+  --preview-ttl-hours=24
+```
+
+The resulting `.facility.json` is the reviewable source of truth. Its `checks`
+must be non-empty for builder delivery. `preview.command` may prepare
+non-production data before starting the server; Facility injects no project
+secrets, and the immutable image must already be published. The
+`${{ steps.delivery.outputs.head_sha }}` tag placeholder is resolved by GitHub
+Actions in the repository lane and by Facility in the platform lane.
+
+```json
+{
+  "defaultBranch": "main",
+  "provision": "pnpm install --frozen-lockfile",
+  "checks": ["pnpm lint", "pnpm typecheck", "pnpm test"],
+  "board": { "org": "acme", "project": 12 },
+  "preview": {
+    "enabled": true,
+    "image": "ghcr.io/acme/app:sha-…",
+    "command": ["sh", "-lc", "pnpm start"],
+    "port": 3000,
+    "readinessPath": "/healthz",
+    "ttlHours": 24
+  }
+}
+```
+
+Run `facility doctor --run-guards --github` after committing. It checks the
+manifest, generated workflows, configured agent models and authentication,
+preview variables/secrets, deterministic guards, and branch protection.
+
 ## Platform lane
 
 The platform lane is the complete operator surface; the web application is not

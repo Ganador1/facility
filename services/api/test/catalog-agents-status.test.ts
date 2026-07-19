@@ -147,7 +147,16 @@ describe("catalog + agents status + integrations", async () => {
       mode: "status-probe",
       engine: "claude_code",
       status: "succeeded",
-      receipt: { usage: { cost_cents: 42 } },
+      receipt: {
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read: 0,
+          cache_write: 0,
+          cost_cents: 42,
+          cost_source: "test",
+        },
+      },
       gh: { pr: { number: 7, url: "https://github.com/theam/x/pull/7" } },
       queuedAt: new Date(Date.now() - 60_000),
       endedAt: new Date(),

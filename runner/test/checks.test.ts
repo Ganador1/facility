@@ -2,10 +2,12 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   checkEvent,
+  deliveryFailure,
   engineEnv,
   parseSelfReportedChecks,
   redactEventData,
   redactSecrets,
+  requiresDelivery,
   runCheckCommand,
 } from "../src/index.js";
 
@@ -48,6 +50,45 @@ describe("platform acceptance checks", () => {
   it("caps the failure output at 2000 chars", () => {
     const event = checkEvent("x", 1, "z".repeat(5000));
     expect((event.output as string).length).toBe(2000);
+  });
+});
+
+describe("builder delivery invariant", () => {
+  const repo = {
+    cloneUrl: "https://github.com/example/project.git",
+    branch: "main",
+    installationTokenRef: "installation",
+  };
+
+  it("requires delivery only for builder modes", () => {
+    expect(requiresDelivery("builder")).toBe(true);
+    expect(requiresDelivery("codex-builder")).toBe(true);
+    expect(requiresDelivery("architect")).toBe(false);
+    expect(requiresDelivery("review")).toBe(false);
+  });
+
+  it("rejects no-op, unpushed, and push-failed builder results", () => {
+    expect(deliveryFailure({ mode: "builder", repo }, { changed: false })).toBe(
+      "delivery_no_changes",
+    );
+    expect(deliveryFailure({ mode: "builder", repo }, { changed: true })).toBe(
+      "delivery_branch_missing",
+    );
+    expect(
+      deliveryFailure(
+        { mode: "builder", repo },
+        { changed: true, branch: "facility/run-1", headSha: "abc", pushError: "denied" },
+      ),
+    ).toBe("delivery_push_failed");
+  });
+
+  it("accepts a changed commit pushed to a delivery branch", () => {
+    expect(
+      deliveryFailure(
+        { mode: "builder", repo },
+        { changed: true, branch: "facility/run-1", headSha: "abc" },
+      ),
+    ).toBeNull();
   });
 });
 

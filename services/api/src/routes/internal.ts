@@ -405,6 +405,7 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
       return (await finishRun(db, run, body, {
         config,
         githubClientFactory: app.githubClientFactory,
+        enqueue: app.enqueue,
       })) as unknown as Record<string, unknown>;
     },
   );

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildClaudeCodeArgs,
+  buildCodexArgs,
   composedPrompt,
   handleControlMessage,
   prepareWorkspace,
@@ -64,6 +65,30 @@ describe("workspace preparation", () => {
       "Project harness/KB context is in ./harness/SESSION.md - read it first.",
     );
     expect(composedPrompt(bundle())).not.toContain("./harness/SESSION.md");
+  });
+
+  it("installs registry skills as discoverable SKILL.md packages for both engines", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    await prepareWorkspace(
+      bundle({ skills: [{ name: "working to standard", content: "# Working to standard" }] }),
+      "virtual-key",
+      {
+        platformKey: null,
+        platformApiUrl: "https://api.test",
+        projectId: "proj_test",
+        repoToken: null,
+      },
+      root,
+    );
+
+    for (const engineRoot of [".claude", ".agents"]) {
+      await expect(
+        readFile(
+          join(root, "scratch", engineRoot, "skills", "working_to_standard", "SKILL.md"),
+          "utf8",
+        ),
+      ).resolves.toBe("# Working to standard");
+    }
   });
 
   it("does not write live engine or platform key values into the agent cwd", async () => {
@@ -193,6 +218,19 @@ describe("Claude resume controls", () => {
     timers[0]?.();
     expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
     clear();
+  });
+});
+
+describe("Codex model controls", () => {
+  it("applies the configured model and reasoning effort", () => {
+    const args = buildCodexArgs(
+      bundle({
+        engineConfig: { primary: "gpt-5.6", reasoning_effort: "high" },
+      }),
+    );
+    expect(args).toContain("--model");
+    expect(args).toContain("gpt-5.6");
+    expect(args).toContain('model_reasoning_effort="high"');
   });
 });
 

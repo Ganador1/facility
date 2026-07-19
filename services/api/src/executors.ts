@@ -121,6 +121,11 @@ export async function executeApprovedProposal(
   try {
     actionTypeName = actionType.name;
     validatePayload(actionType.payloadSchema, proposal.payload);
+    const recurrence = ["skill_proposal", "rule_proposal", "guard_candidate"].includes(
+      actionType.name,
+    )
+      ? await captureRecurrenceBaseline(db, proposal)
+      : undefined;
     if (actionType.name === "task_creation") {
       await executeTaskCreation(db, proposal, executionOptions);
     } else if (actionType.name === "skill_proposal" || actionType.name === "rule_proposal") {
@@ -130,11 +135,13 @@ export async function executeApprovedProposal(
         actionType.name === "skill_proposal" ? "skill" : "rule",
       );
     } else if (actionType.name === "guard_candidate") {
-      await executeGuardCandidate(db, proposal);
+      await executeGuardCandidate(db, proposal, executionOptions);
     } else if (actionType.name === "kb_amendment") {
       await executeKbAmendment(db, proposal);
     } else if (actionType.name === "plan_acceptance") {
-      if (objectOrEmpty(actionType.executor).type !== "internal") return;
+      if (objectOrEmpty(actionType.executor).type !== "internal") {
+        throw new Error("plan_acceptance_executor_invalid");
+      }
       await executePlanAcceptance(db, proposal, actor, executionOptions);
     } else if (actionType.name === "mcp_tool_call") {
       await executeMcpToolCall(db, proposal, actor, executionOptions);
@@ -145,7 +152,10 @@ export async function executeApprovedProposal(
       .update(proposals)
       .set({ state: "executed", updatedAt: new Date() })
       .where(and(eq(proposals.orgId, proposal.orgId), eq(proposals.id, proposal.id)));
-    await appendProposalEvent(db, proposal, "executed", actor, { actionType: actionType.name });
+    await appendProposalEvent(db, proposal, "executed", actor, {
+      actionType: actionType.name,
+      ...(recurrence ? { recurrence } : {}),
+    });
     return true;
   } catch (error) {
     await db
@@ -204,7 +214,8 @@ async function executePlanAcceptance(
     return;
   }
 
-  const builder = await findAgentDef(db, proposal.orgId, proposal.projectId, "builder");
+  const builderCommand = architectRun.engine === "codex" ? "codex-builder" : "builder";
+  const builder = await findAgentDef(db, proposal.orgId, proposal.projectId, builderCommand);
   if (!builder) throw new Error("plan_acceptance_builder_not_configured");
 
   const createdRun = (
@@ -1874,25 +1885,92 @@ async function executeRegistryDraft(
     createdBy,
   });
   if (!version) throw new Error("registry_draft_create_failed");
-  return { itemId: item.id, versionId: version.id };
+  const active = await publishRegistryVersion(db, proposal.orgId, version.id);
+  return { itemId: item.id, versionId: active.id, status: active.status };
 }
 
-async function executeGuardCandidate(db: Db, proposal: typeof proposals.$inferSelect) {
+async function executeGuardCandidate(
+  db: Db,
+  proposal: typeof proposals.$inferSelect,
+  options: ExecuteApprovedProposalOptions,
+) {
+  if (!proposal.projectId) throw new Error("guard_candidate_missing_project");
   const payload = objectOrEmpty(proposal.payload);
   const title = stringField(payload.title) ?? `Guard candidate ${proposal.id}`;
-  await db
-    .insert(platformIssues)
-    .values({
-      id: newId("iss"),
-      orgId: proposal.orgId,
-      projectId: proposal.projectId,
-      kind: "learning",
-      severity: "info",
-      fingerprint: `learning:guard:${proposal.id}`,
-      title,
-      bodyMd: stringField(payload.content) ?? proposal.contextMd,
-    })
-    .onConflictDoNothing();
+  const rawContent = stringField(payload.content);
+  if (!rawContent) throw new Error("guard_candidate_content_missing");
+  const content = executableGuardContent(rawContent);
+  if (!/export\s+default/.test(content) || !/\brun\s*\(/.test(content)) {
+    throw new Error("guard_candidate_not_executable");
+  }
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, proposal.orgId), eq(repos.projectId, proposal.projectId)))
+      .orderBy(repos.createdAt)
+      .limit(1)
+  )[0];
+  if (!repo?.installationId) throw new Error("guard_candidate_repo_unavailable");
+  const factory =
+    options.githubFactory ??
+    (options.config?.githubAppId && options.config.githubAppPrivateKey
+      ? createGithubClientFactory(options.config)
+      : null);
+  if (!factory) throw new Error("github_app_unconfigured");
+  const client = await createGithubClientForRepo(db, factory, repo);
+  const slug = guardSlug(title);
+  const branch = `facility/guard-${slug}-${proposal.id.slice(-8)}`;
+  const baseSha = await client.getDefaultBranchSha();
+  const baseCommit = await client.getCommit(baseSha);
+  const blob = await client.createBlob(`${content.trim()}\n`);
+  const tree = await client.createTree(baseCommit.treeSha, [
+    { path: `guards/${slug}.mjs`, mode: "100644", type: "blob", sha: blob },
+  ]);
+  const commit = await client.createCommit(`test(guards): enforce ${title}`, tree, [baseSha]);
+  await client.createBranch(branch, commit);
+  const evidence = Array.isArray(payload.evidence_refs)
+    ? payload.evidence_refs.filter((value): value is string => typeof value === "string")
+    : [];
+  const pr = await client.createPullRequest({
+    head: branch,
+    base: repo.defaultBranch,
+    title: `test(guards): enforce ${title}`,
+    body: [
+      `Implements approved Facility guard proposal \`${proposal.id}\`.`,
+      "",
+      proposal.contextMd,
+      "",
+      "Evidence:",
+      ...(evidence.length ? evidence.map((value) => `- ${value}`) : ["- See proposal context"]),
+      "",
+      "A human must review and merge this pull request before the guard becomes active.",
+    ].join("\n"),
+  });
+  await insertAuditEvent(db, {
+    orgId: proposal.orgId,
+    projectId: proposal.projectId,
+    actor: { type: "system", id: "learning-guard-executor" },
+    action: "github.pr.created",
+    target: { type: "proposal", id: proposal.id },
+    payload: { kind: "guard_candidate", branch, commit, pr },
+  });
+  return { branch, commit, pr };
+}
+
+function executableGuardContent(content: string) {
+  const fenced = content.match(/```(?:js|javascript|mjs)?\s*\n([\s\S]*?)```/i);
+  return fenced?.[1] ?? content;
+}
+
+function guardSlug(value: string) {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "")
+      .slice(0, 48) || "learned-invariant"
+  );
 }
 
 async function executeKbAmendment(db: Db, proposal: ProposalExecutionContext) {
@@ -2044,6 +2122,49 @@ function arrayOfStrings(value: unknown) {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string")
     : [];
+}
+
+async function captureRecurrenceBaseline(db: Db, proposal: typeof proposals.$inferSelect) {
+  const payload = objectOrEmpty(proposal.payload);
+  const fingerprints = [...new Set(arrayOfStrings(payload.recurrence_fingerprints))].slice(0, 20);
+  const requestedDays = Number(payload.evaluation_window_days);
+  const evaluationWindowDays =
+    Number.isInteger(requestedDays) && requestedDays >= 1 && requestedDays <= 30
+      ? requestedDays
+      : 7;
+  if (!proposal.projectId || fingerprints.length === 0) {
+    return { configured: false, evaluationWindowDays, fingerprints: [], baseline: [] };
+  }
+  const baseline = await db
+    .select({
+      fingerprint: platformIssues.fingerprint,
+      count: platformIssues.count,
+      firstSeen: platformIssues.firstSeen,
+      lastSeen: platformIssues.lastSeen,
+    })
+    .from(platformIssues)
+    .where(
+      and(
+        eq(platformIssues.orgId, proposal.orgId),
+        eq(platformIssues.projectId, proposal.projectId),
+        inArray(platformIssues.fingerprint, fingerprints),
+      ),
+    );
+  const byFingerprint = new Map(baseline.map((issue) => [issue.fingerprint, issue]));
+  return {
+    configured: true,
+    evaluationWindowDays,
+    fingerprints,
+    baseline: fingerprints.map((fingerprint) => {
+      const issue = byFingerprint.get(fingerprint);
+      return {
+        fingerprint,
+        count: issue?.count ?? 0,
+        firstSeen: issue?.firstSeen?.toISOString() ?? null,
+        lastSeen: issue?.lastSeen?.toISOString() ?? null,
+      };
+    }),
+  };
 }
 
 function validatePayload(schema: unknown, payload: unknown) {

@@ -23,6 +23,7 @@ jobs:
       issues: write
       pull-requests: write
       id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -96,3 +97,38 @@ jobs:
           FACILITY_PR_NUMBER: ${{ github.event.pull_request.number }}
           FACILITY_REVIEW_STARTED_AT: ${{ steps.review-start.outputs.started_at }}
         run: node .github/facility/review/finalize.mjs
+
+      - name: Collect trusted agent run receipt
+        id: receipt
+        if: always() && steps.workflow-change.outputs.changed != 'true'
+        shell: bash
+        env:
+          FACILITY_RECEIPT_PROVIDER: claude_code
+          FACILITY_RECEIPT_MODE: review
+          FACILITY_RECEIPT_RESULT: ${{ steps.reviewer.outcome }}
+          FACILITY_RECEIPT_STARTED_AT: ${{ steps.review-start.outputs.started_at }}
+          FACILITY_RECEIPT_MODEL: "{{REVIEW_MODEL}}"
+          FACILITY_RECEIPT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          FACILITY_RECEIPT_CHECKS_FILE: ${{ github.workspace }}/.agent-sdlc/checks.jsonl
+          FACILITY_RECEIPT_OUTPUT: ${{ runner.temp }}/facility-receipt/facility-run.json
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          trusted="$RUNNER_TEMP/facility-receipt-collector.mjs"
+          git show "origin/{{DEFAULT_BRANCH}}:.github/facility/receipts/collect.mjs" > "$trusted" 2>/dev/null || \
+            gh api "repos/$GITHUB_REPOSITORY/contents/.github/facility/receipts/collect.mjs?ref={{DEFAULT_BRANCH}}" --jq .content | base64 -d > "$trusted"
+          node "$trusted"
+
+      - name: Attest agent run receipt
+        if: always() && steps.receipt.outcome == 'success'
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: ${{ steps.receipt.outputs.path }}
+
+      - name: Upload agent run receipt
+        if: always() && steps.receipt.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: facility-run-receipt-${{ github.run_id }}-${{ github.job }}
+          path: ${{ steps.receipt.outputs.path }}
+          if-no-files-found: error
+          retention-days: 90

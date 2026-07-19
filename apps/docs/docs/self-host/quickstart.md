@@ -82,6 +82,11 @@ AWS S3, R2, and other S3-compatible endpoints.
 2. **GitHub App** — create your own App installation (see
    [Production](production)) so kickstart and triggers work against your org.
 3. **Kickstart** — connect a repo and open the kickstart PR.
+4. **Protected previews** — in production, finish the WorkOS AuthKit settings
+   before enabling previews. Configure the project with an immutable review
+   image, command, port, readiness path, and TTL; give repository automation a
+   project-scoped `runs:write` key. Human preview access is SSO-only even when
+   the request came from a machine key.
 
 The web application is optional. The complete operating surface is available
 through the CLI, REST/OpenAPI + TypeScript SDK, and MCP; see the three reference

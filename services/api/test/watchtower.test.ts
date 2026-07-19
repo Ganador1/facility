@@ -28,6 +28,7 @@ import { analyticsOverview, rollupAnalytics } from "../src/watchtower/analytics.
 import { CANARY_MESSAGE_HASH, collectCanaries } from "../src/watchtower/canary.js";
 import type { GitHubClient, WorkflowRun } from "../src/watchtower/github.js";
 import { collectGitHubHealth } from "../src/watchtower/github-health.js";
+import { projectHealth } from "../src/watchtower/health.js";
 import { expireHitlProposals } from "../src/watchtower/hitl.js";
 import {
   isActionableSeverity,
@@ -431,12 +432,20 @@ describe("watchtower", async () => {
       await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
     )[0];
     expect(issue?.state).toBe("open");
+    await expect(projectHealth(db, orgId, project.id)).resolves.toMatchObject({
+      status: "red",
+      classification: "unhealthy",
+    });
     github.workflowRuns = [];
     await collectGitHubHealth(db, github);
     issue = (
       await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
     )[0];
     expect(issue?.state).toBe("resolved");
+    await expect(projectHealth(db, orgId, project.id)).resolves.toMatchObject({
+      status: "ok",
+      classification: "healthy",
+    });
     // Two full collectGitHubHealth passes over real Postgres; give it headroom
     // beyond vitest's 5s default so it is not a load-sensitive flake.
   }, 20_000);

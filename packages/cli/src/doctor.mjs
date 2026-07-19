@@ -9,6 +9,7 @@ import { banner, bold, dim, fail, green, heading, item, ok, red, warn, yellow } 
 
 const REQUIRED = [
   ".github/workflows/facility-crew.yml",
+  ".github/workflows/facility-codex.yml",
   ".github/workflows/facility-review.yml",
   ".github/workflows/facility-address-review.yml",
   ".github/workflows/facility-doctor.yml",
@@ -21,6 +22,7 @@ const REQUIRED = [
   ".github/facility/sweep.md",
   ".github/facility/doctor/resolve.mjs",
   ".github/facility/delivery/verify.mjs",
+  ".github/facility/receipts/collect.mjs",
   ".github/facility/review/finalize.mjs",
   ".github/facility/watchtower/outcomes.mjs",
   ".github/facility/watchtower/health.mjs",
@@ -78,6 +80,7 @@ export async function doctor(flags, version, options = {}) {
 
 function inspectLocalInstall(dir, options = {}) {
   const checks = [];
+  let manifest = {};
   for (const file of REQUIRED) {
     checks.push(
       existsSync(join(dir, file))
@@ -91,22 +94,26 @@ function inspectLocalInstall(dir, options = {}) {
     checks.push(localCheck("Manifest", ".facility.json", "fail", "missing"));
   } else {
     try {
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+      manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
       const models = manifest.models;
       checks.push(
-        models?.build && models?.review && models?.plan
+        models?.build &&
+          models?.review &&
+          models?.plan &&
+          models?.codexBuild &&
+          models?.codexPlan
           ? localCheck(
               "Manifest",
               ".facility.json",
               "pass",
-              `engine ${manifest.engine || "claude-code"}, models build=${models.build}, review=${models.review}, plan=${models.plan}`,
+              `engines ${(manifest.engines || [manifest.engine || "claude-code"]).join(",")}, models build=${models.build}, review=${models.review}, plan=${models.plan}, codexBuild=${models.codexBuild}, codexPlan=${models.codexPlan}`,
             )
           : localCheck(
               "Manifest",
               "models",
               "fail",
-              "models.build, models.review, and models.plan must all be configured.",
-              "Rerun init with explicit build, review, and plan models.",
+              "Claude and Codex build/plan models must all be configured.",
+              "Rerun init with explicit Claude and Codex model flags.",
             ),
       );
       const mode = detectAnthropicAuthMode(manifest, dir);
@@ -143,6 +150,29 @@ function inspectLocalInstall(dir, options = {}) {
               "Set manifest.checks.",
             ),
       );
+      if (manifest.preview?.enabled) {
+        const previewValid =
+          typeof manifest.preview.image === "string" &&
+          Number.isInteger(manifest.preview.port) &&
+          (!manifest.preview.readinessPath ||
+            String(manifest.preview.readinessPath).startsWith("/"));
+        checks.push(
+          previewValid
+            ? localCheck(
+                "Manifest",
+                "protected preview",
+                "pass",
+                `${manifest.preview.image}:${manifest.preview.port}${manifest.preview.readinessPath ?? ""}`,
+              )
+            : localCheck(
+                "Manifest",
+                "protected preview",
+                "fail",
+                "Preview image, port, or readiness path is invalid.",
+                "Rerun init with --preview-image, --preview-port, and an optional /readiness path.",
+              ),
+        );
+      }
     } catch (error) {
       checks.push(
         localCheck(
@@ -182,12 +212,6 @@ function inspectLocalInstall(dir, options = {}) {
     );
   }
 
-  let manifest = {};
-  try {
-    manifest = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : {};
-  } catch {
-    // The manifest parse failure is already represented in checks.
-  }
   const requirements = authRequirements(detectAnthropicAuthMode(manifest, dir));
   const ghSecrets = options.github
     ? spawnSync("gh", ["secret", "list"], {
@@ -203,14 +227,35 @@ function inspectLocalInstall(dir, options = {}) {
         timeout: 10_000,
       })
     : undefined;
+  const environmentSecrets = new Set();
+  if (options.github) {
+    for (const environment of ["facility-crew", "facility-codex"]) {
+      const result = spawnSync("gh", ["secret", "list", "--env", environment], {
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
+      if (result.status === 0) {
+        for (const name of namesFromGhList(result.stdout)) environmentSecrets.add(name);
+      }
+    }
+  }
+  const requiredSecrets = new Set(requirements.secrets);
+  if (manifest.engines?.includes("codex")) requiredSecrets.add("OPENAI_API_KEY");
+  if (manifest.preview?.enabled) {
+    for (const name of ["FACILITY_API_URL", "FACILITY_PROJECT_ID", "FACILITY_PREVIEW_KEY"]) {
+      requiredSecrets.add(name);
+    }
+  }
   if (ghSecrets?.status === 0 && ghVariables?.status === 0) {
     const secrets = namesFromGhList(ghSecrets.stdout);
+    for (const name of environmentSecrets) secrets.add(name);
     const variables = namesFromGhList(ghVariables.stdout);
-    for (const name of requirements.secrets) {
+    for (const name of requiredSecrets) {
       checks.push(
         secrets.has(name)
           ? localCheck("GitHub", name, "pass", "Secret exists")
-          : localCheck("GitHub", name, "fail", "Secret not found", requirements.remediation),
+          : localCheck("GitHub", name, "fail", "Secret not found", credentialRemediation(name, requirements.remediation)),
       );
     }
     for (const name of requirements.variables) {
@@ -220,6 +265,7 @@ function inspectLocalInstall(dir, options = {}) {
           : localCheck("GitHub", name, "fail", "Variable not found", requirements.remediation),
       );
     }
+    checks.push(githubBranchProtectionCheck(dir, manifest));
   } else if (options.github) {
     checks.push(
       localCheck(
@@ -231,7 +277,7 @@ function inspectLocalInstall(dir, options = {}) {
       ),
     );
   } else {
-    for (const name of requirements.secrets) {
+    for (const name of requiredSecrets) {
       checks.push(
         localCheck(
           "GitHub",
@@ -256,11 +302,54 @@ function inspectLocalInstall(dir, options = {}) {
   }
   const manual = [
     "Claude GitHub App installed on the repo",
-    "default branch protected: PR + 1 human review required",
+    ...(options.github ? [] : ["default branch protected: PR + 1 human review required"]),
     "provider TEST keys (if any) live in the facility-crew Environment",
   ];
   const problems = checks.filter((check) => check.status === "fail").length;
   return { ok: problems === 0, mode: "local", directory: dir, problems, checks, manual };
+}
+
+function credentialRemediation(name, authRemediation) {
+  if (name === "OPENAI_API_KEY") {
+    return "store a dedicated, spend-capped key in the facility-codex environment";
+  }
+  if (name.startsWith("FACILITY_")) {
+    return "configure the Facility API URL, project id, and project-scoped preview key together";
+  }
+  return authRemediation;
+}
+
+function githubBranchProtectionCheck(dir, manifest) {
+  const repo = spawnSync("gh", ["repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"], {
+    cwd: dir,
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  const nameWithOwner = repo.stdout.trim();
+  if (repo.status !== 0 || !nameWithOwner) {
+    return localCheck(
+      "GitHub",
+      "branch protection",
+      "warn",
+      "Could not resolve the GitHub repository.",
+      "Run gh auth login and verify branch protection manually.",
+    );
+  }
+  const branch = String(manifest.defaultBranch || "main");
+  const protection = spawnSync(
+    "gh",
+    ["api", `repos/${nameWithOwner}/branches/${encodeURIComponent(branch)}/protection`],
+    { cwd: dir, encoding: "utf8", timeout: 10_000 },
+  );
+  return protection.status === 0
+    ? localCheck("GitHub", `${branch} branch protection`, "pass", "Protection is enabled")
+    : localCheck(
+        "GitHub",
+        `${branch} branch protection`,
+        "fail",
+        "Protection could not be verified.",
+        "Require pull requests and at least one human approval on the default branch.",
+      );
 }
 
 function localCheck(section, label, status, message, remediation, detail) {

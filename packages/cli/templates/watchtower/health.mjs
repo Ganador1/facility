@@ -23,6 +23,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const WATCHLIST = [
   "facility-crew",
+  "facility-codex",
   "facility-review",
   "facility-address-review",
   "facility-doctor",
@@ -47,6 +48,7 @@ const day = runsSince(iso(24));
 const week = runsSince(iso(24 * 7));
 
 const problems = [];
+const advisories = [];
 const rows = [];
 for (const name of WATCHLIST) {
   const daily = day.filter((r) => r.name === name);
@@ -56,19 +58,38 @@ for (const name of WATCHLIST) {
   const weeklyCount = week.filter((r) => r.name === name).length;
   const maxFail = budgetFor(budgets.maxDailyFailures, name, 3);
   const maxWeekly = budgetFor(budgets.maxWeeklyRuns, name, Infinity);
-  if (failures.length >= maxFail) {
+  const latest = daily[0] ?? week.filter((r) => r.name === name)[0];
+  const consecutiveFailures = (
+    daily.length ? daily : week.filter((r) => r.name === name)
+  ).findIndex((run) => !["failure", "startup_failure", "timed_out"].includes(run.conclusion ?? ""));
+  const failureStreak =
+    consecutiveFailures === -1
+      ? (daily.length ? daily : week.filter((r) => r.name === name)).length
+      : consecutiveFailures;
+  const classification =
+    weeklyCount === 0
+      ? "unknown"
+      : failures.length >= maxFail || weeklyCount > maxWeekly || failureStreak >= 2
+        ? "unhealthy"
+        : failures.length > 0 ||
+            ["failure", "startup_failure", "timed_out"].includes(latest?.conclusion ?? "")
+          ? "degraded"
+          : "healthy";
+  if (failures.length >= maxFail || failureStreak >= 2) {
     problems.push(
-      `**${name}**: ${failures.length} failures in 24h (budget ${maxFail}) — latest: ${failures[0].html_url}`,
+      `**${name}**: ${failures.length} failures in 24h (budget ${maxFail}), streak ${failureStreak} — latest: ${failures[0]?.html_url ?? latest?.html_url ?? "unknown"}`,
     );
+  } else if (classification === "degraded") {
+    advisories.push(`**${name}**: a recent run failed, below the incident threshold.`);
   }
   if (weeklyCount > maxWeekly) {
     problems.push(
       `**${name}**: ${weeklyCount} runs this week (budget ${maxWeekly}) — runaway trigger or runaway spend?`,
     );
   }
-  if (daily.length || weeklyCount) {
-    rows.push(`| ${name} | ${daily.length} | ${failures.length} | ${weeklyCount} |`);
-  }
+  rows.push(
+    `| ${name} | ${classification} | ${daily.length} | ${failures.length} | ${weeklyCount} |`,
+  );
 }
 
 const MARKER = "facility-health";
@@ -91,13 +112,14 @@ const openIncidents = JSON.parse(
 const report = [
   `Health check ${new Date().toISOString()} — last 24h / 7d, from the GitHub API.`,
   "",
-  "| workflow | runs 24h | failures 24h | runs 7d |",
-  "|---|---|---|---|",
+  "| workflow | health | runs 24h | failures 24h | runs 7d |",
+  "|---|---|---|---|---|",
   ...rows,
   "",
   problems.length
     ? `### Problems\n${problems.map((p) => `- ${p}`).join("\n")}`
     : "All watched workflows within budget.",
+  advisories.length ? `### Degraded\n${advisories.map((p) => `- ${p}`).join("\n")}` : "",
 ].join("\n");
 
 if (problems.length) {

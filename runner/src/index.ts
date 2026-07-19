@@ -75,7 +75,7 @@ async function main() {
         bundle.timeoutMin,
       );
       if (provision !== 0) {
-        await postResult("failed", startedAt, { code: "provision_failed" });
+        await postResult(bundle, "failed", startedAt, { code: "provision_failed" });
         return;
       }
     }
@@ -84,7 +84,7 @@ async function main() {
     await uploadTranscript();
     await uploadSessionState(bundle);
     if (interruptRequested) {
-      await postResult("canceled", startedAt, "human_interrupt");
+      await postResult(bundle, "canceled", startedAt, "human_interrupt");
       return;
     }
     await emitChecks(cwdFor(bundle));
@@ -93,17 +93,45 @@ async function main() {
     // every configured check command passes. Skip them when the engine already
     // failed (the run fails regardless). Without this an agent could report
     // success while its required checks are red.
-    const checksPassed = engineCode === 0 ? await runChecks(bundle, cwdFor(bundle)) : false;
-    const succeeded = engineCode === 0 && checksPassed;
-    const git = succeeded ? await shipGitChanges(bundle) : undefined;
+    const checksConfigured = !requiresDelivery(bundle.mode) || bundle.checkCmds.length > 0;
+    if (!checksConfigured) {
+      await emit([
+        {
+          type: "check",
+          data: {
+            self_reported: false,
+            name: "configured acceptance checks",
+            status: "failed",
+            reason: "checks_not_configured",
+          },
+        },
+      ]);
+    }
+    const checksPassed =
+      engineCode === 0 && checksConfigured ? await runChecks(bundle, cwdFor(bundle)) : false;
+    const engineAndChecksSucceeded = engineCode === 0 && checksPassed;
+    const git = engineAndChecksSucceeded ? await shipGitChanges(bundle) : undefined;
+    const deliveryError = engineAndChecksSucceeded ? deliveryFailure(bundle, git) : null;
+    const succeeded = engineAndChecksSucceeded && deliveryError === null;
     await postResult(
+      bundle,
       succeeded ? "succeeded" : "failed",
       startedAt,
-      succeeded ? undefined : engineCode !== 0 ? { code: engineCode } : { code: "checks_failed" },
+      succeeded
+        ? undefined
+        : engineCode !== 0
+          ? { code: engineCode }
+          : !checksConfigured
+            ? { code: "checks_not_configured" }
+            : deliveryError
+              ? { code: deliveryError }
+              : { code: "checks_failed" },
       git,
     );
   } catch (error) {
-    await postResult("failed", startedAt, { error: errorMessage(error) }).catch(() => undefined);
+    await postResult(bundle, "failed", startedAt, { error: errorMessage(error) }).catch(
+      () => undefined,
+    );
     process.exitCode = 1;
   } finally {
     steerStop?.();
@@ -153,7 +181,9 @@ export async function prepareWorkspace(
   for (const root of [join(cwd, ".claude", "skills"), join(cwd, ".agents", "skills")]) {
     await mkdir(root, { recursive: true });
     for (const [fileBase, skill] of skillsByFile) {
-      await writeFile(join(root, `${fileBase}.md`), skill.content);
+      const skillDir = join(root, fileBase);
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(join(skillDir, "SKILL.md"), skill.content);
     }
   }
   if (bundle.harness?.files) {
@@ -196,7 +226,7 @@ async function runEngine(bundle: RunBundle, startedAt: number) {
   if (bundle.engine === "codex") {
     return runJsonProcess(
       "codex",
-      ["exec", "--json", "-s", "danger-full-access", composedPrompt(bundle)],
+      buildCodexArgs(bundle),
       cwdFor(bundle),
       parseCodexJsonlLine,
       parseCodexSessionId,
@@ -562,6 +592,7 @@ export async function runCheckCommand(command: string, cwd: string, timeoutMin: 
 }
 
 async function postResult(
+  bundle: RunBundle | null,
   status: "succeeded" | "failed" | "canceled",
   startedAt: number,
   error?: Record<string, unknown> | string,
@@ -573,7 +604,9 @@ async function postResult(
     body: JSON.stringify({
       status,
       receipt: {
-        provider: "byo",
+        provider: receiptProvider(bundle?.engine),
+        mode: receiptMode(bundle?.mode),
+        model: configuredModel(bundle?.engineConfig),
         result: status,
         activity: {
           turns: 0,
@@ -600,6 +633,23 @@ async function postResult(
       engineSessionId: engineSessionId ?? undefined,
     }),
   });
+}
+
+export function requiresDelivery(mode: string) {
+  return mode === "builder" || mode.endsWith("-builder");
+}
+
+export function deliveryFailure(
+  bundle: Pick<RunBundle, "mode" | "repo">,
+  git: Record<string, unknown> | undefined,
+): string | null {
+  if (!requiresDelivery(bundle.mode)) return null;
+  if (!bundle.repo.cloneUrl) return "delivery_repo_not_configured";
+  if (git?.changed !== true) return "delivery_no_changes";
+  if (typeof git.pushError === "string" && git.pushError) return "delivery_push_failed";
+  if (typeof git.branch !== "string" || !git.branch) return "delivery_branch_missing";
+  if (typeof git.headSha !== "string" || !git.headSha) return "delivery_commit_missing";
+  return null;
 }
 
 async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown> | undefined> {
@@ -819,8 +869,51 @@ export function composedPrompt(bundle: RunBundle) {
   return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}${steeringNote}${conversationNote}`;
 }
 
+export function buildCodexArgs(bundle: RunBundle) {
+  const args = ["exec", "--json", "-s", "danger-full-access"];
+  const model = configuredModel(bundle.engineConfig);
+  if (model) args.push("--model", model);
+  const effort = bundle.engineConfig.reasoning_effort ?? bundle.engineConfig.reasoningEffort;
+  if (typeof effort === "string" && effort) {
+    args.push("--config", `model_reasoning_effort=${JSON.stringify(effort)}`);
+  }
+  args.push(composedPrompt(bundle));
+  return args;
+}
+
 function addModelFlags(args: string[], config: Record<string, unknown>) {
-  if (typeof config.model === "string") args.push("--model", config.model);
+  const model = configuredModel(config);
+  if (model) args.push("--model", model);
+}
+
+function configuredModel(config: Record<string, unknown> | undefined) {
+  if (!config) return undefined;
+  for (const candidate of [config.model, config.primary]) {
+    if (typeof candidate === "string" && candidate) return candidate;
+  }
+  return undefined;
+}
+
+function receiptProvider(engine: RunBundle["engine"] | undefined) {
+  if (engine === "claude_code") return "claude_code";
+  if (engine === "codex") return "codex_cli";
+  return "byo";
+}
+
+function receiptMode(mode: string | undefined) {
+  const normalized = mode?.replace(/^codex-/, "").replace(/-/g, "_");
+  return [
+    "architect",
+    "builder",
+    "review",
+    "address_review",
+    "ci_doctor",
+    "security_sweep",
+    "po",
+    "learning",
+  ].includes(normalized ?? "")
+    ? normalized
+    : "custom";
 }
 
 function safeName(name: string) {

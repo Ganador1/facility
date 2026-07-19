@@ -561,6 +561,11 @@ async function kickstart(args, ctx, flags, rawCtx) {
     "org",
     "board",
     "execution-lane",
+    "preview-image",
+    "preview-command",
+    "preview-port",
+    "preview-readiness-path",
+    "preview-ttl-hours",
     "idempotency-key",
   ]);
   const project = await resolveProject(ctx, args[0]);
@@ -597,6 +602,35 @@ async function kickstart(args, ctx, flags, rawCtx) {
       : {}),
     ...(flags["execution-lane"]
       ? { execution_lane: parseObject(flags["execution-lane"], "--execution-lane") }
+      : {}),
+    ...(flags["preview-image"]
+      ? {
+          preview: {
+            enabled: true,
+            image: flagString(flags["preview-image"], "--preview-image"),
+            ...(flags["preview-command"]
+              ? {
+                  command: [
+                    "sh",
+                    "-lc",
+                    flagString(flags["preview-command"], "--preview-command"),
+                  ],
+                }
+              : {}),
+            port: Number(flagString(flags["preview-port"] ?? "3000", "--preview-port")),
+            ...(flags["preview-readiness-path"]
+              ? {
+                  readinessPath: flagString(
+                    flags["preview-readiness-path"],
+                    "--preview-readiness-path",
+                  ),
+                }
+              : {}),
+            ttlHours: Number(
+              flagString(flags["preview-ttl-hours"] ?? "24", "--preview-ttl-hours"),
+            ),
+          },
+        }
       : {}),
   };
   const result = await api(ctx, "POST", `/v1/projects/${project.id}/kickstart`, {

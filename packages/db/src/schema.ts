@@ -833,6 +833,48 @@ export const outcomes = pgTable(
   (table) => [unique("outcomes_org_repo_pr_uidx").on(table.orgId, table.repo, table.prNumber)],
 );
 
+export const previewSandboxes = pgTable(
+  "preview_sandboxes",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    repoId: text("repo_id").references(() => repos.id),
+    runId: text("run_id").references(() => runs.id),
+    prNumber: integer("pr_number"),
+    commitSha: text("commit_sha"),
+    driver: text("driver").notNull(),
+    ref: text("ref"),
+    status: text("status").notNull().default("provisioning"),
+    authMode: text("auth_mode").notNull().default("workos_sso"),
+    originUrl: text("origin_url"),
+    config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
+    error: text("error"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastHealthAt: timestamp("last_health_at", { withTimezone: true }),
+    createdBy: jsonb("created_by").notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    index("preview_sandboxes_org_project_idx").on(
+      table.orgId,
+      table.projectId,
+      table.createdAt.desc(),
+    ),
+    index("preview_sandboxes_expiry_idx").on(table.status, table.expiresAt),
+    check(
+      "preview_sandboxes_status_check",
+      sql`${table.status} in ('provisioning', 'running', 'failed', 'expired', 'destroyed')`,
+    ),
+    check("preview_sandboxes_auth_check", sql`${table.authMode} = 'workos_sso'`),
+    check("preview_sandboxes_driver_check", sql`${table.driver} in ('docker', 'aws')`),
+  ],
+);
+
 export const analyticsDaily = pgTable(
   "analytics_daily",
   {

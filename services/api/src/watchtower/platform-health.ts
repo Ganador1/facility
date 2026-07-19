@@ -38,7 +38,7 @@ async function detectStuckRuns(db: FacilityDb) {
       await raisePlatformIssue(db, {
         orgId: row.run.orgId,
         projectId: row.run.projectId,
-        kind: "run_failure",
+        kind: "platform_failure",
         severity: "error",
         fingerprint,
         title: "Platform run stuck",
@@ -100,7 +100,7 @@ async function detectDispatchDepth(db: FacilityDb) {
       await raisePlatformIssue(db, {
         orgId: project.orgId,
         projectId: project.id,
-        kind: "run_failure",
+        kind: "platform_failure",
         severity: "error",
         fingerprint,
         title: "Dispatch queue depth elevated",

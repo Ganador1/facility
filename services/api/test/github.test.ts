@@ -7,6 +7,7 @@ import {
   integrations,
   migrate,
   orgs,
+  platformIssues,
   projects,
   repos,
   seed,
@@ -18,6 +19,7 @@ import { buildApp } from "../src/app.js";
 import { FacilityGithubClient } from "../src/github/client.js";
 import { processGithubWebhook } from "../src/github/processor.js";
 import { resolveSlashCommand } from "../src/github/router.js";
+import { createPreviewRecord } from "../src/previews.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -240,15 +242,134 @@ describe("github integration", async () => {
     expect(verify?.data.repoId).not.toBe(other.repoId);
   });
 
+  it("adapts GitHub deployment telemetry into a recoverable project signal", async () => {
+    const org = (await db.select().from(orgs).orderBy(asc(orgs.createdAt)).limit(1))[0];
+    if (!org) throw new Error("seeded org missing");
+    const suffix = newId("evt");
+    const projectId = newId("proj");
+    const repoId = newId("repo");
+    const repoName = `deploy-${suffix}`;
+    await db.insert(projects).values({
+      id: projectId,
+      orgId: org.id,
+      name: "Deploy signals",
+      slug: `deploy-signals-${suffix}`,
+      settings: {},
+    });
+    await db.insert(repos).values({
+      id: repoId,
+      orgId: org.id,
+      projectId,
+      owner: "octo",
+      name: repoName,
+      defaultBranch: "main",
+    });
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({ id: newId("int"), orgId: org.id, kind: "github", name: suffix })
+        .returning()
+    )[0];
+    if (!integration) throw new Error("integration fixture missing");
+
+    const deliver = async (state: string) => {
+      const id = newId("evt");
+      await db.insert(inboundEvents).values({
+        id,
+        orgId: org.id,
+        integrationId: integration.id,
+        verified: true,
+        eventType: "deployment_status",
+        payload: {
+          repository: { owner: { login: "octo" }, name: repoName },
+          deployment_status: {
+            state,
+            environment: "production",
+            target_url: "https://example.test/deployment",
+          },
+        },
+      });
+      await processGithubWebhook(db, config, { inboundEventId: id });
+    };
+
+    await deliver("failure");
+    const fingerprint = `deployment:${repoId}:production`;
+    let issue = (
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
+    )[0];
+    expect(issue).toMatchObject({ projectId, state: "open", severity: "error" });
+    await deliver("success");
+    issue = (
+      await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint))
+    )[0];
+    expect(issue?.state).toBe("resolved");
+
+    const preview = await createPreviewRecord(db, {
+      orgId: org.id,
+      projectId,
+      repoId,
+      prNumber: 17,
+      image: "ghcr.io/example/app:sha",
+      port: 3000,
+      ttlHours: 24,
+      createdBy: { type: "system", id: "test" },
+    });
+    if (!preview) throw new Error("preview fixture missing");
+    const closedId = newId("evt");
+    await db.insert(inboundEvents).values({
+      id: closedId,
+      orgId: org.id,
+      integrationId: integration.id,
+      verified: true,
+      eventType: "pull_request",
+      payload: {
+        action: "closed",
+        repository: { owner: { login: "octo" }, name: repoName },
+        pull_request: {
+          number: 17,
+          merged: true,
+          head: { ref: "feature/semantic-preview-branch" },
+          created_at: "2026-07-19T00:00:00Z",
+          closed_at: "2026-07-19T01:00:00Z",
+        },
+      },
+    });
+    const lifecycleJobs: Array<{ queue: string; data: Record<string, unknown> }> = [];
+    await processGithubWebhook(
+      db,
+      config,
+      { inboundEventId: closedId },
+      async () =>
+        ({
+          rest: {
+            pulls: {
+              listReviews: async () => ({ data: [] }),
+              listCommits: async () => ({ data: [] }),
+            },
+          },
+        }) as never,
+      async (queue, data) => {
+        lifecycleJobs.push({ queue, data });
+        return null;
+      },
+    );
+    expect(lifecycleJobs).toContainEqual({
+      queue: "previews.destroy",
+      data: { previewId: preview.id },
+    });
+  });
+
   it("matches only start-of-line slash commands and detects ambiguity", () => {
     expect(resolveSlashCommand("please ask /architect")).toEqual({ ambiguous: false });
     expect(resolveSlashCommand("/architect\n\ncontext")).toEqual({
       command: "architect",
+      agentCommand: "architect",
       ambiguous: false,
     });
     expect(resolveSlashCommand("/architect\n/builder")).toEqual({ ambiguous: true });
     expect(resolveSlashCommand("/codex-builder: go")).toEqual({
       command: "builder",
+      agentCommand: "codex-builder",
       ambiguous: false,
     });
   });

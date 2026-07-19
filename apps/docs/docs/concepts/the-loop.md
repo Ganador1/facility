@@ -4,8 +4,8 @@ title: The loop
 
 # The loop
 
-One change, end to end. This is the SDLC Facility installs and governs —
-the same loop shown at [sdlc.theagilemonkeys.com](https://sdlc.theagilemonkeys.com).
+One change, end to end. This is the open-source SDLC Facility installs and
+governs.
 
 1. **Signal and intake.** Work begins as feedback, telemetry, a meeting, or
    an alert. The signal becomes a shaped issue with a named human owner.
@@ -21,9 +21,9 @@ the same loop shown at [sdlc.theagilemonkeys.com](https://sdlc.theagilemonkeys.c
    checks, push, PR. One-shot delivery is deliberate: an agent allowed to
    ship "foundation + plan" will ship it every time.
 6. **Preview.** Every PR must have a live, isolated environment where a
-   person can try the change quickly. Today, connect your deployment provider's
-   per-PR previews and put the URL and status on the PR. Facility does not yet
-   provision these environments itself; [native previews are on the roadmap](../roadmap#native-preview-environments).
+   person can try the change quickly. Facility can launch a private Docker or
+   AWS review image and expose it through the SSO proxy, or ingest the status
+   and URL from an existing deployment provider.
 7. **Defense in depth.** A contract the agent cannot override, specialist
    reviewers, deterministic guards, and the full build — machines test.
 8. **Human gate 2.** A person validates the preview, reviews the pull request,

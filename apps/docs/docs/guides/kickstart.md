@@ -20,13 +20,14 @@ From zero to a working factory:
 5. **Open the PR.** The platform commits the rendered assets to
    `facility/kickstart` and opens a pull request. Manual steps that only you
    can do are in the PR body: create the agent token secret, protect the
-   default branch, confirm App permissions, and require the deployment
-   provider's per-PR live preview check.
-6. **Configure a live PR preview.** Connect the repo to a deployment provider
-   that creates an isolated environment for each pull request. Make its URL and
-   status visible on the PR so Gate 2 can validate behavior, not only a diff.
-   Facility requires this validation surface now; native orchestration is
-   [planned](../roadmap#native-preview-environments).
+   default branch, confirm App permissions, and complete preview configuration.
+6. **Configure a live PR preview.** Choose a Facility-owned preview or an
+   external deployment adapter. For a native preview, provide an immutable
+   image, optional command, internal port, readiness path, and TTL. Add
+   `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
+   `FACILITY_PREVIEW_KEY` to the repo. In production, WorkOS SSO must be fully
+   configured before Facility accepts preview creation. The private origin is
+   never returned to callers.
 7. **Merge it.** That's Gate 2 muscle memory from day zero. Validate the live
    preview, review the PR, and squash-merge it in GitHub. On merge the
    fingerprint baseline is recorded and the project reports **system ok**.

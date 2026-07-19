@@ -6,10 +6,12 @@ import {
   insertAuditEvent,
   integrations,
   outcomes,
+  previewSandboxes,
   repos,
   runs,
 } from "@facility/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
+import { applyFacilitySignal } from "../integrations/signals.js";
 import type { AppConfig } from "../types.js";
 import {
   createGithubClientFactory,
@@ -42,6 +44,20 @@ type WebhookPayload = TriggerPayload & {
     closed_at?: string;
   };
   workflow_run?: { name?: string; conclusion?: string; html_url?: string };
+  deployment_status?: {
+    id?: number;
+    state?: string;
+    description?: string;
+    environment?: string;
+    target_url?: string;
+  };
+  check_run?: {
+    id?: number;
+    name?: string;
+    status?: string;
+    conclusion?: string | null;
+    html_url?: string;
+  };
 };
 
 export async function processGithubWebhook(
@@ -86,9 +102,12 @@ export async function processGithubWebhook(
         event.orgId,
         payload,
         factory ?? createGithubClientFactory(config),
+        enqueue,
       );
     } else if (event.eventType === "workflow_run") {
       await processWorkflowRun(db, event.orgId, payload);
+    } else if (event.eventType === "deployment_status" || event.eventType === "check_run") {
+      await processOperationalSignal(db, event.orgId, event.eventType, payload);
     }
     await db
       .update(inboundEvents)
@@ -254,10 +273,10 @@ async function processPullRequest(
   orgId: string,
   payload: WebhookPayload,
   factory: GithubClientFactory,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
   if (payload.action !== "closed") return;
   const head = payload.pull_request?.head?.ref ?? "";
-  if (!/^(claude|codex|facility)\//.test(head)) return;
   const owner = payload.repository?.owner?.login;
   const name = payload.repository?.name;
   const number = payload.pull_request?.number;
@@ -270,10 +289,9 @@ async function processPullRequest(
       .limit(1)
   )[0];
   if (!repo) return;
-  const metrics = await pullRequestMetrics(factory, payload, owner, name, number);
   const producingRun = (
     await db
-      .select({ id: runs.id })
+      .select({ id: runs.id, engine: runs.engine })
       .from(runs)
       .where(
         and(
@@ -284,6 +302,27 @@ async function processPullRequest(
       )
       .limit(1)
   )[0];
+  const activePreviews = await db
+    .select({ id: previewSandboxes.id })
+    .from(previewSandboxes)
+    .where(
+      and(
+        eq(previewSandboxes.orgId, orgId),
+        eq(previewSandboxes.repoId, repo.id),
+        eq(previewSandboxes.prNumber, number),
+        inArray(previewSandboxes.status, ["provisioning", "running", "failed"]),
+      ),
+    );
+  for (const preview of activePreviews) {
+    await enqueue?.("previews.destroy", { previewId: preview.id });
+  }
+  // Legacy agent branches carry an explicit lane prefix. Current builders use
+  // ordinary semantic branch names, so a linked platform run or preview is the
+  // authoritative evidence that this PR belongs to Facility.
+  if (!producingRun && activePreviews.length === 0 && !/^(claude|codex|facility)\//.test(head)) {
+    return;
+  }
+  const metrics = await pullRequestMetrics(factory, payload, owner, name, number);
   await db
     .insert(outcomes)
     .values({
@@ -292,7 +331,7 @@ async function processPullRequest(
       projectId: repo.projectId,
       repo: `${owner}/${name}`,
       prNumber: number,
-      agentLane: head.split("/")[0] ?? "facility",
+      agentLane: producingRun?.engine ?? (head.split("/")[0] || "repository"),
       runId: producingRun?.id,
       openedAt: payload.pull_request?.created_at
         ? new Date(payload.pull_request.created_at)
@@ -372,6 +411,78 @@ async function processWorkflowRun(db: FacilityDb, orgId: string, payload: Webhoo
     workflow: payload.workflow_run.name,
     url: payload.workflow_run.html_url,
   });
+}
+
+async function processOperationalSignal(
+  db: FacilityDb,
+  orgId: string,
+  eventType: "deployment_status" | "check_run",
+  payload: WebhookPayload,
+) {
+  const owner = payload.repository?.owner?.login;
+  const name = payload.repository?.name;
+  if (!owner || !name) return;
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
+      .limit(1)
+  )[0];
+  if (!repo) return;
+
+  if (eventType === "deployment_status") {
+    const deployment = payload.deployment_status;
+    const environment = deployment?.environment ?? "default";
+    await applyFacilitySignal(db, {
+      orgId,
+      projectId: repo.projectId,
+      fallbackFingerprint: `${repo.id}:${environment}`,
+      signal: {
+        schema: "facility.signal.v1",
+        type: "deployment",
+        status: githubSignalStatus(deployment?.state),
+        source: "github.deployment_status",
+        fingerprint: `deployment:${repo.id}:${environment}`,
+        title: `Deployment ${environment} ${deployment?.state ?? "unknown"}`,
+        bodyMd: deployment?.description ?? `GitHub deployment status for ${owner}/${name}.`,
+        url: deployment?.target_url,
+      },
+    });
+    return;
+  }
+
+  const check = payload.check_run;
+  const checkName = check?.name ?? "unnamed";
+  await applyFacilitySignal(db, {
+    orgId,
+    projectId: repo.projectId,
+    fallbackFingerprint: `${repo.id}:${checkName}`,
+    signal: {
+      schema: "facility.signal.v1",
+      type: "check",
+      status: githubSignalStatus(check?.conclusion ?? check?.status),
+      source: "github.check_run",
+      fingerprint: `check:${repo.id}:${checkName}`,
+      title: `Check ${checkName} ${check?.conclusion ?? check?.status ?? "unknown"}`,
+      bodyMd: `GitHub check signal for ${owner}/${name}.`,
+      url: check?.html_url,
+    },
+  });
+}
+
+function githubSignalStatus(
+  status: string | null | undefined,
+): "failed" | "recovered" | "pending" | "succeeded" {
+  const normalized = status?.trim().toLowerCase();
+  if (["failure", "failed", "error", "timed_out", "action_required"].includes(normalized ?? "")) {
+    return "failed";
+  }
+  if (["success", "succeeded", "neutral", "skipped"].includes(normalized ?? "")) {
+    return "succeeded";
+  }
+  if (["inactive", "recovered"].includes(normalized ?? "")) return "recovered";
+  return "pending";
 }
 
 export async function enqueueFingerprintVerify(

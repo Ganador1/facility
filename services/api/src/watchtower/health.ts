@@ -31,8 +31,10 @@ export async function projectHealth(db: FacilityDb, orgId: string, projectId: st
       : "ok";
   return {
     status,
+    classification: status === "red" ? "unhealthy" : status === "warn" ? "degraded" : "healthy",
     signals: issues.map((issue) => ({
       kind: issue.kind,
+      failureClass: failureClass(issue.kind),
       severity: issue.severity,
       fingerprint: issue.fingerprint,
       title: issue.title,
@@ -40,4 +42,19 @@ export async function projectHealth(db: FacilityDb, orgId: string, projectId: st
       lastSeen: issue.lastSeen,
     })),
   };
+}
+
+function failureClass(kind: string) {
+  if (kind.includes("budget")) return "budget";
+  if (kind.includes("security")) return "security";
+  if (
+    kind.includes("platform") ||
+    kind.includes("integration") ||
+    kind.includes("preview") ||
+    kind.includes("sandbox")
+  ) {
+    return "infrastructure";
+  }
+  if (kind.includes("agent") || kind.includes("run") || kind.includes("check")) return "agent";
+  return "unknown";
 }

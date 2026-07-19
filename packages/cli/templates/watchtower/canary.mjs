@@ -19,6 +19,10 @@
 // at all (GitHub's recursion guard) — the canary would test nothing.
 // Env: GH_TOKEN, GITHUB_REPOSITORY, CANARY_COMMENT_TOKEN (App/PAT).
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { verifyReceipt } from "../receipts/collect.mjs";
 
 export const CANARY_PROBE_BODY = [
   "/architect",
@@ -131,7 +135,45 @@ async function main() {
   if (run.conclusion !== "success")
     throw new Error(`crew run concluded '${run.conclusion}': ${run.html_url}`);
 
-  // 4. Assert a reply landed on the issue after the probe.
+  // 4. Download and verify the receipt produced by THIS exact crew run. A
+  // green workflow conclusion without its signed evidence is not a green
+  // agent flight.
+  const artifactName = `facility-run-receipt-${run.id}-crew`;
+  const receiptDir = mkdtempSync(join(tmpdir(), "facility-canary-receipt-"));
+  let receipt;
+  let receiptPath;
+  try {
+    gh([
+      "run",
+      "download",
+      String(run.id),
+      "--repo",
+      repo,
+      "--name",
+      artifactName,
+      "--dir",
+      receiptDir,
+    ]);
+    receiptPath = findFile(receiptDir, "facility-run.json");
+    if (!receiptPath) throw new Error(`${artifactName} did not contain facility-run.json`);
+    receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+    if (!verifyReceipt(receipt))
+      throw new Error(`${artifactName} failed its SHA-256 integrity check`);
+    if (
+      receipt.provider !== "claude_code" ||
+      receipt.mode !== "architect" ||
+      receipt.result !== "succeeded" ||
+      receipt.github?.issue !== issueNumber ||
+      !String(receipt.run_id ?? "").startsWith(`${run.id}:`)
+    ) {
+      throw new Error(`${artifactName} does not describe this architect canary run`);
+    }
+    gh(["attestation", "verify", receiptPath, "--repo", repo]);
+  } finally {
+    rmSync(receiptDir, { recursive: true, force: true });
+  }
+
+  // 5. Assert a reply landed on the issue after the probe.
   const comments = JSON.parse(
     gh(["api", `repos/${repo}/issues/${issueNumber}/comments?per_page=100`]),
   );
@@ -141,7 +183,22 @@ async function main() {
       `crew run succeeded but no reply landed on #${issueNumber} — the reply chain is broken`,
     );
 
-  console.log(`canary green: run ${run.html_url} · reply ${reply.html_url}`);
+  console.log(
+    `canary green: run ${run.html_url} · receipt ${receipt.integrity.payload_sha256} (attested) · reply ${reply.html_url}`,
+  );
+}
+
+function findFile(dir, name) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      const nested = findFile(path, name);
+      if (nested) return nested;
+    } else if (entry.name === name) {
+      return path;
+    }
+  }
+  return null;
 }
 
 // Import-safe: the watchtower-locked guard imports CANARY_PROBE_BODY without running the probe.

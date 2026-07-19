@@ -10,6 +10,7 @@ import {
 import { expireIdempotencyRecords } from "./idempotency.js";
 import { deliverPendingWebhooks } from "./integrations/outbound.js";
 import { runLearningNightly } from "./learning.js";
+import { destroyPreviewById, provisionPreview, reconcilePreviews } from "./previews.js";
 import { dispatchRun, reconcileSandboxes } from "./sandbox/orchestrator.js";
 import { runAgentSchedules } from "./schedules.js";
 import { runAnalyticsRollup } from "./watchtower/analytics.js";
@@ -40,6 +41,9 @@ export async function startWorker() {
     "agent.schedules",
     "webhooks.deliver",
     "idempotency.expire",
+    "previews.provision",
+    "previews.destroy",
+    "previews.reconcile",
   ];
   for (const queue of queues) {
     await boss.createQueue(queue);
@@ -63,6 +67,12 @@ export async function startWorker() {
         await deliverPendingWebhooks(config);
       } else if (queue === "idempotency.expire") {
         await expireIdempotencyRecords(db);
+      } else if (queue === "previews.provision") {
+        await provisionPreview(config, String((data as { previewId?: string }).previewId ?? ""));
+      } else if (queue === "previews.destroy") {
+        await destroyPreviewById(config, String((data as { previewId?: string }).previewId ?? ""));
+      } else if (queue === "previews.reconcile") {
+        result = await reconcilePreviews(config);
       } else if (queue === "watchtower.outcomes") {
         await runWatchtowerOutcomes(config);
       } else if (queue === "watchtower.health") {
@@ -97,6 +107,7 @@ export async function startWorker() {
   await boss.schedule("agent.schedules", "* * * * *", {});
   await boss.schedule("webhooks.deliver", "* * * * *", {});
   await boss.schedule("idempotency.expire", "15 2 * * *", {});
+  await boss.schedule("previews.reconcile", "*/2 * * * *", {});
   await boss.schedule("hitl.expire", "0 * * * *", {});
   await boss.schedule("watchtower.outcomes", "0 2 * * *", {});
   await boss.schedule("watchtower.health", "0 3 * * *", {});
