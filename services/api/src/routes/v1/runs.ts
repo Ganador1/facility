@@ -178,6 +178,17 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
           "plan_acceptance runs can only be created by the approved-plan executor",
         );
       }
+      // Preserve issue provenance across generic dispatch (retries pass the
+      // source run's trigger): without this, a retried issue-run loses its
+      // gh linkage and disappears from the issue's history and the pipeline.
+      const triggerRepo = body.trigger?.repo as { owner?: unknown; name?: unknown } | undefined;
+      const triggerIssue = body.trigger?.issue as { number?: unknown } | undefined;
+      const gh =
+        typeof triggerRepo?.owner === "string" &&
+        typeof triggerRepo?.name === "string" &&
+        typeof triggerIssue?.number === "number"
+          ? { owner: triggerRepo.owner, repo: triggerRepo.name, issueNumber: triggerIssue.number }
+          : {};
       const agent = await resolveRunAgentDef(p.orgId, projectId, body);
       const run = (
         await db
@@ -196,6 +207,7 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
             // like Codex runs even though orchestration correctly used the agent.
             engine: agent.engine,
             trigger: body.trigger ?? {},
+            gh,
             createdBy: { type: p.type, id: p.id },
           })
           .returning()
