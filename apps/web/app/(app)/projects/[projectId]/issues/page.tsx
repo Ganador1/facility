@@ -5,19 +5,16 @@ import { IssueRow } from "@/components/issues/issue-row";
 import { SyncIssuesButton } from "@/components/issues/sync-button";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { LiveRefresh } from "@/components/shell/live-refresh";
-import { api, untypedApi } from "@/lib/api";
+import { api } from "@/lib/api";
 import {
   classifyPipeline,
   PIPELINE_STAGES,
   type PipelineStage,
   pipelineCounts,
 } from "@/lib/pipeline";
+import { fetchAllProjectIssues } from "@/lib/project-issues";
 
 export const metadata = { title: "pipeline" };
-
-// TODO(sdk): migrate to the typed client once the issue-mirror routes are in
-// the regenerated SDK route map.
-type IssueListResponse = { items: GhIssue[]; nextCursor?: string | null };
 
 function hasPermission(permissions: string[], permission: string) {
   const [resource] = permission.split(":");
@@ -37,7 +34,7 @@ export default async function ProjectPipelinePage({
   const activeStage =
     stage && STAGE_KEYS.has(stage as PipelineStage) ? (stage as PipelineStage) : null;
   const [issues, me, inbox] = await Promise.all([
-    untypedApi<IssueListResponse>("GET", `/v1/projects/${projectId}/issues?state=all`),
+    fetchAllProjectIssues<GhIssue>(projectId),
     api.me(),
     api.inboxFull(),
   ]);
@@ -47,7 +44,7 @@ export default async function ProjectPipelinePage({
   const permissions = me.ok ? me.data.permissions : [];
   const canTrigger = hasPermission(permissions, "runs:trigger");
   const canSync = hasPermission(permissions, "repos:write");
-  const items = issues.ok ? issues.data.items : [];
+  const items = issues.ok ? issues.items : [];
   const proposals = inbox.ok
     ? inbox.data.proposals.filter((x) => !x.projectId || x.projectId === projectId)
     : [];

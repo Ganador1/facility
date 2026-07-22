@@ -146,13 +146,16 @@ async function main() {
         },
       ]);
     }
-    // Acceptance checks prove a delivery: they run against the agent's changed
-    // workspace. Planning-only modes (architect, review, …) change nothing, so
-    // running the project's checks would measure the repo's baseline — e.g. an
-    // architect failing `npm test` on a repo whose bootstrap PR hasn't merged
-    // yet. Skip them with an explicit informational check instead of failing.
-    const deliveryMode = requiresDelivery(bundle.mode);
-    if (!deliveryMode && bundle.checkCmds.length > 0 && engineCode === 0) {
+    // Acceptance checks prove shipped changes: they run against the agent's
+    // changed workspace. That covers builder deliveries AND repair modes
+    // (address-review, ci-doctor), which push commits too. Read-only modes
+    // (architect, review, security-sweep, …) change nothing, so running the
+    // project's checks would measure the repo's baseline — e.g. an architect
+    // failing `npm test` on a repo whose bootstrap PR hasn't merged yet. Skip
+    // those with an explicit informational check instead of failing.
+    const shipsChanges =
+      requiresDelivery(bundle.mode) || repairRepositoryMode(normalizedMode(bundle.mode));
+    if (!shipsChanges && bundle.checkCmds.length > 0 && engineCode === 0) {
       await emit([
         {
           type: "check",
@@ -160,15 +163,15 @@ async function main() {
             self_reported: false,
             name: "configured acceptance checks",
             status: "passed",
-            reason: "skipped_planning_only_mode",
-            note: "checks gate deliveries; this run changes no code",
+            reason: "skipped_read_only_mode",
+            note: "checks gate shipped changes; this run changes no code",
           },
         },
       ]);
     }
     const checksPassed =
       engineCode === 0 && checksConfigured && progressConfigured
-        ? deliveryMode
+        ? shipsChanges
           ? await runChecks(bundle, cwdFor(bundle))
           : true
         : false;

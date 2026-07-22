@@ -3,8 +3,9 @@ import Link from "next/link";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { PipelineBoard } from "@/components/project/pipeline";
 import { LiveRefresh } from "@/components/shell/live-refresh";
-import { api, summarizeSpend, untypedApi } from "@/lib/api";
-import { classifyPipeline, type PipelineIssue } from "@/lib/pipeline";
+import { api, summarizeSpend } from "@/lib/api";
+import { classifyPipeline } from "@/lib/pipeline";
+import { fetchAllProjectIssues } from "@/lib/project-issues";
 import { fmtAgo, fmtCost, fmtDuration, fmtStatus } from "@/lib/runs";
 
 export const metadata = { title: "overview" };
@@ -60,7 +61,7 @@ export default async function ProjectOverviewPage({
       api.agentsStatus(projectId),
       api.outcomes(`?state=open&projectId=${projectId}&limit=10`),
       api.outcomes(`?state=all&projectId=${projectId}&limit=6`),
-      untypedApi<{ items: PipelineIssue[] }>("GET", `/v1/projects/${projectId}/issues?state=all`),
+      fetchAllProjectIssues(projectId),
     ]);
 
   if (!project.ok) {
@@ -101,9 +102,9 @@ export default async function ProjectOverviewPage({
   const lastOwnerRun = ownerRuns[0];
 
   const recent = items.slice(0, 8);
-  const pipeline = classifyPipeline(ghIssues.ok ? ghIssues.data.items : [], proposals);
+  const pipeline = classifyPipeline(ghIssues.ok ? ghIssues.items : [], proposals);
   const issueTitleByNumber = new Map(
-    (ghIssues.ok ? ghIssues.data.items : []).map((issue) => [issue.number, issue.title]),
+    (ghIssues.ok ? ghIssues.items : []).map((issue) => [issue.number, issue.title]),
   );
   // PR → issue provenance comes from Facility's own runs (a builder run carries
   // both its issue and the PR it shipped) — GitHub only knows via closing

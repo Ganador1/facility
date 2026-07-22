@@ -40,6 +40,7 @@ export type PipelineIssue = {
   state: string;
   htmlUrl?: string;
   ghUpdatedAt?: string | null;
+  closedAt?: string | null;
   linkedRuns?: LinkedRun[];
 };
 
@@ -131,9 +132,13 @@ export function classifyPipeline<T extends PipelineIssue>(
     if (issue.state === "open") {
       const { stage, placed } = placeOpen(issue, proposalIssueNumbers.has(issue.number));
       stages.get(stage)?.push(placed);
-    } else if (issue.ghUpdatedAt && now - Date.parse(issue.ghUpdatedAt) < WEEK_MS) {
-      // Closed recently — the mirror doesn't distinguish merged from closed,
-      // so "shipped" is closed-this-week. Good enough until outcomes land.
+      continue;
+    }
+    // Shipped = closed this week, by close time — ghUpdatedAt would resurrect
+    // an old closed issue whenever it gets a comment or label. (The mirror
+    // doesn't distinguish merged from closed; good enough until outcomes land.)
+    const closedStamp = issue.closedAt ?? issue.ghUpdatedAt;
+    if (closedStamp && now - Date.parse(closedStamp) < WEEK_MS) {
       stages.get("shipped")?.push({
         issue,
         runState: null,
