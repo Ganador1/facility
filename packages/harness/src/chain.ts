@@ -79,6 +79,18 @@ export const productChain: ArtifactChainConfig = {
         refs: z.array(z.string()).default([]),
       }).passthrough(),
     },
+    R: {
+      // Stable documentation — architecture, conventions, runbooks. Free
+      // (no parent required): reference material is curated, not derived, and
+      // unlike Signals it is expected to stay current rather than accumulate.
+      prefix: "R",
+      name: "Reference",
+      parentTypes: [],
+      schema: SharedFrontmatter.extend({
+        type: z.literal("R"),
+        area: z.string().optional(),
+      }).passthrough(),
+    },
   },
 };
 

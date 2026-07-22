@@ -480,6 +480,24 @@ export const KbEntryDraftSchema = z.object({
   supersedes: z.null(),
 });
 
+export const KbDecisionSchema = KbEntrySchema.extend({
+  artifactId: z.string(),
+  /** Artifact id of the decision that superseded this one, when retired. */
+  supersededBy: z.string().nullable(),
+  /** Still governing: not superseded and not marked superseded itself. */
+  active: z.boolean(),
+});
+
+export const KbNeighborSchema = z.object({
+  id: z.string(),
+  artifactId: z.string(),
+  type: z.string(),
+  number: z.number().int(),
+  slug: z.string(),
+  status: z.string().nullable(),
+  relation: z.enum(["supersedes", "superseded-by", "linked"]),
+});
+
 export const TaskSchema = z.object({
   id: z.string(),
   orgId: z.string(),

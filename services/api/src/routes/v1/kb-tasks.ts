@@ -1,6 +1,7 @@
 import { newId, verifyKey } from "@facility/core";
 import {
   actionTypes,
+  agentDefs,
   kbEntries,
   kbLinks,
   kbSpaces,
@@ -9,10 +10,11 @@ import {
   proposalEvents,
   proposals,
   repos,
+  runEvents,
   runs,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
@@ -34,8 +36,10 @@ import {
   bearer,
   definedFields,
   IdParams,
+  KbDecisionSchema,
   KbEntryDraftSchema,
   KbEntrySchema,
+  KbNeighborSchema,
   KbSpaceSchema,
   Ok,
   objectOrEmpty,
@@ -174,6 +178,291 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         (request.params as { entryId: string }).entryId,
       );
       return entry;
+    },
+  );
+
+  // The Product Owner's decision record: every decision with its supersedence
+  // resolved. `active=1` narrows to decisions that still govern — not
+  // superseded by a newer one and not marked superseded themselves.
+  app.get(
+    "/v1/projects/:projectId/kb/decisions",
+    {
+      config: { permission: "kb:read" },
+      schema: {
+        params: IdParams,
+        querystring: z.object({ active: z.coerce.number().optional() }),
+        response: { 200: z.array(KbDecisionSchema) },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
+      const space = await spaceFor(p.orgId, projectId);
+      if (!space) return [];
+      const decisions = await db
+        .select()
+        .from(kbEntries)
+        .where(
+          and(
+            eq(kbEntries.orgId, p.orgId),
+            eq(kbEntries.spaceId, space.id),
+            eq(kbEntries.type, "D"),
+          ),
+        )
+        .orderBy(desc(kbEntries.number));
+      const supersededBy = new Map<string, string>();
+      for (const entry of decisions) {
+        const target = entry.supersedes;
+        if (target) supersededBy.set(target, artifactIdFor(toHarnessEntry(entry)));
+      }
+      const rows = decisions.map((entry) => {
+        const artifactId = artifactIdFor(toHarnessEntry(entry));
+        const successor = supersededBy.get(artifactId) ?? null;
+        return {
+          ...entry,
+          artifactId,
+          supersededBy: successor,
+          active: successor === null && entry.status !== "superseded",
+        };
+      });
+      const activeOnly = (request.query as { active?: number }).active === 1;
+      return activeOnly ? rows.filter((row) => row.active) : rows;
+    },
+  );
+
+  // Plain-text KB search for the PO's tools: substring over slug and body,
+  // optionally narrowed by type. Recall over precision; no embeddings.
+  app.get(
+    "/v1/projects/:projectId/kb/search",
+    {
+      config: { permission: "kb:read" },
+      schema: {
+        params: IdParams,
+        querystring: z.object({
+          q: z.string().min(1),
+          type: z.string().optional(),
+          limit: z.coerce.number().int().min(1).max(50).default(20),
+        }),
+        response: { 200: z.array(KbEntrySchema) },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
+      const space = await spaceFor(p.orgId, projectId);
+      if (!space) return [];
+      const query = request.query as { q: string; type?: string; limit: number };
+      const needle = `%${query.q.replaceAll("%", "\\%").replaceAll("_", "\\_")}%`;
+      const match = or(ilike(kbEntries.slug, needle), ilike(kbEntries.bodyMd, needle));
+      return db
+        .select()
+        .from(kbEntries)
+        .where(
+          query.type
+            ? and(
+                eq(kbEntries.orgId, p.orgId),
+                eq(kbEntries.spaceId, space.id),
+                eq(kbEntries.type, query.type),
+                match,
+              )
+            : and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.spaceId, space.id), match),
+        )
+        .orderBy(desc(kbEntries.updatedAt))
+        .limit(query.limit);
+    },
+  );
+
+  // An entry plus its link neighborhood — what it derives from, what derives
+  // from it, and what supersedes what. The PO reads little but connected.
+  app.get(
+    "/v1/kb/entries/:entryId/neighborhood",
+    {
+      config: { permission: "kb:read" },
+      schema: {
+        params: IdParams,
+        response: {
+          200: z.object({
+            entry: KbEntrySchema,
+            artifactId: z.string(),
+            linked: z.array(KbNeighborSchema),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const entry = await loadKbEntryForPrincipal(
+        p,
+        (request.params as { entryId: string }).entryId,
+      );
+      const links = await db
+        .select()
+        .from(kbLinks)
+        .where(and(eq(kbLinks.orgId, p.orgId), eq(kbLinks.spaceId, entry.spaceId)));
+      const neighborIds = new Set<string>();
+      for (const link of links) {
+        if (link.fromEntry === entry.id) neighborIds.add(link.toEntry);
+        if (link.toEntry === entry.id) neighborIds.add(link.fromEntry);
+      }
+      const neighbors = neighborIds.size
+        ? await db
+            .select()
+            .from(kbEntries)
+            .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.spaceId, entry.spaceId)))
+        : [];
+      const entryArtifactId = artifactIdFor(toHarnessEntry(entry));
+      const linked = neighbors
+        .filter((neighbor) => neighborIds.has(neighbor.id))
+        .map((neighbor) => {
+          const neighborArtifactId = artifactIdFor(toHarnessEntry(neighbor));
+          return {
+            id: neighbor.id,
+            artifactId: neighborArtifactId,
+            type: neighbor.type,
+            number: neighbor.number,
+            slug: neighbor.slug,
+            status: neighbor.status,
+            relation:
+              entry.supersedes === neighborArtifactId
+                ? ("supersedes" as const)
+                : neighbor.supersedes === entryArtifactId
+                  ? ("superseded-by" as const)
+                  : ("linked" as const),
+          };
+        });
+      return { entry, artifactId: entryArtifactId, linked };
+    },
+  );
+
+  // Decisions are immutable once made: the only way to change one is to make a
+  // new one that supersedes it. This creates the successor and retires the
+  // predecessor in one transaction, keeping the chain navigable.
+  app.post(
+    "/v1/kb/entries/:entryId/supersede",
+    {
+      config: { permission: "kb:write", auditAction: "kb.updated" },
+      schema: {
+        params: IdParams,
+        body: z.object({
+          slug: z.string().optional(),
+          frontmatter: AnyObject.default({}),
+          bodyMd: z.string(),
+          status: z.string().optional(),
+        }),
+        response: { 200: KbEntrySchema },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { entryId } = request.params as { entryId: string };
+      const body = request.body as {
+        slug?: string;
+        frontmatter: Record<string, unknown>;
+        bodyMd: string;
+        status?: string;
+      };
+      const predecessor = await loadKbEntryForPrincipal(p, entryId);
+      if (predecessor.status === "superseded") {
+        throw new ApiError(
+          409,
+          "kb_entry_already_superseded",
+          "This entry was already superseded — supersede its successor instead",
+        );
+      }
+      const space = (
+        await db
+          .select()
+          .from(kbSpaces)
+          .where(and(eq(kbSpaces.orgId, p.orgId), eq(kbSpaces.id, predecessor.spaceId)))
+          .limit(1)
+      )[0];
+      if (!space) throw notFound("KB space not found");
+      const graph = await loadKbGraph(db, p.orgId, space.projectId);
+      if (!graph) throw notFound("KB space not found");
+      const predecessorArtifactId = artifactIdFor(toHarnessEntry(predecessor));
+      const max =
+        (
+          await db
+            .select()
+            .from(kbEntries)
+            .where(
+              and(
+                eq(kbEntries.orgId, p.orgId),
+                eq(kbEntries.spaceId, space.id),
+                eq(kbEntries.type, predecessor.type),
+              ),
+            )
+            .orderBy(desc(kbEntries.number))
+            .limit(1)
+        )[0]?.number ?? 0;
+      const parentEntries = graph.entries.filter((candidate) => candidate.id === predecessor.id);
+      const normalized = normalizeKbDraft({
+        type: predecessor.type,
+        number: max + 1,
+        slug: body.slug ?? predecessor.slug,
+        frontmatter: { ...body.frontmatter, supersedes: predecessorArtifactId },
+        bodyMd: body.bodyMd,
+        parentEntries,
+      });
+      const status = body.status ?? (predecessor.type === "D" ? "decided" : predecessor.status);
+      const draft = {
+        id: "__draft__",
+        type: predecessor.type,
+        number: max + 1,
+        slug: body.slug ?? predecessor.slug,
+        frontmatter: normalized.frontmatter,
+        bodyMd: normalized.bodyMd,
+        status,
+        supersedes: predecessorArtifactId,
+      };
+      const report = validate({
+        space: toHarnessSpace(space),
+        entries: [...graph.entries, draft],
+        links: [
+          ...graph.links,
+          { fromEntry: "__draft__", toEntry: predecessor.id },
+          { fromEntry: predecessor.id, toEntry: "__draft__" },
+        ],
+        entryId: "__draft__",
+        validateSpecials: false,
+      });
+      if (!report.ok) {
+        throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
+      }
+      return db.transaction(async (tx) => {
+        const inserted = (
+          await tx
+            .insert(kbEntries)
+            .values({
+              id: newId("kb"),
+              orgId: p.orgId,
+              spaceId: space.id,
+              type: predecessor.type,
+              number: max + 1,
+              slug: body.slug ?? predecessor.slug,
+              frontmatter: normalized.frontmatter,
+              bodyMd: normalized.bodyMd,
+              status,
+              supersedes: predecessorArtifactId,
+            })
+            .returning()
+        )[0];
+        if (!inserted) throw new ApiError(500, "insert_failed", "Could not supersede KB entry");
+        await tx
+          .insert(kbLinks)
+          .values([
+            { orgId: p.orgId, spaceId: space.id, fromEntry: inserted.id, toEntry: predecessor.id },
+            { orgId: p.orgId, spaceId: space.id, fromEntry: predecessor.id, toEntry: inserted.id },
+          ])
+          .onConflictDoNothing();
+        await tx
+          .update(kbEntries)
+          .set({ status: "superseded", updatedAt: new Date() })
+          .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, predecessor.id)));
+        return inserted;
+      });
     },
   );
 
@@ -356,6 +645,29 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         supersedes?: string | null;
       };
       const current = await loadKbEntryForPrincipal(p, entryId);
+      // Decisions are immutable once made: their content never changes in
+      // place. The only allowed patch is the supersedence transition itself
+      // (status → superseded); anything else must go through /supersede.
+      if (
+        current.type === "D" &&
+        (current.status === "decided" || current.status === "superseded")
+      ) {
+        const changesContent =
+          body.bodyMd !== undefined ||
+          body.slug !== undefined ||
+          body.type !== undefined ||
+          body.number !== undefined ||
+          body.frontmatter !== undefined ||
+          body.supersedes !== undefined;
+        const illegalStatus = body.status !== undefined && body.status !== "superseded";
+        if (changesContent || illegalStatus) {
+          throw new ApiError(
+            409,
+            "kb_decision_immutable",
+            "Decided decisions are immutable — create a superseding decision via POST /v1/kb/entries/:entryId/supersede",
+          );
+        }
+      }
       const space = (
         await db
           .select()
@@ -464,6 +776,177 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
     assertBareRowProjectScope(p, row.space.projectId, "KB entry not found");
     return row.entry;
   }
+
+  // Transcript / note intake: store the raw capture as a Signal (the log type
+  // with provenance) and hand it to the Product Owner for a backlog review.
+  // The review run compares the capture against the pipeline and active
+  // decisions and emits its proposed changes as individual HITL proposals.
+  app.post(
+    "/v1/projects/:projectId/kb/intake",
+    {
+      config: { permission: "kb:write", auditAction: "kb.updated" },
+      schema: {
+        params: IdParams,
+        body: z.object({
+          title: z.string().min(3),
+          source: z.string().min(2),
+          bodyMd: z.string().min(10),
+          dispatch: z.boolean().default(true),
+        }),
+        response: {
+          200: z.object({
+            entry: KbEntrySchema,
+            artifactId: z.string(),
+            runId: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
+      const body = request.body as {
+        title: string;
+        source: string;
+        bodyMd: string;
+        dispatch: boolean;
+      };
+      const space = await spaceFor(p.orgId, projectId);
+      if (!space) throw notFound("KB space not found");
+      const graph = await loadKbGraph(db, p.orgId, projectId);
+      if (!graph) throw notFound("KB space not found");
+      const slug = body.title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 64);
+      if (!slug) throw new ApiError(400, "intake_title_invalid", "Title yields an empty slug");
+      const max =
+        (
+          await db
+            .select()
+            .from(kbEntries)
+            .where(
+              and(
+                eq(kbEntries.orgId, p.orgId),
+                eq(kbEntries.spaceId, space.id),
+                eq(kbEntries.type, "S"),
+              ),
+            )
+            .orderBy(desc(kbEntries.number))
+            .limit(1)
+        )[0]?.number ?? 0;
+      const normalized = normalizeKbDraft({
+        type: "S",
+        number: max + 1,
+        slug,
+        frontmatter: {
+          source: body.source,
+          provenance: {
+            receivedAt: new Date().toISOString(),
+            by: { type: p.type, id: p.id },
+          },
+        },
+        bodyMd: body.bodyMd,
+        parentEntries: [],
+      });
+      const draft = {
+        id: "__draft__",
+        type: "S",
+        number: max + 1,
+        slug,
+        frontmatter: normalized.frontmatter,
+        bodyMd: normalized.bodyMd,
+        status: null,
+        supersedes: null,
+      };
+      const report = validate({
+        space: toHarnessSpace(space),
+        entries: [...graph.entries, draft],
+        links: graph.links,
+        entryId: "__draft__",
+        validateSpecials: false,
+      });
+      if (!report.ok) {
+        throw new ApiError(400, "kb_validation_failed", "Intake entry failed validation", report);
+      }
+      const entry = (
+        await db
+          .insert(kbEntries)
+          .values({
+            id: newId("kb"),
+            orgId: p.orgId,
+            spaceId: space.id,
+            type: "S",
+            number: max + 1,
+            slug,
+            frontmatter: normalized.frontmatter,
+            bodyMd: normalized.bodyMd,
+          })
+          .returning()
+      )[0];
+      if (!entry) throw new ApiError(500, "insert_failed", "Could not store intake entry");
+      const artifactId = artifactIdFor(toHarnessEntry(entry));
+      let runId: string | null = null;
+      if (body.dispatch) {
+        const owner = (
+          await db
+            .select()
+            .from(agentDefs)
+            .where(
+              and(
+                eq(agentDefs.orgId, p.orgId),
+                eq(agentDefs.projectId, projectId),
+                eq(agentDefs.name, "project-owner"),
+                eq(agentDefs.enabled, true),
+              ),
+            )
+            .limit(1)
+        )[0];
+        if (!owner) {
+          throw new ApiError(400, "no_owner_agent", "Project has no enabled project-owner agent");
+        }
+        const run = (
+          await db
+            .insert(runs)
+            .values({
+              id: newId("run"),
+              orgId: p.orgId,
+              projectId,
+              agentDefId: owner.id,
+              mode: owner.name,
+              engine: owner.engine,
+              trigger: {
+                type: "kb_intake",
+                entryId: entry.id,
+                artifactId,
+                source: body.source,
+                title: body.title,
+                instruction:
+                  "A new capture landed in the KB. Read it, read the pipeline and the active decisions, then propose the backlog and decision changes it implies — one proposal per change, citing " +
+                  artifactId +
+                  " as evidence.",
+              },
+              gh: {},
+              createdBy: { type: p.type, id: p.id },
+            })
+            .returning()
+        )[0];
+        if (!run) throw new ApiError(500, "insert_failed", "Could not dispatch the review run");
+        await db.insert(runEvents).values({
+          orgId: p.orgId,
+          runId: run.id,
+          seq: 1,
+          type: "queued",
+          data: { queue: "runs.dispatch" },
+        });
+        await app.enqueue("runs.dispatch", { runId: run.id, orgId: p.orgId });
+        runId = run.id;
+      }
+      return { entry, artifactId, runId };
+    },
+  );
 
   app.get(
     "/v1/projects/:projectId/tasks",
