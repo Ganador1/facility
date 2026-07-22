@@ -196,6 +196,7 @@ export function harnessFragmentForBundle(input: {
   space: typeof kbSpaces.$inferSelect | undefined;
   config: AppConfig;
   runId: string;
+  mode?: string;
 }) {
   if (!input.space) return undefined;
   return buildHarnessBundle({
@@ -204,6 +205,7 @@ export function harnessFragmentForBundle(input: {
     activeMd: input.space.activeMd,
     apiBaseUrl: input.config.publicUrl,
     runId: input.runId,
+    mode: input.mode,
   });
 }
 

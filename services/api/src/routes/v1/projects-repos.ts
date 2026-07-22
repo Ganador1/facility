@@ -512,7 +512,18 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
             { type: "manual", config: {} },
           ],
           sandboxProfileId: sandbox?.id,
-          permissions: ["kb:write", "tasks:write", "hitl:write"],
+          // Read grants are explicit (write does not imply read in can()): the
+          // PO reads its KB, the pipeline, and delegated runs, and may
+          // dispatch a read-only architect consult.
+          permissions: [
+            "kb:read",
+            "kb:write",
+            "tasks:read",
+            "tasks:write",
+            "hitl:write",
+            "runs:read",
+            "runs:trigger",
+          ],
           enabled: true,
         })
         .onConflictDoNothing();

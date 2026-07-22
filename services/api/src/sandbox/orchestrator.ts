@@ -1319,7 +1319,7 @@ async function buildRunBundle(
     },
     scope: objectOrEmpty(run.trigger),
     timeoutMin,
-    harness: harnessFragmentForBundle({ space, config, runId: run.id }),
+    harness: harnessFragmentForBundle({ space, config, runId: run.id, mode: run.mode }),
   };
   const resume = await resumeForRun(db, run);
   if (resume) bundle.resume = resume;
