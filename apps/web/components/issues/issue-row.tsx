@@ -4,6 +4,7 @@ import { Button, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { currentRunOf, prsOf } from "@/lib/pipeline";
 
 export type GhIssue = {
   id: string;
@@ -118,31 +119,45 @@ export function IssueRow({
           </div>
         ) : null}
       </div>
-      {issue.linkedRuns.length > 0 ? (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-0 sm:pl-10">
-          {issue.linkedRuns.map((run) => (
-            <span key={run.id} className="flex items-center gap-2">
-              <StatusDot tone={toneFor(run.status)} pulse={run.status === "running"} />
-              <Link
-                href={`/projects/${projectId}/sessions/${run.id}`}
-                className="font-mono text-[11px] text-(--mut) hover:text-(--ink)"
-              >
-                {run.mode} · {run.status}
-              </Link>
-              {run.pr?.url ? (
-                <a
-                  href={run.pr.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
+      {(() => {
+        // One run explains the issue's position — history lives in the session
+        // pages, not here. Show the current run + every PR the issue produced.
+        const current = currentRunOf(issue);
+        const prs = prsOf(issue);
+        if (!current && prs.length === 0) return null;
+        const attempts = issue.linkedRuns.length;
+        return (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-0 sm:pl-10">
+            {current ? (
+              <span className="flex items-center gap-2">
+                <StatusDot tone={toneFor(current.status)} pulse={current.status === "running"} />
+                <Link
+                  href={`/projects/${projectId}/sessions/${current.id}`}
+                  className="font-mono text-[11px] text-(--mut) hover:text-(--ink)"
                 >
-                  PR #{run.pr.number ?? ""} ↗
-                </a>
-              ) : null}
-            </span>
-          ))}
-        </div>
-      ) : null}
+                  {current.mode} · {current.status}
+                </Link>
+                {attempts > 1 ? (
+                  <span className="font-mono text-[10px] text-(--dim)" title="previous attempts">
+                    ({attempts - 1} earlier)
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+            {prs.map((pr) => (
+              <a
+                key={pr.number}
+                href={pr.url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
+              >
+                PR #{pr.number} ↗
+              </a>
+            ))}
+          </div>
+        );
+      })()}
       {error ? <p className="font-mono text-[11px] text-(--bad)">{error}</p> : null}
     </div>
   );
