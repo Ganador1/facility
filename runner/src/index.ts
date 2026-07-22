@@ -146,16 +146,15 @@ async function main() {
         },
       ]);
     }
-    // Acceptance checks prove shipped changes: they run against the agent's
-    // changed workspace. That covers builder deliveries AND repair modes
-    // (address-review, ci-doctor), which push commits too. Read-only modes
-    // (architect, review, security-sweep, …) change nothing, so running the
-    // project's checks would measure the repo's baseline — e.g. an architect
-    // failing `npm test` on a repo whose bootstrap PR hasn't merged yet. Skip
-    // those with an explicit informational check instead of failing.
-    const shipsChanges =
-      requiresDelivery(bundle.mode) || repairRepositoryMode(normalizedMode(bundle.mode));
-    if (!shipsChanges && bundle.checkCmds.length > 0 && engineCode === 0) {
+    // Acceptance checks prove changed work, so read-only modes (architect,
+    // review, security-sweep) skip them: those runs change nothing, and running
+    // the project's checks would measure the repo's baseline — e.g. an
+    // architect failing `npm test` on a repo whose bootstrap PR hasn't merged
+    // yet. Every other mode keeps the gate: builder deliveries, repair modes
+    // (address-review, ci-doctor — they push commits too), and custom/BYO
+    // modes that use checks as generic acceptance.
+    const readOnlyMode = readOnlyRepositoryMode(normalizedMode(bundle.mode));
+    if (readOnlyMode && bundle.checkCmds.length > 0 && engineCode === 0) {
       await emit([
         {
           type: "check",
@@ -171,9 +170,9 @@ async function main() {
     }
     const checksPassed =
       engineCode === 0 && checksConfigured && progressConfigured
-        ? shipsChanges
-          ? await runChecks(bundle, cwdFor(bundle))
-          : true
+        ? readOnlyMode
+          ? true
+          : await runChecks(bundle, cwdFor(bundle))
         : false;
     const engineAndChecksSucceeded = engineCode === 0 && checksPassed && securityReportConfigured;
     const git = engineAndChecksSucceeded ? await shipGitChanges(bundle) : undefined;
