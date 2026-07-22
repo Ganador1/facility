@@ -4,6 +4,7 @@ import type { GhIssue } from "@/components/issues/issue-row";
 import { IssueRow } from "@/components/issues/issue-row";
 import { SyncIssuesButton } from "@/components/issues/sync-button";
 import { ErrorNotice, Offline } from "@/components/offline";
+import { StageSection } from "@/components/project/stage-section";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api } from "@/lib/api";
 import {
@@ -15,6 +16,9 @@ import {
 import { fetchAllProjectIssues } from "@/lib/project-issues";
 
 export const metadata = { title: "pipeline" };
+
+/** The list reads delivery-first: what's closest to shipping sits on top. */
+const DELIVERY_FIRST = [...PIPELINE_STAGES].reverse();
 
 function hasPermission(permissions: string[], permission: string) {
   const [resource] = permission.split(":");
@@ -49,12 +53,12 @@ export default async function ProjectPipelinePage({
     ? inbox.data.proposals.filter((x) => !x.projectId || x.projectId === projectId)
     : [];
   const stages = classifyPipeline(items, proposals);
-  const counts = pipelineCounts(stages);
+  const counts = [...pipelineCounts(stages)].reverse();
   const openCount = items.filter((i) => i.state === "open").length;
 
   const visibleStages = activeStage
-    ? PIPELINE_STAGES.filter((s) => s.key === activeStage)
-    : PIPELINE_STAGES;
+    ? DELIVERY_FIRST.filter((s) => s.key === activeStage)
+    : DELIVERY_FIRST;
 
   return (
     <div className="flex flex-col gap-8">
@@ -64,7 +68,7 @@ export default async function ProjectPipelinePage({
           <Eyebrow>pipeline</Eyebrow>
           <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Pipeline</h1>
           <p className="text-[12.5px] text-(--dim)">
-            {issues.ok ? `${openCount} open issues flowing left to right` : "mirror unavailable"} ·
+            {issues.ok ? `${openCount} open issues · closest to shipping on top` : "mirror unavailable"} ·
             issues live on GitHub — agents are dispatched here
           </p>
         </div>
@@ -126,28 +130,20 @@ export default async function ProjectPipelinePage({
           backfill.
         </p>
       ) : (
-        <div className="flex flex-col gap-8">
+        <div className="flex flex-col gap-6">
           {visibleStages.map((s) => {
             const stageItems = stages.get(s.key) ?? [];
             return (
-              <section key={s.key} className="flex flex-col gap-3">
-                <div className="flex items-baseline gap-3">
-                  {stageItems.some((p) => p.runState === "failed") ? (
-                    <StatusDot tone="bad" />
-                  ) : s.kind === "human" ? (
-                    <StatusDot tone="human" />
-                  ) : s.kind === "agent" ? (
-                    <StatusDot
-                      tone={stageItems.length > 0 ? "agent" : "machine"}
-                      pulse={stageItems.some((p) => p.runState === "live")}
-                    />
-                  ) : (
-                    <StatusDot tone="ok" />
-                  )}
-                  <h2 className="text-[14px] font-semibold tracking-tight">{s.label}</h2>
-                  <span className="font-mono text-[12px] text-(--dim)">{stageItems.length}</span>
-                  <span className="text-[11.5px] text-(--dim)">{s.sub}</span>
-                </div>
+              <StageSection
+                key={s.key}
+                label={s.label}
+                sub={s.sub}
+                kind={s.kind}
+                total={stageItems.length}
+                liveCount={stageItems.filter((p) => p.runState === "live").length}
+                failedCount={stageItems.filter((p) => p.runState === "failed").length}
+                defaultOpen={activeStage !== null || s.key !== "shipped"}
+              >
                 {stageItems.length === 0 ? (
                   <p className="border border-(--line) px-5 py-3.5 text-[12.5px] text-(--dim)">
                     Nothing here right now.
@@ -164,7 +160,7 @@ export default async function ProjectPipelinePage({
                     ))}
                   </div>
                 )}
-              </section>
+              </StageSection>
             );
           })}
         </div>
