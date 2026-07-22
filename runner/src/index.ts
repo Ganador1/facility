@@ -146,9 +146,31 @@ async function main() {
         },
       ]);
     }
+    // Acceptance checks prove a delivery: they run against the agent's changed
+    // workspace. Planning-only modes (architect, review, …) change nothing, so
+    // running the project's checks would measure the repo's baseline — e.g. an
+    // architect failing `npm test` on a repo whose bootstrap PR hasn't merged
+    // yet. Skip them with an explicit informational check instead of failing.
+    const deliveryMode = requiresDelivery(bundle.mode);
+    if (!deliveryMode && bundle.checkCmds.length > 0 && engineCode === 0) {
+      await emit([
+        {
+          type: "check",
+          data: {
+            self_reported: false,
+            name: "configured acceptance checks",
+            status: "passed",
+            reason: "skipped_planning_only_mode",
+            note: "checks gate deliveries; this run changes no code",
+          },
+        },
+      ]);
+    }
     const checksPassed =
       engineCode === 0 && checksConfigured && progressConfigured
-        ? await runChecks(bundle, cwdFor(bundle))
+        ? deliveryMode
+          ? await runChecks(bundle, cwdFor(bundle))
+          : true
         : false;
     const engineAndChecksSucceeded = engineCode === 0 && checksPassed && securityReportConfigured;
     const git = engineAndChecksSucceeded ? await shipGitChanges(bundle) : undefined;
