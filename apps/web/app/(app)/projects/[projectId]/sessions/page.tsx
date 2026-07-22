@@ -6,7 +6,7 @@ import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api } from "@/lib/api";
 import { toSessionRows } from "@/lib/session-rows";
 
-export const metadata = { title: "sessions" };
+export const metadata = { title: "runs" };
 
 const LIVE = new Set(["queued", "provisioning", "running", "awaiting_human"]);
 
@@ -32,8 +32,8 @@ export default async function ProjectSessionsPage({
     <div className="flex flex-col gap-8">
       <LiveRefresh seconds={20} />
       <div className="flex flex-col gap-2">
-        <Eyebrow>sessions</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Sessions</h1>
+        <Eyebrow>runs</Eyebrow>
+        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Runs</h1>
         <p className="text-[12.5px] text-(--dim)">
           {rows.length} recorded · {liveCount} live
         </p>

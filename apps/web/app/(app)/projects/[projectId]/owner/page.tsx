@@ -8,7 +8,7 @@ import { api } from "@/lib/api";
 import { fmtAgo, fmtStatus } from "@/lib/runs";
 import { cronToWords } from "@/lib/schedule";
 
-export const metadata = { title: "owner" };
+export const metadata = { title: "project manager" };
 
 const OWNER_NAMES = new Set(["project-owner", "learning"]);
 
@@ -46,8 +46,10 @@ export default async function OwnerPage({ params }: { params: Promise<{ projectI
     <div className="flex flex-col gap-8">
       <LiveRefresh seconds={30} />
       <div className="flex flex-col gap-2">
-        <Eyebrow>owner</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Project Owner</h1>
+        <Eyebrow>project manager</Eyebrow>
+        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">
+          Project Manager
+        </h1>
         <p className="text-[12.5px] text-(--dim)">
           {ownerAgent
             ? `${ownerAgent.engine}${cron ? ` · ${cronToWords(cron)}` : " · on demand"} · ${
