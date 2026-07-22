@@ -60,6 +60,7 @@ const GhIssueItemSchema = z.object({
   htmlUrl: z.string(),
   commentsCount: z.number(),
   ghUpdatedAt: DateValue.nullable(),
+  closedAt: DateValue.nullable(),
   linkedRuns: z.array(LinkedRunSchema),
 });
 
@@ -492,6 +493,7 @@ function issueItem(
     htmlUrl: issue.htmlUrl,
     commentsCount: issue.commentsCount,
     ghUpdatedAt: issue.ghUpdatedAt,
+    closedAt: issue.closedAt,
     linkedRuns,
   };
 }

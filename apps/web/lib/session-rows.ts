@@ -18,6 +18,11 @@ function prOf(gh: unknown): string | null {
   return null;
 }
 
+function issueOf(gh: unknown): number | null {
+  const n = gh && typeof gh === "object" ? (gh as { issueNumber?: unknown }).issueNumber : null;
+  return typeof n === "number" ? n : null;
+}
+
 /** Flatten runs into the session-table view model (server-side). */
 export function toSessionRows(
   runs: Array<Run & { project?: { id: string; slug: string } }>,
@@ -36,5 +41,6 @@ export function toSessionRows(
     endedAt: run.endedAt,
     costCents: costOf(run.receipt),
     prUrl: prOf(run.gh),
+    issueNumber: issueOf(run.gh),
   }));
 }

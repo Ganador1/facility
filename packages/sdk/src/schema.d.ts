@@ -7897,6 +7897,8 @@ export interface operations {
                             commentsCount: number;
                             /** Format: date-time */
                             ghUpdatedAt: string | null;
+                            /** Format: date-time */
+                            closedAt: string | null;
                             linkedRuns: {
                                 id: string;
                                 mode: string;
@@ -8013,6 +8015,8 @@ export interface operations {
                         commentsCount: number;
                         /** Format: date-time */
                         ghUpdatedAt: string | null;
+                        /** Format: date-time */
+                        closedAt: string | null;
                         linkedRuns: {
                             id: string;
                             mode: string;

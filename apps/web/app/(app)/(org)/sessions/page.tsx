@@ -5,7 +5,7 @@ import { LiveRefresh } from "@/components/shell/live-refresh";
 import { fetchAllRuns } from "@/lib/runs";
 import { toSessionRows } from "@/lib/session-rows";
 
-export const metadata = { title: "fleet" };
+export const metadata = { title: "activity" };
 
 const LIVE = new Set(["queued", "provisioning", "running", "awaiting_human"]);
 
@@ -21,8 +21,8 @@ export default async function FleetPage() {
     <div className="flex flex-col gap-8">
       <LiveRefresh seconds={20} />
       <div className="flex flex-col gap-2">
-        <Eyebrow>fleet</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Sessions</h1>
+        <Eyebrow>activity</Eyebrow>
+        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Activity</h1>
         <p className="text-[12.5px] text-(--dim)">
           {live} live across the org · {rows.length} recorded
         </p>

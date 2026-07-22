@@ -3,7 +3,7 @@ import { HarnessList } from "@/components/harness/harness-list";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { api } from "@/lib/api";
 
-export const metadata = { title: "harness" };
+export const metadata = { title: "skills & rules" };
 
 const KINDS = [
   "skill",
@@ -39,8 +39,10 @@ export default async function HarnessPage({
   return (
     <div className="flex flex-col gap-8">
       <div className="flex flex-col gap-2">
-        <Eyebrow>harness</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Harness</h1>
+        <Eyebrow>skills &amp; rules</Eyebrow>
+        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">
+          Skills &amp; Rules
+        </h1>
         <p className="text-[12.5px] text-(--dim)">
           {items.length} published item{items.length === 1 ? "" : "s"}
           {kind ? ` · ${kind.replace("_", " ")}` : ""} · immutable once published

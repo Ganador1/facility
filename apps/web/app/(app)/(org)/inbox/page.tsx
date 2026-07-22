@@ -6,7 +6,7 @@ import { ErrorNotice, Offline } from "@/components/offline";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api, type Outcome } from "@/lib/api";
 
-export const metadata = { title: "inbox" };
+export const metadata = { title: "approvals" };
 
 function fmtAgo(iso: string | null) {
   if (!iso) return "—";
@@ -46,8 +46,8 @@ export default async function InboxPage({
     <div className="flex flex-col gap-8">
       <LiveRefresh seconds={30} />
       <div className="flex flex-col gap-2">
-        <Eyebrow>inbox</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Inbox</h1>
+        <Eyebrow>approvals</Eyebrow>
+        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Approvals</h1>
         <p className="text-[12.5px] text-(--dim)">
           {proposals.length} gate{proposals.length === 1 ? "" : "s"} · {openPrs.length} PR
           {openPrs.length === 1 ? "" : "s"} to review · {issues.length} issue

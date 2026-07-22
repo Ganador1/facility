@@ -18,6 +18,7 @@ export type SessionRow = {
   endedAt: string | null;
   costCents: number | null;
   prUrl: string | null;
+  issueNumber?: number | null;
 };
 
 const LIVE = new Set(["queued", "provisioning", "running"]);
@@ -165,18 +166,30 @@ export function SessionTable({
                   <td className="px-5 py-3 font-mono text-[11px] text-(--dim)">{row.engine}</td>
                   <td className="px-5 py-3 text-[12px] text-(--mut)">{fmtStatus(row.status)}</td>
                   <td className="px-5 py-3">
-                    {row.prUrl ? (
-                      <a
-                        href={row.prUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
-                      >
-                        PR ↗
-                      </a>
-                    ) : (
-                      <span className="font-mono text-[11px] text-(--dim)">—</span>
-                    )}
+                    <span className="flex items-center gap-3">
+                      {row.issueNumber != null ? (
+                        <Link
+                          href={`/projects/${row.projectId}/issues?stage=all`}
+                          className="font-mono text-[11px] text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
+                          title="the issue this run works on"
+                        >
+                          #{row.issueNumber}
+                        </Link>
+                      ) : null}
+                      {row.prUrl ? (
+                        <a
+                          href={row.prUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
+                        >
+                          PR ↗
+                        </a>
+                      ) : null}
+                      {row.issueNumber == null && !row.prUrl ? (
+                        <span className="font-mono text-[11px] text-(--dim)">—</span>
+                      ) : null}
+                    </span>
                   </td>
                   <td className="px-5 py-3 font-mono text-[11px] text-(--mut)">
                     {fmtDuration(row.startedAt, row.endedAt)}

@@ -10379,6 +10379,11 @@
                             "type": "string",
                             "format": "date-time"
                           },
+                          "closedAt": {
+                            "nullable": true,
+                            "type": "string",
+                            "format": "date-time"
+                          },
                           "linkedRuns": {
                             "type": "array",
                             "items": {
@@ -10419,6 +10424,7 @@
                           "htmlUrl",
                           "commentsCount",
                           "ghUpdatedAt",
+                          "closedAt",
                           "linkedRuns"
                         ],
                         "additionalProperties": false
@@ -10594,6 +10600,11 @@
                       "type": "string",
                       "format": "date-time"
                     },
+                    "closedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
                     "linkedRuns": {
                       "type": "array",
                       "items": {
@@ -10682,6 +10693,7 @@
                     "htmlUrl",
                     "commentsCount",
                     "ghUpdatedAt",
+                    "closedAt",
                     "linkedRuns",
                     "bodyMd",
                     "runs"

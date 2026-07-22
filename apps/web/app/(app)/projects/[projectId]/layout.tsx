@@ -41,7 +41,7 @@ export default async function ProjectLayout({
   const p = project.data;
   const projectList = projects.ok ? projects.data : [];
   const inboxCount = inbox.ok ? inbox.data.proposals.length + inbox.data.issues.length : undefined;
-  const navProject = { id: p.id, slug: p.slug };
+  const navProject = { id: p.id, slug: p.slug, name: p.name };
 
   return (
     <div className="flex min-h-dvh">

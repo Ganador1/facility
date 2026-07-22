@@ -238,11 +238,17 @@ function githubArtifacts(run: Run) {
   const gh = (run.gh ?? {}) as Record<string, unknown>;
   const pr = artifactFrom(gh.pr) ?? artifactFrom(gh.prUrl) ?? artifactFrom(gh.url);
   const issueNumber = typeof gh.issueNumber === "number" ? gh.issueNumber : undefined;
+  // Backlink to the issue this run works on — derive the GitHub URL from the
+  // run's own repo context when the payload doesn't carry one.
+  const issueUrl =
+    typeof gh.owner === "string" && typeof gh.repo === "string" && issueNumber !== undefined
+      ? `https://github.com/${gh.owner}/${gh.repo}/issues/${issueNumber}`
+      : null;
   const issue =
     artifactFrom(gh.issue) ??
     artifactFrom(gh.issueUrl) ??
     artifactFrom(gh.htmlUrl) ??
-    (issueNumber !== undefined ? { text: `#${issueNumber}`, href: null } : null);
+    (issueNumber !== undefined ? { text: `#${issueNumber}`, href: issueUrl } : null);
   return [
     pr ? { label: "PR", text: pr.text, href: pr.href } : null,
     issue ? { label: "issue", text: issue.text, href: issue.href } : null,

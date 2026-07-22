@@ -5,18 +5,22 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
-export type NavProject = { id: string; slug: string };
+export type NavProject = { id: string; slug: string; name?: string };
 
-type NavItem = { href: string; label: string; badge?: number };
+type NavItem = { href: string; label: string; badge?: number; sub?: string };
 
-/** Org-level destinations — thin by design; the daily loop lives inside a project. */
-export function orgNav(inboxCount?: number): NavItem[] {
+/** Org mode is the projects dashboard; everything else is the platform beneath it. */
+export function orgNav(): NavItem[] {
+  return [{ href: "/projects", label: "Projects" }];
+}
+
+/** Cross-project operator surfaces — secondary by design; explained, not assumed. */
+export function orgPlatformNav(inboxCount?: number): NavItem[] {
   return [
-    { href: "/projects", label: "Projects" },
-    { href: "/sessions", label: "Fleet" },
-    { href: "/inbox", label: "Inbox", badge: inboxCount },
-    { href: "/harness", label: "Harness" },
-    { href: "/audit", label: "Audit" },
+    { href: "/sessions", label: "Activity", sub: "live agent work, all projects" },
+    { href: "/harness", label: "Skills & Rules", sub: "what your agents know" },
+    { href: "/audit", label: "Audit log", sub: "every action, recorded" },
+    { href: "/inbox", label: "Approvals", badge: inboxCount, sub: "decisions waiting on you" },
     { href: "/settings", label: "Settings" },
   ];
 }
@@ -26,9 +30,9 @@ export function projectNav(projectId: string): NavItem[] {
   const base = `/projects/${projectId}`;
   return [
     { href: base, label: "Overview" },
-    { href: `${base}/issues`, label: "Issues" },
-    { href: `${base}/sessions`, label: "Sessions" },
-    { href: `${base}/owner`, label: "Owner" },
+    { href: `${base}/issues`, label: "Pipeline", sub: "issues by stage" },
+    { href: `${base}/sessions`, label: "Runs", sub: "agent work on this project" },
+    { href: `${base}/owner`, label: "Project Manager", sub: "the agent that runs this project" },
     { href: `${base}/agents`, label: "Agents" },
     { href: `${base}/settings`, label: "Settings" },
   ];
@@ -69,7 +73,12 @@ function NavLinks({
             <span className={cx("font-mono text-[10px]", active ? "text-(--ink)" : "text-(--dim)")}>
               {String(i + 1).padStart(2, "0")}
             </span>
-            {item.label}
+            <span className="flex min-w-0 flex-col">
+              {item.label}
+              {item.sub ? (
+                <span className="text-[10px] leading-snug text-(--dim)">{item.sub}</span>
+              ) : null}
+            </span>
             {item.badge ? (
               <span className="ml-auto font-mono text-[11px] text-(--human)">{item.badge}</span>
             ) : null}
@@ -98,17 +107,33 @@ function NavSections({
   onNavigate?: () => void;
 }) {
   if (!project) {
-    return <NavLinks items={orgNav(inboxCount)} onNavigate={onNavigate} />;
-  }
-  return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <SectionLabel>project</SectionLabel>
-        <NavLinks items={projectNav(project.id)} exactFirst onNavigate={onNavigate} />
+    return (
+      <div className="flex flex-col gap-6">
+        <NavLinks items={orgNav()} onNavigate={onNavigate} />
+        <div className="flex flex-col gap-2">
+          <SectionLabel>platform</SectionLabel>
+          <NavLinks items={orgPlatformNav(inboxCount)} onNavigate={onNavigate} />
+        </div>
       </div>
+    );
+  }
+  // Project mode: the sidebar belongs to the project. The way out is explicit
+  // (back link on top) and the section is titled by the project itself.
+  return (
+    <div className="flex flex-col gap-3">
+      <Link
+        href="/projects"
+        onClick={onNavigate}
+        className="flex items-center gap-2 px-5 text-[12px] text-(--mut) transition-colors hover:text-(--ink)"
+      >
+        <span aria-hidden className="font-mono">
+          ←
+        </span>
+        Back to all projects
+      </Link>
       <div className="flex flex-col gap-2">
-        <SectionLabel>org</SectionLabel>
-        <NavLinks items={orgNav(inboxCount)} onNavigate={onNavigate} />
+        <SectionLabel>{project.name ?? project.slug}</SectionLabel>
+        <NavLinks items={projectNav(project.id)} exactFirst onNavigate={onNavigate} />
       </div>
     </div>
   );

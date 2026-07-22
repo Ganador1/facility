@@ -1,9 +1,11 @@
 import { Cell, Divider, Eyebrow, HairlineGrid, Metric, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
-import { EngineLoop } from "@/components/agents/engine-loop";
 import { ErrorNotice, Offline } from "@/components/offline";
+import { PipelineBoard } from "@/components/project/pipeline";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api, summarizeSpend } from "@/lib/api";
+import { classifyPipeline } from "@/lib/pipeline";
+import { fetchAllProjectIssues } from "@/lib/project-issues";
 import { fmtAgo, fmtCost, fmtDuration, fmtStatus } from "@/lib/runs";
 
 export const metadata = { title: "overview" };
@@ -49,7 +51,7 @@ export default async function ProjectOverviewPage({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  const [project, runs, spend, health, inbox, agentsStatus, outcomes, allOutcomes] =
+  const [project, runs, spend, health, inbox, agentsStatus, outcomes, allOutcomes, ghIssues] =
     await Promise.all([
       api.project(projectId),
       api.runs(projectId),
@@ -59,6 +61,7 @@ export default async function ProjectOverviewPage({
       api.agentsStatus(projectId),
       api.outcomes(`?state=open&projectId=${projectId}&limit=10`),
       api.outcomes(`?state=all&projectId=${projectId}&limit=6`),
+      fetchAllProjectIssues(projectId),
     ]);
 
   if (!project.ok) {
@@ -99,6 +102,20 @@ export default async function ProjectOverviewPage({
   const lastOwnerRun = ownerRuns[0];
 
   const recent = items.slice(0, 8);
+  const pipeline = classifyPipeline(ghIssues.ok ? ghIssues.items : [], proposals);
+  const issueTitleByNumber = new Map(
+    (ghIssues.ok ? ghIssues.items : []).map((issue) => [issue.number, issue.title]),
+  );
+  // PR → issue provenance comes from Facility's own runs (a builder run carries
+  // both its issue and the PR it shipped) — GitHub only knows via closing
+  // keywords, but this is our source of truth for pipeline linkage.
+  const issueByPr = new Map<number, number>();
+  for (const run of items) {
+    const gh = run.gh as { issueNumber?: number; pr?: { number?: number } } | null;
+    if (gh?.pr?.number != null && gh.issueNumber != null) {
+      issueByPr.set(gh.pr.number, gh.issueNumber);
+    }
+  }
   const spendSummary = spend.ok ? summarizeSpend(spend.data) : null;
   const shipped = allOutcomes.ok
     ? allOutcomes.data.filter((outcome) => outcome.terminalAt).slice(0, 5)
@@ -111,9 +128,7 @@ export default async function ProjectOverviewPage({
       <div className="flex flex-col gap-2">
         <Eyebrow>overview</Eyebrow>
         <div className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-          <h1 className="font-mono text-[clamp(22px,3.2vw,34px)] font-semibold tracking-tight">
-            {p.slug}
-          </h1>
+          <h1 className="text-[clamp(22px,3.2vw,34px)] font-semibold tracking-tight">{p.name}</h1>
           <span className="inline-flex items-center gap-2 text-[12.5px] text-(--mut)">
             <StatusDot tone={healthTone(healthData?.status)} />
             {healthData ? `health ${healthData.status}` : "health —"}
@@ -128,6 +143,23 @@ export default async function ProjectOverviewPage({
           <p className="max-w-xl text-sm leading-relaxed text-(--mut)">{p.description}</p>
         ) : null}
       </div>
+
+      <section className="flex flex-col gap-4">
+        <div className="flex items-baseline justify-between">
+          <Eyebrow>the pipeline</Eyebrow>
+          <Link
+            href={`/projects/${projectId}/issues`}
+            className="text-[12px] font-medium text-(--mut) hover:text-(--ink)"
+          >
+            open the pipeline →
+          </Link>
+        </div>
+        {ghIssues.ok ? (
+          <PipelineBoard stages={pipeline} projectId={projectId} />
+        ) : (
+          <ErrorNotice message={`Couldn't load the issue mirror — ${ghIssues.message}`} />
+        )}
+      </section>
 
       {needsYou > 0 || watchtower.length > 0 ? (
         <section className="flex flex-col gap-4">
@@ -147,21 +179,29 @@ export default async function ProjectOverviewPage({
                 </span>
               </Link>
             ))}
-            {openPrs.slice(0, 5).map((outcome) => (
-              <a
-                key={outcome.id}
-                href={`https://github.com/${outcome.repo}/pull/${outcome.prNumber}`}
-                target="_blank"
-                rel="noreferrer"
-                className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
-              >
-                <StatusDot tone="human" />
-                <span className="font-mono text-[13px] text-(--ink)">
-                  {outcome.repo}#{outcome.prNumber}
-                </span>
-                <span className="text-[12.5px] text-(--mut)">PR awaiting your review ↗</span>
-              </a>
-            ))}
+            {openPrs.slice(0, 5).map((outcome) => {
+              const issueNumber = issueByPr.get(outcome.prNumber);
+              const issueTitle = issueNumber != null ? issueTitleByNumber.get(issueNumber) : null;
+              return (
+                <a
+                  key={outcome.id}
+                  href={`https://github.com/${outcome.repo}/pull/${outcome.prNumber}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
+                >
+                  <StatusDot tone="human" />
+                  <span className="font-mono text-[13px] text-(--ink)">
+                    {outcome.repo}#{outcome.prNumber}
+                  </span>
+                  <span className="truncate text-[12.5px] text-(--mut)">
+                    {issueNumber != null
+                      ? `implements #${issueNumber}${issueTitle ? ` ${issueTitle}` : ""} — PR awaiting your review ↗`
+                      : "PR awaiting your review ↗"}
+                  </span>
+                </a>
+              );
+            })}
             {proposals.slice(0, 5).map((proposal) => (
               <Link
                 key={proposal.id}
@@ -170,10 +210,17 @@ export default async function ProjectOverviewPage({
               >
                 <StatusDot tone="human" />
                 <span className="text-[12px] font-medium text-(--human)">
-                  {proposal.actionType}
+                  {proposal.actionType === "plan_acceptance"
+                    ? "plan approval"
+                    : proposal.actionType.replaceAll("_", " ")}
                 </span>
                 <span className="truncate text-[12.5px] text-(--mut)">
-                  gate waiting for a decision
+                  {(() => {
+                    const n = (proposal.payload as { issueNumber?: number } | null)?.issueNumber;
+                    const title = n != null ? issueTitleByNumber.get(n) : undefined;
+                    if (n != null && title) return `#${n} ${title} — waiting for your decision`;
+                    return "waiting for your decision";
+                  })()}
                 </span>
                 <span className="ml-auto font-mono text-[11px] text-(--dim)">
                   {fmtAgo(proposal.createdAt)}
@@ -238,32 +285,6 @@ export default async function ProjectOverviewPage({
               </Link>
             ))}
           </div>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-4">
-        <div className="flex items-baseline justify-between">
-          <Eyebrow>the engine</Eyebrow>
-          <Link
-            href={`/projects/${projectId}/agents`}
-            className="text-[12px] font-medium text-(--mut) hover:text-(--ink)"
-          >
-            all agents →
-          </Link>
-        </div>
-        {agentRows.length === 0 ? (
-          <p className="text-sm text-(--dim)">
-            No agents configured yet —{" "}
-            <Link
-              href={`/projects/${projectId}/agents/new`}
-              className="text-(--ink) underline underline-offset-4"
-            >
-              create the first one
-            </Link>
-            .
-          </p>
-        ) : (
-          <EngineLoop projectId={projectId} rows={agentRows} compact />
         )}
       </section>
 
