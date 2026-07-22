@@ -26,6 +26,7 @@ const TYPE_LABELS: Record<string, string> = {
   D: "decisions",
   T: "tasks",
   V: "verifications",
+  R: "reference",
   H: "hypotheses",
   E: "experiments",
   F: "findings",

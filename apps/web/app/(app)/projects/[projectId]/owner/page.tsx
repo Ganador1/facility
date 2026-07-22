@@ -2,13 +2,14 @@ import { Divider, Eyebrow, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { OwnerConversation } from "@/components/owner/conversation";
+import { OwnerIntake } from "@/components/owner/intake";
 import { type KbEntry, KbReader, type KbSpace } from "@/components/owner/kb-reader";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api } from "@/lib/api";
 import { fmtAgo, fmtStatus } from "@/lib/runs";
 import { cronToWords } from "@/lib/schedule";
 
-export const metadata = { title: "project manager" };
+export const metadata = { title: "product owner" };
 
 const OWNER_NAMES = new Set(["project-owner", "learning"]);
 
@@ -46,10 +47,8 @@ export default async function OwnerPage({ params }: { params: Promise<{ projectI
     <div className="flex flex-col gap-8">
       <LiveRefresh seconds={30} />
       <div className="flex flex-col gap-2">
-        <Eyebrow>project manager</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">
-          Project Manager
-        </h1>
+        <Eyebrow>product owner</Eyebrow>
+        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Product Owner</h1>
         <p className="text-[12.5px] text-(--dim)">
           {ownerAgent
             ? `${ownerAgent.engine}${cron ? ` · ${cronToWords(cron)}` : " · on demand"} · ${
@@ -81,6 +80,11 @@ export default async function OwnerPage({ params }: { params: Promise<{ projectI
           <div className="flex flex-col gap-4">
             <Eyebrow>conversation</Eyebrow>
             <OwnerConversation projectId={projectId} />
+          </div>
+
+          <div className="flex flex-col gap-4">
+            <Eyebrow>feed the owner</Eyebrow>
+            <OwnerIntake projectId={projectId} />
           </div>
 
           <Divider />
