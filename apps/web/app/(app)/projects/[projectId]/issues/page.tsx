@@ -68,8 +68,10 @@ export default async function ProjectPipelinePage({
           <Eyebrow>pipeline</Eyebrow>
           <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Pipeline</h1>
           <p className="text-[12.5px] text-(--dim)">
-            {issues.ok ? `${openCount} open issues · closest to shipping on top` : "mirror unavailable"} ·
-            issues live on GitHub — agents are dispatched here
+            {issues.ok
+              ? `${openCount} open issues · closest to shipping on top`
+              : "mirror unavailable"}{" "}
+            · issues live on GitHub — agents are dispatched here
           </p>
         </div>
         {canSync ? <SyncIssuesButton projectId={projectId} /> : null}
