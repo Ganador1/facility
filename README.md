@@ -117,7 +117,7 @@ node /absolute/path/to/facility/packages/cli/bin/facility.mjs init \
 
 Configure `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
 `FACILITY_PREVIEW_KEY` in GitHub. Production Facility deployments must have a
-complete WorkOS SSO configuration or preview creation fails closed. The review
+complete GitHub/OIDC login configuration or preview creation fails closed. The review
 image must already exist; Facility does not build application images.
 
 After installation, follow the human-only steps printed by the CLI: configure
@@ -144,12 +144,15 @@ pnpm dev
 
 `pnpm dev` creates `.env` when needed, fills only blank required development
 values, starts Postgres and MinIO, installs dependencies, builds shared
-packages, migrates and seeds the database, then launches the API, worker,
+packages, migrates and seeds platform essentials, then launches the API, worker,
 gateway, web app, and documentation site. Existing `.env` values are never
 replaced. Because the command seeds development data, it refuses a non-local
 `DATABASE_URL`.
 
-Open `http://localhost:3400` and use the development sign-in. Ctrl-C stops the
+Create a GitHub App for local development, fill `GITHUB_OAUTH_CLIENT_ID` and
+`GITHUB_OAUTH_CLIENT_SECRET`, then bootstrap its account/installation binding as
+described in the [authentication guide](apps/docs/docs/self-host/authentication.md).
+Open `http://localhost:3400` and sign in with GitHub. Ctrl-C stops the
 foreground development processes; the Docker infrastructure remains available
 for the next `pnpm dev`.
 
@@ -261,7 +264,7 @@ The web app currently covers projects, agents, sessions and live steering,
 issues, Project Owner knowledge, the human inbox, harness items, analytics,
 audit, integrations, providers, API keys, budgets, and members. The REST API is
 the complete platform surface, with focused subsets exposed through the CLI and
-MCP. Production deployments require WorkOS for human SSO and a separately
+MCP. Production deployments use GitHub directly or the SaaS OIDC broker for human login and a separately
 configured GitHub App for repository automation.
 
 The [architecture document](docs/platform/ARCHITECTURE.md) describes the

@@ -2,13 +2,14 @@
 
 This module provisions the AWS reference deployment from the platform architecture:
 VPC, two private AZs, public ALB, RDS Postgres 16, S3 object storage, ECR,
-ECS Fargate services for `api`, `worker`, `gateway`, and `web`, a runner task
+ECS Fargate services for `api`, `worker`, `gateway`, `web`, and `mcp`, a runner task
 definition for the AWS sandbox driver, KMS, Secrets Manager, and CloudWatch logs.
 
 Topology:
 
 - `app_hostname` routes to the `web` ECS service through the public ALB.
 - `api_hostname` routes to the `api` ECS service through the public ALB.
+- `mcp_hostname` routes to the audience-bound MCP resource server.
 - `gateway` has no public ALB route. It is reachable only inside the VPC through
   Cloud Map at the `gateway_internal_url` output.
 - Postgres accepts `5432` only from the ECS service security group.
@@ -23,18 +24,16 @@ cp terraform.tfvars.example playground.tfvars
 
 Edit `playground.tfvars`:
 
-- Set `app_hostname` and `api_hostname`.
+- Set `app_hostname`, `api_hostname`, and `mcp_hostname`.
 - Set `acm_certificate_arn` for HTTPS, or leave it empty for HTTP-only testing.
 - Set `route53_zone_id` if Terraform should create alias records.
 - Set `enable_cloudfront_api_endpoint = true` to get an AWS-managed HTTPS API
   and webhook URL without a public DNS zone. This is intended for validation;
   use your own hostname and ACM certificate for production.
 - Set image tags matching the images you push.
-- Set `enable_workos = false` only for a non-interactive webhook validation
-  deployment. Production login and protected previews require WorkOS.
-- Set `mcp_oauth_audience` (with the WorkOS secrets) to enable interactive-client
-  MCP OAuth 2.1, or leave it empty for `fak_`-key-only MCP; tune
-  `envelope_retention_days` for your data-retention policy.
+- Select direct `github` authentication for self-hosting or `oidc` for a SaaS
+  broker. MCP OAuth is always issued by the dedicated Facility instance.
+- Tune `envelope_retention_days` for your data-retention policy.
 
 No secret values belong in tfvars.
 
@@ -64,7 +63,7 @@ From the repository root:
 AWS_REGION=us-east-1 IMAGE_TAG=$(git rev-parse --short HEAD) ./infra/build-images.sh
 ```
 
-The script expects Dockerfiles for `api`, `worker`, `gateway`, `web`, and
+The script expects Dockerfiles for `api`, `worker`, `gateway`, `web`, `mcp`, and
 `runner`. Override paths or image URIs with environment variables documented in
 the script when a service image is built elsewhere. It builds `linux/amd64` by
 default, matching Terraform's default `task_cpu_architecture = "X86_64"`. To
@@ -83,11 +82,9 @@ Required runtime values:
 
 - `database_url`: `postgres://facility:<password>@<rds_endpoint>:5432/facility?sslmode=verify-full`
 - `secret_master_key`: 32-byte base64 value from `openssl rand -base64 32`
-- `workos_api_key`
-- `workos_client_id`
-- `workos_cookie_password`: 32+ random chars
-- `workos_authkit_domain`
-- `next_public_workos_redirect_uri`: `https://api.example.com/auth/callback`
+- `github_oauth_client_id` and `github_oauth_client_secret` in direct mode, or
+  `oidc_client_id` and `oidc_client_secret` in broker mode
+- `facility_oauth_jwks`: persistent private ES256 JWK set
 - `github_app_id`
 - `github_app_private_key`
 - `github_app_webhook_secret`
@@ -113,7 +110,7 @@ aws secretsmanager get-secret-value \
 ## 5. Run the migrate + seed task once
 
 The `migrate` task runs database migrations **and** seeds the bundled essentials
-(roles, action types, default sandbox profile) that first WorkOS bootstrap and
+(roles, action types, default sandbox profile) that administrative bootstrap and
 `facility doctor` require — seeding is idempotent. Run it only after the
 `database_url` secret and images are populated:
 

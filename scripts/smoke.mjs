@@ -2,18 +2,17 @@
 // End-to-end smoke test for a running Facility stack.
 //   API=http://localhost:4400 GATEWAY=http://localhost:4410 node scripts/smoke.mjs
 //
-// Exercises the real seams: dev-login → project → virtual key → a live model
+// Exercises the real seams: API key → project → virtual key → a live model
 // call proxied through the gateway → metering + audit chain. Exits non-zero on
-// the first failure. Requires FACILITY_INSECURE_DEV on the API and a provider
-// key reachable by the gateway (sealed credential or DEV_*_API_KEY).
+// the first failure. Requires an owner FACILITY_API_KEY and a provider key
+// reachable by the gateway (sealed credential or DEV_*_API_KEY).
 import process from "node:process";
 
 const API = process.env.API ?? "http://localhost:4400";
 const GATEWAY = process.env.GATEWAY ?? "http://localhost:4410";
-const EMAIL = process.env.SMOKE_EMAIL ?? "smoke@theagilemonkeys.com";
+const FACILITY_API_KEY = process.env.FACILITY_API_KEY;
 const MODEL = process.env.SMOKE_MODEL ?? "claude-haiku-4-5-20251001";
 
-let cookie = "";
 const steps = [];
 function ok(name, detail = "") {
   steps.push({ name, ok: true, detail });
@@ -28,7 +27,7 @@ function fail(name, err) {
 async function api(path, init = {}) {
   const res = await fetch(`${API}${path}`, {
     ...init,
-    headers: { "content-type": "application/json", ...(cookie ? { cookie } : {}), ...init.headers },
+    headers: { "content-type": "application/json", authorization: `Bearer ${FACILITY_API_KEY}`, ...init.headers },
   });
   const body = await res.json().catch(() => null);
   return { res, body };
@@ -36,6 +35,7 @@ async function api(path, init = {}) {
 
 async function main() {
   console.log(`Facility smoke — api ${API}, gateway ${GATEWAY}\n`);
+  if (!FACILITY_API_KEY) fail("configuration", "FACILITY_API_KEY is required");
 
   {
     const { res, body } = await api("/health");
@@ -46,14 +46,6 @@ async function main() {
     const res = await fetch(`${GATEWAY}/health`);
     if (!res.ok) fail("gateway health", res.status);
     ok("gateway health");
-  }
-  {
-    const { res, body, ...rest } = await apiSetCookie("/auth/dev-login", {
-      method: "POST",
-      body: JSON.stringify({ email: EMAIL }),
-    });
-    if (!res.ok) fail("dev-login", JSON.stringify(body));
-    ok("dev-login", body.orgId);
   }
   {
     const { res, body } = await api("/v1/me");
@@ -106,18 +98,6 @@ async function main() {
   }
 
   console.log(`\nSMOKE PASSED (${steps.length} checks)`);
-}
-
-// dev-login needs to capture the Set-Cookie for subsequent calls
-async function apiSetCookie(path, init) {
-  const res = await fetch(`${API}${path}`, {
-    ...init,
-    headers: { "content-type": "application/json", ...init.headers },
-  });
-  const setCookie = res.headers.get("set-cookie");
-  if (setCookie) cookie = setCookie.split(";")[0];
-  const body = await res.json().catch(() => null);
-  return { res, body };
 }
 
 main().catch((err) => fail("unexpected", err?.message ?? String(err)));

@@ -121,7 +121,7 @@ describe("watchtower", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `watchtower-${Date.now()}@example.com` },
     });
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");

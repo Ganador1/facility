@@ -1,20 +1,21 @@
 import { newId } from "@facility/core";
-import { createDb, migrate, orgMembers, seed, users } from "@facility/db";
 import {
-  createLocalJWKSet,
-  exportJWK,
-  generateKeyPair,
-  type JWK,
-  type JWTVerifyGetKey,
-  SignJWT,
-} from "jose";
+  createDb,
+  githubInstallations,
+  migrate,
+  oauthArtifacts,
+  orgMembers,
+  seed,
+  users,
+} from "@facility/db";
+import { createLocalJWKSet, decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildApp } from "../src/app.js";
+import { buildApp, mintSessionCookie } from "../src/app.js";
+import { pkceChallenge } from "../src/auth/identity-provider.js";
 import {
   AccessTokenError,
   looksLikeJwt,
-  type OauthConfig,
   oauthConfigFromApp,
   verifyAccessToken,
 } from "../src/oauth.js";
@@ -23,198 +24,116 @@ import type { AppConfig } from "../src/types.js";
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_test";
 const masterKey = Buffer.alloc(32, 7).toString("base64");
-const ISSUER = "https://auth.facility.test";
-const AUDIENCE = "facility-mcp";
-
-// Trusted signing keypair + the JWKS the resource server trusts (offline).
-const { privateKey, publicKey } = await generateKeyPair("RS256");
-const publicJwk: JWK = { ...(await exportJWK(publicKey)), kid: "test-key", alg: "RS256" };
-const jwks: JWTVerifyGetKey = createLocalJWKSet({ keys: [publicJwk] });
-const foreign = await generateKeyPair("RS256");
+const issuer = "https://api.facility.test";
+const audience = "https://mcp.facility.test";
+const { privateKey, publicKey } = await generateKeyPair("ES256", { extractable: true });
+const privateJwk = { ...(await exportJWK(privateKey)), kid: "test-key", alg: "ES256", use: "sig" };
+const publicJwk = { ...(await exportJWK(publicKey)), kid: "test-key", alg: "ES256", use: "sig" };
+const foreign = await generateKeyPair("ES256");
 type SignKey = Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
-
-const oauthConfig: OauthConfig = {
-  issuer: ISSUER,
-  jwksUri: `${ISSUER}/oauth2/jwks`,
-  audience: AUDIENCE,
+const base: AppConfig = {
+  databaseUrl,
+  secretMasterKey: masterKey,
+  port: 4400,
+  publicUrl: "http://localhost:4400",
+  sandboxApiUrl: "http://localhost:4400",
+  sandboxGatewayUrl: "http://localhost:4410",
+  gatewayUrl: "http://localhost:4410",
+  sandboxRunnerImage: "facility-runner:dev",
+  sandboxDriver: "docker",
+  facilityInsecureDev: true,
+  logLevel: "silent",
 };
-const subject = `workos_user_${Date.now()}`;
-const email = `${subject}-oauth@example.com`;
+const oauthConfig = { issuer, audience, jwks: { keys: [publicJwk] } };
 
-async function signToken(
-  o: {
+async function token(
+  input: {
     sub?: string;
-    issuer?: string;
-    audience?: string | null;
-    alg?: string;
+    orgId?: string;
+    aud?: string;
+    exp?: number | false;
+    scope?: string;
     key?: SignKey;
-    exp?: string | number | false;
   } = {},
 ) {
-  const jwt = new SignJWT({ email })
-    .setProtectedHeader({ alg: o.alg ?? "RS256", kid: "test-key" })
-    .setIssuer(o.issuer ?? ISSUER)
-    .setSubject(o.sub ?? subject)
+  const jwt = new SignJWT({
+    org_id: input.orgId ?? "org_test",
+    scope: input.scope ?? "facility:mcp",
+  })
+    .setProtectedHeader({ alg: "ES256", kid: "test-key" })
+    .setIssuer(issuer)
+    .setSubject(input.sub ?? "user_test")
+    .setAudience(input.aud ?? audience)
     .setIssuedAt();
-  if (o.audience !== null) jwt.setAudience(o.audience ?? AUDIENCE);
-  if (o.exp !== false) jwt.setExpirationTime(o.exp ?? "1h");
-  return jwt.sign(o.key ?? privateKey);
+  if (input.exp !== false) jwt.setExpirationTime(input.exp ?? "15m");
+  return jwt.sign(input.key ?? privateKey);
 }
 
-// --- Pure token verification (no database; never skipped) ---
-
-describe("oauth token verification", () => {
-  it("derives config only when both issuer domain and audience are set, https-only", () => {
-    const base: AppConfig = {
-      databaseUrl,
-      secretMasterKey: masterKey,
-      port: 4400,
-      publicUrl: "http://localhost:4400",
-      sandboxApiUrl: "http://localhost:4400",
-      sandboxGatewayUrl: "http://localhost:4410",
-      gatewayUrl: "http://localhost:4410",
-      sandboxRunnerImage: "facility-runner:dev",
-      sandboxDriver: "docker",
-      facilityInsecureDev: true,
-      logLevel: "silent",
-    };
-    expect(oauthConfigFromApp({ ...base, workosAuthkitDomain: ISSUER })).toBeNull();
-    expect(oauthConfigFromApp({ ...base, mcpOauthAudience: AUDIENCE })).toBeNull();
+describe("Facility OAuth access-token verification", () => {
+  it("enables OAuth only when issuer, resource, and keys are all configured", () => {
+    expect(oauthConfigFromApp(base)).toBeNull();
+    expect(oauthConfigFromApp({ ...base, oauthIssuer: issuer, mcpPublicUrl: audience })).toBeNull();
     expect(
       oauthConfigFromApp({
         ...base,
-        workosAuthkitDomain: "http://auth.facility.test",
-        mcpOauthAudience: AUDIENCE,
-      }),
-    ).toBeNull();
-    const ok = oauthConfigFromApp({
-      ...base,
-      workosAuthkitDomain: ISSUER,
-      mcpOauthAudience: AUDIENCE,
+        oauthIssuer: issuer,
+        mcpPublicUrl: audience,
+        oauthJwks: { keys: [privateJwk] },
+      })?.audience,
+    ).toBe(audience);
+  });
+
+  it("accepts a signed, scoped, audience-bound Facility token", async () => {
+    await expect(verifyAccessToken(await token(), oauthConfig)).resolves.toEqual({
+      userId: "user_test",
+      orgId: "org_test",
+      scope: "facility:mcp",
     });
-    expect(ok?.issuer).toBe(ISSUER);
-    expect(ok?.audience).toBe(AUDIENCE);
   });
 
-  it("accepts a correctly signed, unexpired, correctly-audienced token", async () => {
-    const claims = await verifyAccessToken(await signToken(), oauthConfig, jwks);
-    expect(claims.workosUserId).toBe(subject);
-    expect(claims.email).toBe(email);
-  });
-
-  it("rejects an expired token", async () => {
-    await expect(
-      verifyAccessToken(
-        await signToken({ exp: Math.floor(Date.now() / 1000) - 60 }),
-        oauthConfig,
-        jwks,
-      ),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a token with no exp claim (non-expiring)", async () => {
-    await expect(
-      verifyAccessToken(await signToken({ exp: false }), oauthConfig, jwks),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a token from the wrong issuer", async () => {
-    await expect(
-      verifyAccessToken(await signToken({ issuer: "https://evil.example" }), oauthConfig, jwks),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a token signed by an untrusted key", async () => {
-    await expect(
-      verifyAccessToken(await signToken({ key: foreign.privateKey }), oauthConfig, jwks),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a non-RS256 (HS256 alg-confusion) token", async () => {
-    const hs = await new SignJWT({})
-      .setProtectedHeader({ alg: "HS256" })
-      .setIssuer(ISSUER)
-      .setSubject(subject)
-      .setAudience(AUDIENCE)
-      .setExpirationTime("1h")
-      .sign(new TextEncoder().encode("shared-secret"));
-    await expect(verifyAccessToken(hs, oauthConfig, jwks)).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a token with the wrong audience", async () => {
-    await expect(
-      verifyAccessToken(await signToken({ audience: "some-other-resource" }), oauthConfig, jwks),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a token with no audience claim", async () => {
-    await expect(
-      verifyAccessToken(await signToken({ audience: null }), oauthConfig, jwks),
-    ).rejects.toBeInstanceOf(AccessTokenError);
-  });
-
-  it("rejects a token with no subject", async () => {
-    const noSub = await new SignJWT({})
-      .setProtectedHeader({ alg: "RS256", kid: "test-key" })
-      .setIssuer(ISSUER)
-      .setAudience(AUDIENCE)
-      .setExpirationTime("1h")
-      .sign(privateKey);
-    await expect(verifyAccessToken(noSub, oauthConfig, jwks)).rejects.toBeInstanceOf(
+  it.each([
+    ["expired", () => token({ exp: Math.floor(Date.now() / 1000) - 1 })],
+    ["wrong audience", () => token({ aud: "https://other.example" })],
+    ["missing expiry", () => token({ exp: false })],
+    ["missing MCP scope", () => token({ scope: "openid" })],
+    ["foreign signature", () => token({ key: foreign.privateKey })],
+  ])("rejects %s", async (_label, create) => {
+    await expect(verifyAccessToken(await create(), oauthConfig)).rejects.toBeInstanceOf(
       AccessTokenError,
     );
   });
 
-  it("classifies JWT-shaped strings", () => {
-    expect(looksLikeJwt("aaa.bbb.ccc")).toBe(true);
-    expect(looksLikeJwt("fak_abc123")).toBe(false);
-    expect(looksLikeJwt("aaa.bbb")).toBe(false);
+  it("recognizes only three-segment JWT values", () => {
+    expect(looksLikeJwt("a.b.c")).toBe(true);
+    expect(looksLikeJwt("fak_test")).toBe(false);
   });
 });
 
-// --- Integration through resolvePrincipal (requires Postgres) ---
-
-async function canConnect() {
-  const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
+describe("Facility OAuth resource-server integration", async () => {
+  const sql = postgres(databaseUrl, { max: 1, connect_timeout: 2 });
+  let reachable = true;
   try {
-    await sqlClient`select 1`;
-    return true;
+    await sql`select 1`;
   } catch {
-    return false;
+    reachable = false;
   } finally {
-    await sqlClient.end().catch(() => undefined);
+    await sql.end();
   }
-}
-
-describe("oauth resource server (integration)", async () => {
-  const reachable = await canConnect();
   if (!reachable) {
-    it.skip("Postgres unreachable; OAuth integration tests skipped", () => undefined);
+    it.skip("Postgres unreachable", () => undefined);
     return;
   }
 
   const config: AppConfig = {
-    databaseUrl,
-    secretMasterKey: masterKey,
-    port: 4400,
-    publicUrl: "http://localhost:4400",
-    sandboxApiUrl: "http://localhost:4400",
-    sandboxGatewayUrl: "http://localhost:4410",
-    gatewayUrl: "http://localhost:4410",
-    sandboxRunnerImage: "facility-runner:dev",
-    sandboxDriver: "docker",
-    webUrl: "http://localhost:3000",
-    facilityInsecureDev: true,
-    logLevel: "silent",
-    workosApiKey: "sk_test",
-    workosClientId: "client_test",
-    workosAuthkitDomain: ISSUER,
-    mcpOauthAudience: AUDIENCE,
+    ...base,
+    oauthIssuer: issuer,
+    mcpPublicUrl: audience,
+    oauthJwks: { keys: [privateJwk] },
   };
-  const app = await buildApp(config, { oauthJwks: jwks });
+  const app = await buildApp(config, { oauthJwks: createLocalJWKSet({ keys: [publicJwk] }) });
   const { db, client } = createDb(databaseUrl);
+  const userId = newId("user");
   let orgId = "";
-  let fakKey = "";
 
   beforeAll(async () => {
     await migrate(databaseUrl);
@@ -222,80 +141,236 @@ describe("oauth resource server (integration)", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
-      payload: { email: `oauth-owner-${Date.now()}@example.com` },
+      url: "/__test/session",
+      payload: { email: `oauth-${Date.now()}@example.com` },
     });
-    expect(login.statusCode).toBe(200);
     orgId = login.json().orgId;
-    const cookie = login.cookies.map((c) => `${c.name}=${c.value}`).join("; ");
-    const key = await app.inject({
-      method: "POST",
-      url: "/v1/keys",
-      headers: { cookie },
-      payload: { name: `oauth-fak-${Date.now()}`, roleId: "role_bundled_owner" },
-    });
-    expect(key.statusCode).toBe(200);
-    fakKey = key.json().secret;
-    const userId = newId("user");
-    await db.insert(users).values({
-      id: userId,
-      workosUserId: subject,
-      email,
-      name: "OAuth User",
-      status: "active",
-    });
-    await db.insert(orgMembers).values({
-      id: newId("user"),
+    await db.insert(users).values({ id: userId, email: `${userId}@example.com`, status: "active" });
+    await db
+      .insert(orgMembers)
+      .values({ id: newId("member"), orgId, userId, roleId: "role_bundled_owner" });
+    await db.insert(githubInstallations).values({
+      id: newId("int"),
       orgId,
-      userId,
-      roleId: "role_bundled_owner",
+      installationId: 9_000_000 + Math.floor(Math.random() * 100_000),
+      accountId: 8_000_000,
+      accountLogin: "oauth-test",
+      targetType: "Organization",
     });
   });
-
   afterAll(async () => {
     await app.close();
     await client.end();
   });
 
-  it("authenticates an API request with a valid OAuth access token", async () => {
-    const me = await app.inject({
+  it("publishes authorization metadata and registers a public PKCE client", async () => {
+    const proxyHeaders = {
+      host: "api.facility.test",
+      "x-forwarded-host": "api.facility.test",
+      "x-forwarded-proto": "https",
+    };
+    const metadata = await app.inject({
       method: "GET",
-      url: "/v1/me",
-      headers: { authorization: `Bearer ${await signToken()}` },
+      url: "/.well-known/oauth-authorization-server",
+      headers: proxyHeaders,
     });
-    expect(me.statusCode).toBe(200);
-    expect(me.json().principal.email).toBe(email);
-    expect(me.json().principal.orgId).toBe(orgId);
-  });
-
-  it("rejects an expired token at the API with 401", async () => {
-    const me = await app.inject({
+    expect(metadata.statusCode).toBe(200);
+    expect(metadata.json()).toMatchObject({
+      issuer,
+      authorization_endpoint: `${issuer}/oauth/authorize`,
+      token_endpoint: `${issuer}/oauth/token`,
+      registration_endpoint: `${issuer}/oauth/register`,
+      code_challenge_methods_supported: ["S256"],
+    });
+    const poisonedMetadata = await app.inject({
       method: "GET",
-      url: "/v1/me",
+      url: "/.well-known/oauth-authorization-server",
       headers: {
-        authorization: `Bearer ${await signToken({ exp: Math.floor(Date.now() / 1000) - 60 })}`,
+        host: "evil.example",
+        "x-forwarded-host": "evil.example",
+        "x-forwarded-proto": "http",
       },
     });
-    expect(me.statusCode).toBe(401);
+    expect(poisonedMetadata.statusCode).toBe(200);
+    expect(poisonedMetadata.json().issuer).toBe(issuer);
+    const publishedKeys = await app.inject({
+      method: "GET",
+      url: "/oauth/jwks",
+      headers: proxyHeaders,
+    });
+    expect(publishedKeys.statusCode).toBe(200);
+    expect(publishedKeys.json().keys[0]).toMatchObject({ kid: "test-key", kty: "EC" });
+    expect(publishedKeys.json().keys[0].d).toBeUndefined();
+    const registration = await app.inject({
+      method: "POST",
+      url: "/oauth/register",
+      headers: proxyHeaders,
+      payload: {
+        client_name: "Facility MCP test",
+        redirect_uris: ["http://127.0.0.1:32123/callback"],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      },
+    });
+    expect(registration.statusCode, registration.body).toBe(201);
+    expect(registration.json()).toMatchObject({
+      client_name: "Facility MCP test",
+      token_endpoint_auth_method: "none",
+    });
+    expect(registration.json().client_secret).toBeUndefined();
   });
 
-  it("forbids a valid token whose subject has no platform membership", async () => {
+  it("resolves a current member and rejects cross-tenant claims", async () => {
+    const accepted = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { authorization: `Bearer ${await token({ sub: userId, orgId })}` },
+    });
+    expect(accepted.statusCode).toBe(200);
+    const denied = await app.inject({
+      method: "GET",
+      url: "/v1/me",
+      headers: { authorization: `Bearer ${await token({ sub: userId, orgId: "org_other" })}` },
+    });
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it("completes PKCE authorization, rotates refresh tokens, and rejects reuse", async () => {
+    const proxyHeaders = {
+      host: "api.facility.test",
+      "x-forwarded-host": "api.facility.test",
+      "x-forwarded-proto": "https",
+    };
+    const redirectUri = "http://127.0.0.1:32124/callback";
+    const registration = await app.inject({
+      method: "POST",
+      url: "/oauth/register",
+      headers: proxyHeaders,
+      payload: {
+        client_name: "MCP regression client",
+        redirect_uris: [redirectUri],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      },
+    });
+    expect(registration.statusCode, registration.body).toBe(201);
+    const clientId = registration.json().client_id as string;
+    const verifier = "pkce-verifier-".padEnd(64, "x");
+    const query = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: "code",
+      scope: "openid offline_access facility:mcp",
+      resource: audience,
+      state: "oauth-state",
+      code_challenge: await pkceChallenge(verifier),
+      code_challenge_method: "S256",
+    });
+    const authorization = await app.inject({
+      method: "GET",
+      url: `/oauth/authorize?${query}`,
+      headers: proxyHeaders,
+    });
+    expect(authorization.statusCode).toBe(303);
+    const providerCookies = authorization.cookies.map((cookie) => `${cookie.name}=${cookie.value}`);
+    const interactionPath = new URL(
+      required(authorization.headers.location, "interaction redirect"),
+      config.publicUrl,
+    ).pathname;
+    const facilityCookie = `facility_session=${await mintSessionCookie(config, userId, orgId)}`;
+    const interaction = await app.inject({
+      method: "GET",
+      url: interactionPath,
+      headers: { cookie: [facilityCookie, ...providerCookies].join("; ") },
+    });
+    expect(interaction.statusCode).toBe(200);
+    expect(interaction.body).toContain("Authorize Facility MCP");
+    expect(interaction.body).toContain(redirectUri);
+    const consent = await app.inject({
+      method: "POST",
+      url: interactionPath,
+      headers: {
+        ...proxyHeaders,
+        cookie: [facilityCookie, ...providerCookies].join("; "),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      payload: "confirm=yes",
+    });
+    expect(consent.statusCode).toBe(303);
+    const resumedCookies = [
+      ...providerCookies,
+      ...consent.cookies.map((cookie) => `${cookie.name}=${cookie.value}`),
+    ];
+    const consentLocation = required(consent.headers.location, "consent redirect");
+    const resumed = await app.inject({
+      method: "GET",
+      url: new URL(consentLocation, issuer).pathname + new URL(consentLocation, issuer).search,
+      headers: { ...proxyHeaders, cookie: resumedCookies.join("; ") },
+    });
+    expect(resumed.statusCode).toBe(303);
+    const callback = new URL(required(resumed.headers.location, "OAuth callback redirect"));
+    expect(callback.searchParams.get("state")).toBe("oauth-state");
+    const code = required(callback.searchParams.get("code"), "authorization code");
+    const exchange = await tokenRequest(app, proxyHeaders, {
+      grant_type: "authorization_code",
+      client_id: clientId,
+      code,
+      redirect_uri: redirectUri,
+      code_verifier: verifier,
+      resource: audience,
+    });
+    expect(exchange.statusCode, exchange.body).toBe(200);
+    const first = exchange.json();
+    expect(first.access_token.split(".")).toHaveLength(3);
+    expect(first.refresh_token).toBeTypeOf("string");
+    const persisted = JSON.stringify(await db.select().from(oauthArtifacts));
+    expect(persisted).not.toContain(first.refresh_token);
+    expect(persisted).not.toContain(first.access_token);
     const me = await app.inject({
       method: "GET",
       url: "/v1/me",
-      headers: { authorization: `Bearer ${await signToken({ sub: "workos_user_unknown" })}` },
+      headers: { authorization: `Bearer ${first.access_token}` },
     });
-    expect(me.statusCode).toBe(403);
-  });
+    expect(
+      me.statusCode,
+      JSON.stringify({ body: me.body, claims: decodeJwt(first.access_token) }),
+    ).toBe(200);
 
-  it("still accepts fak_ API keys and rejects missing auth", async () => {
-    const withKey = await app.inject({
-      method: "GET",
-      url: "/v1/me",
-      headers: { authorization: `Bearer ${fakKey}` },
+    const rotated = await tokenRequest(app, proxyHeaders, {
+      grant_type: "refresh_token",
+      client_id: clientId,
+      refresh_token: first.refresh_token,
+      resource: audience,
     });
-    expect(withKey.statusCode).toBe(200);
-    const anon = await app.inject({ method: "GET", url: "/v1/me" });
-    expect(anon.statusCode).toBe(401);
+    expect(rotated.statusCode, rotated.body).toBe(200);
+    expect(rotated.json().refresh_token).not.toBe(first.refresh_token);
+    const replay = await tokenRequest(app, proxyHeaders, {
+      grant_type: "refresh_token",
+      client_id: clientId,
+      refresh_token: first.refresh_token,
+      resource: audience,
+    });
+    expect(replay.statusCode).toBe(400);
+    expect(replay.json().error).toBe("invalid_grant");
   });
 });
+
+function tokenRequest(
+  app: Awaited<ReturnType<typeof buildApp>>,
+  headers: Record<string, string>,
+  body: Record<string, string>,
+) {
+  return app.inject({
+    method: "POST",
+    url: "/oauth/token",
+    headers: { ...headers, "content-type": "application/x-www-form-urlencoded" },
+    payload: new URLSearchParams(body).toString(),
+  });
+}
+
+function required<T>(value: T | null | undefined, label: string): T {
+  if (value == null) throw new Error(`Missing ${label}`);
+  return value;
+}

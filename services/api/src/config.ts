@@ -7,6 +7,11 @@ import type { AppConfig } from "./types.js";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 loadDotenv({ path: join(repoRoot, ".env"), quiet: true });
 
+const OptionalUrl = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z.string().url().optional(),
+);
+
 const EnvSchema = z
   .object({
     DATABASE_URL: z.string().url(),
@@ -23,14 +28,24 @@ const EnvSchema = z
     // Driver the seeded default sandbox profile uses. Must match the deployment:
     // "docker" for local/self-host, "aws" for the Fargate stack.
     FACILITY_SANDBOX_DRIVER: z.enum(["docker", "aws"]).default("docker"),
-    WORKOS_API_KEY: z.string().optional(),
-    WORKOS_CLIENT_ID: z.string().optional(),
-    WORKOS_COOKIE_PASSWORD: z.string().optional(),
-    WORKOS_AUTHKIT_DOMAIN: z.string().optional(),
-    MCP_OAUTH_AUDIENCE: z.string().optional(),
-    NEXT_PUBLIC_WORKOS_REDIRECT_URI: z.string().optional(),
+    AUTH_IDENTITY_PROVIDER: z.enum(["github", "oidc"]).default("github"),
+    AUTH_CALLBACK_URL: OptionalUrl,
+    GITHUB_OAUTH_CLIENT_ID: z.string().optional(),
+    GITHUB_OAUTH_CLIENT_SECRET: z.string().optional(),
+    GITHUB_OAUTH_AUTHORIZE_URL: z
+      .string()
+      .url()
+      .default("https://github.com/login/oauth/authorize"),
+    GITHUB_OAUTH_TOKEN_URL: z.string().url().default("https://github.com/login/oauth/access_token"),
+    GITHUB_OAUTH_API_URL: z.string().url().default("https://api.github.com"),
+    OIDC_ISSUER: OptionalUrl,
+    OIDC_CLIENT_ID: z.string().optional(),
+    OIDC_CLIENT_SECRET: z.string().optional(),
+    FACILITY_INSTANCE_ID: z.string().optional(),
+    FACILITY_OAUTH_ISSUER: OptionalUrl,
+    FACILITY_OAUTH_JWKS: z.string().optional(),
+    MCP_PUBLIC_URL: OptionalUrl,
     FACILITY_INSECURE_DEV: z.string().optional(),
-    FACILITY_AUTO_JOIN: z.string().optional(),
     S3_ENDPOINT: z.string().optional(),
     S3_ACCESS_KEY: z.string().optional(),
     S3_SECRET_KEY: z.string().optional(),
@@ -62,6 +77,26 @@ const EnvSchema = z
         message: "FACILITY_INSECURE_DEV is refused in production",
       });
     }
+    if (
+      env.AUTH_IDENTITY_PROVIDER === "github" &&
+      Boolean(env.GITHUB_OAUTH_CLIENT_ID) !== Boolean(env.GITHUB_OAUTH_CLIENT_SECRET)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["GITHUB_OAUTH_CLIENT_ID"],
+        message: "GitHub OAuth client id and secret must be configured together",
+      });
+    }
+    if (
+      env.AUTH_IDENTITY_PROVIDER === "oidc" &&
+      (!env.OIDC_ISSUER || !env.OIDC_CLIENT_ID || !env.FACILITY_INSTANCE_ID)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["OIDC_ISSUER"],
+        message: "OIDC issuer, client id, and Facility instance id are required in oidc mode",
+      });
+    }
   });
 
 function isExactBase64Key(value: string) {
@@ -71,25 +106,33 @@ function isExactBase64Key(value: string) {
 
 export function readConfig(env = process.env): AppConfig {
   const parsed = EnvSchema.parse(env);
+  const webUrl = parsed.WEB_URL ?? parsed.PUBLIC_URL;
   return {
     databaseUrl: parsed.DATABASE_URL,
     secretMasterKey: parsed.SECRET_MASTER_KEY,
     port: parsed.PORT,
     publicUrl: parsed.PUBLIC_URL,
-    webUrl: parsed.WEB_URL,
+    webUrl,
     sandboxApiUrl: parsed.SANDBOX_API_URL ?? parsed.PUBLIC_URL,
     sandboxGatewayUrl: parsed.SANDBOX_GATEWAY_URL ?? parsed.GATEWAY_URL,
     gatewayUrl: parsed.GATEWAY_URL,
     sandboxRunnerImage: parsed.FACILITY_RUNNER_IMAGE,
     sandboxDriver: parsed.FACILITY_SANDBOX_DRIVER,
-    workosApiKey: parsed.WORKOS_API_KEY,
-    workosClientId: parsed.WORKOS_CLIENT_ID,
-    workosCookiePassword: parsed.WORKOS_COOKIE_PASSWORD,
-    workosAuthkitDomain: parsed.WORKOS_AUTHKIT_DOMAIN,
-    mcpOauthAudience: parsed.MCP_OAUTH_AUDIENCE,
-    workosRedirectUri: parsed.NEXT_PUBLIC_WORKOS_REDIRECT_URI,
+    authIdentityProvider: parsed.AUTH_IDENTITY_PROVIDER,
+    authCallbackUrl: parsed.AUTH_CALLBACK_URL ?? `${webUrl.replace(/\/$/, "")}/api/auth/callback`,
+    githubOauthClientId: parsed.GITHUB_OAUTH_CLIENT_ID,
+    githubOauthClientSecret: parsed.GITHUB_OAUTH_CLIENT_SECRET,
+    githubOauthAuthorizeUrl: parsed.GITHUB_OAUTH_AUTHORIZE_URL,
+    githubOauthTokenUrl: parsed.GITHUB_OAUTH_TOKEN_URL,
+    githubOauthApiUrl: parsed.GITHUB_OAUTH_API_URL,
+    oidcIssuer: parsed.OIDC_ISSUER?.replace(/\/$/, ""),
+    oidcClientId: parsed.OIDC_CLIENT_ID,
+    oidcClientSecret: parsed.OIDC_CLIENT_SECRET,
+    facilityInstanceId: parsed.FACILITY_INSTANCE_ID,
+    oauthIssuer: parsed.FACILITY_OAUTH_ISSUER?.replace(/\/$/, ""),
+    oauthJwks: parseJwks(parsed.FACILITY_OAUTH_JWKS),
+    mcpPublicUrl: parsed.MCP_PUBLIC_URL?.replace(/\/$/, ""),
     facilityInsecureDev: parsed.FACILITY_INSECURE_DEV === "1",
-    facilityAutoJoin: parsed.FACILITY_AUTO_JOIN === "1",
     s3Endpoint: parsed.S3_ENDPOINT,
     s3AccessKey: parsed.S3_ACCESS_KEY,
     s3SecretKey: parsed.S3_SECRET_KEY,
@@ -102,4 +145,34 @@ export function readConfig(env = process.env): AppConfig {
     githubCloneToken: parsed.GITHUB_CLONE_TOKEN,
     logLevel: parsed.LOG_LEVEL,
   };
+}
+
+function parseJwks(value: string | undefined): { keys: Record<string, unknown>[] } | undefined {
+  if (!value) return undefined;
+  const parsed = JSON.parse(value) as { keys?: unknown } | unknown[];
+  const keys = Array.isArray(parsed) ? parsed : parsed.keys;
+  if (
+    !Array.isArray(keys) ||
+    keys.length === 0 ||
+    keys.some((key) => !key || typeof key !== "object")
+  ) {
+    throw new Error("FACILITY_OAUTH_JWKS must contain a non-empty JWK key array");
+  }
+  for (const key of keys as Record<string, unknown>[]) {
+    if (
+      key.kty !== "EC" ||
+      key.crv !== "P-256" ||
+      typeof key.x !== "string" ||
+      typeof key.y !== "string" ||
+      typeof key.d !== "string" ||
+      typeof key.kid !== "string" ||
+      key.kid.length === 0
+    ) {
+      throw new Error("FACILITY_OAUTH_JWKS keys must be private ES256 JWKs with unique kid values");
+    }
+  }
+  if (new Set((keys as Record<string, unknown>[]).map((key) => key.kid)).size !== keys.length) {
+    throw new Error("FACILITY_OAUTH_JWKS key ids must be unique");
+  }
+  return { keys: keys as Record<string, unknown>[] };
 }

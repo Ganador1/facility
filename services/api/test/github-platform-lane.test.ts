@@ -82,7 +82,7 @@ describe("github platform lane", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `gh-platform-${Date.now()}@example.com` },
     });
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
@@ -577,7 +577,7 @@ describe("github platform lane", async () => {
       prNumber: 13,
       commitSha: "preview123",
       status: "provisioning",
-      authMode: "workos_sso",
+      authMode: "facility_session",
       config: {
         image: "ghcr.io/example/review-app:preview123",
         port: 3000,

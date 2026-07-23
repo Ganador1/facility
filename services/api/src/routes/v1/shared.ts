@@ -345,7 +345,6 @@ export const MemberRowSchema = z.object({
   member: OrgMemberSchema,
   user: z.object({
     id: z.string(),
-    workosUserId: z.string().nullable(),
     email: z.string(),
     name: z.string().nullable(),
     avatarUrl: z.string().nullable(),

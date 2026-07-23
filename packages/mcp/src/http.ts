@@ -10,7 +10,7 @@ export type HttpServerOptions = {
   allowedHosts?: string[];
   fetch?: typeof fetch;
   // OAuth 2.1 resource-server discovery (RFC 9728). When set, the server
-  // advertises the WorkOS authorization server so interactive MCP clients
+  // advertises the Facility instance authorization server so interactive MCP clients
   // (Claude, Cursor, ChatGPT) can run the OAuth 2.1 / PKCE flow. `fak_` API
   // keys continue to work unchanged for non-interactive service use.
   resourceUrl?: string;

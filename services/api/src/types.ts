@@ -30,17 +30,21 @@ export type AppConfig = {
   sandboxRunnerImage: string;
   // Driver the seeded default sandbox profile uses ("docker" | "aws").
   sandboxDriver: "docker" | "aws";
-  workosApiKey?: string;
-  workosAuthkitDomain?: string;
-  workosRedirectUri?: string;
-  workosClientId?: string;
-  workosCookiePassword?: string;
-  // Expected `aud` for WorkOS OAuth access tokens. REQUIRED to enable the JWT
-  // credential kind: the resource server keeps OAuth JWT auth disabled unless
-  // this is set, so audience is always validated (never fail-open).
-  mcpOauthAudience?: string;
+  authIdentityProvider?: "github" | "oidc";
+  authCallbackUrl?: string;
+  githubOauthClientId?: string;
+  githubOauthClientSecret?: string;
+  githubOauthAuthorizeUrl?: string;
+  githubOauthTokenUrl?: string;
+  githubOauthApiUrl?: string;
+  oidcIssuer?: string;
+  oidcClientId?: string;
+  oidcClientSecret?: string;
+  facilityInstanceId?: string;
+  oauthIssuer?: string;
+  oauthJwks?: { keys: Record<string, unknown>[] };
+  mcpPublicUrl?: string;
   facilityInsecureDev: boolean;
-  facilityAutoJoin?: boolean;
   s3Endpoint?: string;
   s3AccessKey?: string;
   s3SecretKey?: string;
@@ -52,6 +56,17 @@ export type AppConfig = {
   githubAppSlug?: string;
   githubCloneToken?: string;
   logLevel: string;
+};
+
+export type ExternalIdentity = {
+  provider: "github";
+  githubUserId: string;
+  login: string;
+  email: string;
+  emailVerified: true;
+  name?: string;
+  avatarUrl?: string;
+  installations: Array<{ installationId: number; accountId: number }>;
 };
 
 declare module "fastify" {

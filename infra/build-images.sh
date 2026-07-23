@@ -31,7 +31,7 @@ login() {
     docker login --username AWS --password-stdin "$ECR_REGISTRY"
 }
 
-# The api and gateway images are stages of the root multi-stage Dockerfile;
+# The api, gateway, and mcp images are stages of the root multi-stage Dockerfile;
 # web and runner have their own. api and worker share one image (the worker is
 # just `node services/api/dist/worker.js` at runtime).
 build_and_push() {
@@ -66,5 +66,6 @@ build_and_push api Dockerfile api
 # The worker runs the api image with a different command — same bits, own repo.
 retag_and_push api worker
 build_and_push gateway Dockerfile gateway
+build_and_push mcp Dockerfile mcp
 build_and_push web apps/web/Dockerfile web
 build_and_push runner runner/Dockerfile "" "$ROOT_DIR/runner"

@@ -55,7 +55,7 @@ describe("outcomes list + audit filters", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `outcomes-audit-${Date.now()}@example.com` },
     });
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");

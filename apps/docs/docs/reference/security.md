@@ -8,7 +8,7 @@ Security and privacy are first-class concerns; this page is the contract.
 
 ## Identity & access
 
-- Humans: WorkOS SSO (AuthKit). Machines: argon2id-hashed API keys bound to
+- Humans: GitHub identity through direct OAuth or the SaaS OIDC broker. Machines: argon2id-hashed API keys bound to
   roles. One permission catalog for web, CLI, MCP, and agents; deny by
   default; every route declares its permission and the startup assertion
   refuses undeclared routes.
@@ -19,7 +19,7 @@ Security and privacy are first-class concerns; this page is the contract.
 - **Stored secrets** — provider API keys and integration signing secrets are
   sealed (libsodium) with a master key from your secret manager/KMS, decrypted
   only in the service that needs them, and never returned by any API.
-- **Service credentials** — the GitHub App private key and WorkOS credentials
+- **Service credentials** — the GitHub App, upstream identity, and OAuth signing credentials
   are supplied to the services as environment variables from your secret
   manager; the platform reads them at boot and does not persist them in its
   database.
@@ -47,7 +47,7 @@ Security and privacy are first-class concerns; this page is the contract.
 - Preview origins bind only to Docker loopback or an AWS private address;
   Facility rejects public, credential-bearing, and non-HTTP origins.
 - Production preview creation, listing, viewing, and deletion fail closed until
-  WorkOS SSO is configured. Machine keys can request a preview, but cannot view
+  interactive GitHub/OIDC login is configured. Machine keys can request a preview, but cannot view
   or delete it.
 - The public URL is an authenticated Facility proxy. It strips cookies and
   authorization before forwarding only browser-safe `GET` and `HEAD` requests.

@@ -53,7 +53,7 @@ export function enrichOpenApi(
   for (const path of Object.keys(paths)) {
     if (path.startsWith("/internal/")) delete paths[path];
   }
-  delete paths["/auth/dev-login"];
+  delete paths["/__test/session"];
   delete paths["/auth/default-org"];
 
   const routeMap = new Map(

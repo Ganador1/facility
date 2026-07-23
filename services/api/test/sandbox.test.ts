@@ -86,7 +86,7 @@ describe("sandbox api", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `sandbox-${Date.now()}@example.com` },
     });
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");

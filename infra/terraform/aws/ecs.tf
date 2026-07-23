@@ -142,7 +142,7 @@ resource "aws_ecs_task_definition" "migrate" {
       image     = local.images.api
       essential = true
       # Migrate AND seed: bundled roles/action-types/default sandbox profile must
-      # exist before the first WorkOS bootstrap and before `facility doctor`
+      # exist before administrative instance bootstrap and before `facility doctor`
       # passes. Seed is idempotent (ON CONFLICT) so re-running each deploy is safe.
       command = [
         "sh",

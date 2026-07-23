@@ -80,7 +80,7 @@ describe("assistant ask endpoint", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: "assistant-tester@example.test" },
     });
     const setCookie = login.headers["set-cookie"];

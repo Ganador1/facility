@@ -1,60 +1,54 @@
 import { randomBytes } from "node:crypto";
-import { newId } from "@facility/core";
+import { newId, open, seal } from "@facility/core";
 import {
+  githubInstallations,
+  insertAuditEvent,
   orgMembers,
   orgs,
-  roles as rolesTable,
+  roles,
   seedBundledRegistryForOrg,
+  userIdentities,
   users,
 } from "@facility/db";
-import { WorkOS } from "@workos-inc/node";
-import { and, eq, isNull, or } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { ensureDevUser, mintSessionCookie } from "../app.js";
+import { mintSessionCookie } from "../app.js";
+import { type AuthTransaction, ExternalIdentityProvider } from "../auth/identity-provider.js";
 import { ApiError } from "../errors.js";
-import type { AppConfig } from "../types.js";
+import type { AppConfig, ExternalIdentity } from "../types.js";
 
 const EmptyResponse = z.object({ ok: z.boolean() });
 const STATE_COOKIE = "facility_oauth_state";
+const SESSION_COOKIE = "facility_session";
 
-export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig) {
-  const workos =
-    config.workosApiKey && config.workosClientId ? new WorkOS(config.workosApiKey) : null;
-  const redirectUri = config.workosRedirectUri ?? `${config.publicUrl}/auth/callback`;
+export async function registerAuthRoutes(
+  app: FastifyInstance,
+  config: AppConfig,
+  options: { fetch?: typeof fetch } = {},
+) {
+  const provider = new ExternalIdentityProvider(config, options.fetch);
 
   app.get(
     "/auth/login",
     {
       config: { public: true },
-      schema: { response: { 302: z.unknown(), 501: z.object({ error: z.unknown() }) } },
+      schema: {
+        querystring: z.object({ returnTo: z.string().optional() }),
+        response: { 302: z.unknown(), 501: z.object({ error: z.unknown() }) },
+      },
     },
-    async (_request, reply) => {
-      if (!workos || !config.workosClientId) {
-        throw new ApiError(
-          501,
-          "workos_unconfigured",
-          "WorkOS login is not configured",
-          undefined,
-          true,
-        );
-      }
-      // CSRF: bind the OAuth round-trip to a cookie-held nonce.
-      const state = randomBytes(16).toString("hex");
-      reply.setCookie(STATE_COOKIE, state, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        secure: redirectUri.startsWith("https://"),
-        maxAge: 600,
-      });
-      const url = workos.userManagement.getAuthorizationUrl({
-        provider: "authkit",
-        clientId: config.workosClientId,
-        redirectUri,
-        state,
-      });
-      return reply.redirect(url);
+    async (request, reply) => {
+      const { returnTo } = request.query as { returnTo?: string };
+      const transaction: AuthTransaction = {
+        state: randomBytes(24).toString("base64url"),
+        verifier: randomBytes(48).toString("base64url"),
+        nonce: randomBytes(24).toString("base64url"),
+        returnTo: safeReturnTo(returnTo),
+      };
+      const sealed = await seal(JSON.stringify(transaction), config.secretMasterKey);
+      reply.setCookie(STATE_COOKIE, sealed, cookieOptions(config, 600));
+      return reply.redirect(await provider.authorizationUrl(transaction));
     },
   );
 
@@ -63,109 +57,75 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
     {
       config: { public: true },
       schema: {
-        querystring: z.object({ code: z.string().optional(), state: z.string().optional() }),
+        querystring: z.object({
+          code: z.string().optional(),
+          state: z.string().optional(),
+          error: z.string().optional(),
+        }),
         response: { 302: z.unknown(), 401: z.unknown(), 403: z.unknown(), 501: z.unknown() },
       },
     },
     async (request, reply) => {
-      if (!workos || !config.workosClientId) {
-        throw new ApiError(501, "workos_unconfigured", "WorkOS is not configured", undefined, true);
+      const query = request.query as { code?: string; state?: string; error?: string };
+      if (query.error) throw new ApiError(401, "auth_denied", "Authentication was denied");
+      if (!query.code) throw new ApiError(401, "missing_code", "Authorization code is required");
+      const stateCookie = request.cookies[STATE_COOKIE];
+      let transaction: AuthTransaction;
+      try {
+        transaction = z
+          .object({
+            state: z.string(),
+            verifier: z.string(),
+            nonce: z.string(),
+            returnTo: z.string(),
+          })
+          .parse(JSON.parse(await open(stateCookie ?? "", config.secretMasterKey)));
+      } catch {
+        throw new ApiError(401, "bad_state", "OAuth state is missing or invalid");
       }
-      const { code, state } = request.query as { code?: string; state?: string };
-      if (!code) throw new ApiError(401, "missing_code", "Authorization code is required");
-      const expectedState = request.cookies[STATE_COOKIE];
-      if (!expectedState || expectedState !== state) {
+      if (transaction.state !== query.state)
         throw new ApiError(401, "bad_state", "OAuth state mismatch");
-      }
       reply.clearCookie(STATE_COOKIE, { path: "/" });
 
-      let workosUser: {
-        id: string;
-        email: string;
-        firstName?: string | null;
-        lastName?: string | null;
-      };
+      let identity: ExternalIdentity;
       try {
-        const result = await workos.userManagement.authenticateWithCode({
-          clientId: config.workosClientId,
-          code,
-        });
-        workosUser = result.user;
+        identity = await provider.exchange(query.code, transaction);
       } catch (error) {
-        request.log.warn({ err: error }, "workos code exchange failed");
-        throw new ApiError(401, "auth_failed", "WorkOS authentication failed");
+        if (error instanceof ApiError) throw error;
+        request.log.warn({ err: error }, "external identity exchange failed");
+        throw new ApiError(401, "auth_failed", "Authentication failed");
       }
-
-      const session = await ensureWorkosUser(
-        app.facilityDb,
-        {
-          workosUserId: workosUser.id,
-          email: workosUser.email,
-          name:
-            [workosUser.firstName, workosUser.lastName].filter(Boolean).join(" ").trim() ||
-            undefined,
-        },
-        {
-          autoJoin: config.facilityAutoJoin,
-        },
+      const session = await ensureGithubUser(app.facilityDb, identity);
+      reply.setCookie(
+        SESSION_COOKIE,
+        await mintSessionCookie(config, session.userId, session.orgId),
+        cookieOptions(config, 7 * 24 * 60 * 60),
       );
-      const sealed = await mintSessionCookie(config, session.userId, session.orgId);
-      reply.setCookie("facility_session", sealed, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        secure: redirectUri.startsWith("https://"),
+      await insertAuditEvent(app.facilityDb, {
+        orgId: session.orgId,
+        actor: { type: "user", id: session.userId },
+        action: "auth.login",
+        target: { type: "user", id: session.userId },
+        payload: { via: config.authIdentityProvider ?? "github" },
+        ip: request.ip,
+        userAgent: request.headers["user-agent"],
       });
-      await request.audit("auth.login", { type: "user", id: session.userId }, { via: "workos" });
-      return reply.redirect(config.webUrl ?? "/");
-    },
-  );
-
-  app.post(
-    "/auth/dev-login",
-    {
-      config: { public: true },
-      schema: {
-        body: z.object({ email: z.string().email() }),
-        response: {
-          200: z.object({ ok: z.boolean(), orgId: z.string(), userId: z.string() }),
-        },
-      },
-    },
-    async (request, reply) => {
-      if (!config.facilityInsecureDev) {
-        throw new ApiError(404, "not_found", "Dev login is disabled");
-      }
-      const { email } = request.body as { email: string };
-      const session = await ensureDevUser(app.facilityDb, email);
-      const sealed = await mintSessionCookie(config, session.userId, session.orgId);
-      // The session value is sealed with authenticated encryption (libsodium
-      // secretbox) — that IS the integrity layer, so no cookie signing on top.
-      reply.setCookie("facility_session", sealed, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        secure: config.publicUrl.startsWith("https://"),
-      });
-      await request.audit("auth.login", { type: "user", id: session.userId });
-      return { ok: true, ...session };
+      return reply.redirect(
+        new URL(transaction.returnTo, config.webUrl ?? config.publicUrl).toString(),
+      );
     },
   );
 
   app.post(
     "/auth/logout",
-    {
-      config: { public: true },
-      schema: { response: { 200: EmptyResponse } },
-    },
+    { config: { public: true }, schema: { response: { 200: EmptyResponse } } },
     async (request, reply) => {
-      if (request.principal) {
+      if (request.principal)
         await request.audit("auth.logout", {
           type: request.principal.type,
           id: request.principal.id,
         });
-      }
-      reply.clearCookie("facility_session", { path: "/" });
+      reply.clearCookie(SESSION_COOKIE, { path: "/" });
       return { ok: true };
     },
   );
@@ -188,161 +148,129 @@ export async function registerAuthRoutes(app: FastifyInstance, config: AppConfig
   );
 }
 
-/**
- * Upsert a WorkOS-authenticated user and resolve their org. An existing member
- * keeps their org. Otherwise membership must be provisioned first, unless an
- * org explicitly admits the user's email domain or auto-join is opted in.
- */
-export async function ensureWorkosUser(
+/** Resolve a verified GitHub identity to an explicitly provisioned Facility member. */
+export async function ensureGithubUser(
   db: FastifyInstance["facilityDb"],
-  input: { workosUserId: string; email: string; name?: string },
-  options: { autoJoin?: boolean } = {},
+  identity: ExternalIdentity,
 ): Promise<{ userId: string; orgId: string }> {
-  const existing =
-    (await db.select().from(users).where(eq(users.workosUserId, input.workosUserId)).limit(1))[0] ??
-    (await db.select().from(users).where(eq(users.email, input.email)).limit(1))[0];
-
-  const userId = existing?.id ?? newId("user");
-  if (existing) {
+  const linked = (
     await db
-      .update(users)
-      .set({
-        workosUserId: input.workosUserId,
-        name: input.name ?? existing.name,
-        updatedAt: new Date(),
-      })
-      .where(eq(users.id, existing.id));
-  } else {
-    await db.insert(users).values({
-      id: userId,
-      workosUserId: input.workosUserId,
-      email: input.email,
-      name: input.name,
-      status: "active",
-    });
-  }
-
-  const membership = (
-    await db.select().from(orgMembers).where(eq(orgMembers.userId, userId)).limit(1)
-  )[0];
-  if (membership) return { userId, orgId: membership.orgId };
-
-  const orgRows = await db.select().from(orgs);
-  if (orgRows.length === 0) {
-    return bootstrapFirstOrg(db, userId, input.email);
-  }
-  const autoJoinEnabled = options.autoJoin ?? process.env.FACILITY_AUTO_JOIN === "1";
-  const domainMatch = orgRows.filter((org) => orgAllowsEmailDomain(org.settings, input.email));
-  const org =
-    domainMatch.length === 1
-      ? domainMatch[0]
-      : autoJoinEnabled && orgRows.length === 1
-        ? orgRows[0]
-        : null;
-  if (!org)
-    throw new ApiError(
-      403,
-      "not_invited",
-      "No membership for this user; ask an admin to invite you",
-    );
-  const viewer = await findRole(db, "viewer", org.id);
-  if (!viewer) throw new ApiError(500, "seed_required", "Bundled viewer role is not seeded");
-  await db
-    .insert(orgMembers)
-    .values({ id: newId("user"), orgId: org.id, userId, roleId: viewer.id })
-    .onConflictDoNothing();
-  return { userId, orgId: org.id };
-}
-
-function orgAllowsEmailDomain(settings: unknown, email: string) {
-  const domain = email.split("@")[1]?.trim().toLowerCase();
-  if (!domain) return false;
-  const object =
-    settings && typeof settings === "object" && !Array.isArray(settings)
-      ? (settings as Record<string, unknown>)
-      : {};
-  const auth =
-    object.auth && typeof object.auth === "object" && !Array.isArray(object.auth)
-      ? (object.auth as Record<string, unknown>)
-      : {};
-  const values = [
-    object.allowedDomain,
-    object.allowedDomains,
-    object["allowed-domain"],
-    object["allowed-domains"],
-    object.autoJoinDomain,
-    object.autoJoinDomains,
-    auth.allowedDomain,
-    auth.allowedDomains,
-    auth["allowed-domain"],
-    auth["allowed-domains"],
-  ].flatMap((value) => (Array.isArray(value) ? value : [value]));
-  return values.some((value) => typeof value === "string" && value.trim().toLowerCase() === domain);
-}
-
-async function bootstrapFirstOrg(
-  db: FastifyInstance["facilityDb"],
-  userId: string,
-  email: string,
-): Promise<{ userId: string; orgId: string }> {
-  const orgName = bootstrapOrgName(email);
-  const slug = await uniqueOrgSlug(db, slugify(orgName));
-  const org = (
-    await db
-      .insert(orgs)
-      .values({ id: newId("org"), name: orgName, slug, settings: {} })
-      .returning()
-  )[0];
-  if (!org) throw new ApiError(500, "bootstrap_failed", "Failed to create bootstrap org");
-  const owner = await findRole(db, "owner", org.id);
-  if (!owner) throw new ApiError(500, "seed_required", "Bundled owner role is not seeded");
-  await db
-    .insert(orgMembers)
-    .values({ id: newId("user"), orgId: org.id, userId, roleId: owner.id })
-    .onConflictDoNothing();
-  await seedBundledRegistryForOrg(db, org.id);
-  return { userId, orgId: org.id };
-}
-
-async function findRole(
-  db: FastifyInstance["facilityDb"],
-  name: "owner" | "viewer",
-  orgId: string,
-) {
-  return (
-    await db
-      .select()
-      .from(rolesTable)
+      .select({ identity: userIdentities, user: users })
+      .from(userIdentities)
+      .innerJoin(users, eq(userIdentities.userId, users.id))
       .where(
-        and(eq(rolesTable.name, name), or(isNull(rolesTable.orgId), eq(rolesTable.orgId, orgId))),
+        and(
+          eq(userIdentities.provider, "github"),
+          eq(userIdentities.providerSubject, identity.githubUserId),
+        ),
       )
       .limit(1)
   )[0];
-}
-
-function bootstrapOrgName(email: string) {
-  const configured = process.env.FACILITY_BOOTSTRAP_ORG_NAME?.trim();
-  if (configured) return configured;
-  const domain = email.split("@")[1]?.trim().toLowerCase();
-  return domain?.split(".").filter(Boolean)[0] || "facility";
-}
-
-async function uniqueOrgSlug(db: FastifyInstance["facilityDb"], base: string) {
-  let slug = base || "facility";
-  let suffix = 2;
-  while ((await db.select({ id: orgs.id }).from(orgs).where(eq(orgs.slug, slug)).limit(1))[0]) {
-    slug = `${base}-${suffix}`;
-    suffix += 1;
+  const emailMatches = linked
+    ? []
+    : await db
+        .select()
+        .from(users)
+        .where(sql`lower(${users.email}) = ${identity.email.toLowerCase()}`)
+        .limit(2);
+  if (!linked && emailMatches.length > 1) {
+    throw new ApiError(403, "identity_conflict", "Multiple Facility users match this GitHub email");
   }
-  return slug;
+  const invited = linked?.user ?? emailMatches[0];
+  if (invited?.status !== "active") {
+    throw new ApiError(
+      403,
+      "not_invited",
+      "No active Facility invitation exists for this GitHub user",
+    );
+  }
+
+  const memberships = await db
+    .select({ member: orgMembers, role: roles, installation: githubInstallations })
+    .from(orgMembers)
+    .innerJoin(roles, eq(orgMembers.roleId, roles.id))
+    .innerJoin(githubInstallations, eq(githubInstallations.orgId, orgMembers.orgId))
+    .where(and(eq(orgMembers.userId, invited.id), isNull(githubInstallations.suspendedAt)))
+    .orderBy(orgMembers.createdAt, orgMembers.orgId);
+  const admitted = memberships.find(({ installation }) =>
+    identity.installations.some(
+      (candidate) =>
+        candidate.installationId === installation.installationId &&
+        candidate.accountId === installation.accountId,
+    ),
+  );
+  if (!admitted)
+    throw new ApiError(
+      403,
+      "installation_access_required",
+      "GitHub App installation access is required for this Facility instance",
+    );
+
+  if (!linked) {
+    const conflicting = (
+      await db
+        .select()
+        .from(userIdentities)
+        .where(and(eq(userIdentities.userId, invited.id), eq(userIdentities.provider, "github")))
+        .limit(1)
+    )[0];
+    if (conflicting)
+      throw new ApiError(
+        403,
+        "identity_conflict",
+        "This Facility user is linked to another GitHub identity",
+      );
+    await db.insert(userIdentities).values({
+      id: newId("user"),
+      userId: invited.id,
+      provider: "github",
+      providerSubject: identity.githubUserId,
+      login: identity.login,
+      metadata: { accountIds: identity.installations.map((entry) => entry.accountId) },
+    });
+  } else if (linked.user.id !== invited.id) {
+    throw new ApiError(
+      403,
+      "identity_conflict",
+      "GitHub identity is linked to another Facility user",
+    );
+  }
+
+  await db
+    .update(users)
+    .set({
+      email: identity.email,
+      name: identity.name ?? invited.name,
+      avatarUrl: identity.avatarUrl ?? invited.avatarUrl,
+      updatedAt: new Date(),
+    })
+    .where(eq(users.id, invited.id));
+  await db
+    .update(userIdentities)
+    .set({ login: identity.login, updatedAt: new Date() })
+    .where(
+      and(
+        eq(userIdentities.provider, "github"),
+        eq(userIdentities.providerSubject, identity.githubUserId),
+      ),
+    );
+  await seedBundledRegistryForOrg(db, admitted.member.orgId);
+  return { userId: invited.id, orgId: admitted.member.orgId };
 }
 
-function slugify(value: string) {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "") || "facility"
-  );
+function cookieOptions(config: AppConfig, maxAge: number) {
+  const callback =
+    config.authCallbackUrl ?? `${config.webUrl ?? config.publicUrl}/api/auth/callback`;
+  return {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    path: "/",
+    secure: callback.startsWith("https://"),
+    maxAge,
+  };
+}
+
+function safeReturnTo(value: string | undefined) {
+  if (!value || value === "/") return "/";
+  return /^\/oauth\/interaction\/[A-Za-z0-9_-]+$/.test(value) ? value : "/";
 }

@@ -17,10 +17,8 @@ if (command === "serve") {
     console.error("FACILITY_API_URL is required.");
     process.exit(2);
   }
-  // OAuth 2.1 discovery is advertised only when an authorization server is
-  // configured; otherwise the server stays API-key-only. WORKOS_AUTHKIT_DOMAIN
-  // is the WorkOS authorization server; MCP_PUBLIC_URL is this resource's URL.
-  const authRaw = process.env.MCP_AUTHORIZATION_SERVER ?? process.env.WORKOS_AUTHKIT_DOMAIN;
+  // OAuth discovery points at this Facility instance's authorization server.
+  const authRaw = process.env.MCP_AUTHORIZATION_SERVER;
   const authorizationServer = authRaw
     ? /^https?:\/\//.test(authRaw)
       ? authRaw.replace(/\/+$/, "")

@@ -24,35 +24,35 @@ export type PreviewCreateInput = {
   createdBy: { type: string; id: string };
 };
 
-export function previewSsoReady(config: AppConfig) {
-  return Boolean(
-    config.workosApiKey &&
-      config.workosClientId &&
-      config.workosAuthkitDomain &&
-      config.workosRedirectUri &&
-      config.workosCookiePassword,
-  );
+export function previewAuthReady(config: AppConfig) {
+  return config.authIdentityProvider === "oidc"
+    ? Boolean(config.oidcIssuer && config.oidcClientId && config.facilityInstanceId)
+    : Boolean(config.githubOauthClientId && config.githubOauthClientSecret);
 }
 
-export function assertPreviewSso(config: AppConfig, principal: Principal | undefined) {
+export function assertPreviewSession(config: AppConfig, principal: Principal | undefined) {
   if (principal?.type !== "user") {
-    throw previewError(403, "preview_sso_required", "Preview environments require an SSO session");
+    throw previewError(
+      403,
+      "preview_session_required",
+      "Preview environments require a user session",
+    );
   }
-  if (!config.facilityInsecureDev && !previewSsoReady(config)) {
+  if (!config.facilityInsecureDev && !previewAuthReady(config)) {
     throw previewError(
       503,
-      "preview_sso_unavailable",
-      "Preview provisioning is disabled until WorkOS SSO is fully configured",
+      "preview_auth_unavailable",
+      "Preview provisioning is disabled until interactive authentication is configured",
     );
   }
 }
 
 export function assertPreviewProvisioningAvailable(config: AppConfig) {
-  if (!config.facilityInsecureDev && !previewSsoReady(config)) {
+  if (!config.facilityInsecureDev && !previewAuthReady(config)) {
     throw previewError(
       503,
-      "preview_sso_unavailable",
-      "Preview provisioning is disabled until WorkOS SSO is fully configured",
+      "preview_auth_unavailable",
+      "Preview provisioning is disabled until interactive authentication is configured",
     );
   }
 }
@@ -72,7 +72,7 @@ export async function createPreviewRecord(db: Db, input: PreviewCreateInput) {
         commitSha: input.commitSha,
         driver: input.driver ?? "docker",
         status: "provisioning",
-        authMode: "workos_sso",
+        authMode: "facility_session",
         config: {
           image: input.image,
           command: input.command,
@@ -148,7 +148,7 @@ export async function provisionPreview(
         actor: { type: "system", id: "preview.provisioner" },
         action: "preview.provisioned",
         target: { type: "preview", id: preview.id },
-        payload: { driver: driver.name, status, auth_mode: "workos_sso" },
+        payload: { driver: driver.name, status, auth_mode: "facility_session" },
       });
       return updated;
     } catch (error) {

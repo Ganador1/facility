@@ -38,6 +38,7 @@ import {
   schedulerWatermarks,
   seed,
   steerMessages,
+  userIdentities,
   users,
   verifyAuditChain,
   webhookDeliveries,
@@ -50,7 +51,7 @@ import { registerAssistantTurn, releaseAssistantTurn } from "../src/assistant/tu
 import type { GithubClientFactory } from "../src/github/client.js";
 import { validateProjectKb } from "../src/harness.js";
 import { deliverPendingWebhooks } from "../src/integrations/outbound.js";
-import { ensureWorkosUser } from "../src/routes/auth.js";
+import { ensureGithubUser } from "../src/routes/auth.js";
 import { runAgentSchedules } from "../src/schedules.js";
 import type { AppConfig } from "../src/types.js";
 
@@ -194,7 +195,7 @@ describe("api", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `api-${Date.now()}@example.com` },
     });
     expect(login.statusCode).toBe(200);
@@ -202,7 +203,7 @@ describe("api", async () => {
     orgId = login.json().orgId;
     const approverLogin = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `api-approver-${Date.now()}@example.com` },
     });
     expect(approverLogin.statusCode).toBe(200);
@@ -249,7 +250,7 @@ describe("api", async () => {
       components?: { schemas?: Record<string, unknown>; securitySchemes?: Record<string, unknown> };
     };
     expect(Object.keys(document.paths).some((path) => path.startsWith("/internal/"))).toBe(false);
-    expect(document.paths["/auth/dev-login"]).toBeUndefined();
+    expect(document.paths["/__test/session"]).toBeUndefined();
     expect(document.components?.schemas?.ErrorResponse).toBeDefined();
     expect(document.components?.securitySchemes).toMatchObject({
       bearerAuth: { type: "http", scheme: "bearer" },
@@ -376,7 +377,7 @@ describe("api", async () => {
     return { projectId: project.json().id as string, agent };
   }
 
-  it("dev-login resolves /v1/me", async () => {
+  it("internal test session resolves /v1/me", async () => {
     const response = await app.inject({ method: "GET", url: "/v1/me", headers: { cookie } });
     expect(response.statusCode).toBe(200);
     expect(response.json().org.slug).toBe("the-agile-monkeys");
@@ -387,91 +388,89 @@ describe("api", async () => {
     expect(response.statusCode).toBe(501);
     expect(response.json()).toEqual({
       error: {
-        code: "workos_unconfigured",
-        message: "WorkOS login is not configured",
+        code: "auth_unconfigured",
+        message: "Login is not configured",
       },
     });
   });
 
-  it("bootstraps the first WorkOS user as owner when no orgs exist", async () => {
-    const rollback = new Error("rollback bootstrap test");
-    await expect(
-      db.transaction(async (tx) => {
-        await tx.execute(sql`TRUNCATE TABLE orgs, users, roles CASCADE`);
-        await tx.insert(roles).values({
-          id: "role_bundled_owner",
-          orgId: null,
-          name: "owner",
-          description: "Full organization control.",
-          permissions: ["*"],
-        });
-
-        const session = await ensureWorkosUser(
-          tx as unknown as Parameters<typeof ensureWorkosUser>[0],
-          {
-            workosUserId: "workos_first_admin",
-            email: "first@theagilemonkeys.com",
-            name: "First Admin",
-          },
-        );
-
-        const membership = (
-          await tx
-            .select({ org: orgs, member: orgMembers, role: roles, user: users })
-            .from(orgMembers)
-            .innerJoin(orgs, eq(orgMembers.orgId, orgs.id))
-            .innerJoin(roles, eq(orgMembers.roleId, roles.id))
-            .innerJoin(users, eq(orgMembers.userId, users.id))
-            .where(eq(orgMembers.userId, session.userId))
-            .limit(1)
-        )[0];
-        expect(membership?.org.slug).toBe("theagilemonkeys");
-        expect(membership?.role.name).toBe("owner");
-        expect(membership?.user.workosUserId).toBe("workos_first_admin");
-        throw rollback;
-      }),
-    ).rejects.toThrow(rollback.message);
-  });
-
-  it("requires WorkOS users to be invited or admitted by org email domain", async () => {
-    const rollback = new Error("rollback workos admission test");
+  it("requires an explicit invitation and exact GitHub installation access", async () => {
+    const rollback = new Error("rollback github admission test");
     await expect(
       db.transaction(async (tx) => {
         await expect(
-          ensureWorkosUser(
-            tx as unknown as Parameters<typeof ensureWorkosUser>[0],
-            {
-              workosUserId: `workos_uninvited_${Date.now()}`,
-              email: `uninvited-${Date.now()}@blocked.example`,
-              name: "Uninvited",
-            },
-            { autoJoin: false },
-          ),
+          ensureGithubUser(tx as unknown as Parameters<typeof ensureGithubUser>[0], {
+            provider: "github",
+            githubUserId: `90${Date.now()}`,
+            login: "uninvited",
+            email: `uninvited-${Date.now()}@blocked.example`,
+            emailVerified: true,
+            installations: [{ installationId: 900001, accountId: 800001 }],
+          }),
         ).rejects.toMatchObject({ statusCode: 403, code: "not_invited" });
 
+        const invitedId = newId("user");
+        const invitedEmail = `invited-${Date.now()}@example.com`;
+        const installationId = 700_000 + Math.floor(Math.random() * 10_000);
+        const accountId = 800_000 + Math.floor(Math.random() * 10_000);
+        await tx.insert(users).values({ id: invitedId, email: invitedEmail, status: "active" });
         await tx
-          .update(orgs)
-          .set({ settings: { allowedDomains: ["allowed.example"] }, updatedAt: new Date() })
-          .where(eq(orgs.id, orgId));
-        const admitted = await ensureWorkosUser(
-          tx as unknown as Parameters<typeof ensureWorkosUser>[0],
+          .insert(orgMembers)
+          .values({ id: newId("member"), orgId, userId: invitedId, roleId: viewerRole });
+        await tx.insert(githubInstallations).values({
+          id: newId("int"),
+          orgId,
+          installationId,
+          accountId,
+          accountLogin: "facility-test",
+          targetType: "Organization",
+        });
+        await expect(
+          ensureGithubUser(tx as unknown as Parameters<typeof ensureGithubUser>[0], {
+            provider: "github",
+            githubUserId: String(600_000 + Date.now()),
+            login: "invited",
+            email: invitedEmail,
+            emailVerified: true,
+            installations: [{ installationId, accountId: accountId + 1 }],
+          }),
+        ).rejects.toMatchObject({ statusCode: 403, code: "installation_access_required" });
+        expect(
+          (await tx.select().from(userIdentities).where(eq(userIdentities.userId, invitedId)))
+            .length,
+        ).toBe(0);
+        const admitted = await ensureGithubUser(
+          tx as unknown as Parameters<typeof ensureGithubUser>[0],
           {
-            workosUserId: `workos_allowed_${Date.now()}`,
-            email: `allowed-${Date.now()}@allowed.example`,
-            name: "Allowed",
+            provider: "github",
+            githubUserId: String(600_000 + Date.now()),
+            login: "invited",
+            email: invitedEmail,
+            emailVerified: true,
+            installations: [{ installationId, accountId }],
           },
-          { autoJoin: false },
         );
         expect(admitted.orgId).toBe(orgId);
-        const membership = (
-          await tx
-            .select({ member: orgMembers, role: roles })
-            .from(orgMembers)
-            .innerJoin(roles, eq(orgMembers.roleId, roles.id))
-            .where(eq(orgMembers.userId, admitted.userId))
-            .limit(1)
-        )[0];
-        expect(membership?.role.name).toBe("viewer");
+        expect(
+          (await tx.select().from(userIdentities).where(eq(userIdentities.userId, invitedId)))
+            .length,
+        ).toBe(1);
+
+        const ambiguousEmail = `ambiguous-${Date.now()}@example.com`;
+        await tx.insert(users).values([
+          { id: newId("user"), email: ambiguousEmail, status: "active" },
+          { id: newId("user"), email: ambiguousEmail.toUpperCase(), status: "active" },
+        ]);
+        await expect(
+          ensureGithubUser(tx as unknown as Parameters<typeof ensureGithubUser>[0], {
+            provider: "github",
+            githubUserId: String(700_000 + Date.now()),
+            login: "ambiguous",
+            email: ambiguousEmail,
+            emailVerified: true,
+            installations: [{ installationId, accountId }],
+          }),
+        ).rejects.toMatchObject({ statusCode: 403, code: "identity_conflict" });
         throw rollback;
       }),
     ).rejects.toThrow(rollback.message);

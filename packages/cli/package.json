@@ -33,6 +33,9 @@
   "engines": {
     "node": ">=20"
   },
+  "dependencies": {
+    "postgres": "^3.4.7"
+  },
   "scripts": {
     "test": "node --test test/*.test.mjs"
   }

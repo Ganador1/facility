@@ -86,15 +86,17 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:-facility-dev-secret}
       S3_BUCKET: ${S3_BUCKET:-facility}
       AWS_REGION: ${AWS_REGION:-us-east-1}
-      WORKOS_API_KEY: ${WORKOS_API_KEY:-}
-      WORKOS_CLIENT_ID: ${WORKOS_CLIENT_ID:-}
-      WORKOS_COOKIE_PASSWORD: ${WORKOS_COOKIE_PASSWORD:-}
-      # Production auth completeness: without WORKOS_AUTHKIT_DOMAIN the SSO login is
-      # incomplete, and MCP_OAUTH_AUDIENCE gates OAuth-JWT auth for remote MCP —
-      # `facility doctor` fails when these are absent in production. Forwarded from
-      # the host so a real deployment can set them.
-      WORKOS_AUTHKIT_DOMAIN: ${WORKOS_AUTHKIT_DOMAIN:-}
-      MCP_OAUTH_AUDIENCE: ${MCP_OAUTH_AUDIENCE:-}
+      AUTH_IDENTITY_PROVIDER: ${AUTH_IDENTITY_PROVIDER:-github}
+      AUTH_CALLBACK_URL: ${AUTH_CALLBACK_URL:-http://localhost:3400/api/auth/callback}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      FACILITY_INSTANCE_ID: ${FACILITY_INSTANCE_ID:-}
+      FACILITY_OAUTH_ISSUER: ${FACILITY_OAUTH_ISSUER:-http://localhost:4400}
+      FACILITY_OAUTH_JWKS: ${FACILITY_OAUTH_JWKS:-}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:4420}
       # GitHub App (repo automation): webhooks 401 and clone-token minting fail
       # without these; doctor flags them when repo automation is enabled.
       GITHUB_APP_ID: ${GITHUB_APP_ID:-}
@@ -201,7 +203,7 @@ services:
       FACILITY_API_URL: http://api:4400
       MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:4420}
       MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-localhost,127.0.0.1,mcp}
-      MCP_AUTHORIZATION_SERVER: ${MCP_AUTHORIZATION_SERVER:-}
+      MCP_AUTHORIZATION_SERVER: ${MCP_AUTHORIZATION_SERVER:-http://localhost:4400}
       MCP_TRUST_PROXY_HOPS: ${MCP_TRUST_PROXY_HOPS:-0}
     command:
       [

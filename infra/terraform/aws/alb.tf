@@ -22,6 +22,10 @@ resource "aws_lb_target_group" "service" {
       port        = local.ports.web
       health_path = "/"
     }
+    mcp = {
+      port        = local.ports.mcp
+      health_path = "/readyz"
+    }
   }
 
   name        = "${local.name_prefix}-${each.key}"
@@ -116,6 +120,18 @@ resource "aws_lb_listener_rule" "http_web" {
   }
 }
 
+resource "aws_lb_listener_rule" "http_mcp" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 30
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["mcp"].arn
+  }
+  condition {
+    host_header { values = [var.mcp_hostname] }
+  }
+}
+
 resource "aws_lb_listener_rule" "https_api" {
   count = var.acm_certificate_arn == "" ? 0 : 1
 
@@ -152,6 +168,19 @@ resource "aws_lb_listener_rule" "https_web" {
   }
 }
 
+resource "aws_lb_listener_rule" "https_mcp" {
+  count        = var.acm_certificate_arn == "" ? 0 : 1
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 30
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["mcp"].arn
+  }
+  condition {
+    host_header { values = [var.mcp_hostname] }
+  }
+}
+
 resource "aws_route53_record" "app" {
   count = var.route53_zone_id == "" ? 0 : 1
 
@@ -173,6 +202,18 @@ resource "aws_route53_record" "api" {
   name    = var.api_hostname
   type    = "A"
 
+  alias {
+    name                   = aws_lb.public.dns_name
+    zone_id                = aws_lb.public.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "mcp" {
+  count   = var.route53_zone_id == "" ? 0 : 1
+  zone_id = var.route53_zone_id
+  name    = var.mcp_hostname
+  type    = "A"
   alias {
     name                   = aws_lb.public.dns_name
     zone_id                = aws_lb.public.zone_id

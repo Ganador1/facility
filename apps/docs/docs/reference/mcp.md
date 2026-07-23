@@ -34,13 +34,13 @@ Remote: run the same built binary with `node
 compose stack already includes it, while other deployments host it next to the
 control plane. It exposes streamable HTTP at `https://<mcp-host>/mcp` with
 `Authorization: Bearer <credential>`.
-Two credential kinds are accepted: a `fak_…` API key (for non-interactive services) or a WorkOS
-OAuth 2.1 access token (for interactive clients like Claude, Cursor, and ChatGPT). Interactive
+Two credential kinds are accepted: a `fak_…` API key (for non-interactive services) or a Facility
+OAuth access token (for interactive clients like Claude, Cursor, and ChatGPT). Interactive
 clients discover the flow from `/.well-known/oauth-protected-resource` (advertised on a `401` via
-`WWW-Authenticate`); the control plane validates the token against WorkOS's JWKS. OAuth is enabled
-only when `MCP_OAUTH_AUDIENCE` and `WORKOS_AUTHKIT_DOMAIN` are set on the control plane, and
-the HTTP process advertises discovery when given `MCP_PUBLIC_URL` and `MCP_AUTHORIZATION_SERVER`
-(defaults to `WORKOS_AUTHKIT_DOMAIN`).
+`WWW-Authenticate`). Each instance publishes authorization metadata, dynamic client registration,
+PKCE authorization, revocation, and JWKS endpoints. Tokens are bound to the exact `MCP_PUBLIC_URL`;
+configure the API with `FACILITY_OAUTH_ISSUER` and `FACILITY_OAUTH_JWKS`, then point the MCP process's
+`MCP_AUTHORIZATION_SERVER` at that issuer.
 
 Remote binds fail closed unless `MCP_ALLOWED_HOSTS` or `MCP_PUBLIC_URL` names a
 trusted authority. Browser `Origin` is checked against the same set, request

@@ -20,7 +20,7 @@ terraform init
 terraform apply -var-file=yourorg.tfvars
 ```
 
-The variables file names the domain, the WorkOS and GitHub App credentials
+The variables file names the domains, identity mode, and GitHub App credentials
 (by secret ARN, not value), instance sizes, and the container image tags —
 build and push images with the repo's `infra/build-images.sh`.
 

@@ -1,0 +1,55 @@
+---
+title: Authentication modes
+---
+
+# Authentication modes
+
+Facility uses GitHub as its human identity source and never stores upstream access tokens.
+Every instance is dedicated to one Facility organization, one GitHub account, and one GitHub
+App installation. A login succeeds only when the stable numeric GitHub user ID belongs to an
+explicit Facility member and the user can access the configured installation.
+
+## Direct GitHub for local and self-hosted instances
+
+Create a GitHub App for the installation, enable user authorization, grant read access to email
+addresses, and set its callback URL to the exact web-origin URL
+`https://<web-host>/api/auth/callback`. Configure:
+
+```dotenv
+AUTH_IDENTITY_PROVIDER=github
+AUTH_CALLBACK_URL=https://app.example.com/api/auth/callback
+GITHUB_OAUTH_CLIENT_ID=...
+GITHUB_OAUTH_CLIENT_SECRET=...
+```
+
+After migrations and the non-demo seed, run:
+
+```bash
+DATABASE_URL=postgres://... facility instance bootstrap \
+  --org-name "Example" --org-slug example \
+  --owner-email owner@example.com --owner-name "Owner" \
+  --github-user-id 123 --github-login owner \
+  --github-account-id 456 --github-account-login example \
+  --github-installation-id 789 \
+  --github-account-type organization
+```
+
+The command connects directly to PostgreSQL, is idempotent for the exact same binding, and refuses
+to modify a database containing a different instance.
+
+## SaaS OIDC broker
+
+SaaS instances do not hold the shared GitHub App secret. The commercial service completes GitHub
+OAuth and acts as an OIDC issuer; each dedicated instance is an OIDC client. Configure the issuer,
+client credentials, and stable instance ID. The signed ID token must include verified
+`github_user_id`, `github_login`, `email`, `email_verified=true`, `github_account_id`,
+`github_installation_id`, and `facility_instance_id` claims. Facility validates signature, issuer,
+audience, nonce, instance, account, and installation before creating its own session.
+
+## MCP OAuth
+
+The upstream mode does not change MCP trust. Every instance issues its own MCP tokens so they are
+audience-bound and revocable within that instance. Supply a persistent private ES256 JWK set via
+`FACILITY_OAUTH_JWKS`; put a new signing key first and retain old signing keys through the maximum
+token lifetime when rotating them. The configured set contains private keys; Facility publishes only
+their public parameters from `/oauth/jwks`.

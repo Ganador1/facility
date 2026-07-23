@@ -140,7 +140,7 @@ not universal performance guarantees.
   behavior without embedding a particular product stack in Facility core.
 - Platform integration tests exercise the architect → human plan gate → builder
   delivery → SSO preview → receipt/outcome path against the same generalized
-  contract. A production deployment still needs GitHub App, provider, WorkOS,
+  contract. A production deployment still needs GitHub App, identity provider,
   runner-image, and project-preview configuration before that lane can run.
 - Facility-owned previews currently consume a prebuilt immutable image, proxy
   browser-safe `GET`/`HEAD` traffic, and inject no project secrets. Those are
