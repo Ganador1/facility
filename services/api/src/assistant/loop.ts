@@ -18,9 +18,9 @@ import { ASSISTANT_TOOLS } from "./tools.js";
 
 type Db = ReturnType<typeof createDb>["db"];
 
-const MAX_ITERATIONS = 8;
+const MAX_ITERATIONS = 12;
 const MAX_TOKENS = 4096;
-const WALL_CLOCK_MS = 120_000;
+const WALL_CLOCK_MS = 240_000;
 const KEY_TTL_MS = 15 * 60_000;
 const HISTORY_LIMIT = 30;
 const TOOL_RESULT_CAP = 40_000;

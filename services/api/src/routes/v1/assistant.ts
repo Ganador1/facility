@@ -16,7 +16,8 @@ import { terminalStatus } from "../../sandbox/state.js";
 import { assertProjectScope, IdParams, principal, type V1RouteContext } from "./shared.js";
 
 const AskBody = z.object({
-  body: z.string().min(1).max(32_000),
+  // Roomy enough for a pasted meeting transcript plus commentary.
+  body: z.string().min(1).max(120_000),
   conversationId: z.string().optional(),
 });
 

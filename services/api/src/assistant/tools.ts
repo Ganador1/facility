@@ -147,7 +147,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "intake_capture",
     description:
-      "File pasted source material (meeting transcript, notes, request) as a Signal in the knowledge base WITH provenance, and dispatch the Product Owner review run that proposes backlog/decision changes from it. Use when the user pastes a document or asks to record one.",
+      "File source material the user shared (meeting transcript, notes, request) as a Signal in the knowledge base WITH provenance. It does NOT dispatch anything: YOU are the review — after filing, read the pipeline and active decisions in this same conversation and propose whatever backlog or decision changes the capture implies, citing the signal code.",
     inputSchema: {
       type: "object",
       properties: {
@@ -165,7 +165,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
         title: String(a.title ?? ""),
         source: String(a.source ?? "assistant"),
         bodyMd: String(a.bodyMd ?? ""),
-        dispatch: true,
+        dispatch: false,
       },
     }),
   },
