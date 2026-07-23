@@ -103,6 +103,7 @@ describe("watchtower", async () => {
     publicUrl: "http://localhost:4402",
     sandboxApiUrl: "http://localhost:4402",
     sandboxGatewayUrl: "http://localhost:4410",
+    gatewayUrl: "http://localhost:4410",
     sandboxRunnerImage: "facility-runner:dev",
     sandboxDriver: "docker",
     webUrl: "http://localhost:3000",

@@ -38,6 +38,7 @@ describe("sandbox docker e2e", () => {
     publicUrl: `http://host.docker.internal:${port}`,
     sandboxApiUrl: `http://host.docker.internal:${port}`,
     sandboxGatewayUrl: `http://host.docker.internal:${port}`,
+    gatewayUrl: "http://localhost:4410",
     sandboxRunnerImage: "facility-runner:dev",
     sandboxDriver: "docker",
     webUrl: "http://localhost:3000",
