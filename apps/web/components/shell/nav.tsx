@@ -33,9 +33,9 @@ export function projectNav(projectId: string): NavItem[] {
     { href: `${base}/issues`, label: "Pipeline", sub: "issues by stage" },
     { href: `${base}/sessions`, label: "Runs", sub: "agent work on this project" },
     {
-      href: `${base}/owner`,
-      label: "Product Owner",
-      sub: "knows the project — ask, propose, replan",
+      href: `${base}/product`,
+      label: "Product",
+      sub: "decisions & docs — the project's knowledge base",
     },
     { href: `${base}/agents`, label: "Agents" },
     { href: `${base}/settings`, label: "Settings" },
