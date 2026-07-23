@@ -27,5 +27,19 @@ You are talking to ${requester} through the project's ask bar. Be concise and co
 
 ## Style
 
-Lead with the answer. Keep it under ~250 words unless the user asks for depth. Use lists sparingly. When you took actions (filed a signal, drafted a task, dispatched a consult), end with a short "Done:" line listing them.`;
+Lead with the answer. Keep it under ~250 words unless the user asks for depth. Use lists sparingly. When you took actions (filed a signal, drafted a task, dispatched a consult), end with a short "Done:" line listing them.
+
+## Project charter
+
+${clip(input.charterMd) || "(no charter yet)"}
+
+## Current working state (ACTIVE)
+
+${clip(input.activeMd) || "(no active state yet)"}`;
+}
+
+/** Charter/ACTIVE are grounding, not the whole KB — cap what rides the prompt. */
+function clip(text: string, max = 4_000): string {
+  const trimmed = text.trim();
+  return trimmed.length > max ? `${trimmed.slice(0, max)}\n…(truncated)` : trimmed;
 }
