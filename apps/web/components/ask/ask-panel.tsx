@@ -82,8 +82,14 @@ export function AskPanel({
   }
 
   // While streaming, the just-sent user message and the live reply aren't in
-  // the durable history yet — filter duplicates once they land.
-  const liveEcho = pendingQuestion && !turn.final;
+  // the durable history yet — but the user message persists immediately, so
+  // the history refetch can race the echo. Suppress the echo the moment the
+  // durable copy is present.
+  const lastUserBody = [...history]
+    .reverse()
+    .find((message) => message.role === "user")
+    ?.body?.trim();
+  const liveEcho = pendingQuestion && !turn.final && lastUserBody !== pendingQuestion.trim();
 
   return (
     <div className="flex max-h-[60vh] flex-col border border-(--line) bg-(--bg) shadow-[0_-12px_40px_rgba(0,0,0,0.35)]">

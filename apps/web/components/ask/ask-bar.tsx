@@ -204,6 +204,21 @@ export function AskBar({ projectId }: { projectId: string }) {
           </span>
           <input
             ref={inputRef}
+            // Plain search-style text input: the name/type plus the vendor
+            // ignore attributes keep password managers (1Password, LastPass,
+            // Bitwarden, browser autofill) from treating it as a credential.
+            type="text"
+            name="facility-ask-question"
+            inputMode="text"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            data-1p-ignore="true"
+            data-lpignore="true"
+            data-bwignore="true"
+            data-form-type="other"
+            aria-label="Ask the product owner"
             value={value}
             onChange={(event) => setValue(event.target.value)}
             onFocus={() => {
