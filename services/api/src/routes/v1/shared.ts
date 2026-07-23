@@ -180,6 +180,7 @@ export const ConversationSchema = z.object({
   lastRunId: z.string().nullable(),
   engineSessionId: z.string().nullable(),
   status: z.string(),
+  kind: z.string(),
   createdBy: JsonValue,
   createdAt: DateValue,
   updatedAt: DateValue,
