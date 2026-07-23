@@ -85,16 +85,15 @@ export function fmtStamp(iso: string): string {
 }
 
 /**
- * Artifact ids a markdown body references — [[wikilinks]] plus bare codes.
- * CHARTER/ACTIVE only count in wikilink form (the bare words are too common
- * in prose to treat as references).
+ * Artifact ids a markdown body references — bare codes are the detection
+ * unit (they also match inside [[wikilinks]]).
  */
-const REF_SCAN_RE = /\[\[([A-Z]{1,2}\d{3}|CHARTER|ACTIVE)\]\]|\b([A-Z]{1,2}\d{3})\b/g;
+const REF_SCAN_RE = /\b([A-Z]{1,2}\d{3}|CHARTER|ACTIVE)\b/g;
 
 export function referencedIds(md: string): Set<string> {
   const refs = new Set<string>();
   for (const match of md.matchAll(REF_SCAN_RE)) {
-    const id = match[1] ?? match[2];
+    const id = match[1];
     if (id) refs.add(id);
   }
   return refs;

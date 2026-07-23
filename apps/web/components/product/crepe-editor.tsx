@@ -4,8 +4,9 @@ import "@milkdown/crepe/theme/common/style.css";
 import "./crepe-theme.css";
 
 import { Crepe } from "@milkdown/crepe";
+import { editorViewCtx } from "@milkdown/kit/core";
 import { useEffect, useRef } from "react";
-import { artifactRefs } from "@/components/product/artifact-refs";
+import { artifactRefsPlugin } from "@/components/product/artifact-refs";
 
 /**
  * The always-on WYSIWYG surface (Milkdown Crepe). Markdown stays the source
@@ -60,13 +61,24 @@ export function CrepeEditor({
         },
       },
     });
-    crepe.editor.use(artifactRefs(() => navRef.current));
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, md) => changeRef.current?.(unescapeWikilinks(md)));
     });
     crepe.setReadonly(initialReadOnly.current);
     crepeRef.current = crepe;
-    const created = crepe.create();
+    const created = crepe.create().then((editor) => {
+      // Registered on the LIVE view, after create: immune to milkdown's
+      // plugin-lifecycle ordering, which silently dropped $prose decorations.
+      editor.action((ctx) => {
+        const view = ctx.get(editorViewCtx);
+        view.updateState(
+          view.state.reconfigure({
+            plugins: [...view.state.plugins, artifactRefsPlugin(() => navRef.current)],
+          }),
+        );
+      });
+      return editor;
+    });
     return () => {
       crepeRef.current = null;
       void created.then(() => crepe.destroy());

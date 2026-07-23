@@ -73,13 +73,13 @@ function coalescesWith(
   return by?.type === p.type && by?.id === p.id;
 }
 
-/** Artifact ids a body cites — [[wikilinks]] plus bare codes (entries only). */
-const BODY_REF_RE = /\[\[([A-Z]{1,2}\d{3})\]\]|\b([A-Z]{1,2}\d{3})\b/g;
+/** Artifact ids a body cites — bare codes (they match inside [[wikilinks]] too). */
+const BODY_REF_RE = /\b([A-Z]{1,2}\d{3})\b/g;
 
 function citedArtifactIds(md: string): Set<string> {
   const refs = new Set<string>();
   for (const match of md.matchAll(BODY_REF_RE)) {
-    const id = match[1] ?? match[2];
+    const id = match[1];
     if (id) refs.add(id);
   }
   return refs;

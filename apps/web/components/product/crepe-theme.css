@@ -84,12 +84,17 @@
   border: 1px solid var(--line);
 }
 
-/* Artifact refs (D001, [[R002]]) decorated as live links by the
-   facility-artifact-refs ProseMirror plugin. */
+/* Artifact refs (D001, CHARTER…) decorated as live links by the
+   facility-artifact-refs ProseMirror plugin: visibly "detected" — mono,
+   tinted, underlined — and clickable. */
 .facility-crepe .milkdown .ProseMirror .artifact-ref {
   color: var(--info);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 0.95em;
+  background: color-mix(in srgb, var(--info) 12%, transparent);
+  padding: 0 2px;
   text-decoration: underline;
-  text-underline-offset: 4px;
+  text-underline-offset: 3px;
   cursor: pointer;
 }
 
