@@ -100,14 +100,20 @@ export function groupSections(entries: KbEntry[]): KbSection[] {
     byType.set(entry.type, [...(byType.get(entry.type) ?? []), entry]);
   }
 
+  // Primary sections always render — an empty Decisions section with its
+  // "+ new" affordance is the onboarding, not a gap to hide.
+  const PRIMARY_LABELS: Record<string, string> = {
+    D: "decisions (ADRs)",
+    R: "documentation",
+    S: "signals",
+  };
   const sections: KbSection[] = [];
   for (const type of PRIMARY_ORDER) {
-    const list = byType.get(type);
-    if (!list) continue;
+    const list = byType.get(type) ?? [];
     byType.delete(type);
     sections.push({
       key: type,
-      label: TYPE_LABELS[type] ?? type,
+      label: PRIMARY_LABELS[type] ?? TYPE_LABELS[type] ?? type,
       entries: sortForSection(type, list),
       secondary: false,
     });

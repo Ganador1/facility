@@ -30,13 +30,13 @@ export function projectNav(projectId: string): NavItem[] {
   const base = `/projects/${projectId}`;
   return [
     { href: base, label: "Overview" },
-    { href: `${base}/issues`, label: "Pipeline", sub: "issues by stage" },
-    { href: `${base}/sessions`, label: "Runs", sub: "agent work on this project" },
     {
       href: `${base}/product`,
       label: "Product",
       sub: "decisions & docs — the project's knowledge base",
     },
+    { href: `${base}/issues`, label: "Pipeline", sub: "issues by stage" },
+    { href: `${base}/sessions`, label: "Runs", sub: "agent work on this project" },
     { href: `${base}/agents`, label: "Agents" },
     { href: `${base}/settings`, label: "Settings" },
   ];

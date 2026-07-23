@@ -6,6 +6,7 @@ import { DocView } from "@/components/product/doc-view";
 import { MetaRail } from "@/components/product/meta-rail";
 import { NavTree } from "@/components/product/nav-tree";
 import { NewEntry } from "@/components/product/new-entry";
+import { ThreadView } from "@/components/product/thread-view";
 import {
   artifactIdFor,
   groupSections,
@@ -25,6 +26,7 @@ export function ProductWorkspace({
   entries,
   decisions,
   signalRuns,
+  threads,
   canWrite,
 }: {
   projectId: string;
@@ -32,6 +34,7 @@ export function ProductWorkspace({
   entries: KbEntry[];
   decisions: KbDecision[];
   signalRuns: Record<string, string>;
+  threads: { id: string; title: string | null; updatedAt?: string }[];
   canWrite: boolean;
 }) {
   const router = useRouter();
@@ -47,7 +50,10 @@ export function ProductWorkspace({
 
   const sections = useMemo(() => groupSections(entries), [entries]);
   const doc = searchParams.get("doc") ?? "active";
-  const entry = doc === "charter" || doc === "active" ? null : (byArtifactId.get(doc) ?? null);
+  const threadId = doc.startsWith("thread:") ? doc.slice("thread:".length) : null;
+  const thread = threadId ? (threads.find((t) => t.id === threadId) ?? null) : null;
+  const entry =
+    doc === "charter" || doc === "active" || threadId ? null : (byArtifactId.get(doc) ?? null);
 
   const navigate = useCallback(
     (next: string) => {
@@ -86,6 +92,7 @@ export function ProductWorkspace({
       <NavTree
         sections={sections}
         decisions={decisions}
+        threads={threads}
         selected={creating ? "" : doc}
         canWrite={canWrite}
         onSelect={navigate}
@@ -93,7 +100,13 @@ export function ProductWorkspace({
       />
 
       <div className="min-w-0">
-        {creating ? (
+        {threadId && !creating ? (
+          <ThreadView
+            projectId={projectId}
+            conversationId={threadId}
+            title={thread?.title ?? null}
+          />
+        ) : creating ? (
           <div className="flex flex-col gap-3">
             <span className="text-[12.5px] font-medium text-(--dim)">
               new {creating === "D" ? "decision" : "documentation page"}

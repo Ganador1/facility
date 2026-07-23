@@ -9,9 +9,16 @@ import { artifactIdFor, type KbDecision, type KbEntry, type KbSection } from "@/
  * Signals as first-class sections, pipeline + research artifacts tucked
  * behind a collapsed group. Filter narrows by slug or artifact id.
  */
+const EMPTY_HINTS: Record<string, string> = {
+  D: "no decisions recorded yet — capture the first ADR",
+  R: "no documentation pages yet",
+  S: "no signals yet — paste a transcript into the ask bar",
+};
+
 export function NavTree({
   sections,
   decisions,
+  threads,
   selected,
   canWrite,
   onSelect,
@@ -19,6 +26,7 @@ export function NavTree({
 }: {
   sections: KbSection[];
   decisions: KbDecision[];
+  threads: { id: string; title: string | null; updatedAt?: string }[];
   selected: string;
   canWrite: boolean;
   onSelect: (doc: string) => void;
@@ -87,20 +95,49 @@ export function NavTree({
                   : undefined
               }
             >
-              {rows.map((entry) => (
-                <EntryRow
-                  key={entry.id}
-                  entry={entry}
-                  selected={selected}
-                  onSelect={onSelect}
-                  supersededBy={
-                    section.key === "D" ? ((entry as KbDecision).supersededBy ?? null) : null
-                  }
-                />
-              ))}
+              {rows.length === 0 ? (
+                <p className="px-2 py-1.5 text-[11.5px] italic text-(--dim)">
+                  {EMPTY_HINTS[section.key] ?? "nothing here yet"}
+                </p>
+              ) : (
+                rows.map((entry) => (
+                  <EntryRow
+                    key={entry.id}
+                    entry={entry}
+                    selected={selected}
+                    onSelect={onSelect}
+                    supersededBy={
+                      section.key === "D" ? ((entry as KbDecision).supersededBy ?? null) : null
+                    }
+                  />
+                ))
+              )}
             </SectionBlock>
           );
         })}
+
+      <SectionBlock label="conversations" count={threads.length}>
+        {threads.length === 0 ? (
+          <p className="px-2 py-1.5 text-[11.5px] italic text-(--dim)">
+            no threads yet — use the ask bar below
+          </p>
+        ) : (
+          threads.map((thread) => (
+            <button
+              key={thread.id}
+              type="button"
+              onClick={() => onSelect(`thread:${thread.id}`)}
+              title={thread.title ?? thread.id}
+              className={cx(
+                "flex items-baseline gap-2 px-2 py-1.5 text-left text-[12.5px] hover:text-(--ink)",
+                selected === `thread:${thread.id}` ? "font-medium text-(--ink)" : "text-(--mut)",
+              )}
+            >
+              <span className="min-w-0 truncate">{thread.title ?? "untitled thread"}</span>
+            </button>
+          ))
+        )}
+      </SectionBlock>
 
       {sections.some((s) => s.secondary) ? (
         <div className="flex flex-col gap-2">

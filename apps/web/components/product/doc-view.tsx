@@ -4,6 +4,7 @@ import { Button, PillTag } from "@facility/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { type LinkArtifact, Markdown } from "@/components/markdown";
+import { CopyRef } from "@/components/product/copy-ref";
 import { DecisionDetail } from "@/components/product/decision-detail";
 import { MarkdownEditor } from "@/components/product/markdown-editor";
 import { SignalDetail } from "@/components/product/signal-detail";
@@ -55,6 +56,7 @@ export function DocView({
   const header = (
     <div className="flex flex-wrap items-center gap-2">
       <span className="font-mono text-[13px] font-medium text-(--ink)">{artifactIdFor(entry)}</span>
+      <CopyRef artifactId={artifactIdFor(entry)} />
       <span className="text-[13px] text-(--mut)">{entry.slug.replaceAll("-", " ")}</span>
       {entry.status && entry.type !== "D" ? <PillTag>{entry.status}</PillTag> : null}
     </div>

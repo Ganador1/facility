@@ -4,6 +4,7 @@ import { Button, PillTag, StatusDot } from "@facility/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { type LinkArtifact, Markdown } from "@/components/markdown";
+import { CopyRef } from "@/components/product/copy-ref";
 import { MarkdownEditor } from "@/components/product/markdown-editor";
 import { ValidationReportPanel } from "@/components/product/validation-report";
 import { artifactIdFor, type KbEntry, splitFrontmatter } from "@/lib/kb";
@@ -90,6 +91,7 @@ export function DecisionDetail({
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-3 border border-(--line) bg-(--card) px-4 py-3">
         <StatusDot tone={superseded ? "machine" : decided ? "ok" : "human"} />
+        <CopyRef artifactId={artifactId} />
         {entry.status ? <PillTag>{entry.status}</PillTag> : null}
         {superseded && successor ? (
           <button
