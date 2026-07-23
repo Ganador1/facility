@@ -470,6 +470,19 @@ export const KbEntrySchema = z.object({
   updatedAt: DateValue,
 });
 
+export const KbEntryVersionSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  entryId: z.string(),
+  version: z.number().int(),
+  slug: z.string(),
+  frontmatter: AnyObject,
+  bodyMd: z.string(),
+  status: z.string().nullable(),
+  savedBy: JsonValue.nullable(),
+  createdAt: DateValue,
+});
+
 export const KbEntryDraftSchema = z.object({
   id: z.literal("__draft__"),
   type: z.string(),

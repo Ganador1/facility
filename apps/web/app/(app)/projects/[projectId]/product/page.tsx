@@ -1,4 +1,3 @@
-import { Eyebrow } from "@facility/ui";
 import { Suspense } from "react";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { ProductWorkspace } from "@/components/product/workspace";
@@ -40,16 +39,10 @@ export default async function ProductPage({ params }: { params: Promise<{ projec
   const kbDecisions = (decisions.ok ? decisions.data : []) as unknown as KbDecision[];
 
   return (
-    <div className="flex flex-col gap-8">
+    // App-shell layout: menu → tab → content. No redundant page title; the
+    // columns own the viewport height with independent scrolls.
+    <div className="flex h-[calc(100dvh-9.5rem)] min-h-[480px] flex-col gap-5">
       <LiveRefresh seconds={60} />
-      <div className="flex flex-col gap-2">
-        <Eyebrow>product</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Product</h1>
-        <p className="text-[12.5px] text-(--dim)">
-          the project's knowledge base — decisions, documentation, and the signals they came from
-        </p>
-      </div>
-
       <ProductTabs />
 
       {!space.ok || !entries.ok ? (
@@ -57,16 +50,18 @@ export default async function ProductPage({ params }: { params: Promise<{ projec
           message={`Couldn't load the knowledge base — ${!space.ok ? space.message : entries.ok ? "" : entries.message}`}
         />
       ) : (
-        <Suspense>
-          <ProductWorkspace
-            projectId={projectId}
-            space={kbSpace}
-            entries={kbEntries}
-            decisions={kbDecisions}
-            signalRuns={signalRuns}
-            canWrite={canWriteKb}
-          />
-        </Suspense>
+        <div className="min-h-0 flex-1">
+          <Suspense>
+            <ProductWorkspace
+              projectId={projectId}
+              space={kbSpace}
+              entries={kbEntries}
+              decisions={kbDecisions}
+              signalRuns={signalRuns}
+              canWrite={canWriteKb}
+            />
+          </Suspense>
+        </div>
       )}
     </div>
   );

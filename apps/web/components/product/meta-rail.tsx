@@ -1,22 +1,54 @@
 "use client";
 
 import { PillTag } from "@facility/ui";
+import { useEffect, useState } from "react";
 import { artifactIdFor, type KbEntry, TYPE_LABELS } from "@/lib/kb";
 import type { Neighborhood } from "@/lib/kb-client";
 
+export type EntryVersion = {
+  id: string;
+  version: number;
+  slug: string;
+  bodyMd: string;
+  status: string | null;
+  createdAt: string;
+};
+
 /**
- * The Notion "page properties" analog: identity, status, dates, and the
- * validator-enforced link graph of the selected entry.
+ * The Notion "page properties" analog: identity, status, dates, the
+ * validator-enforced link graph, and the edit history of the selected entry.
  */
 export function MetaRail({
   entry,
   neighborhood,
   onNavigate,
+  onPreviewVersion,
 }: {
   entry: KbEntry;
   neighborhood: Neighborhood | null;
   onNavigate: (artifactId: string) => void;
+  onPreviewVersion?: (version: EntryVersion) => void;
 }) {
+  const [versions, setVersions] = useState<EntryVersion[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    setVersions([]);
+    void (async () => {
+      try {
+        const response = await fetch(`/api/v1/kb/entries/${entry.id}/versions`, {
+          cache: "no-store",
+        });
+        if (!response.ok) return;
+        const rows = (await response.json()) as EntryVersion[];
+        if (!cancelled) setVersions(rows);
+      } catch {
+        // History is best-effort.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [entry.id]);
   const supersedes = neighborhood?.linked.filter((n) => n.relation === "supersedes") ?? [];
   const supersededBy = neighborhood?.linked.filter((n) => n.relation === "superseded-by") ?? [];
   const linked = neighborhood?.linked.filter((n) => n.relation === "linked") ?? [];
@@ -52,6 +84,31 @@ export function MetaRail({
           ) : null}
         </dl>
       </div>
+      {versions.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[10.5px] font-medium uppercase tracking-[0.08em] text-(--dim)">
+            history · {versions.length}
+          </span>
+          <div className="flex flex-col gap-1">
+            {versions.map((version) => (
+              <button
+                key={version.id}
+                type="button"
+                onClick={() => onPreviewVersion?.(version)}
+                title="view this version"
+                className="flex items-baseline gap-2 text-left text-(--mut) hover:text-(--ink)"
+              >
+                <span className="shrink-0 font-mono text-[10.5px] text-(--dim)">
+                  v{version.version}
+                </span>
+                <span className="min-w-0 truncate font-mono text-[10.5px]">
+                  {version.createdAt.slice(0, 16).replace("T", " ")}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
       {groups.map((group) =>
         group.items.length > 0 ? (
           <div key={group.label} className="flex flex-col gap-1.5">

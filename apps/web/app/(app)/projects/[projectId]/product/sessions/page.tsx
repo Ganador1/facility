@@ -1,4 +1,3 @@
-import { Eyebrow } from "@facility/ui";
 import { Suspense } from "react";
 import { Offline } from "@/components/offline";
 import { SessionsWorkspace, type SessionThread } from "@/components/product/sessions-workspace";
@@ -27,21 +26,16 @@ export default async function ProductSessionsPage({
   );
 
   return (
-    <div className="flex flex-col gap-8">
+    // App-shell layout: menu → tab → content; fixed composer, scrolling thread.
+    <div className="flex h-[calc(100dvh-9.5rem)] min-h-[480px] flex-col gap-5">
       <LiveRefresh seconds={60} />
-      <div className="flex flex-col gap-2">
-        <Eyebrow>product</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Product</h1>
-        <p className="text-[12.5px] text-(--dim)">
-          chat sessions with the digital product owner — every exchange kept, every thread resumable
-        </p>
-      </div>
-
       <ProductTabs />
 
-      <Suspense>
-        <SessionsWorkspace projectId={projectId} threads={threads} />
-      </Suspense>
+      <div className="min-h-0 flex-1">
+        <Suspense>
+          <SessionsWorkspace projectId={projectId} threads={threads} />
+        </Suspense>
+      </div>
     </div>
   );
 }

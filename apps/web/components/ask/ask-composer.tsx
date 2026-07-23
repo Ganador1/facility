@@ -27,7 +27,7 @@ export function AskComposer({
   /** Pin follow-ups to a thread; null starts a fresh one on first send. */
   conversationId: string | null;
   placeholder?: string;
-  inputRef?: React.RefObject<HTMLInputElement | null>;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
   onTurnStarted: (turn: TurnStart) => void;
 }) {
   const [value, setValue] = useState("");
@@ -35,7 +35,7 @@ export function AskComposer({
   const [intakeReceipt, setIntakeReceipt] = useState<IntakeReceipt | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const internalRef = useRef<HTMLInputElement>(null);
+  const internalRef = useRef<HTMLTextAreaElement>(null);
   const inputRef = externalRef ?? internalRef;
 
   const ask = useCallback(
@@ -166,7 +166,7 @@ export function AskComposer({
         </p>
       ) : null}
       <form
-        className="flex items-center gap-2 border border-(--line) bg-(--bg) px-3 py-2 shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
+        className="flex items-end gap-2 border border-(--line) bg-(--bg) px-3 py-2 shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
         onSubmit={(event) => {
           event.preventDefault();
           void ask(value);
@@ -175,14 +175,14 @@ export function AskComposer({
         <span aria-hidden className="font-mono text-[12px] text-(--accent)">
           ▸
         </span>
-        <input
+        <textarea
           ref={inputRef}
-          // Plain search-style text input: the name/type plus the vendor
-          // ignore attributes keep password managers (1Password, LastPass,
-          // Bitwarden, browser autofill) from treating it as a credential.
-          type="text"
+          // Auto-growing prompt area: one line at rest, up to half the
+          // viewport for long content. Enter sends; Shift+Enter breaks the
+          // line. The name plus the vendor ignore attributes keep password
+          // managers (1Password, LastPass, Bitwarden, autofill) away.
+          rows={1}
           name="facility-ask-question"
-          inputMode="text"
           autoComplete="off"
           autoCorrect="off"
           autoCapitalize="off"
@@ -193,7 +193,18 @@ export function AskComposer({
           data-form-type="other"
           aria-label="Chat with the digital product owner"
           value={value}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) => {
+            setValue(event.target.value);
+            const el = event.target;
+            el.style.height = "auto";
+            el.style.height = `${Math.min(el.scrollHeight, window.innerHeight / 2)}px`;
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void ask(value);
+            }
+          }}
           onPaste={(event) => {
             const pasted = event.clipboardData.getData("text");
             if (pasted.length > PASTE_INTAKE_CHARS) {
@@ -202,7 +213,7 @@ export function AskComposer({
             }
           }}
           placeholder={placeholder}
-          className="min-w-0 flex-1 bg-transparent text-[13px] text-(--ink) outline-none placeholder:text-(--dim)"
+          className="max-h-[50vh] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-[13px] leading-relaxed text-(--ink) outline-none placeholder:text-(--dim)"
         />
         <Button size="sm" variant="outline" type="submit" disabled={busy || !value.trim()}>
           {busy ? "…" : "send"}

@@ -8,16 +8,11 @@ import { CopyRef } from "@/components/product/copy-ref";
 import { MarkdownEditor } from "@/components/product/markdown-editor";
 import { ValidationReportPanel } from "@/components/product/validation-report";
 import { artifactIdFor, type KbEntry, splitFrontmatter } from "@/lib/kb";
-import {
-  type Neighborhood,
-  patchEntry,
-  supersedeEntry,
-  type ValidationReport,
-} from "@/lib/kb-client";
+import { type Neighborhood, patchEntry, type ValidationReport } from "@/lib/kb-client";
 
 /**
- * A decision record: status, its place in the supersedence chain, and the
- * immutability contract — decided decisions never change; they get succeeded.
+ * A decision record: status, its place in the supersedence chain, and direct
+ * editing — every edit preserves the prior content as a version.
  */
 export function DecisionDetail({
   entry,
@@ -33,8 +28,7 @@ export function DecisionDetail({
   onNavigate: (artifactId: string) => void;
 }) {
   const router = useRouter();
-  const [mode, setMode] = useState<"read" | "supersede" | "edit">("read");
-  const [armed, setArmed] = useState(false);
+  const [mode, setMode] = useState<"read" | "edit">("read");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [report, setReport] = useState<ValidationReport | null>(null);
@@ -42,31 +36,9 @@ export function DecisionDetail({
   const artifactId = artifactIdFor(entry);
   const superseded = entry.status === "superseded";
   const decided = entry.status === "decided";
-  const proposed = entry.status === "proposed";
   const successor = neighborhood?.linked.find((n) => n.relation === "superseded-by") ?? null;
   const predecessor = neighborhood?.linked.find((n) => n.relation === "supersedes") ?? null;
   const { frontmatter, body } = splitFrontmatter(entry.bodyMd);
-
-  async function submitSupersede(markdown: string) {
-    setBusy(true);
-    setNote(null);
-    setReport(null);
-    const res = await supersedeEntry(entry.id, {
-      frontmatter: {},
-      bodyMd: frontmatter + markdown,
-      status: "decided",
-    });
-    setBusy(false);
-    if (!res.ok) {
-      setNote(res.error.message);
-      if (res.error.report) setReport(res.error.report);
-      return;
-    }
-    const nextId = artifactIdFor(res.data);
-    setMode("read");
-    onNavigate(nextId);
-    router.refresh();
-  }
 
   async function submitEdit(markdown: string) {
     setBusy(true);
@@ -75,11 +47,7 @@ export function DecisionDetail({
     const res = await patchEntry(entry.id, { bodyMd: frontmatter + markdown });
     setBusy(false);
     if (!res.ok) {
-      setNote(
-        res.error.code === "kb_decision_immutable"
-          ? "this decision is decided — it can only be superseded"
-          : res.error.message,
-      );
+      setNote(res.error.message);
       if (res.error.report) setReport(res.error.report);
       return;
     }
@@ -115,58 +83,25 @@ export function DecisionDetail({
           {superseded
             ? "retired — kept for the record"
             : decided
-              ? "decided decisions are immutable — supersede to change"
+              ? "editable — every edit keeps the previous version"
               : "proposed — editable until decided"}
         </span>
-        {canWrite && !superseded && mode === "read" ? (
-          <div className="flex items-center gap-2">
-            {proposed ? (
-              <Button size="sm" variant="outline" onClick={() => setMode("edit")}>
-                edit
-              </Button>
-            ) : null}
-            <Button
-              size="sm"
-              variant={armed ? "primary" : "outline"}
-              tone={armed ? "agent" : undefined}
-              onClick={() => {
-                if (!armed) {
-                  setArmed(true);
-                  return;
-                }
-                setArmed(false);
-                setMode("supersede");
-              }}
-            >
-              {armed ? "confirm supersede" : "supersede"}
-            </Button>
-          </div>
+        {canWrite && mode === "read" ? (
+          <Button size="sm" variant="outline" onClick={() => setMode("edit")}>
+            edit
+          </Button>
         ) : null}
       </div>
 
       {report ? <ValidationReportPanel report={report} /> : null}
 
-      {mode === "supersede" ? (
-        <MarkdownEditor
-          initial={body}
-          saveLabel={`create successor of ${artifactId}`}
-          busy={busy}
-          note={note}
-          hint="creates a new decision; this one flips to superseded"
-          onSave={(md) => void submitSupersede(md)}
-          onCancel={() => {
-            setMode("read");
-            setNote(null);
-            setReport(null);
-          }}
-        />
-      ) : mode === "edit" ? (
+      {mode === "edit" ? (
         <MarkdownEditor
           initial={body}
           saveLabel="save decision"
           busy={busy}
           note={note}
-          hint="still proposed — editable until decided"
+          hint="every edit keeps the previous version in history"
           onSave={(md) => void submitEdit(md)}
           onCancel={() => {
             setMode("read");

@@ -86,13 +86,13 @@ export type KbSection = {
   secondary: boolean;
 };
 
-const PRIMARY_ORDER = ["D", "R", "S"] as const;
-const PIPELINE_TYPES = new Set(["T", "V"]);
+const PRIMARY_ORDER = ["D", "R", "S", "L"] as const;
 
 /**
- * Section layout of the nav tree: Decisions, Documentation, Signals as
- * first-class sections; pipeline artifacts (T/V) and any research-chain
- * types grouped as secondary.
+ * Section layout of the nav tree: Decisions, Documentation, Signals, and
+ * Learnings as first-class sections; every remaining type (pipeline T/V,
+ * research chain, …) lands in one "additional resources" freeform group —
+ * which also hosts the charter/active context docs in the nav.
  */
 export function groupSections(entries: KbEntry[]): KbSection[] {
   const byType = new Map<string, KbEntry[]>();
@@ -106,6 +106,7 @@ export function groupSections(entries: KbEntry[]): KbSection[] {
     D: "decisions (ADRs)",
     R: "documentation",
     S: "signals",
+    L: "learnings",
   };
   const sections: KbSection[] = [];
   for (const type of PRIMARY_ORDER) {
@@ -119,26 +120,12 @@ export function groupSections(entries: KbEntry[]): KbSection[] {
     });
   }
 
-  const pipeline: KbEntry[] = [];
-  for (const type of PIPELINE_TYPES) {
-    const list = byType.get(type);
-    if (!list) continue;
-    byType.delete(type);
-    pipeline.push(...list);
+  const rest: KbEntry[] = [];
+  for (const [, list] of [...byType.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    rest.push(...list);
   }
-  if (pipeline.length > 0) {
-    pipeline.sort((a, b) => a.type.localeCompare(b.type) || b.number - a.number);
-    sections.push({ key: "TV", label: "pipeline artifacts", entries: pipeline, secondary: true });
-  }
-
-  for (const [type, list] of [...byType.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    sections.push({
-      key: type,
-      label: TYPE_LABELS[type] ?? type,
-      entries: sortForSection(type, list),
-      secondary: true,
-    });
-  }
+  rest.sort((a, b) => a.type.localeCompare(b.type) || b.number - a.number);
+  sections.push({ key: "extra", label: "additional resources", entries: rest, secondary: true });
   return sections;
 }
 

@@ -36,12 +36,12 @@ export function SessionsWorkspace({
   );
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-      <nav aria-label="Chat sessions" className="flex flex-col gap-2">
+    <div className="grid h-full min-h-0 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
+      <nav aria-label="Chat sessions" className="flex min-h-0 flex-col gap-2">
         <Button size="sm" variant="outline" onClick={() => select(null)}>
           new session
         </Button>
-        <div className="flex flex-col">
+        <div className="flex min-h-0 flex-col overflow-y-auto">
           {threads.length === 0 ? (
             <p className="px-2 py-1.5 text-[11.5px] italic text-(--dim)">
               no sessions yet — start one below
@@ -65,8 +65,9 @@ export function SessionsWorkspace({
         </div>
       </nav>
 
-      <div className="flex min-h-[50vh] flex-col gap-4">
-        <div className="flex-1">
+      {/* Fixed composer, scrolling conversation: only the messages move. */}
+      <div className="flex min-h-0 flex-col gap-4">
+        <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           <ThreadMessages
             conversationId={selected}
             activeRunId={activeRunId}

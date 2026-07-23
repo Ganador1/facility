@@ -12,7 +12,8 @@ import { artifactIdFor, type KbDecision, type KbEntry, type KbSection } from "@/
 const EMPTY_HINTS: Record<string, string> = {
   D: "no decisions recorded yet — capture the first ADR",
   R: "no documentation pages yet",
-  S: "no signals yet — paste a transcript into the ask bar",
+  S: "no signals yet — paste a transcript into the chat",
+  L: "no learnings yet — the learning agent files them after runs",
 };
 
 export function NavTree({
@@ -31,7 +32,6 @@ export function NavTree({
   onNew: (type: "R" | "D") => void;
 }) {
   const [filter, setFilter] = useState("");
-  const [openSecondary, setOpenSecondary] = useState(false);
 
   const decisionRows = useMemo(() => {
     const active = decisions.filter((d) => d.active);
@@ -55,28 +55,6 @@ export function NavTree({
         aria-label="Filter pages"
         className="border border-(--line) bg-(--bg-subtle) px-3 py-1.5 text-[12px] text-(--ink) outline-none placeholder:text-(--dim) focus:border-(--line-strong)"
       />
-
-      <SectionBlock label="context" count={2}>
-        {(
-          [
-            { key: "charter", id: "CHARTER", label: "charter" },
-            { key: "active", id: "ACTIVE", label: "active" },
-          ] as const
-        ).map((pin) => (
-          <button
-            key={pin.key}
-            type="button"
-            onClick={() => onSelect(pin.key)}
-            className={cx(
-              "flex items-baseline gap-2 px-2 py-1.5 text-left text-[12.5px] hover:text-(--ink)",
-              selected === pin.key ? "font-medium text-(--ink)" : "text-(--mut)",
-            )}
-          >
-            <span className="shrink-0 font-mono text-[10.5px] text-(--dim)">{pin.id}</span>
-            <span className="min-w-0 truncate">{pin.label}</span>
-          </button>
-        ))}
-      </SectionBlock>
 
       {sections
         .filter((s) => !s.secondary)
@@ -115,39 +93,45 @@ export function NavTree({
           );
         })}
 
-      {sections.some((s) => s.secondary) ? (
-        <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={() => setOpenSecondary((v) => !v)}
-            className="text-left text-[10.5px] font-medium text-(--dim) hover:text-(--mut)"
-          >
-            {openSecondary ? "▾" : "▸"} more artifacts ·{" "}
-            {sections.filter((s) => s.secondary).reduce((acc, s) => acc + s.entries.length, 0)}
-          </button>
-          {openSecondary
-            ? sections
-                .filter((s) => s.secondary)
-                .map((section) => (
-                  <SectionBlock
-                    key={section.key}
-                    label={section.label}
-                    count={section.entries.filter(matches).length}
-                  >
-                    {section.entries.filter(matches).map((entry) => (
-                      <EntryRow
-                        key={entry.id}
-                        entry={entry}
-                        selected={selected}
-                        onSelect={onSelect}
-                        supersededBy={null}
-                      />
-                    ))}
-                  </SectionBlock>
-                ))
-            : null}
-        </div>
-      ) : null}
+      {sections
+        .filter((s) => s.secondary)
+        .map((section) => {
+          const rows = section.entries.filter(matches);
+          return (
+            <SectionBlock key={section.key} label={section.label} count={rows.length + 2}>
+              {/* The freeform home: the context docs live here alongside any
+                  page outside the four structured sections. */}
+              {(
+                [
+                  { key: "charter", id: "CHARTER", label: "charter" },
+                  { key: "active", id: "ACTIVE", label: "active" },
+                ] as const
+              ).map((pin) => (
+                <button
+                  key={pin.key}
+                  type="button"
+                  onClick={() => onSelect(pin.key)}
+                  className={cx(
+                    "flex items-baseline gap-2 px-2 py-1.5 text-left text-[12.5px] hover:text-(--ink)",
+                    selected === pin.key ? "font-medium text-(--ink)" : "text-(--mut)",
+                  )}
+                >
+                  <span className="shrink-0 font-mono text-[10.5px] text-(--dim)">{pin.id}</span>
+                  <span className="min-w-0 truncate">{pin.label}</span>
+                </button>
+              ))}
+              {rows.map((entry) => (
+                <EntryRow
+                  key={entry.id}
+                  entry={entry}
+                  selected={selected}
+                  onSelect={onSelect}
+                  supersededBy={null}
+                />
+              ))}
+            </SectionBlock>
+          );
+        })}
     </nav>
   );
 }

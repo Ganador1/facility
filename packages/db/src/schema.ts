@@ -713,6 +713,28 @@ export const kbEntries = pgTable(
   ],
 );
 
+export const kbEntryVersions = pgTable(
+  "kb_entry_versions",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    entryId: text("entry_id")
+      .notNull()
+      .references(() => kbEntries.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    slug: text("slug").notNull(),
+    frontmatter: jsonb("frontmatter").notNull().default({}),
+    bodyMd: text("body_md").notNull().default(""),
+    status: text("status"),
+    savedBy: jsonb("saved_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("kb_entry_versions_unique").on(table.entryId, table.version),
+    index("kb_entry_versions_entry_idx").on(table.entryId, table.version),
+  ],
+);
+
 export const kbLinks = pgTable(
   "kb_links",
   {

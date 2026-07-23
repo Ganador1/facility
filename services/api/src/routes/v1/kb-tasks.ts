@@ -3,6 +3,7 @@ import {
   actionTypes,
   agentDefs,
   kbEntries,
+  kbEntryVersions,
   kbLinks,
   kbSpaces,
   poTasks,
@@ -14,7 +15,7 @@ import {
   runs,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
@@ -39,6 +40,7 @@ import {
   KbDecisionSchema,
   KbEntryDraftSchema,
   KbEntrySchema,
+  KbEntryVersionSchema,
   KbNeighborSchema,
   KbSpaceSchema,
   Ok,
@@ -645,29 +647,9 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         supersedes?: string | null;
       };
       const current = await loadKbEntryForPrincipal(p, entryId);
-      // Decisions are immutable once made: their content never changes in
-      // place. The only allowed patch is the supersedence transition itself
-      // (status → superseded); anything else must go through /supersede.
-      if (
-        current.type === "D" &&
-        (current.status === "decided" || current.status === "superseded")
-      ) {
-        const changesContent =
-          body.bodyMd !== undefined ||
-          body.slug !== undefined ||
-          body.type !== undefined ||
-          body.number !== undefined ||
-          body.frontmatter !== undefined ||
-          body.supersedes !== undefined;
-        const illegalStatus = body.status !== undefined && body.status !== "superseded";
-        if (changesContent || illegalStatus) {
-          throw new ApiError(
-            409,
-            "kb_decision_immutable",
-            "Decided decisions are immutable — create a superseding decision via POST /v1/kb/entries/:entryId/supersede",
-          );
-        }
-      }
+      // Every page is freely editable — history, not immutability, is the
+      // safety net: the prior content is captured as a version in the same
+      // transaction as the update below.
       const space = (
         await db
           .select()
@@ -705,17 +687,57 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       if (!report.ok) {
         throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
       }
-      const row = (
-        await db
-          .update(kbEntries)
-          .set(patch)
-          .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, entryId)))
-          .returning()
-      )[0];
+      const row = await db.transaction(async (tx) => {
+        const versionRow = await tx
+          .select({ maxVersion: sql<number>`coalesce(max(${kbEntryVersions.version}), 0)::int` })
+          .from(kbEntryVersions)
+          .where(eq(kbEntryVersions.entryId, entryId));
+        const maxVersion = versionRow[0]?.maxVersion ?? 0;
+        await tx.insert(kbEntryVersions).values({
+          id: newId("ver"),
+          orgId: p.orgId,
+          entryId,
+          version: maxVersion + 1,
+          slug: current.slug,
+          frontmatter: current.frontmatter ?? {},
+          bodyMd: current.bodyMd,
+          status: current.status,
+          savedBy: { type: p.type, id: p.id },
+        });
+        return (
+          await tx
+            .update(kbEntries)
+            .set(patch)
+            .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.id, entryId)))
+            .returning()
+        )[0];
+      });
       if (!row) throw notFound("KB entry not found");
       return row;
     },
   );
+
+  app.get(
+    "/v1/kb/entries/:entryId/versions",
+    {
+      config: { permission: "kb:read" },
+      schema: {
+        params: IdParams,
+        response: { 200: z.array(KbEntryVersionSchema) },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { entryId } = request.params as { entryId: string };
+      await loadKbEntryForPrincipal(p, entryId);
+      return db
+        .select()
+        .from(kbEntryVersions)
+        .where(and(eq(kbEntryVersions.orgId, p.orgId), eq(kbEntryVersions.entryId, entryId)))
+        .orderBy(desc(kbEntryVersions.version));
+    },
+  );
+
   app.post(
     "/v1/projects/:projectId/kb/validate",
     {

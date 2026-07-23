@@ -17,7 +17,7 @@ export function AskBar({ projectId }: { projectId: string }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const storageKey = `facility-ask-thread:${projectId}`;
 
   useEffect(() => {

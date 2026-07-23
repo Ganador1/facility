@@ -287,7 +287,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(131);
+    ).toBe(132);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },

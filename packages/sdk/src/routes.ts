@@ -40,6 +40,7 @@ export const FACILITY_V1_ROUTES = [
   "GET /v1/issues",
   "GET /v1/kb/entries/:entryId",
   "GET /v1/kb/entries/:entryId/neighborhood",
+  "GET /v1/kb/entries/:entryId/versions",
   "GET /v1/keys",
   "GET /v1/llm-requests",
   "GET /v1/llm-requests/:requestId/envelope",
