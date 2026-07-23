@@ -73,6 +73,18 @@ function coalescesWith(
   return by?.type === p.type && by?.id === p.id;
 }
 
+/** Artifact ids a body cites — [[wikilinks]] plus bare codes (entries only). */
+const BODY_REF_RE = /\[\[([A-Z]{1,2}\d{3})\]\]|\b([A-Z]{1,2}\d{3})\b/g;
+
+function citedArtifactIds(md: string): Set<string> {
+  const refs = new Set<string>();
+  for (const match of md.matchAll(BODY_REF_RE)) {
+    const id = match[1] ?? match[2];
+    if (id) refs.add(id);
+  }
+  return refs;
+}
+
 export async function registerKbTasksRoutes(app: FastifyInstance, context: V1RouteContext) {
   const { db } = context;
   app.get(
@@ -771,11 +783,38 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         supersedes: body.supersedes,
         updatedAt: new Date(),
       });
+      // Citing another artifact IS linking it: normalize the body (the
+      // ## Links section carries every cite) and compute the additive graph
+      // rows BEFORE validation — the validator enforces exactly that
+      // invariant. Additive only: creation-time chain links never disappear.
+      const citedTargets: typeof entries = [];
+      if (typeof patch.bodyMd === "string") {
+        const refs = citedArtifactIds(patch.bodyMd);
+        refs.delete(artifactIdFor(toHarnessEntry({ ...current, ...patch })));
+        for (const target of entries) {
+          if (target.id !== entryId && refs.has(artifactIdFor(toHarnessEntry(target)))) {
+            citedTargets.push(target);
+          }
+        }
+        if (citedTargets.length > 0) {
+          patch.bodyMd = ensureLinks(
+            patch.bodyMd,
+            citedTargets.map((target) => artifactIdFor(toHarnessEntry(target))),
+          );
+        }
+      }
       const patched = { ...current, ...patch };
+      const linkSet = [
+        ...links.map((link) => ({ fromEntry: link.fromEntry, toEntry: link.toEntry })),
+        ...citedTargets.flatMap((target) => [
+          { fromEntry: entryId, toEntry: target.id },
+          { fromEntry: target.id, toEntry: entryId },
+        ]),
+      ];
       const report = validate({
         space: toHarnessSpace(space),
         entries: entries.map((entry) => toHarnessEntry(entry.id === entryId ? patched : entry)),
-        links: links.map((link) => ({ fromEntry: link.fromEntry, toEntry: link.toEntry })),
+        links: linkSet,
         entryId,
         validateSpecials: false,
       });
@@ -803,6 +842,25 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
             status: current.status,
             savedBy: { type: p.type, id: p.id },
           });
+        }
+        for (const target of citedTargets) {
+          await tx
+            .insert(kbLinks)
+            .values([
+              {
+                orgId: p.orgId,
+                spaceId: current.spaceId,
+                fromEntry: entryId,
+                toEntry: target.id,
+              },
+              {
+                orgId: p.orgId,
+                spaceId: current.spaceId,
+                fromEntry: target.id,
+                toEntry: entryId,
+              },
+            ])
+            .onConflictDoNothing();
         }
         return (
           await tx

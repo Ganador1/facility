@@ -34,9 +34,10 @@
 }
 
 /* Match the app's reading scale instead of Crepe's document defaults. The
-   left gutter stays wide: Crepe hangs the block drag/plus handles there. */
+   left gutter stays wide: Crepe hangs BOTH block handles (add + drag) there,
+   side by side. */
 .facility-crepe .milkdown .ProseMirror {
-  padding: 24px 28px 96px 56px;
+  padding: 24px 28px 96px 88px;
   font-size: 13px;
   line-height: 1.65;
   max-width: none;
@@ -81,6 +82,15 @@
 .facility-crepe .milkdown .ProseMirror th,
 .facility-crepe .milkdown .ProseMirror td {
   border: 1px solid var(--line);
+}
+
+/* Artifact refs (D001, [[R002]]) decorated as live links by the
+   facility-artifact-refs ProseMirror plugin. */
+.facility-crepe .milkdown .ProseMirror .artifact-ref {
+  color: var(--info);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+  cursor: pointer;
 }
 
 /* Square corners everywhere — the app has no border radii. */

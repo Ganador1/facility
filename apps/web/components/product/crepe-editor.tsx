@@ -5,6 +5,7 @@ import "./crepe-theme.css";
 
 import { Crepe } from "@milkdown/crepe";
 import { useEffect, useRef } from "react";
+import { artifactRefs } from "@/components/product/artifact-refs";
 
 /**
  * The always-on WYSIWYG surface (Milkdown Crepe). Markdown stays the source
@@ -26,7 +27,7 @@ export function CrepeEditor({
   readOnly?: boolean;
   placeholder?: string;
   onMarkdownChange?: (md: string) => void;
-  /** Cmd/Ctrl+click on an artifact ref (D001, [[R002]], [[CHARTER]]…) navigates. */
+  /** Clicking an artifact ref (D001, [[R002]], [[CHARTER]]…) navigates to it. */
   onNavigateRef?: (artifactId: string) => void;
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -59,6 +60,7 @@ export function CrepeEditor({
         },
       },
     });
+    crepe.editor.use(artifactRefs(() => navRef.current));
     crepe.on((listener) => {
       listener.markdownUpdated((_ctx, md) => changeRef.current?.(md));
     });
@@ -75,51 +77,5 @@ export function CrepeEditor({
     crepeRef.current?.setReadonly(readOnly);
   }, [readOnly]);
 
-  return (
-    <div
-      ref={rootRef}
-      onClickCapture={(event) => {
-        if (!navRef.current || !(event.metaKey || event.ctrlKey)) return;
-        const ref = artifactRefAtPoint(event.clientX, event.clientY);
-        if (ref) {
-          event.preventDefault();
-          event.stopPropagation();
-          navRef.current(ref);
-        }
-      }}
-      className="facility-crepe h-full min-h-0"
-    />
-  );
-}
-
-const REF_RE = /\[\[([A-Z]{1,2}\d{3}|CHARTER|ACTIVE)\]\]|([A-Z]{1,2}\d{3})/g;
-
-/** Resolve the artifact ref under a pointer position, if any. */
-function artifactRefAtPoint(x: number, y: number): string | null {
-  const doc = document as Document & {
-    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
-    caretRangeFromPoint?: (x: number, y: number) => Range | null;
-  };
-  let node: Node | null = null;
-  let offset = 0;
-  const pos = doc.caretPositionFromPoint?.(x, y);
-  if (pos) {
-    node = pos.offsetNode;
-    offset = pos.offset;
-  } else {
-    const range = doc.caretRangeFromPoint?.(x, y);
-    if (range) {
-      node = range.startContainer;
-      offset = range.startOffset;
-    }
-  }
-  if (!node || node.nodeType !== Node.TEXT_NODE) return null;
-  const text = node.textContent ?? "";
-  for (const match of text.matchAll(REF_RE)) {
-    const start = match.index ?? 0;
-    if (offset >= start && offset <= start + match[0].length) {
-      return match[1] ?? match[2] ?? null;
-    }
-  }
-  return null;
+  return <div ref={rootRef} className="facility-crepe h-full min-h-0" />;
 }
