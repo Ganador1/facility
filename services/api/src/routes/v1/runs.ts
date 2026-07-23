@@ -331,6 +331,13 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
         if (!error && event.type === "result" && typeof data.error === "string") {
           error = data.error;
         }
+        // Current sandbox vocabulary: the final message is an `assistant`
+        // event carrying plain text (the engine-shaped branch below covers
+        // the older nested form).
+        if (!answer && event.type === "assistant" && typeof data.text === "string") {
+          const text = data.text.trim();
+          if (text) answer = text.length > 20_000 ? text.slice(-20_000) : text;
+        }
         if (!answer && event.type === "engine" && data.type === "assistant") {
           const message =
             data.message && typeof data.message === "object"
