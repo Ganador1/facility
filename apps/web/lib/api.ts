@@ -164,6 +164,8 @@ export const api = {
   },
   issue: (projectId: string, number: number) =>
     apiFetch("GET", `/v1/projects/${projectId}/issues/${number}`),
+  storyGithubActivity: (projectId: string, number: number) =>
+    apiFetch("GET", `/v1/projects/${projectId}/stories/${number}/github-activity`),
   proposal: (id: string) => apiFetch("GET", `/v1/proposals/${id}`),
   outcomes: (params = "") => apiFetch("GET", "/v1/outcomes", { query: queryFromParams(params) }),
   auditVerify: () => apiFetch("GET", "/v1/audit/verify"),

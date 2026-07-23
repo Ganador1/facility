@@ -8,6 +8,7 @@ import {
   repos,
   runEvents,
   runs,
+  users,
 } from "@facility/db";
 import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
@@ -80,6 +81,29 @@ const GhIssueDetailSchema = GhIssueItemSchema.extend({
       endedAt: DateValue.nullable(),
       receipt: JsonValue.nullable(),
       pr: JsonValue.optional(),
+      triggeredBy: z.string().nullable(),
+    }),
+  ),
+});
+
+const StoryGithubActivitySchema = z.object({
+  comments: z.array(
+    z.object({
+      id: z.number(),
+      author: z.string(),
+      bodyMd: z.string(),
+      createdAt: z.string(),
+      url: z.string(),
+    }),
+  ),
+  prs: z.array(
+    z.object({
+      number: z.number(),
+      title: z.string(),
+      bodyMd: z.string(),
+      author: z.string(),
+      url: z.string(),
+      state: z.string(),
     }),
   ),
 });
@@ -357,6 +381,40 @@ export async function registerGithubV1Routes(app: FastifyInstance, context: V1Ro
       assertProjectScope(p, projectId);
       const issue = await loadIssue(db, p.orgId, projectId, number);
       const issueRuns = await fullRunsForIssue(db, p.orgId, projectId, number);
+      // "Who triggered this" — user runs resolve to the member's email; GitHub
+      // senders/bots keep their login; system paths get their path name.
+      const creatorIds = [
+        ...new Set(
+          issueRuns
+            .map((run) => {
+              const createdBy = objectOrEmpty(run.createdBy);
+              return createdBy.type === "user" && typeof createdBy.id === "string"
+                ? createdBy.id
+                : null;
+            })
+            .filter((id): id is string => id !== null),
+        ),
+      ];
+      const emailById = new Map(
+        (creatorIds.length
+          ? await db
+              .select({ id: users.id, email: users.email })
+              .from(users)
+              .where(inArray(users.id, creatorIds))
+          : []
+        ).map((row) => [row.id, row.email]),
+      );
+      const triggeredByOf = (run: (typeof issueRuns)[number]): string | null => {
+        const trigger = objectOrEmpty(run.trigger);
+        const createdBy = objectOrEmpty(run.createdBy);
+        if (trigger.source === "plan_acceptance") return "plan approval";
+        if (trigger.type === "schedule") return "schedule";
+        if (createdBy.type === "user" && typeof createdBy.id === "string") {
+          return emailById.get(createdBy.id) ?? "a member";
+        }
+        if (typeof createdBy.id === "string" && createdBy.id) return createdBy.id;
+        return null;
+      };
       return {
         ...issueItem(issue, issueRuns.map(linkedRunFromRun)),
         bodyMd: issue.bodyMd,
@@ -372,9 +430,70 @@ export async function registerGithubV1Routes(app: FastifyInstance, context: V1Ro
             endedAt: run.endedAt,
             receipt: run.receipt,
             pr: gh.pr,
+            triggeredBy: triggeredByOf(run),
           };
         }),
       };
+    },
+  );
+
+  app.get(
+    "/v1/projects/:projectId/stories/:number/github-activity",
+    {
+      config: { permission: "runs:read" },
+      schema: {
+        params: z.object({ projectId: z.string(), number: z.coerce.number().int() }),
+        response: { 200: StoryGithubActivitySchema },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId, number } = request.params as { projectId: string; number: number };
+      assertProjectScope(p, projectId);
+      const issue = await loadIssue(db, p.orgId, projectId, number);
+      const empty = { comments: [], prs: [] };
+      const repo = (
+        await db
+          .select()
+          .from(repos)
+          .where(
+            and(
+              eq(repos.orgId, p.orgId),
+              eq(repos.projectId, projectId),
+              eq(repos.id, issue.repoId),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (!repo?.installationId) return empty;
+      try {
+        const factory = app.githubClientFactory ?? createGithubClientFactory(config);
+        const client = await createGithubClientForRepo(db, factory, repo);
+        // Bot comments are Facility's own progress/ack noise (and other
+        // bots') — the timeline wants the human conversation.
+        const comments = (await client.listIssueComments(number))
+          .filter((comment) => comment.authorType !== "Bot")
+          .map(({ authorType: _authorType, body, ...rest }) => ({ ...rest, bodyMd: body }));
+        const issueRuns = await fullRunsForIssue(db, p.orgId, projectId, number);
+        const prNumbers = new Set<number>();
+        for (const run of issueRuns) {
+          const pr = objectOrEmpty(run.gh).pr as { number?: number } | undefined;
+          if (pr && typeof pr.number === "number") prNumbers.add(pr.number);
+        }
+        const prs = [];
+        for (const prNumber of [...prNumbers].sort((a, b) => a - b)) {
+          try {
+            const { body, ...pr } = await client.getPullRequest(prNumber);
+            prs.push({ ...pr, bodyMd: body });
+          } catch {
+            // A deleted or inaccessible PR must not sink the timeline.
+          }
+        }
+        return { comments, prs };
+      } catch {
+        // GitHub being unreachable degrades to the Facility-only timeline.
+        return empty;
+      }
     },
   );
 

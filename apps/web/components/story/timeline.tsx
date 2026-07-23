@@ -1,9 +1,13 @@
 import { StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
 import { ProposalCard } from "@/components/inbox/proposal-card";
+import { Markdown } from "@/components/markdown";
+import { RunOutcome } from "@/components/story/run-outcome";
 import type { Proposal } from "@/lib/api";
 import { fmtCost, fmtDuration } from "@/lib/runs";
-import type { StoryItem, StoryRun } from "@/lib/story";
+import { type StoryItem, type StoryRun, stageLabel } from "@/lib/story";
+
+const TERMINAL = new Set(["succeeded", "failed"]);
 
 /**
  * The story timeline: everything that happened to a unit of work, in order,
@@ -27,9 +31,9 @@ export function StoryTimeline({
     );
   }
   return (
-    <ol className="flex flex-col border-l border-(--line)">
+    <ol className="flex flex-col gap-6 border-l border-(--line)">
       {items.map((item) => (
-        <li key={keyOf(item)} className="relative pb-6 pl-6 last:pb-0">
+        <li key={keyOf(item)} className="relative pl-6">
           <span
             aria-hidden
             className="absolute top-1.5 -left-[3.5px] h-[7px] w-[7px] border border-(--line-strong) bg-(--bg)"
@@ -50,10 +54,14 @@ function keyOf(item: StoryItem): string {
       return `proposal-${item.proposal.id}`;
     case "proposal_decided":
       return `decided-${item.proposal.id}`;
+    case "comment":
+      return `comment-${item.comment.id}`;
     case "pr_opened":
       return `pr-open-${item.outcome.id}`;
     case "pr_closed":
       return `pr-closed-${item.outcome.id}`;
+    case "stage":
+      return `stage-${item.stage}-${item.ts}`;
     default:
       return item.kind;
   }
@@ -78,8 +86,44 @@ function TimelineItem({
       );
     case "issue_closed":
       return <MilestoneLine ts={item.ts} text="issue closed" tone="ok" />;
+    case "stage":
+      return (
+        <div className="flex items-center gap-2.5">
+          <span aria-hidden className="font-mono text-[11px] text-(--dim)">
+            →
+          </span>
+          <span className="border border-(--line-strong) px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-(--mut)">
+            {stageLabel(item.stage)}
+          </span>
+          <Stamp ts={item.ts} />
+        </div>
+      );
     case "run":
       return <RunItem projectId={projectId} ts={item.ts} run={item.run} />;
+    case "comment":
+      return (
+        <div className="flex flex-col gap-2 border border-(--line) px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <StatusDot tone="human" />
+            <span className="font-mono text-[12px] text-(--ink)">{item.comment.author}</span>
+            <span className="text-[11.5px] text-(--dim)">commented on GitHub</span>
+            <a
+              href={item.comment.url}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-[10.5px] text-(--dim) hover:text-(--ink)"
+            >
+              ↗
+            </a>
+            <span className="ml-auto">
+              <Stamp ts={item.ts} />
+            </span>
+          </div>
+          <div className="text-[12.5px]">
+            <Markdown source={item.comment.bodyMd} />
+          </div>
+        </div>
+      );
     case "proposal":
       return item.proposal.state === "open" ? (
         // The actionable beat: the pending gate, decidable right here.
@@ -104,24 +148,44 @@ function TimelineItem({
       return (
         <MilestoneLine
           ts={item.ts}
-          text={`${humanizeAction(item.proposal.actionType)} ${decisionOf(item.proposal)}${decidedByOf(item.proposal)}`}
+          text={`${humanizeAction(item.proposal.actionType)} ${decisionOf(item.proposal)}`}
           tone={item.proposal.state === "rejected" ? "bad" : "ok"}
         />
       );
     case "pr_opened":
       return (
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-          <StatusDot tone="agent" />
-          <a
-            href={`https://github.com/${item.outcome.repo}/pull/${item.outcome.prNumber}`}
-            target="_blank"
-            rel="noreferrer"
-            className="font-mono text-[12.5px] text-(--ink) underline-offset-4 hover:underline"
-          >
-            PR {item.outcome.repo.split("/")[1]}#{item.outcome.prNumber} ↗
-          </a>
-          <span className="text-[12px] text-(--mut)">opened · {item.outcome.agentLane}</span>
-          <Stamp ts={item.ts} />
+        <div className="flex flex-col gap-2 border border-(--line) px-4 py-3">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <StatusDot tone="agent" />
+            <a
+              href={
+                item.pr?.url ??
+                `https://github.com/${item.outcome.repo}/pull/${item.outcome.prNumber}`
+              }
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-[12.5px] text-(--ink) underline-offset-4 hover:underline"
+            >
+              PR #{item.outcome.prNumber} ↗
+            </a>
+            {item.pr?.title ? (
+              <span className="min-w-0 truncate text-[12.5px] text-(--mut)">{item.pr.title}</span>
+            ) : null}
+            <span className="text-[11.5px] text-(--dim)">opened · {item.outcome.agentLane}</span>
+            <span className="ml-auto">
+              <Stamp ts={item.ts} />
+            </span>
+          </div>
+          {item.pr?.bodyMd?.trim() ? (
+            <details>
+              <summary className="cursor-pointer font-mono text-[10.5px] text-(--dim) hover:text-(--ink)">
+                PR description
+              </summary>
+              <div className="mt-2 border-t border-(--line) pt-3 text-[12.5px]">
+                <Markdown source={item.pr.bodyMd} />
+              </div>
+            </details>
+          ) : null}
         </div>
       );
     case "pr_closed":
@@ -145,7 +209,7 @@ function RunItem({ projectId, ts, run }: { projectId: string; ts: string | null;
   const cost = costOf(run);
   const failed = run.status === "failed";
   return (
-    <div className="flex flex-col gap-1 border border-(--line) bg-(--bg-subtle) px-4 py-2.5">
+    <div className="flex flex-col gap-2 border border-(--line) bg-(--bg-subtle) px-4 py-2.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <StatusDot tone={toneFor(run.status)} pulse={run.status === "running"} />
         <Link
@@ -158,6 +222,9 @@ function RunItem({ projectId, ts, run }: { projectId: string; ts: string | null;
           {run.status}
         </span>
         <span className="font-mono text-[10.5px] text-(--dim)">{run.engine}</span>
+        {run.triggeredBy ? (
+          <span className="font-mono text-[10.5px] text-(--dim)">by {run.triggeredBy}</span>
+        ) : null}
         {run.startedAt ? (
           <span className="font-mono text-[10.5px] text-(--dim)">
             {fmtDuration(String(run.startedAt), run.endedAt ? String(run.endedAt) : null)}
@@ -168,6 +235,7 @@ function RunItem({ projectId, ts, run }: { projectId: string; ts: string | null;
           <Stamp ts={ts} fallback="queued" />
         </span>
       </div>
+      {TERMINAL.has(run.status) ? <RunOutcome runId={run.id} /> : null}
     </div>
   );
 }
@@ -212,11 +280,6 @@ function decisionOf(proposal: Proposal): string {
   if (proposal.state === "rejected") return "rejected";
   if (proposal.state === "execution_failed") return "approved · execution failed";
   return proposal.state === "approved" ? "approved" : proposal.state;
-}
-
-function decidedByOf(proposal: Proposal): string {
-  const by = (proposal as { decidedBy?: { id?: string } | null }).decidedBy;
-  return by?.id ? ` · by ${by.id}` : "";
 }
 
 function costOf(run: StoryRun): string | null {

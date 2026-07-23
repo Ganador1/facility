@@ -7,7 +7,7 @@ import { LiveRefresh } from "@/components/shell/live-refresh";
 import { StoryTimeline } from "@/components/story/timeline";
 import { StoryTriggerButtons } from "@/components/story/trigger-buttons";
 import { api } from "@/lib/api";
-import { classifyPipeline, PIPELINE_STAGES } from "@/lib/pipeline";
+import { classifyPipeline, PIPELINE_STAGES, prsOf } from "@/lib/pipeline";
 import { asPipelineIssue, deriveStoryTimeline, proposalsForIssue } from "@/lib/story";
 
 export async function generateMetadata({ params }: { params: Promise<{ number: string }> }) {
@@ -17,8 +17,8 @@ export async function generateMetadata({ params }: { params: Promise<{ number: s
 
 /**
  * The story page: one unit of work, its whole life — issue, agent runs,
- * human gates, PRs — as a single actionable timeline. GitHub is the sync
- * reference (the ↗ link), not the destination.
+ * human gates, PRs, the GitHub conversation — as a single actionable
+ * timeline. GitHub links are the sync references, not the destination.
  */
 export default async function StoryPage({
   params,
@@ -29,10 +29,11 @@ export default async function StoryPage({
   const number = Number.parseInt(rawNumber, 10);
   if (!Number.isFinite(number)) notFound();
 
-  const [detail, inbox, outcomes, me] = await Promise.all([
+  const [detail, inbox, outcomes, activity, me] = await Promise.all([
     api.issue(projectId, number),
     api.inboxAll(),
     api.outcomes(`?state=all&projectId=${projectId}&limit=200`),
+    api.storyGithubActivity(projectId, number),
     api.me(),
   ]);
 
@@ -48,16 +49,25 @@ export default async function StoryPage({
   );
   const storyProposals = proposalsForIssue(proposals, number);
   const openProposals = proposals.filter((proposal) => proposal.state === "open");
+  const comments = activity.ok ? activity.data.comments : [];
+  const activityPrs = activity.ok ? activity.data.prs : [];
   const timeline = deriveStoryTimeline({
     detail: issue,
     proposals,
     outcomes: outcomes.ok ? outcomes.data : [],
+    comments,
+    prs: activityPrs,
   });
 
   const staged = classifyPipeline([asPipelineIssue(issue)], openProposals);
   const stage = PIPELINE_STAGES.find((candidate) =>
     (staged.get(candidate.key) ?? []).some((placed) => placed.issue.number === number),
   );
+
+  // Header sync references: the issue plus every PR the story produced.
+  const prLinks = new Map<number, string>();
+  for (const pr of prsOf(asPipelineIssue(issue))) prLinks.set(pr.number, pr.url);
+  for (const pr of activityPrs) prLinks.set(pr.number, pr.url);
 
   const permissions = me.ok ? me.data.permissions : [];
   const has = (perm: string) =>
@@ -71,9 +81,11 @@ export default async function StoryPage({
       <div className="flex flex-col gap-3">
         <Eyebrow>story</Eyebrow>
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <h1 className="min-w-0 text-[clamp(18px,2.4vw,26px)] font-semibold tracking-tight">
-            <span className="mr-3 font-mono text-[0.72em] text-(--dim)">#{issue.number}</span>
-            {issue.title}
+          <h1 className="flex min-w-0 items-baseline gap-3 text-[clamp(18px,2.4vw,26px)] font-semibold tracking-tight">
+            <span className="shrink-0 font-mono text-[0.72em] font-normal text-(--dim)">
+              #{issue.number}
+            </span>
+            <span className="min-w-0">{issue.title}</span>
           </h1>
           {has("runs:trigger") && issue.state === "open" ? (
             <StoryTriggerButtons projectId={projectId} issueNumber={issue.number} />
@@ -99,8 +111,21 @@ export default async function StoryPage({
             rel="noreferrer"
             className="font-mono text-[11px] text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
           >
-            GitHub ↗
+            issue #{issue.number} ↗
           </a>
+          {[...prLinks.entries()]
+            .sort(([a], [b]) => a - b)
+            .map(([prNumber, url]) => (
+              <a
+                key={prNumber}
+                href={url}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-[11px] text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
+              >
+                PR #{prNumber} ↗
+              </a>
+            ))}
           {storyProposals.some((proposal) => proposal.state === "open") ? (
             <span className="font-mono text-[11px] text-(--human)">waiting on you</span>
           ) : null}
@@ -108,7 +133,7 @@ export default async function StoryPage({
       </div>
 
       {issue.bodyMd?.trim() ? (
-        <details className="border border-(--line) bg-(--bg-subtle)">
+        <details open className="border border-(--line) bg-(--bg-subtle)">
           <summary className="cursor-pointer px-4 py-2.5 font-mono text-[11px] text-(--dim) hover:text-(--ink)">
             issue body
           </summary>
