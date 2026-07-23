@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 
 export type AskToolChip = {
+  /** Stable append-order id — chips are append-only, never reordered. */
+  id: number;
   tool: string;
   ok?: boolean;
   ms?: number;
@@ -57,7 +59,7 @@ export function useAskStream(runId: string | null): AskTurnState {
             return {
               ...prev,
               status: null,
-              tools: [...prev.tools, { tool: String(data.tool ?? "tool") }],
+              tools: [...prev.tools, { id: prev.tools.length, tool: String(data.tool ?? "tool") }],
             };
           case "tool_result": {
             const tools = [...prev.tools];

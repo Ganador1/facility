@@ -1496,7 +1496,10 @@ async function activeSkills(
 // Revoke a run's least-privilege credentials — the run-scoped virtual key (LLM
 // gateway) and platform key (kb/tasks). Shared by every terminal path so a
 // failed/timed-out run never leaves a live key behind.
-export async function revokeRunKeys(db: ReturnType<typeof createDb>["db"], sandbox: RunSandboxState) {
+export async function revokeRunKeys(
+  db: ReturnType<typeof createDb>["db"],
+  sandbox: RunSandboxState,
+) {
   const now = new Date();
   if (sandbox.virtualKeyId) {
     // Guard on isNull so a re-revoke is a no-op and we only push-invalidate the

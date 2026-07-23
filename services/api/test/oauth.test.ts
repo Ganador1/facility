@@ -72,7 +72,7 @@ describe("oauth token verification", () => {
       publicUrl: "http://localhost:4400",
       sandboxApiUrl: "http://localhost:4400",
       sandboxGatewayUrl: "http://localhost:4410",
-    gatewayUrl: "http://localhost:4410",
+      gatewayUrl: "http://localhost:4410",
       sandboxRunnerImage: "facility-runner:dev",
       sandboxDriver: "docker",
       facilityInsecureDev: true,

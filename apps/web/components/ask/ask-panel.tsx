@@ -130,8 +130,8 @@ export function AskPanel({
           <div className="flex flex-col gap-2 self-start">
             {turn.tools.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
-                {turn.tools.map((chip, index) => (
-                  <ToolChip key={`${chip.tool}-${index}`} chip={chip} projectId={projectId} />
+                {turn.tools.map((chip) => (
+                  <ToolChip key={chip.id} chip={chip} projectId={projectId} />
                 ))}
               </div>
             ) : null}
