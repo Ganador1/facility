@@ -38,6 +38,7 @@ export function AskPanel({
   activeRunId,
   pendingQuestion,
   onClose,
+  onNewThread,
 }: {
   projectId: string;
   conversationId: string | null;
@@ -45,6 +46,7 @@ export function AskPanel({
   /** The just-sent user message, echoed while the turn streams. */
   pendingQuestion: string | null;
   onClose: () => void;
+  onNewThread: () => void;
 }) {
   const turn = useAskStream(activeRunId);
   const [history, setHistory] = useState<ThreadMessage[]>([]);
@@ -103,6 +105,11 @@ export function AskPanel({
               stop
             </Button>
           ) : null}
+          {conversationId ? (
+            <Button size="sm" variant="outline" onClick={onNewThread} title="start a fresh thread">
+              new thread
+            </Button>
+          ) : null}
           <Button size="sm" variant="outline" onClick={onClose}>
             close
           </Button>
@@ -144,10 +151,12 @@ export function AskPanel({
                 ))}
               </div>
             ) : null}
-            {turn.status ? (
+            {/* The user must always see the question was received — before the
+                first event lands, "thinking" holds the line (tam-os pattern). */}
+            {turn.status || !turn.text ? (
               <p className="flex items-center gap-2 font-mono text-[11px] text-(--dim)">
                 <StatusDot tone="agent" pulse />
-                {turn.status}
+                {turn.status ?? "thinking…"}
               </p>
             ) : null}
             {turn.text ? (

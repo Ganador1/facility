@@ -139,6 +139,16 @@ export function AskBar({ projectId }: { projectId: string }) {
             activeRunId={activeRunId}
             pendingQuestion={pendingQuestion}
             onClose={() => setPanelOpen(false)}
+            onNewThread={() => {
+              setConversationId(null);
+              setActiveRunId(null);
+              setPendingQuestion(null);
+              try {
+                sessionStorage.removeItem(storageKey);
+              } catch {
+                // Best-effort.
+              }
+            }}
           />
         ) : null}
         {pendingPaste ? (

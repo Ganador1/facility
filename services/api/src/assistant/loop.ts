@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { generateApiKey } from "@facility/core";
-import { conversationMessages, type createDb, runs, virtualKeys } from "@facility/db";
-import { and, eq } from "drizzle-orm";
+import { conversationMessages, type createDb, llmRequests, runs, virtualKeys } from "@facility/db";
+import { and, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { failRun, finishConversationTurn, revokeRunKeys } from "../sandbox/orchestrator.js";
 import { appendRunEvents } from "../sandbox/state.js";
@@ -338,5 +338,47 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<void>
     clearTimeout(timer);
     turns.delete(runId);
     if (virtualKeyId) await revokeRunKeys(db, { virtualKeyId }).catch(() => undefined);
+    await writeUsageReceipt(db, orgId, runId).catch(() => undefined);
+  }
+}
+
+/**
+ * Inline runs have no sandbox receipt, but the gateway meters every model
+ * call into llm_requests attributed to the run — aggregate that into the
+ * standard receipt shape so cost/tokens surface everywhere sandbox runs do.
+ * Metering lands asynchronously after each proxied response, so retry once.
+ */
+async function writeUsageReceipt(db: Db, orgId: string, runId: string) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const totals = (
+      await db
+        .select({
+          requests: sql<number>`count(*)::int`,
+          costCents: sql<number>`coalesce(sum(${llmRequests.costCents}), 0)::float`,
+          inputTokens: sql<number>`coalesce(sum(${llmRequests.inputTokens}), 0)::int`,
+          outputTokens: sql<number>`coalesce(sum(${llmRequests.outputTokens}), 0)::int`,
+        })
+        .from(llmRequests)
+        .where(and(eq(llmRequests.orgId, orgId), eq(llmRequests.runId, runId)))
+    )[0];
+    if (totals && totals.requests > 0) {
+      await db
+        .update(runs)
+        .set({
+          receipt: {
+            source: "llm_requests",
+            usage: {
+              cost_cents: totals.costCents,
+              input_tokens: totals.inputTokens,
+              output_tokens: totals.outputTokens,
+              requests: totals.requests,
+            },
+          },
+          updatedAt: new Date(),
+        })
+        .where(and(eq(runs.orgId, orgId), eq(runs.id, runId)));
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
   }
 }
