@@ -1,4 +1,4 @@
-import { Eyebrow, PillTag } from "@facility/ui";
+import { Eyebrow } from "@facility/ui";
 import Link from "next/link";
 import { IssueCard } from "@/components/inbox/issue-card";
 import { ProposalCard } from "@/components/inbox/proposal-card";
@@ -20,22 +20,24 @@ function prUrl(outcome: Outcome) {
   return `https://github.com/${outcome.repo}/pull/${outcome.prNumber}`;
 }
 
-export default async function InboxPage({
+/** Approvals are a project surface: only this project's decisions land here. */
+export default async function ApprovalsPage({
+  params,
   searchParams,
 }: {
-  searchParams: Promise<{ focus?: string; projectId?: string }>;
+  params: Promise<{ projectId: string }>;
+  searchParams: Promise<{ focus?: string }>;
 }) {
-  const [{ focus, projectId }, inbox, outcomes, projects] = await Promise.all([
+  const [{ projectId }, { focus }, inbox, outcomes] = await Promise.all([
+    params,
     searchParams,
     api.inboxFull(),
     api.outcomes("?state=open&limit=50"),
-    api.projects(),
   ]);
   if (!inbox.ok) return inbox.offline ? <Offline /> : <ErrorNotice message={inbox.message} />;
 
-  const slugById = new Map((projects.ok ? projects.data : []).map((p) => [p.id, p.slug]));
   const byProject = <T extends { projectId?: string | null }>(items: T[]) =>
-    projectId ? items.filter((item) => item.projectId === projectId) : items;
+    items.filter((item) => item.projectId === projectId);
 
   const proposals = byProject(inbox.data.proposals);
   const issues = byProject(inbox.data.issues);
@@ -47,26 +49,16 @@ export default async function InboxPage({
       <LiveRefresh seconds={30} />
       <div className="flex flex-col gap-2">
         <Eyebrow>approvals</Eyebrow>
-        <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Approvals</h1>
         <p className="text-[12.5px] text-(--dim)">
           {proposals.length} gate{proposals.length === 1 ? "" : "s"} · {openPrs.length} PR
           {openPrs.length === 1 ? "" : "s"} to review · {issues.length} issue
           {issues.length === 1 ? "" : "s"}
         </p>
         <p className="max-w-2xl text-[12.5px] leading-relaxed text-(--mut)">
-          Facility decisions and watchtower issues are handled here. Gate 2 remains human validation
+          Everything on this project waiting for a human decision. Gate 2 remains human validation
           of the live preview, pull-request review, and squash merge in GitHub.
         </p>
       </div>
-
-      {projectId ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Link href="/inbox">
-            <PillTag>all projects</PillTag>
-          </Link>
-          <PillTag active>{slugById.get(projectId) ?? projectId}</PillTag>
-        </div>
-      ) : null}
 
       {waiting === 0 ? (
         <p className="text-sm text-(--dim)">Nothing is waiting on you.</p>
@@ -92,11 +84,6 @@ export default async function InboxPage({
                     <span className="font-mono text-[10.5px] text-(--dim)">
                       {outcome.agentLane}
                     </span>
-                    {slugById.get(outcome.projectId) ? (
-                      <span className="text-[11px] font-medium text-(--mut)">
-                        {slugById.get(outcome.projectId)}
-                      </span>
-                    ) : null}
                     {outcome.runId ? (
                       <Link
                         href={`/projects/${outcome.projectId}/sessions/${outcome.runId}`}

@@ -428,7 +428,10 @@ async function writeUsageReceipt(db: Db, orgId: string, runId: string) {
           receipt: {
             source: "llm_requests",
             usage: {
-              cost_cents: totals.costCents,
+              // The receipt contract (RunSchema) wants integer cents plus the
+              // metering source — fractional cents 500 the runs listing.
+              cost_cents: Math.round(totals.costCents),
+              cost_source: "gateway",
               input_tokens: totals.inputTokens,
               output_tokens: totals.outputTokens,
               requests: totals.requests,
