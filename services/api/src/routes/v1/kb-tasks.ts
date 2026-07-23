@@ -5,6 +5,7 @@ import {
   kbEntries,
   kbEntryVersions,
   kbLinks,
+  kbSpaceDocVersions,
   kbSpaces,
   poTasks,
   projects,
@@ -15,7 +16,7 @@ import {
   runs,
 } from "@facility/db";
 import { artifactIdFor, validate } from "@facility/harness";
-import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
@@ -42,6 +43,7 @@ import {
   KbEntrySchema,
   KbEntryVersionSchema,
   KbNeighborSchema,
+  KbSpaceDocVersionSchema,
   KbSpaceSchema,
   Ok,
   objectOrEmpty,
@@ -53,6 +55,23 @@ import {
   type V1RouteContext,
   ValidationReportSchema,
 } from "./shared.js";
+
+/**
+ * Autosave-friendly history: repeated saves by the same actor within this
+ * window coalesce into the version captured when the editing session started,
+ * instead of one version per debounce tick.
+ */
+const VERSION_COALESCE_MS = 10 * 60_000;
+
+function coalescesWith(
+  latest: { createdAt: Date; savedBy: unknown } | undefined,
+  p: Principal,
+): boolean {
+  if (!latest) return false;
+  if (Date.now() - latest.createdAt.getTime() > VERSION_COALESCE_MS) return false;
+  const by = latest.savedBy as { type?: string; id?: string } | null;
+  return by?.type === p.type && by?.id === p.id;
+}
 
 export async function registerKbTasksRoutes(app: FastifyInstance, context: V1RouteContext) {
   const { db } = context;
@@ -87,10 +106,12 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       config: { permission: "kb:write", auditAction: "kb.updated" },
       schema: {
         params: IdParams,
+        // Partial by design: omitted fields keep their stored value, so saving
+        // the charter can never clobber the active doc or the chain config.
         body: z.object({
-          charterMd: z.string().default(""),
-          activeMd: z.string().default(""),
-          config: AnyObject.default({}),
+          charterMd: z.string().optional(),
+          activeMd: z.string().optional(),
+          config: AnyObject.optional(),
         }),
         response: { 200: KbSpaceSchema },
       },
@@ -100,34 +121,108 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       const { projectId } = request.params as { projectId: string };
       assertProjectScope(p, projectId);
       const body = request.body as {
-        charterMd: string;
-        activeMd: string;
-        config: Record<string, unknown>;
+        charterMd?: string;
+        activeMd?: string;
+        config?: Record<string, unknown>;
       };
-      const row = (
-        await db
-          .insert(kbSpaces)
-          .values({
-            id: newId("kb"),
+      const current = await spaceFor(p.orgId, projectId);
+      if (!current) {
+        const row = (
+          await db
+            .insert(kbSpaces)
+            .values({
+              id: newId("kb"),
+              orgId: p.orgId,
+              projectId,
+              charterMd: body.charterMd ?? "",
+              activeMd: body.activeMd ?? "",
+              config: body.config ?? {},
+              charterUpdatedAt: body.charterMd !== undefined ? new Date() : null,
+              activeUpdatedAt: body.activeMd !== undefined ? new Date() : null,
+            })
+            .returning()
+        )[0];
+        if (!row) throw new ApiError(500, "insert_failed", "Could not create KB space");
+        return row;
+      }
+      const row = await db.transaction(async (tx) => {
+        const patch: Partial<typeof kbSpaces.$inferInsert> = { updatedAt: new Date() };
+        if (body.config !== undefined) patch.config = body.config;
+        const docs = [
+          { doc: "charter" as const, next: body.charterMd, prior: current.charterMd },
+          { doc: "active" as const, next: body.activeMd, prior: current.activeMd },
+        ];
+        for (const { doc, next, prior } of docs) {
+          if (next === undefined || next === prior) continue;
+          if (doc === "charter") {
+            patch.charterMd = next;
+            patch.charterUpdatedAt = new Date();
+          } else {
+            patch.activeMd = next;
+            patch.activeUpdatedAt = new Date();
+          }
+          const latest = (
+            await tx
+              .select()
+              .from(kbSpaceDocVersions)
+              .where(
+                and(eq(kbSpaceDocVersions.spaceId, current.id), eq(kbSpaceDocVersions.doc, doc)),
+              )
+              .orderBy(desc(kbSpaceDocVersions.version))
+              .limit(1)
+          )[0];
+          if (coalescesWith(latest, p)) continue;
+          await tx.insert(kbSpaceDocVersions).values({
+            id: newId("ver"),
             orgId: p.orgId,
-            projectId,
-            charterMd: body.charterMd,
-            activeMd: body.activeMd,
-            config: body.config,
-          })
-          .onConflictDoUpdate({
-            target: kbSpaces.projectId,
-            set: {
-              charterMd: body.charterMd,
-              activeMd: body.activeMd,
-              config: body.config,
-              updatedAt: new Date(),
-            },
-          })
-          .returning()
-      )[0];
+            spaceId: current.id,
+            doc,
+            version: (latest?.version ?? 0) + 1,
+            bodyMd: prior,
+            savedBy: { type: p.type, id: p.id },
+          });
+        }
+        return (
+          await tx
+            .update(kbSpaces)
+            .set(patch)
+            .where(and(eq(kbSpaces.orgId, p.orgId), eq(kbSpaces.id, current.id)))
+            .returning()
+        )[0];
+      });
       if (!row) throw new ApiError(500, "insert_failed", "Could not update KB space");
       return row;
+    },
+  );
+
+  app.get(
+    "/v1/projects/:projectId/kb/space/versions",
+    {
+      config: { permission: "kb:read" },
+      schema: {
+        params: IdParams,
+        querystring: z.object({ doc: z.enum(["charter", "active"]) }),
+        response: { 200: z.array(KbSpaceDocVersionSchema) },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
+      const space = await spaceFor(p.orgId, projectId);
+      if (!space) return [];
+      const { doc } = request.query as { doc: "charter" | "active" };
+      return db
+        .select()
+        .from(kbSpaceDocVersions)
+        .where(
+          and(
+            eq(kbSpaceDocVersions.orgId, p.orgId),
+            eq(kbSpaceDocVersions.spaceId, space.id),
+            eq(kbSpaceDocVersions.doc, doc),
+          ),
+        )
+        .orderBy(desc(kbSpaceDocVersions.version));
     },
   );
 
@@ -688,22 +783,27 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
       }
       const row = await db.transaction(async (tx) => {
-        const versionRow = await tx
-          .select({ maxVersion: sql<number>`coalesce(max(${kbEntryVersions.version}), 0)::int` })
-          .from(kbEntryVersions)
-          .where(eq(kbEntryVersions.entryId, entryId));
-        const maxVersion = versionRow[0]?.maxVersion ?? 0;
-        await tx.insert(kbEntryVersions).values({
-          id: newId("ver"),
-          orgId: p.orgId,
-          entryId,
-          version: maxVersion + 1,
-          slug: current.slug,
-          frontmatter: current.frontmatter ?? {},
-          bodyMd: current.bodyMd,
-          status: current.status,
-          savedBy: { type: p.type, id: p.id },
-        });
+        const latest = (
+          await tx
+            .select()
+            .from(kbEntryVersions)
+            .where(eq(kbEntryVersions.entryId, entryId))
+            .orderBy(desc(kbEntryVersions.version))
+            .limit(1)
+        )[0];
+        if (!coalescesWith(latest, p)) {
+          await tx.insert(kbEntryVersions).values({
+            id: newId("ver"),
+            orgId: p.orgId,
+            entryId,
+            version: (latest?.version ?? 0) + 1,
+            slug: current.slug,
+            frontmatter: current.frontmatter ?? {},
+            bodyMd: current.bodyMd,
+            status: current.status,
+            savedBy: { type: p.type, id: p.id },
+          });
+        }
         return (
           await tx
             .update(kbEntries)

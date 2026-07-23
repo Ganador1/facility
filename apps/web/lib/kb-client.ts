@@ -64,11 +64,15 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<KbR
   }
 }
 
+/**
+ * The PUT is partial: send only what changed. Never default `config` — a
+ * stray `{}` would wipe the space's chain configuration.
+ */
 export function saveSpace(
   projectId: string,
-  body: { charterMd: string; activeMd: string; config?: Record<string, unknown> },
+  body: { charterMd?: string; activeMd?: string; config?: Record<string, unknown> },
 ) {
-  return req("PUT", `/v1/projects/${projectId}/kb/space`, { config: {}, ...body });
+  return req("PUT", `/v1/projects/${projectId}/kb/space`, body);
 }
 
 export type CreateEntryBody = {

@@ -21188,6 +21188,16 @@
                       "type": "object",
                       "additionalProperties": {}
                     },
+                    "charterUpdatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "activeUpdatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time"
@@ -21204,6 +21214,8 @@
                     "charterMd",
                     "activeMd",
                     "config",
+                    "charterUpdatedAt",
+                    "activeUpdatedAt",
                     "createdAt",
                     "updatedAt"
                   ],
@@ -21317,15 +21329,12 @@
                 "type": "object",
                 "properties": {
                   "charterMd": {
-                    "default": "",
                     "type": "string"
                   },
                   "activeMd": {
-                    "default": "",
                     "type": "string"
                   },
                   "config": {
-                    "default": {},
                     "type": "object",
                     "additionalProperties": {}
                   }
@@ -21371,6 +21380,16 @@
                       "type": "object",
                       "additionalProperties": {}
                     },
+                    "charterUpdatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "activeUpdatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
                     "createdAt": {
                       "type": "string",
                       "format": "date-time"
@@ -21387,6 +21406,8 @@
                     "charterMd",
                     "activeMd",
                     "config",
+                    "charterUpdatedAt",
+                    "activeUpdatedAt",
                     "createdAt",
                     "updatedAt"
                   ],
@@ -21490,6 +21511,181 @@
           }
         ],
         "x-facility-permission": "kb:write"
+      }
+    },
+    "/v1/projects/{projectId}/kb/space/versions": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "charter",
+                "active"
+              ]
+            },
+            "in": "query",
+            "name": "doc",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "orgId": {
+                        "type": "string"
+                      },
+                      "spaceId": {
+                        "type": "string"
+                      },
+                      "doc": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "bodyMd": {
+                        "type": "string"
+                      },
+                      "savedBy": {
+                        "nullable": true
+                      },
+                      "createdAt": {
+                        "type": "string",
+                        "format": "date-time"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "orgId",
+                      "spaceId",
+                      "doc",
+                      "version",
+                      "bodyMd",
+                      "savedBy",
+                      "createdAt"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getProjectsByProjectIdKbSpaceVersions",
+        "summary": "List space versions",
+        "tags": [
+          "Knowledge base"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "kb:read"
       }
     },
     "/v1/projects/{projectId}/kb/entries": {

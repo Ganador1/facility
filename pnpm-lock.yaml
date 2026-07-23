@@ -82,6 +82,9 @@ importers:
       '@facility/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@milkdown/crepe':
+        specifier: ^7.21.3
+        version: 7.21.3(prosemirror-model@1.25.11)(prosemirror-state@1.4.4)(prosemirror-view@1.42.1)(typescript@5.9.3)
       '@milkdown/kit':
         specifier: 7.21.3
         version: 7.21.3(@codemirror/language@6.12.4)(@codemirror/state@6.7.1)(@codemirror/view@6.43.6)(typescript@5.9.3)

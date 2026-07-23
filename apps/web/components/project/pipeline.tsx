@@ -1,7 +1,6 @@
 import { cx, StatusDot } from "@facility/ui";
 import Link from "next/link";
 import {
-  PIPELINE_STAGES,
   type PipelineIssue,
   type PipelineStage,
   type PlacedIssue,

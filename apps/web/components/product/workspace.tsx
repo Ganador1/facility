@@ -2,24 +2,31 @@
 
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Markdown } from "@/components/markdown";
-import { DocView } from "@/components/product/doc-view";
-import { type EntryVersion, MetaRail } from "@/components/product/meta-rail";
+import {
+  type AboutRow,
+  ArtifactPage,
+  type PanelLinkGroup,
+} from "@/components/product/artifact-page";
 import { NavTree } from "@/components/product/nav-tree";
 import { NewEntry } from "@/components/product/new-entry";
 import {
   artifactIdFor,
+  fmtStamp,
   groupSections,
   type KbDecision,
   type KbEntry,
   type KbSpace,
-  stripFrontmatter,
+  referencedIds,
+  splitFrontmatter,
+  typeLabelFor,
 } from "@/lib/kb";
-import { fetchNeighborhood, type Neighborhood } from "@/lib/kb-client";
+import { fetchNeighborhood, type Neighborhood, patchEntry, saveSpace } from "@/lib/kb-client";
 
 /**
- * The Product workspace: page tree · document · properties. Selection is URL
- * state (?doc=D001) so artifact links deep-link and survive refreshes.
+ * The Product workspace: page tree on the left, the unified artifact page on
+ * the right. Every artifact — decisions, docs, signals, learnings, and the
+ * charter/active context docs — renders through the same template. Selection
+ * is URL state (?doc=D001) so artifact links deep-link and survive refreshes.
  */
 export function ProductWorkspace({
   projectId,
@@ -40,8 +47,6 @@ export function ProductWorkspace({
   const searchParams = useSearchParams();
   const [creating, setCreating] = useState<"R" | "D" | null>(null);
   const [hood, setHood] = useState<Neighborhood | null>(null);
-  const [railOpen, setRailOpen] = useState(false);
-  const [previewVersion, setPreviewVersion] = useState<EntryVersion | null>(null);
 
   const byArtifactId = useMemo(() => {
     const map = new Map<string, KbEntry>();
@@ -51,18 +56,19 @@ export function ProductWorkspace({
 
   const sections = useMemo(() => groupSections(entries), [entries]);
   const doc = searchParams.get("doc") ?? "active";
-  const entry = doc === "charter" || doc === "active" ? null : (byArtifactId.get(doc) ?? null);
+  const isPin = doc === "charter" || doc === "active";
+  const entry = isPin ? null : (byArtifactId.get(doc) ?? null);
 
   const navigate = useCallback(
     (next: string) => {
       setCreating(null);
-      setPreviewVersion(null);
-      router.replace(`?doc=${encodeURIComponent(next)}`, { scroll: false });
+      const target = next === "CHARTER" ? "charter" : next === "ACTIVE" ? "active" : next;
+      router.replace(`?doc=${encodeURIComponent(target)}`, { scroll: false });
     },
     [router],
   );
 
-  // Neighborhood powers the meta rail + decision chains; fetched per entry.
+  // Neighborhood powers the links panel + decision chains; fetched per entry.
   useEffect(() => {
     let cancelled = false;
     setHood(null);
@@ -75,20 +81,131 @@ export function ProductWorkspace({
     };
   }, [entry]);
 
-  const linkArtifact = useCallback(
-    (id: string) => {
-      if (id === "ACTIVE") return "?doc=active";
-      if (id === "CHARTER") return "?doc=charter";
-      return byArtifactId.has(id) ? `?doc=${encodeURIComponent(id)}` : null;
-    },
-    [byArtifactId],
-  );
-
-  const signalRunId = entry ? (signalRuns[entry.id] ?? null) : null;
+  let page: React.ReactNode;
+  if (creating) {
+    page = (
+      <div className="h-full min-h-0 overflow-y-auto p-5">
+        <div className="flex flex-col gap-3">
+          <span className="text-[12.5px] font-medium text-(--dim)">
+            new {creating === "D" ? "decision" : "documentation page"}
+          </span>
+          <NewEntry
+            projectId={projectId}
+            type={creating}
+            entries={entries}
+            onCreated={(artifactId) => {
+              setCreating(null);
+              navigate(artifactId);
+            }}
+            onCancel={() => setCreating(null)}
+          />
+        </div>
+      </div>
+    );
+  } else if (isPin) {
+    const which = doc as "charter" | "active";
+    const raw = which === "charter" ? space.charterMd : space.activeMd;
+    const { frontmatter, body } = splitFrontmatter(raw);
+    const docUpdated =
+      (which === "charter" ? space.charterUpdatedAt : space.activeUpdatedAt) ?? space.updatedAt;
+    const monoId = which.toUpperCase();
+    const cites = [...referencedIds(raw)]
+      .filter((id) => byArtifactId.has(id))
+      .map((id) => {
+        const target = byArtifactId.get(id) as KbEntry;
+        return { key: id, ref: id, label: target.slug.replaceAll("-", " ") };
+      });
+    const citedBy = entries
+      .filter((candidate) => referencedIds(candidate.bodyMd).has(monoId))
+      .map((candidate) => ({
+        key: candidate.id,
+        ref: artifactIdFor(candidate),
+        label: candidate.slug.replaceAll("-", " "),
+      }));
+    page = (
+      <ArtifactPage
+        key={which}
+        docKey={which}
+        meta={{
+          typeLabel: "resource",
+          artifactId: monoId,
+          createdAt: space.createdAt ?? null,
+          updatedAt: docUpdated ?? null,
+        }}
+        body={body}
+        readOnly={!canWrite}
+        placeholder={
+          which === "charter"
+            ? "the product charter — what this project is and why"
+            : "the active working state — what's true right now"
+        }
+        onSave={async (md) => {
+          const res = await saveSpace(
+            projectId,
+            which === "charter" ? { charterMd: frontmatter + md } : { activeMd: frontmatter + md },
+          );
+          if (!res.ok) return { ok: false, message: res.error.message };
+          router.refresh();
+          return { ok: true };
+        }}
+        linkGroups={[
+          { label: "references", items: cites },
+          { label: "referenced by", items: citedBy },
+        ]}
+        versionsUrl={`/api/v1/projects/${projectId}/kb/space/versions?doc=${which}`}
+        onNavigate={navigate}
+      />
+    );
+  } else if (entry) {
+    const { frontmatter, body } = splitFrontmatter(entry.bodyMd);
+    const linkGroups: PanelLinkGroup[] = [
+      { label: "supersedes", relation: "supersedes" as const },
+      { label: "superseded by", relation: "superseded-by" as const },
+      { label: "links", relation: "linked" as const },
+    ].map((group) => ({
+      label: group.label,
+      items: (hood?.linked ?? [])
+        .filter((neighbor) => neighbor.relation === group.relation)
+        .map((neighbor) => ({
+          key: neighbor.id,
+          ref: neighbor.artifactId,
+          label: neighbor.slug.replaceAll("-", " "),
+        })),
+    }));
+    page = (
+      <ArtifactPage
+        key={entry.id}
+        docKey={entry.id}
+        meta={{
+          typeLabel: typeLabelFor(entry.type),
+          artifactId: artifactIdFor(entry),
+          status: entry.status,
+          createdAt: entry.createdAt ?? null,
+          updatedAt: entry.updatedAt ?? null,
+        }}
+        body={body}
+        readOnly={!canWrite}
+        onSave={async (md) => {
+          const res = await patchEntry(entry.id, { bodyMd: frontmatter + md });
+          if (!res.ok) return { ok: false, message: res.error.message };
+          router.refresh();
+          return { ok: true };
+        }}
+        aboutRows={aboutRowsFor(entry, projectId, signalRuns[entry.id] ?? null)}
+        linkGroups={linkGroups}
+        versionsUrl={`/api/v1/kb/entries/${entry.id}/versions`}
+        onNavigate={navigate}
+      />
+    );
+  } else {
+    page = (
+      <p className="p-5 text-[12.5px] text-(--dim)">No page selected — pick one from the tree.</p>
+    );
+  }
 
   return (
-    <div className="grid h-full min-h-0 gap-6 lg:grid-cols-[280px_minmax(0,1fr)]">
-      <div className="min-h-0 overflow-y-auto pr-1">
+    <div className="grid h-full min-h-0 lg:grid-cols-[270px_minmax(0,1fr)]">
+      <div className="min-h-0 overflow-y-auto border-r border-(--line) px-4 py-4">
         <NavTree
           sections={sections}
           decisions={decisions}
@@ -98,84 +215,37 @@ export function ProductWorkspace({
           onNew={(type) => setCreating(type)}
         />
       </div>
-
-      <div className="relative min-h-0 min-w-0">
-        {entry && !creating ? (
-          <button
-            type="button"
-            onClick={() => setRailOpen((v) => !v)}
-            className="absolute right-2 top-0 z-20 border border-(--line) bg-(--bg) px-2 py-1 font-mono text-[10.5px] text-(--dim) hover:text-(--ink)"
-            title="page properties, links & history"
-          >
-            {railOpen ? "properties ×" : "properties"}
-          </button>
-        ) : null}
-
-        <div className="h-full min-h-0 overflow-y-auto pr-1">
-          {previewVersion ? (
-            <div className="flex flex-col gap-3">
-              <div className="flex flex-wrap items-center gap-3 border border-(--line) bg-(--card) px-4 py-2.5">
-                <span className="font-mono text-[11px] text-(--human)">
-                  viewing v{previewVersion.version} ·{" "}
-                  {previewVersion.createdAt.slice(0, 16).replace("T", " ")}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setPreviewVersion(null)}
-                  className="font-mono text-[11px] text-(--info,--mut) underline-offset-2 hover:underline"
-                >
-                  back to current
-                </button>
-              </div>
-              <div className="border border-(--line) bg-(--bg-subtle) p-5">
-                <Markdown source={stripFrontmatter(previewVersion.bodyMd)} />
-              </div>
-            </div>
-          ) : creating ? (
-            <div className="flex flex-col gap-3">
-              <span className="text-[12.5px] font-medium text-(--dim)">
-                new {creating === "D" ? "decision" : "documentation page"}
-              </span>
-              <NewEntry
-                projectId={projectId}
-                type={creating}
-                entries={entries}
-                onCreated={(artifactId) => {
-                  setCreating(null);
-                  navigate(artifactId);
-                }}
-                onCancel={() => setCreating(null)}
-              />
-            </div>
-          ) : (
-            <DocView
-              doc={doc}
-              entry={entry}
-              space={space}
-              projectId={projectId}
-              canWrite={canWrite}
-              neighborhood={hood}
-              signalRunId={signalRunId}
-              linkArtifact={linkArtifact}
-              onNavigate={navigate}
-            />
-          )}
-        </div>
-
-        {railOpen && entry && !creating ? (
-          <aside className="absolute inset-y-0 right-0 z-10 w-[280px] overflow-y-auto border-l border-(--line) bg-(--bg) p-4 shadow-[-12px_0_40px_rgba(0,0,0,0.35)]">
-            <MetaRail
-              entry={entry}
-              neighborhood={hood}
-              onNavigate={navigate}
-              onPreviewVersion={(version) => {
-                setPreviewVersion(version);
-                setRailOpen(false);
-              }}
-            />
-          </aside>
-        ) : null}
-      </div>
+      <div className="min-h-0 min-w-0">{page}</div>
     </div>
   );
+}
+
+/** Type-specific context for the details panel — a Signal's provenance, etc. */
+function aboutRowsFor(entry: KbEntry, projectId: string, reviewRunId: string | null): AboutRow[] {
+  if (entry.type !== "S") return [];
+  const provenance =
+    entry.frontmatter.provenance && typeof entry.frontmatter.provenance === "object"
+      ? (entry.frontmatter.provenance as Record<string, unknown>)
+      : {};
+  const source =
+    typeof entry.frontmatter.source === "string"
+      ? entry.frontmatter.source
+      : typeof provenance.source === "string"
+        ? (provenance.source as string)
+        : null;
+  const rows: AboutRow[] = [];
+  if (source) rows.push({ label: "source", value: source });
+  if (typeof provenance.receivedAt === "string") {
+    rows.push({ label: "received", value: fmtStamp(provenance.receivedAt) });
+  }
+  rows.push(
+    reviewRunId
+      ? {
+          label: "review run",
+          value: "open →",
+          href: `/projects/${projectId}/sessions/${reviewRunId}`,
+        }
+      : { label: "review run", value: "none" },
+  );
+  return rows;
 }

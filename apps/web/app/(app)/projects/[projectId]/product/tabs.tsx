@@ -14,7 +14,9 @@ export function ProductTabs() {
     { href: `${base}/sessions`, label: "Sessions" },
   ];
   return (
-    <nav aria-label="Product sections" className="flex gap-6 border-b border-(--line)">
+    // The bottom hairline is the host header's — tabs only carry the active
+    // indicator, which overlaps it by 1px.
+    <nav aria-label="Product sections" className="flex gap-6">
       {tabs.map((tab) => {
         const active = pathname === tab.href;
         return (

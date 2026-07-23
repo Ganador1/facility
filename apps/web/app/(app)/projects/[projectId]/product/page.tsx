@@ -1,3 +1,4 @@
+import { Eyebrow } from "@facility/ui";
 import { Suspense } from "react";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { ProductWorkspace } from "@/components/product/workspace";
@@ -39,16 +40,22 @@ export default async function ProductPage({ params }: { params: Promise<{ projec
   const kbDecisions = (decisions.ok ? decisions.data : []) as unknown as KbDecision[];
 
   return (
-    // App-shell layout: menu → tab → content. No redundant page title; the
-    // columns own the viewport height with independent scrolls.
-    <div className="flex h-[calc(100dvh-9.5rem)] min-h-[480px] flex-col gap-5">
+    // App-shell tab: fills the work area edge to edge (see main.app-main).
+    <div className="main-bleed flex h-full min-h-0 flex-col">
       <LiveRefresh seconds={60} />
-      <ProductTabs />
+      <div className="border-b border-(--line) px-5 pt-4 sm:px-6">
+        <Eyebrow>product</Eyebrow>
+        <div className="mt-2">
+          <ProductTabs />
+        </div>
+      </div>
 
       {!space.ok || !entries.ok ? (
-        <ErrorNotice
-          message={`Couldn't load the knowledge base — ${!space.ok ? space.message : entries.ok ? "" : entries.message}`}
-        />
+        <div className="p-5">
+          <ErrorNotice
+            message={`Couldn't load the knowledge base — ${!space.ok ? space.message : entries.ok ? "" : entries.message}`}
+          />
+        </div>
       ) : (
         <div className="min-h-0 flex-1">
           <Suspense>

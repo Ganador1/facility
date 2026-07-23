@@ -21,6 +21,10 @@ export type KbEntry = {
 export type KbSpace = {
   charterMd: string;
   activeMd: string;
+  createdAt?: string;
+  updatedAt?: string;
+  charterUpdatedAt?: string | null;
+  activeUpdatedAt?: string | null;
 };
 
 export type KbDecision = KbEntry & {
@@ -52,6 +56,49 @@ export const TYPE_LABELS: Record<string, string> = {
   CR: "change requests",
   SR: "status reports",
 };
+
+/** Singular per-page labels for the unified artifact header. */
+const TYPE_SINGULAR: Record<string, string> = {
+  S: "signal",
+  D: "decision",
+  T: "task",
+  V: "verification",
+  R: "documentation",
+  H: "hypothesis",
+  E: "experiment",
+  F: "finding",
+  L: "learning",
+  CR: "change request",
+  SR: "status report",
+};
+
+export function typeLabelFor(type: string): string {
+  return TYPE_SINGULAR[type] ?? type.toLowerCase();
+}
+
+/** Header timestamp: `2026-07-23 12:30` in local time. */
+export function fmtStamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso.slice(0, 16).replace("T", " ");
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * Artifact ids a markdown body references — [[wikilinks]] plus bare codes.
+ * CHARTER/ACTIVE only count in wikilink form (the bare words are too common
+ * in prose to treat as references).
+ */
+const REF_SCAN_RE = /\[\[([A-Z]{1,2}\d{3}|CHARTER|ACTIVE)\]\]|\b([A-Z]{1,2}\d{3})\b/g;
+
+export function referencedIds(md: string): Set<string> {
+  const refs = new Set<string>();
+  for (const match of md.matchAll(REF_SCAN_RE)) {
+    const id = match[1] ?? match[2];
+    if (id) refs.add(id);
+  }
+  return refs;
+}
 
 /** Mirror of packages/harness/src/validate.ts artifactIdFor — keep in sync. */
 export function artifactIdFor(entry: Pick<KbEntry, "type" | "number" | "frontmatter">): string {

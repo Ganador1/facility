@@ -451,8 +451,21 @@ export const KbSpaceSchema = z.object({
   charterMd: z.string(),
   activeMd: z.string(),
   config: AnyObject,
+  charterUpdatedAt: DateValue.nullable(),
+  activeUpdatedAt: DateValue.nullable(),
   createdAt: DateValue,
   updatedAt: DateValue,
+});
+
+export const KbSpaceDocVersionSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  spaceId: z.string(),
+  doc: z.string(),
+  version: z.number().int(),
+  bodyMd: z.string(),
+  savedBy: JsonValue.nullable(),
+  createdAt: DateValue,
 });
 
 export const KbEntrySchema = z.object({

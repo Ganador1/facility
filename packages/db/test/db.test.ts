@@ -378,7 +378,7 @@ describe("db", async () => {
       Array.from(applied)
         .map((row) => row.name)
         .at(-1),
-    ).toBe("0026_kb_entry_versions.sql");
+    ).toBe("0027_kb_space_doc_versions.sql");
     const invalidOutcomeRollups = (await db.execute(
       sql`
         SELECT count(*)::int AS count

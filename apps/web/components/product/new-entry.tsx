@@ -2,8 +2,8 @@
 
 import { Button, Field, Select, TextInput } from "@facility/ui";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
-import { MarkdownEditor } from "@/components/product/markdown-editor";
+import { useMemo, useRef, useState } from "react";
+import { CrepeEditor } from "@/components/product/crepe-editor";
 import { ValidationReportPanel } from "@/components/product/validation-report";
 import { artifactIdFor, type KbEntry, TYPE_LABELS } from "@/lib/kb";
 import { createEntry, createEntryDry, type DryRunResult } from "@/lib/kb-client";
@@ -31,7 +31,7 @@ export function NewEntry({
   const [slug, setSlug] = useState("");
   const [status, setStatus] = useState<"proposed" | "decided">("proposed");
   const [links, setLinks] = useState<Set<string>>(new Set());
-  const [markdown, setMarkdown] = useState("");
+  const markdownRef = useRef("");
   const [dry, setDry] = useState<DryRunResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -58,18 +58,17 @@ export function NewEntry({
     return {
       type,
       slug: slug.trim(),
-      bodyMd: markdown,
+      bodyMd: markdownRef.current,
       ...(type === "D" ? { status } : {}),
       links: [...links],
     };
   }
 
-  async function validate(md: string) {
-    setMarkdown(md);
+  async function validate() {
     setBusy(true);
     setNote(null);
     setDry(null);
-    const res = await createEntryDry(projectId, { ...body(), bodyMd: md });
+    const res = await createEntryDry(projectId, body());
     setBusy(false);
     if (!res.ok) {
       setNote(res.error.message);
@@ -149,15 +148,34 @@ export function NewEntry({
         </div>
       ) : null}
 
-      <MarkdownEditor
-        initial=""
-        saveLabel="validate"
-        busy={busy}
-        note={note}
-        hint="dry run first — shows the assigned id and the validator's verdict"
-        onSave={(md) => void validate(md)}
-        onCancel={onCancel}
-      />
+      <div className="min-h-[280px] border border-(--line) bg-(--bg-subtle)">
+        <CrepeEditor
+          docKey={`new-${type}`}
+          value=""
+          placeholder="the page body — markdown; cite other pages as [[D001]]"
+          onMarkdownChange={(md) => {
+            markdownRef.current = md;
+          }}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Button
+          size="sm"
+          variant="primary"
+          tone="agent"
+          disabled={busy}
+          onClick={() => void validate()}
+        >
+          {busy ? "validating…" : "validate"}
+        </Button>
+        <Button size="sm" variant="outline" disabled={busy} onClick={onCancel}>
+          cancel
+        </Button>
+        <span className="font-mono text-[10px] text-(--dim)">
+          dry run first — shows the assigned id and the validator's verdict
+        </span>
+        {note ? <span className="font-mono text-[11px] text-(--bad)">{note}</span> : null}
+      </div>
 
       {dry ? (
         <div className="flex flex-col gap-3">

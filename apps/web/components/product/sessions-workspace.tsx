@@ -36,8 +36,11 @@ export function SessionsWorkspace({
   );
 
   return (
-    <div className="grid h-full min-h-0 gap-6 lg:grid-cols-[260px_minmax(0,1fr)]">
-      <nav aria-label="Chat sessions" className="flex min-h-0 flex-col gap-2">
+    <div className="grid h-full min-h-0 lg:grid-cols-[270px_minmax(0,1fr)]">
+      <nav
+        aria-label="Chat sessions"
+        className="flex min-h-0 flex-col gap-2 border-r border-(--line) px-4 py-4"
+      >
         <Button size="sm" variant="outline" onClick={() => select(null)}>
           new session
         </Button>
@@ -66,7 +69,7 @@ export function SessionsWorkspace({
       </nav>
 
       {/* Fixed composer, scrolling conversation: only the messages move. */}
-      <div className="flex min-h-0 flex-col gap-4">
+      <div className="flex min-h-0 flex-col gap-4 px-5 pt-4 pb-4">
         <div className="min-h-0 flex-1 overflow-y-auto pr-1">
           <ThreadMessages
             conversationId={selected}
