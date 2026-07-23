@@ -101,6 +101,7 @@ export const FACILITY_V1_ROUTES = [
   "POST /v1/members",
   "POST /v1/projects",
   "POST /v1/projects/:projectId/agents",
+  "POST /v1/projects/:projectId/ask",
   "POST /v1/projects/:projectId/consult",
   "POST /v1/projects/:projectId/conversations",
   "POST /v1/projects/:projectId/issues/:number/trigger",
