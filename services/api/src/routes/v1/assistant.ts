@@ -90,6 +90,17 @@ export async function registerAssistantRoutes(app: FastifyInstance, context: V1R
           throw new ApiError(409, "sandbox_thread", "This thread uses the sandbox message route");
         }
       } else {
+        // Provisional title from the opening message — the loop refines it
+        // with a model-generated one once the first reply lands.
+        const firstLine = body.body
+          .split("\n")
+          .map((line) => line.trim())
+          .find(Boolean);
+        const provisionalTitle = firstLine
+          ? firstLine.length > 60
+            ? `${firstLine.slice(0, 57)}…`
+            : firstLine
+          : null;
         const created = (
           await db
             .insert(conversations)
@@ -99,6 +110,7 @@ export async function registerAssistantRoutes(app: FastifyInstance, context: V1R
               projectId,
               agentDefId: owner.id,
               kind: "assistant",
+              title: provisionalTitle,
               createdBy: { type: p.type, id: p.id },
             })
             .returning()

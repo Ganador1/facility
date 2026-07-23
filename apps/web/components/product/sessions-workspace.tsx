@@ -72,6 +72,7 @@ export function SessionsWorkspace({
             conversationId={selected}
             activeRunId={activeRunId}
             pending={pending}
+            onFinal={() => router.refresh()}
             emptyHint={
               selected
                 ? undefined

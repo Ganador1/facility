@@ -1,6 +1,13 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { generateApiKey } from "@facility/core";
-import { conversationMessages, type createDb, llmRequests, runs, virtualKeys } from "@facility/db";
+import {
+  conversationMessages,
+  conversations,
+  type createDb,
+  llmRequests,
+  runs,
+  virtualKeys,
+} from "@facility/db";
 import { and, eq, sql } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { failRun, finishConversationTurn, revokeRunKeys } from "../sandbox/orchestrator.js";
@@ -331,6 +338,9 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<void>
         .limit(1)
     )[0];
     if (runRow) await finishConversationTurn(db, runRow, undefined);
+    // First completed exchange names the session: replace the provisional
+    // (truncated-question) title with a model-generated one. Never fatal.
+    await maybeTitleConversation(db, driver, input, conversationId, text).catch(() => undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : "assistant_turn_failed";
     await failRun(db, orgId, runId, message, "assistant_turn_failed").catch(() => undefined);
@@ -340,6 +350,56 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<void>
     if (virtualKeyId) await revokeRunKeys(db, { virtualKeyId }).catch(() => undefined);
     await writeUsageReceipt(db, orgId, runId).catch(() => undefined);
   }
+}
+
+/**
+ * After the FIRST completed exchange, replace the provisional title (the
+ * truncated opening question, set by the ask route) with a short
+ * model-generated one — the tam-os auto-titling pattern. One tiny call on
+ * the same per-turn key; any failure leaves the provisional title in place.
+ */
+async function maybeTitleConversation(
+  db: Db,
+  driver: AssistantModelDriver,
+  input: AssistantTurnInput,
+  conversationId: string,
+  reply: string,
+) {
+  const rows = await db
+    .select({ role: conversationMessages.role, body: conversationMessages.body })
+    .from(conversationMessages)
+    .where(eq(conversationMessages.conversationId, conversationId))
+    .orderBy(conversationMessages.seq)
+    .limit(3);
+  // Only the first exchange (user + agent) names the session.
+  if (rows.length > 2) return;
+  const question = rows.find((row) => row.role === "user")?.body ?? "";
+  if (!question.trim()) return;
+  const turn = await driver({
+    model: input.agentModel,
+    system:
+      "Name this conversation. Reply with ONLY a title of 3 to 6 plain words — no quotes, no trailing punctuation.",
+    messages: [
+      {
+        role: "user",
+        content: `Question: ${question.slice(0, 600)}\n\nAnswer excerpt: ${reply.slice(0, 400)}`,
+      },
+    ],
+    tools: [],
+    maxTokens: 32,
+    signal: new AbortController().signal,
+    onTextDelta: () => undefined,
+  });
+  const title = finalText(turn.content)
+    .replaceAll(/["'`]/g, "")
+    .replace(/[.!?\s]+$/, "")
+    .trim()
+    .slice(0, 60);
+  if (!title) return;
+  await db
+    .update(conversations)
+    .set({ title, updatedAt: new Date() })
+    .where(and(eq(conversations.orgId, input.orgId), eq(conversations.id, conversationId)));
 }
 
 /**

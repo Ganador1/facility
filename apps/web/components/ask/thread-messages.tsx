@@ -1,7 +1,7 @@
 "use client";
 
 import { StatusDot } from "@facility/ui";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAskStream } from "@/components/ask/use-ask-stream";
 import { Markdown } from "@/components/markdown";
 
@@ -17,14 +17,25 @@ export function ThreadMessages({
   activeRunId,
   pending,
   emptyHint,
+  onFinal,
 }: {
   conversationId: string | null;
   activeRunId: string | null;
   /** The just-sent user message, echoed while the turn streams. */
   pending: string | null;
   emptyHint?: string;
+  /** Fires once when the live turn completes (titles land server-side). */
+  onFinal?: () => void;
 }) {
   const turn = useAskStream(activeRunId);
+  const finalNotified = useRef(false);
+  useEffect(() => {
+    if (turn.final && !finalNotified.current) {
+      finalNotified.current = true;
+      onFinal?.();
+    }
+    if (!turn.final) finalNotified.current = false;
+  }, [turn.final, onFinal]);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
 
   // turn.final is the refetch trigger: the durable reply replaces the stream.
