@@ -62,7 +62,7 @@ export function CrepeEditor({
     });
     crepe.editor.use(artifactRefs(() => navRef.current));
     crepe.on((listener) => {
-      listener.markdownUpdated((_ctx, md) => changeRef.current?.(md));
+      listener.markdownUpdated((_ctx, md) => changeRef.current?.(unescapeWikilinks(md)));
     });
     crepe.setReadonly(initialReadOnly.current);
     crepeRef.current = crepe;
@@ -78,4 +78,15 @@ export function CrepeEditor({
   }, [readOnly]);
 
   return <div ref={rootRef} className="facility-crepe h-full min-h-0" />;
+}
+
+/**
+ * ProseMirror serializes literal brackets as \[\[X\]\] — which would corrupt
+ * the wikilink syntax on every save (and make ensureLinks re-append refs it
+ * can no longer recognize). Restore the canonical [[X]] form.
+ */
+const WIKILINK_ESCAPE_RE = /\\\[\\\[([A-Z]{1,2}\d{3}|CHARTER|ACTIVE)(?:\\\]\\\]|\]\])/g;
+
+function unescapeWikilinks(md: string): string {
+  return md.replace(WIKILINK_ESCAPE_RE, "[[$1]]");
 }
