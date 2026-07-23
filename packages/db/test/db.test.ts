@@ -177,6 +177,7 @@ describe("db", async () => {
     expect(seededActionTypes.map((action) => action.name).sort()).toEqual([
       "budget_override",
       "guard_candidate",
+      "issue_update",
       "kb_amendment",
       "kickstart_review",
       "learning_validation",
