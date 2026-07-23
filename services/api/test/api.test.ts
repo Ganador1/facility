@@ -141,6 +141,7 @@ describe("api", async () => {
     publicUrl: "http://localhost:4400",
     sandboxApiUrl: "http://localhost:4400",
     sandboxGatewayUrl: "http://localhost:4410",
+    gatewayUrl: "http://localhost:4410",
     sandboxRunnerImage: "facility-runner:dev",
     sandboxDriver: "docker",
     webUrl: "http://localhost:3000",
@@ -286,7 +287,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(130);
+    ).toBe(131);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },

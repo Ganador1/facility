@@ -79,6 +79,7 @@ export function readConfig(env = process.env): AppConfig {
     webUrl: parsed.WEB_URL,
     sandboxApiUrl: parsed.SANDBOX_API_URL ?? parsed.PUBLIC_URL,
     sandboxGatewayUrl: parsed.SANDBOX_GATEWAY_URL ?? parsed.GATEWAY_URL,
+    gatewayUrl: parsed.GATEWAY_URL,
     sandboxRunnerImage: parsed.FACILITY_RUNNER_IMAGE,
     sandboxDriver: parsed.FACILITY_SANDBOX_DRIVER,
     workosApiKey: parsed.WORKOS_API_KEY,

@@ -418,7 +418,7 @@ export async function finishRun(
   return { ...claimed, status, receipt, error };
 }
 
-async function finishConversationTurn(
+export async function finishConversationTurn(
   db: ReturnType<typeof createDb>["db"],
   run: RunRow,
   engineSessionId: string | undefined,
@@ -1145,6 +1145,16 @@ export async function reconcileSandboxes(
       // whole tick (and skip the orphaned-key sweep below) — just skip that run.
       try {
         const sandbox = readSandbox(run.sandbox);
+        // In-process assistant turns have no sandbox driver. If the API died
+        // mid-turn (deploy, dev hot-reload) the run would stay "running" and
+        // its conversation locked forever — fail anything past its wall-clock.
+        if (sandbox.inline === true) {
+          const startedAt = run.startedAt ? run.startedAt.getTime() : Number.NaN;
+          if (!Number.isNaN(startedAt) && Date.now() > startedAt + 10 * 60_000) {
+            await failRun(db, run.orgId, run.id, "assistant_timeout", "assistant_timeout");
+          }
+          continue;
+        }
         if (!sandbox.driver || !sandbox.ref) continue;
         const driver = await sandboxDriver(sandbox.driver);
         // Hard cost cap / driver-level backstop: if a run has blown past its timeout
@@ -1486,7 +1496,7 @@ async function activeSkills(
 // Revoke a run's least-privilege credentials — the run-scoped virtual key (LLM
 // gateway) and platform key (kb/tasks). Shared by every terminal path so a
 // failed/timed-out run never leaves a live key behind.
-async function revokeRunKeys(db: ReturnType<typeof createDb>["db"], sandbox: RunSandboxState) {
+export async function revokeRunKeys(db: ReturnType<typeof createDb>["db"], sandbox: RunSandboxState) {
   const now = new Date();
   if (sandbox.virtualKeyId) {
     // Guard on isNull so a re-revoke is a no-op and we only push-invalidate the
@@ -1513,7 +1523,7 @@ async function revokeRunKeys(db: ReturnType<typeof createDb>["db"], sandbox: Run
   }
 }
 
-async function failRun(
+export async function failRun(
   db: ReturnType<typeof createDb>["db"],
   orgId: string,
   runId: string,

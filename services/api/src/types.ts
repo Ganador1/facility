@@ -23,6 +23,9 @@ export type AppConfig = {
   // URLs; override (e.g. host.docker.internal) for the local docker driver.
   sandboxApiUrl: string;
   sandboxGatewayUrl: string;
+  // Gateway URL reachable from the API process itself (in-process assistant
+  // loop) — sandboxGatewayUrl may be a container-network address instead.
+  gatewayUrl: string;
   // Image the seeded default sandbox profile uses to run the platform runner.
   sandboxRunnerImage: string;
   // Driver the seeded default sandbox profile uses ("docker" | "aws").

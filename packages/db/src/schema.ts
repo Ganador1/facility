@@ -428,12 +428,16 @@ export const conversations = pgTable(
     lastRunId: text("last_run_id").references(() => runs.id),
     engineSessionId: text("engine_session_id"),
     status: text("status").notNull().default("idle"),
+    // sandbox = each turn spawns a containerized run (legacy conversation path)
+    // assistant = turns execute in the API's in-process Product Owner loop
+    kind: text("kind").notNull().default("sandbox"),
     createdBy: jsonb("created_by").notNull(),
     ...timestamps,
   },
   (table) => [
     index("conversations_org_project_idx").on(table.orgId, table.projectId),
     check("conversations_status_check", sql`${table.status} in ('idle', 'running')`),
+    check("conversations_kind_check", sql`${table.kind} in ('sandbox', 'assistant')`),
   ],
 );
 

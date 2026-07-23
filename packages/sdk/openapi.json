@@ -9668,6 +9668,9 @@
                     "status": {
                       "type": "string"
                     },
+                    "kind": {
+                      "type": "string"
+                    },
                     "createdBy": {},
                     "createdAt": {
                       "type": "string",
@@ -9687,6 +9690,7 @@
                     "lastRunId",
                     "engineSessionId",
                     "status",
+                    "kind",
                     "createdBy",
                     "createdAt",
                     "updatedAt"
@@ -9840,6 +9844,9 @@
                       "status": {
                         "type": "string"
                       },
+                      "kind": {
+                        "type": "string"
+                      },
                       "createdBy": {},
                       "createdAt": {
                         "type": "string",
@@ -9902,6 +9909,7 @@
                       "lastRunId",
                       "engineSessionId",
                       "status",
+                      "kind",
                       "createdBy",
                       "createdAt",
                       "updatedAt",
@@ -10060,6 +10068,9 @@
                         "status": {
                           "type": "string"
                         },
+                        "kind": {
+                          "type": "string"
+                        },
                         "createdBy": {},
                         "createdAt": {
                           "type": "string",
@@ -10079,6 +10090,7 @@
                         "lastRunId",
                         "engineSessionId",
                         "status",
+                        "kind",
                         "createdBy",
                         "createdAt",
                         "updatedAt"
@@ -10427,6 +10439,177 @@
         "summary": "Create message",
         "tags": [
           "Conversations"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "runs:trigger"
+      }
+    },
+    "/v1/projects/{projectId}/ask": {
+      "post": {
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "body": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32000
+                  },
+                  "conversationId": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "body"
+                ]
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "description": "Replays the original response for the same principal, path, key, and request body for 24 hours.",
+            "schema": {
+              "type": "string",
+              "minLength": 8,
+              "maxLength": 200
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "conversationId": {
+                      "type": "string"
+                    },
+                    "messageId": {
+                      "type": "string"
+                    },
+                    "runId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "conversationId",
+                    "messageId",
+                    "runId"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postProjectsByProjectIdAsk",
+        "summary": "Create ask",
+        "tags": [
+          "Projects"
         ],
         "security": [
           {

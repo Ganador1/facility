@@ -697,6 +697,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/ask": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create ask */
+        post: operations["postProjectsByProjectIdAsk"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/github/installations": {
         parameters: {
             query?: never;
@@ -7604,6 +7621,7 @@ export interface operations {
                         lastRunId: string | null;
                         engineSessionId: string | null;
                         status: string;
+                        kind: string;
                         createdBy: unknown;
                         /** Format: date-time */
                         createdAt: string;
@@ -7733,6 +7751,7 @@ export interface operations {
                         lastRunId: string | null;
                         engineSessionId: string | null;
                         status: string;
+                        kind: string;
                         createdBy: unknown;
                         /** Format: date-time */
                         createdAt: string;
@@ -7842,6 +7861,7 @@ export interface operations {
                             lastRunId: string | null;
                             engineSessionId: string | null;
                             status: string;
+                            kind: string;
                             createdBy: unknown;
                             /** Format: date-time */
                             createdAt: string;
@@ -7974,6 +7994,114 @@ export interface operations {
                             /** Format: date-time */
                             createdAt: string;
                         };
+                        runId: string;
+                    };
+                };
+            };
+            /** @description The request is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication is required or invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The authenticated principal lacks the required permission. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The requested resource was not found or is outside the principal scope. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request conflicts with current resource state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request rate limit was exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error occurred. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A required service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postProjectsByProjectIdAsk: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Replays the original response for the same principal, path, key, and request body for 24 hours. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                projectId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    body: string;
+                    conversationId?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Default Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        conversationId: string;
+                        messageId: string;
                         runId: string;
                     };
                 };

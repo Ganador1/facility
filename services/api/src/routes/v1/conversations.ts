@@ -181,6 +181,13 @@ export async function registerConversationsRoutes(app: FastifyInstance, context:
       const body = request.body as { body: string };
       const conversation = await loadConversation(p.orgId, conversationId);
       assertBareRowProjectScope(p, conversation.projectId, "Conversation not found");
+      if (conversation.kind === "assistant") {
+        throw new ApiError(
+          409,
+          "assistant_thread",
+          "Assistant threads take turns through POST /v1/projects/:projectId/ask",
+        );
+      }
       if (conversation.status === "running") {
         throw new ApiError(409, "turn_in_flight", "Conversation already has a turn in flight");
       }

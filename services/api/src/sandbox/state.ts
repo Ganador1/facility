@@ -46,6 +46,9 @@ export type RunSandboxState = {
   launchedAt?: string;
   finishedAt?: string;
   lastStatus?: string;
+  // True for in-process assistant turns: no container, no driver — the key
+  // lifecycle and orphan sweeps still apply through virtualKeyId.
+  inline?: boolean;
 };
 
 export function readSandbox(value: unknown): RunSandboxState {
