@@ -783,41 +783,76 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         supersedes: body.supersedes,
         updatedAt: new Date(),
       });
-      // Citing another artifact IS linking it: normalize the body (the
-      // ## Links section carries every cite) and compute the additive graph
-      // rows BEFORE validation — the validator enforces exactly that
-      // invariant. Additive only: creation-time chain links never disappear.
+      // Citing another artifact IS linking it: the body is the source of
+      // truth for the graph. Cites found in a saved body are normalized into
+      // the ## Links section and added to kb_links; partners no longer cited
+      // are unlinked — but only when validation proves the graph stays sound
+      // without them, so structural chain links (required parents, the
+      // supersede chain) survive uncited.
+      const entryArtifactId = artifactIdFor(toHarnessEntry({ ...current, ...patch }));
       const citedTargets: typeof entries = [];
+      const removedTargets: typeof entries = [];
+      let linkSet = links.map((link) => ({ fromEntry: link.fromEntry, toEntry: link.toEntry }));
       if (typeof patch.bodyMd === "string") {
         const refs = citedArtifactIds(patch.bodyMd);
-        refs.delete(artifactIdFor(toHarnessEntry({ ...current, ...patch })));
+        refs.delete(entryArtifactId);
         for (const target of entries) {
           if (target.id !== entryId && refs.has(artifactIdFor(toHarnessEntry(target)))) {
             citedTargets.push(target);
           }
         }
-        if (citedTargets.length > 0) {
-          patch.bodyMd = ensureLinks(
-            patch.bodyMd,
-            citedTargets.map((target) => artifactIdFor(toHarnessEntry(target))),
-          );
-        }
+        // Normalize even with zero cites — the validator wants the section.
+        patch.bodyMd = ensureLinks(
+          patch.bodyMd,
+          citedTargets.map((target) => artifactIdFor(toHarnessEntry(target))),
+        );
+        linkSet = [
+          ...linkSet,
+          ...citedTargets.flatMap((target) => [
+            { fromEntry: entryId, toEntry: target.id },
+            { fromEntry: target.id, toEntry: entryId },
+          ]),
+        ];
       }
       const patched = { ...current, ...patch };
-      const linkSet = [
-        ...links.map((link) => ({ fromEntry: link.fromEntry, toEntry: link.toEntry })),
-        ...citedTargets.flatMap((target) => [
-          { fromEntry: entryId, toEntry: target.id },
-          { fromEntry: target.id, toEntry: entryId },
-        ]),
-      ];
-      const report = validate({
-        space: toHarnessSpace(space),
-        entries: entries.map((entry) => toHarnessEntry(entry.id === entryId ? patched : entry)),
-        links: linkSet,
-        entryId,
-        validateSpecials: false,
-      });
+      const validationEntries = entries.map((entry) =>
+        toHarnessEntry(entry.id === entryId ? patched : entry),
+      );
+      const validateWith = (candidateLinks: typeof linkSet, targetEntryId: string) =>
+        validate({
+          space: toHarnessSpace(space),
+          entries: validationEntries,
+          links: candidateLinks,
+          entryId: targetEntryId,
+          validateSpecials: false,
+        });
+      if (typeof patch.bodyMd === "string") {
+        const citedIds = new Set(citedTargets.map((t) => artifactIdFor(toHarnessEntry(t))));
+        const partnerIds = new Set<string>();
+        for (const link of links) {
+          if (link.fromEntry === entryId) partnerIds.add(link.toEntry);
+          if (link.toEntry === entryId) partnerIds.add(link.fromEntry);
+        }
+        for (const partner of entries) {
+          if (!partnerIds.has(partner.id)) continue;
+          const partnerArtifactId = artifactIdFor(toHarnessEntry(partner));
+          if (citedIds.has(partnerArtifactId)) continue;
+          if (current.supersedes === partnerArtifactId) continue;
+          if (partner.supersedes === entryArtifactId) continue;
+          const without = linkSet.filter(
+            (link) =>
+              !(
+                (link.fromEntry === entryId && link.toEntry === partner.id) ||
+                (link.fromEntry === partner.id && link.toEntry === entryId)
+              ),
+          );
+          if (validateWith(without, entryId).ok && validateWith(without, partner.id).ok) {
+            linkSet = without;
+            removedTargets.push(partner);
+          }
+        }
+      }
+      const report = validateWith(linkSet, entryId);
       if (!report.ok) {
         throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
       }
@@ -861,6 +896,20 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
               },
             ])
             .onConflictDoNothing();
+        }
+        for (const target of removedTargets) {
+          await tx
+            .delete(kbLinks)
+            .where(
+              and(
+                eq(kbLinks.orgId, p.orgId),
+                eq(kbLinks.spaceId, current.spaceId),
+                or(
+                  and(eq(kbLinks.fromEntry, entryId), eq(kbLinks.toEntry, target.id)),
+                  and(eq(kbLinks.fromEntry, target.id), eq(kbLinks.toEntry, entryId)),
+                ),
+              ),
+            );
         }
         return (
           await tx

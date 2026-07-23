@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type AboutRow,
   ArtifactPage,
@@ -68,18 +68,22 @@ export function ProductWorkspace({
     [router],
   );
 
-  // Neighborhood powers the links panel + decision chains; fetched per entry.
+  const selectedEntryIdRef = useRef<string | null>(null);
+  const refreshHood = useCallback((entryId: string) => {
+    void fetchNeighborhood(entryId).then((res) => {
+      // A late response for a page we already left must not win.
+      if (res.ok && selectedEntryIdRef.current === entryId) setHood(res.data);
+    });
+  }, []);
+
+  // Neighborhood powers the links panel + decision chains; fetched per entry
+  // and re-fetched after every save (cites add/remove graph links).
   useEffect(() => {
-    let cancelled = false;
+    selectedEntryIdRef.current = entry?.id ?? null;
     setHood(null);
     if (!entry) return;
-    void fetchNeighborhood(entry.id).then((res) => {
-      if (!cancelled && res.ok) setHood(res.data);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [entry]);
+    refreshHood(entry.id);
+  }, [entry, refreshHood]);
 
   let page: React.ReactNode;
   if (creating) {
@@ -188,6 +192,7 @@ export function ProductWorkspace({
         onSave={async (md) => {
           const res = await patchEntry(entry.id, { bodyMd: frontmatter + md });
           if (!res.ok) return { ok: false, message: res.error.message };
+          refreshHood(entry.id);
           router.refresh();
           return { ok: true };
         }}

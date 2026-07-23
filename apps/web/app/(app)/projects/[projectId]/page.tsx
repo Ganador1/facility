@@ -335,7 +335,12 @@ export default async function ProjectOverviewPage({
                 </p>
               ) : (
                 signals.slice(0, 5).map((signal) => (
-                  <div key={`${signal.kind}-${signal.title}`} className="flex items-center gap-3">
+                  // lastSeen disambiguates repeated kind/title pairs (three
+                  // sandbox_lost signals are three rows, not one).
+                  <div
+                    key={`${signal.kind}-${signal.title}-${signal.lastSeen}`}
+                    className="flex items-center gap-3"
+                  >
                     <StatusDot tone={signal.severity === "info" ? "machine" : "bad"} />
                     <span className="text-[11.5px] text-(--dim)">{signal.kind}</span>
                     <span className="truncate text-[12.5px] text-(--mut)">{signal.title}</span>

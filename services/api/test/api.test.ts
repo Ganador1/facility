@@ -3044,6 +3044,21 @@ describe("api", async () => {
     expect(versions.json().length).toBe(1);
     // The captured prior is the creation-normalized body (## Links appended).
     expect(versions.json()[0].bodyMd.startsWith("no links yet")).toBe(true);
+    // Dropping the cite unlinks it again (validation-guarded removal).
+    const uncited = await app.inject({
+      method: "PATCH",
+      url: `/v1/kb/entries/${second.json().id}`,
+      headers: { cookie },
+      payload: { bodyMd: "Standalone again." },
+    });
+    expect(uncited.statusCode, uncited.body).toBe(200);
+    const hoodAfter = await app.inject({
+      method: "GET",
+      url: `/v1/kb/entries/${second.json().id}/neighborhood`,
+      headers: { cookie },
+    });
+    const linkedAfter = hoodAfter.json().linked.map((neighbor: { id: string }) => neighbor.id);
+    expect(linkedAfter).not.toContain(first.json().id);
   });
 
   it("returns null for a project whose KB space has not been created", async () => {
