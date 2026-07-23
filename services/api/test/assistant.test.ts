@@ -141,13 +141,9 @@ describe("assistant ask endpoint", async () => {
     expect(run.status).toBe("succeeded");
     expect(calls).toEqual([]);
 
-    const thread = (
-      await db
-        .select()
-        .from(conversations)
-        .where(and(eq(conversations.orgId, orgId), eq(conversations.id, ask.conversationId)))
-        .limit(1)
-    )[0];
+    // The executor releases the thread AFTER the run turns terminal
+    // (finishConversationTurn runs last) — wait for the release too.
+    const thread = await waitForIdleThread(ask.conversationId);
     expect(thread?.status).toBe("idle");
     expect(thread?.kind).toBe("assistant");
 
@@ -245,6 +241,24 @@ describe("assistant ask endpoint", async () => {
   function setDriver(driver: AssistantModelDriver) {
     (app as unknown as { assistantModelDriver?: AssistantModelDriver }).assistantModelDriver =
       driver;
+  }
+
+  async function waitForIdleThread(conversationId: string) {
+    const deadline = Date.now() + 8_000;
+    for (;;) {
+      const row = (
+        await db
+          .select()
+          .from(conversations)
+          .where(and(eq(conversations.orgId, orgId), eq(conversations.id, conversationId)))
+          .limit(1)
+      )[0];
+      if (row && row.status === "idle") return row;
+      if (Date.now() > deadline) {
+        throw new Error(`conversation ${conversationId} not released: ${row?.status}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
   }
 
   async function waitForTerminal(runId: string) {
