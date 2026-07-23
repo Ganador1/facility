@@ -49,6 +49,9 @@ export function AskPanel({
   const turn = useAskStream(activeRunId);
   const [history, setHistory] = useState<ThreadMessage[]>([]);
 
+  // turn.final is the intended refetch trigger, not a value the body reads —
+  // when the turn completes, the durable reply replaces the streamed one.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: turn.final is the intended change-trigger.
   useEffect(() => {
     if (!conversationId) {
       setHistory([]);
