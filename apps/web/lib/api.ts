@@ -25,6 +25,7 @@ export type {
   Catalog,
   ConnectProjectRepoRequest,
   CreateProjectRequest,
+  GithubIssueDetail,
   Integration,
   IntegrationEvent,
   Issue,
@@ -154,6 +155,15 @@ export const api = {
       data: { proposals: d.proposals ?? d.items ?? [], issues: d.issues ?? [] },
     };
   },
+  // Every state, not just open — story timelines render decided gates too.
+  inboxAll: async (): Promise<ApiResult<Proposal[]>> => {
+    const res = await apiFetch("GET", "/v1/inbox", { query: {} });
+    if (!res.ok) return res;
+    const d = res.data;
+    return { ok: true, data: Array.isArray(d) ? d : (d.proposals ?? d.items ?? []) };
+  },
+  issue: (projectId: string, number: number) =>
+    apiFetch("GET", `/v1/projects/${projectId}/issues/${number}`),
   proposal: (id: string) => apiFetch("GET", `/v1/proposals/${id}`),
   outcomes: (params = "") => apiFetch("GET", "/v1/outcomes", { query: queryFromParams(params) }),
   auditVerify: () => apiFetch("GET", "/v1/audit/verify"),

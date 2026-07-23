@@ -51,6 +51,7 @@ import {
   type PageQueryValue,
   ProposalSchema,
   principal,
+  proposalOpener,
   TaskSchema,
   type V1RouteContext,
   ValidationReportSchema,
@@ -1402,6 +1403,7 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       )[0];
       if (!task) throw notFound("Task not found");
       assertBareRowProjectScope(p, task.projectId, "Task not found");
+      const opener = await proposalOpener(db, request, p);
       const actionType = await actionTypeByName(p.orgId, "task_creation");
       if (!actionType) throw notFound("Action type not found");
       const repo = (
@@ -1448,8 +1450,8 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         proposalId: proposal.id,
         seq: 1,
         type: "open",
-        actor: { type: p.type, id: p.id },
-        data: {},
+        actor: opener.actor,
+        data: opener.data,
       });
       await db
         .update(poTasks)

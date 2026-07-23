@@ -41,6 +41,7 @@ export type DoctorResponse = z.infer<typeof DoctorResponseSchema>;
 const ESSENTIAL_ACTION_TYPES = [
   "budget_override",
   "guard_candidate",
+  "issue_update",
   "kb_amendment",
   "kickstart_review",
   "learning_validation",

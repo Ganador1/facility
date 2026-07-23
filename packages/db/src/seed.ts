@@ -40,6 +40,7 @@ const BUNDLED_ACTION_TYPES = [
   { name: "kickstart_review", required: [] },
   { name: "budget_override", required: [] },
   { name: "task_creation", required: ["taskId", "title", "bodyMd", "wsjf", "target"] },
+  { name: "issue_update", required: ["issueNumber", "title", "bodyMd"] },
   { name: "skill_proposal", required: ["name", "content", "evidence_refs"] },
   { name: "rule_proposal", required: ["name", "content", "evidence_refs"] },
   { name: "guard_candidate", required: ["title", "content", "evidence_refs"] },
@@ -69,6 +70,7 @@ function actionTypeExecutor(name: string) {
   return {
     type: [
       "task_creation",
+      "issue_update",
       "skill_proposal",
       "rule_proposal",
       "guard_candidate",

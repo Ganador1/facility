@@ -19,6 +19,7 @@ import {
   ProposalEventSchema,
   ProposalSchema,
   principal,
+  proposalOpener,
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
 } from "./shared.js";
@@ -283,13 +284,22 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
           .returning()
       )[0];
       if (proposal) {
+        // payload.requestedBy stays the HUMAN principal — the executor
+        // re-verifies that identity's permission; only the opener actor (the
+        // dual-control comparison) may become the agent.
+        const opener = await proposalOpener(db, request, p);
         await db.insert(proposalEvents).values({
           orgId: p.orgId,
           proposalId: proposal.id,
           seq: 1,
           type: "open",
-          actor: { type: p.type, id: p.id },
-          data: { source: "mcp", toolName: body.toolName, permission: body.permission },
+          actor: opener.actor,
+          data: {
+            source: "mcp",
+            toolName: body.toolName,
+            permission: body.permission,
+            ...opener.data,
+          },
         });
       }
       if (!proposal) throw new ApiError(500, "insert_failed", "Could not create proposal");
@@ -305,7 +315,9 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
         body: z.object({
           projectId: z.string().optional(),
           runId: z.string().optional(),
-          actionTypeId: z.string(),
+          actionTypeId: z.string().optional(),
+          /** Action-type NAME, resolved server-side — what in-process agents use. */
+          actionType: z.string().optional(),
           payload: AnyObject,
           contextMd: z.string(),
           expiresAt: IsoDateTime.optional(),
@@ -318,11 +330,15 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
       const body = request.body as {
         projectId?: string;
         runId?: string;
-        actionTypeId: string;
+        actionTypeId?: string;
+        actionType?: string;
         payload: Record<string, unknown>;
         contextMd: string;
         expiresAt?: string;
       };
+      if (!body.actionTypeId && !body.actionType) {
+        throw new ApiError(400, "schema_validation_failed", "actionTypeId or actionType required");
+      }
       await assertProjectInOrg(p, body.projectId);
       const runProjectId = await proposalRunProject(p, body.runId);
       const requestedProjectId = p.projectId ?? body.projectId ?? null;
@@ -334,13 +350,24 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
         );
       }
       const projectId = requestedProjectId ?? runProjectId;
-      const actionType = (
+      let actionType = (
         await db
           .select()
           .from(actionTypes)
-          .where(and(eq(actionTypes.orgId, p.orgId), eq(actionTypes.id, body.actionTypeId)))
+          .where(
+            and(
+              eq(actionTypes.orgId, p.orgId),
+              body.actionTypeId
+                ? eq(actionTypes.id, body.actionTypeId)
+                : eq(actionTypes.name, body.actionType ?? ""),
+            ),
+          )
           .limit(1)
       )[0];
+      // Orgs seeded before the type existed get it lazily, like mcp_tool_call.
+      if (!actionType && body.actionType === "issue_update") {
+        actionType = await ensureIssueUpdateActionType(p.orgId);
+      }
       if (!actionType) throw notFound("Action type not found");
       // mcp_tool_call dispatches to privileged operations (create agent, set
       // budget, publish registry version, …) whose per-tool permission is checked
@@ -369,7 +396,7 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
             orgId: p.orgId,
             projectId,
             runId: body.runId,
-            actionTypeId: body.actionTypeId,
+            actionTypeId: actionType.id,
             payload: body.payload,
             contextMd: body.contextMd,
             expiresAt: body.expiresAt
@@ -378,15 +405,17 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
           })
           .returning()
       )[0];
-      if (proposal)
+      if (proposal) {
+        const opener = await proposalOpener(db, request, p);
         await db.insert(proposalEvents).values({
           orgId: p.orgId,
           proposalId: proposal.id,
           seq: 1,
           type: "open",
-          actor: { type: p.type, id: p.id },
-          data: {},
+          actor: opener.actor,
+          data: opener.data,
         });
+      }
       if (!proposal) throw new ApiError(500, "insert_failed", "Could not create proposal");
       return { ...proposal, actionType: actionType.name };
     },
@@ -539,6 +568,33 @@ export async function registerHitlRoutes(app: FastifyInstance, context: V1RouteC
       return proposalResponse(executed);
     },
   );
+
+  async function ensureIssueUpdateActionType(orgId: string) {
+    const spec = {
+      payloadSchema: { type: "object", required: ["issueNumber", "title", "bodyMd"] },
+      resolver: { type: "permission", config: { permission: "hitl:decide" } },
+      executor: { type: "internal", config: {} },
+      defaultTtlHours: 72,
+    };
+    const existing = (
+      await db
+        .select()
+        .from(actionTypes)
+        .where(and(eq(actionTypes.orgId, orgId), eq(actionTypes.name, "issue_update")))
+        .limit(1)
+    )[0];
+    if (existing) return existing;
+    return (
+      await db
+        .insert(actionTypes)
+        .values({ id: `act_${orgId}_issue_update`, orgId, name: "issue_update", ...spec })
+        .onConflictDoUpdate({
+          target: [actionTypes.orgId, actionTypes.name],
+          set: { ...spec, updatedAt: new Date() },
+        })
+        .returning()
+    )[0];
+  }
 
   async function ensureMcpActionType(orgId: string) {
     const existing = (

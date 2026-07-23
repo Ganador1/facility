@@ -146,12 +146,12 @@ export default async function ProjectOverviewPage({
 
       <section className="flex flex-col gap-4">
         <div className="flex items-baseline justify-between">
-          <Eyebrow>the pipeline</Eyebrow>
+          <Eyebrow>stories</Eyebrow>
           <Link
-            href={`/projects/${projectId}/issues`}
+            href={`/projects/${projectId}/stories`}
             className="text-[12px] font-medium text-(--mut) hover:text-(--ink)"
           >
-            open the pipeline →
+            open stories →
           </Link>
         </div>
         {ghIssues.ok ? (
@@ -205,7 +205,11 @@ export default async function ProjectOverviewPage({
             {proposals.slice(0, 5).map((proposal) => (
               <Link
                 key={proposal.id}
-                href={`/projects/${projectId}/approvals?focus=${proposal.id}`}
+                href={
+                  (proposal.payload as { issueNumber?: number } | null)?.issueNumber != null
+                    ? `/projects/${projectId}/stories/${(proposal.payload as { issueNumber?: number }).issueNumber}`
+                    : `/projects/${projectId}/approvals?focus=${proposal.id}`
+                }
                 className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
               >
                 <StatusDot tone="human" />
@@ -258,7 +262,7 @@ export default async function ProjectOverviewPage({
           <p className="text-sm text-(--dim)">
             No agent is working right now. Trigger one from{" "}
             <Link
-              href={`/projects/${projectId}/issues`}
+              href={`/projects/${projectId}/stories`}
               className="text-(--ink) underline underline-offset-4"
             >
               issues

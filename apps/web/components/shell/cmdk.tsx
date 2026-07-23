@@ -36,10 +36,10 @@ export function CommandPalette({
             href: `/projects/${currentProject.id}`,
           },
           {
-            id: "p-issues",
-            label: `${currentProject.slug} · issues`,
+            id: "p-stories",
+            label: `${currentProject.slug} · stories`,
             hint: "project",
-            href: `/projects/${currentProject.id}/issues`,
+            href: `/projects/${currentProject.id}/stories`,
           },
           {
             id: "p-sessions",

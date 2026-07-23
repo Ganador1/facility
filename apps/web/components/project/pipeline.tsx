@@ -77,7 +77,7 @@ export function PipelineBoard({
           >
             {projectId ? (
               <Link
-                href={`/projects/${projectId}/issues?stage=${stage.key}`}
+                href={`/projects/${projectId}/stories?stage=${stage.key}`}
                 className="transition-opacity hover:opacity-80"
               >
                 {header}
@@ -89,16 +89,27 @@ export function PipelineBoard({
               {items.slice(0, 3).map((placed) => (
                 <span key={placed.issue.number} className="flex items-center gap-1.5">
                   <RunStateDot placed={placed} />
-                  <a
-                    href={placed.issue.htmlUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="min-w-0 truncate text-[11.5px] leading-snug text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
-                    title={placed.issue.title}
-                  >
-                    <span className="font-mono text-(--dim)">#{placed.issue.number}</span>{" "}
-                    {placed.issue.title}
-                  </a>
+                  {projectId ? (
+                    <Link
+                      href={`/projects/${projectId}/stories/${placed.issue.number}`}
+                      className="min-w-0 truncate text-[11.5px] leading-snug text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
+                      title={placed.issue.title}
+                    >
+                      <span className="font-mono text-(--dim)">#{placed.issue.number}</span>{" "}
+                      {placed.issue.title}
+                    </Link>
+                  ) : (
+                    <a
+                      href={placed.issue.htmlUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="min-w-0 truncate text-[11.5px] leading-snug text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
+                      title={placed.issue.title}
+                    >
+                      <span className="font-mono text-(--dim)">#{placed.issue.number}</span>{" "}
+                      {placed.issue.title}
+                    </a>
+                  )}
                   {placed.prs.map((pr) => (
                     <a
                       key={pr.number}

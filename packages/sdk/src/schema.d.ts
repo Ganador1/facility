@@ -8701,6 +8701,8 @@ export interface operations {
                             pr?: unknown;
                         }[];
                         bodyMd: string | null;
+                        /** Format: date-time */
+                        ghCreatedAt: string | null;
                         runs: {
                             id: string;
                             mode: string;
@@ -11815,7 +11817,8 @@ export interface operations {
                 "application/json": {
                     projectId?: string;
                     runId?: string;
-                    actionTypeId: string;
+                    actionTypeId?: string;
+                    actionType?: string;
                     payload: {
                         [key: string]: unknown;
                     };

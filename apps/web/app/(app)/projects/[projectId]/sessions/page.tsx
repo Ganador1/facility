@@ -43,7 +43,7 @@ export default async function ProjectSessionsPage({
         <p className="max-w-lg text-sm leading-relaxed text-(--dim)">
           No sessions yet. Trigger an agent from{" "}
           <Link
-            href={`/projects/${projectId}/issues`}
+            href={`/projects/${projectId}/stories`}
             className="text-(--ink) underline underline-offset-4"
           >
             issues

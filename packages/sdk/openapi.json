@@ -11533,6 +11533,11 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "ghCreatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
                     "runs": {
                       "type": "array",
                       "items": {
@@ -11592,6 +11597,7 @@
                     "closedAt",
                     "linkedRuns",
                     "bodyMd",
+                    "ghCreatedAt",
                     "runs"
                   ],
                   "additionalProperties": false
@@ -16992,6 +16998,9 @@
                   "actionTypeId": {
                     "type": "string"
                   },
+                  "actionType": {
+                    "type": "string"
+                  },
                   "payload": {
                     "type": "object",
                     "additionalProperties": {}
@@ -17004,7 +17013,6 @@
                   }
                 },
                 "required": [
-                  "actionTypeId",
                   "payload",
                   "contextMd"
                 ]

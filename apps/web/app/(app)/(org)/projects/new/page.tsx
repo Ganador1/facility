@@ -657,7 +657,7 @@ export default function KickstartPage() {
                 Trigger the first session from{" "}
                 {project ? (
                   <Link
-                    href={`/projects/${project.id}/issues`}
+                    href={`/projects/${project.id}/stories`}
                     className="text-(--ink) underline underline-offset-4"
                   >
                     issues

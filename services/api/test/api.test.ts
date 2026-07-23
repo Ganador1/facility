@@ -46,6 +46,7 @@ import { and, eq, ne, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp, mintSessionCookie } from "../src/app.js";
+import { registerAssistantTurn, releaseAssistantTurn } from "../src/assistant/turn-registry.js";
 import type { GithubClientFactory } from "../src/github/client.js";
 import { validateProjectKb } from "../src/harness.js";
 import { deliverPendingWebhooks } from "../src/integrations/outbound.js";
@@ -1260,6 +1261,130 @@ describe("api", async () => {
       headers: { cookie },
     });
     expect(loaded.json().events.map((event: { seq: number }) => event.seq)).toEqual([1, 2]);
+  });
+
+  it("records the assistant agent as requester so its own user can approve", async () => {
+    const me = await app.inject({ method: "GET", url: "/v1/me", headers: { cookie } });
+    const principalMe = me.json().principal as { type: string; id: string };
+    const type = (
+      await db
+        .insert(actionTypes)
+        .values({
+          id: newId("act"),
+          orgId,
+          name: `agent_opened_${Date.now()}`,
+          payloadSchema: { type: "object", required: [] },
+          resolver: { type: "permission", config: {} },
+          executor: { type: "none", config: {} },
+          defaultTtlHours: 1,
+        })
+        .returning()
+    )[0];
+    const assistantRun = (
+      await db
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId,
+          projectId,
+          mode: "assistant",
+          engine: "inline",
+          status: "running",
+          trigger: { type: "conversation" },
+          createdBy: { type: principalMe.type, id: principalMe.id },
+        })
+        .returning()
+    )[0];
+    if (!assistantRun) throw new Error("run fixture failed");
+    const token = registerAssistantTurn(assistantRun.id);
+
+    // Valid in-process binding → the AGENT is the requester; the same human
+    // who drove the assistant may approve (dual control = human ≠ agent).
+    const agentOpened = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: {
+        cookie,
+        "x-facility-assistant-run": assistantRun.id,
+        "x-facility-assistant-token": token,
+      },
+      payload: { projectId, actionTypeId: type?.id, payload: {}, contextMd: "agent-opened" },
+    });
+    expect(agentOpened.statusCode, agentOpened.body).toBe(200);
+    const loaded = await app.inject({
+      method: "GET",
+      url: `/v1/proposals/${agentOpened.json().id}`,
+      headers: { cookie },
+    });
+    const openEvent = loaded.json().events[0];
+    expect(openEvent.actor).toEqual({ type: "agent", id: assistantRun.id });
+    expect(openEvent.data.onBehalfOf).toEqual({ type: principalMe.type, id: principalMe.id });
+    const selfDecide = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${agentOpened.json().id}/decide`,
+      headers: { cookie },
+      payload: { decision: "approve" },
+    });
+    expect(selfDecide.statusCode, selfDecide.body).toBe(200);
+
+    // Fails closed: a wrong token records the human as requester, and
+    // self-approval keeps today's 403.
+    const badToken = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: {
+        cookie,
+        "x-facility-assistant-run": assistantRun.id,
+        "x-facility-assistant-token": "forged",
+      },
+      payload: { projectId, actionTypeId: type?.id, payload: {}, contextMd: "forged-token" },
+    });
+    expect(badToken.statusCode).toBe(200);
+    const denied = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${badToken.json().id}/decide`,
+      headers: { cookie },
+      payload: { decision: "approve" },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json().error.code).toBe("same_principal_approval_denied");
+    releaseAssistantTurn(assistantRun.id);
+  });
+
+  it("resolves issue_update proposals by action-type name and dispatches the executor", async () => {
+    // By NAME with lazy ensure — no seeded row required, no id round-trip.
+    const proposed = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: { cookie },
+      payload: {
+        projectId,
+        actionType: "issue_update",
+        payload: { issueNumber: 7, title: "Sharper title", bodyMd: "New body." },
+        contextMd: "Issue update proposal for #7: scope refined per S004",
+      },
+    });
+    expect(proposed.statusCode, proposed.body).toBe(200);
+    expect(proposed.json().actionType).toBe("issue_update");
+    const decided = await app.inject({
+      method: "POST",
+      url: `/v1/proposals/${proposed.json().id}/decide`,
+      headers: { cookie: approverCookie },
+      payload: { decision: "approve" },
+    });
+    expect(decided.statusCode, decided.body).toBe(200);
+    // The executor branch ran (not unsupported_action_type): with no GitHub
+    // repo configured in this suite it fails at the repo lookup, honestly.
+    expect(decided.json().state).toBe("execution_failed");
+    const loaded = await app.inject({
+      method: "GET",
+      url: `/v1/proposals/${proposed.json().id}`,
+      headers: { cookie },
+    });
+    const failure = loaded
+      .json()
+      .events.find((event: { type: string }) => event.type === "execution_failed");
+    expect(failure?.data?.error).toContain("issue_update_missing_repo");
   });
 
   it("activates a learned skill only after a separate human approves it", async () => {

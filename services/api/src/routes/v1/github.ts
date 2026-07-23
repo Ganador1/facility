@@ -69,6 +69,7 @@ const GhIssueItemSchema = z.object({
 
 const GhIssueDetailSchema = GhIssueItemSchema.extend({
   bodyMd: z.string().nullable(),
+  ghCreatedAt: DateValue.nullable(),
   runs: z.array(
     z.object({
       id: z.string(),
@@ -359,6 +360,7 @@ export async function registerGithubV1Routes(app: FastifyInstance, context: V1Ro
       return {
         ...issueItem(issue, issueRuns.map(linkedRunFromRun)),
         bodyMd: issue.bodyMd,
+        ghCreatedAt: issue.ghCreatedAt,
         runs: issueRuns.map((run) => {
           const gh = objectOrEmpty(run.gh);
           return {
