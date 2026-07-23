@@ -28,11 +28,8 @@ export function StoryTimeline({
   }
   return (
     <ol className="flex flex-col border-l border-(--line)">
-      {items.map((item, index) => (
-        <li
-          key={`${item.kind}-${index}-${item.kind === "run" ? item.run.id : (item.ts ?? "")}`}
-          className="relative pb-6 pl-6 last:pb-0"
-        >
+      {items.map((item) => (
+        <li key={keyOf(item)} className="relative pb-6 pl-6 last:pb-0">
           <span
             aria-hidden
             className="absolute top-1.5 -left-[3.5px] h-[7px] w-[7px] border border-(--line-strong) bg-(--bg)"
@@ -42,6 +39,24 @@ export function StoryTimeline({
       ))}
     </ol>
   );
+}
+
+/** Stable identity per item — every source row appears at most once per kind. */
+function keyOf(item: StoryItem): string {
+  switch (item.kind) {
+    case "run":
+      return `run-${item.run.id}`;
+    case "proposal":
+      return `proposal-${item.proposal.id}`;
+    case "proposal_decided":
+      return `decided-${item.proposal.id}`;
+    case "pr_opened":
+      return `pr-open-${item.outcome.id}`;
+    case "pr_closed":
+      return `pr-closed-${item.outcome.id}`;
+    default:
+      return item.kind;
+  }
 }
 
 function TimelineItem({
