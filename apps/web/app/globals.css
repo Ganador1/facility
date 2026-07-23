@@ -36,3 +36,28 @@ body {
   background: var(--ink);
   color: var(--bg);
 }
+
+/*
+ * The project shell's work area. Pages get the standard padding by default;
+ * a page that marks its root `main-bleed` (the app-shell tabs — Product)
+ * takes the full work area edge to edge.
+ */
+main.app-main {
+  padding: 2rem 1.25rem;
+}
+
+@media (min-width: 640px) {
+  main.app-main {
+    padding: 2rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  main.app-main {
+    padding: 2rem 2.5rem;
+  }
+}
+
+main.app-main:has(> .main-bleed) {
+  padding: 0;
+}

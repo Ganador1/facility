@@ -180,6 +180,7 @@ export const ConversationSchema = z.object({
   lastRunId: z.string().nullable(),
   engineSessionId: z.string().nullable(),
   status: z.string(),
+  kind: z.string(),
   createdBy: JsonValue,
   createdAt: DateValue,
   updatedAt: DateValue,
@@ -450,8 +451,21 @@ export const KbSpaceSchema = z.object({
   charterMd: z.string(),
   activeMd: z.string(),
   config: AnyObject,
+  charterUpdatedAt: DateValue.nullable(),
+  activeUpdatedAt: DateValue.nullable(),
   createdAt: DateValue,
   updatedAt: DateValue,
+});
+
+export const KbSpaceDocVersionSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  spaceId: z.string(),
+  doc: z.string(),
+  version: z.number().int(),
+  bodyMd: z.string(),
+  savedBy: JsonValue.nullable(),
+  createdAt: DateValue,
 });
 
 export const KbEntrySchema = z.object({
@@ -469,6 +483,19 @@ export const KbEntrySchema = z.object({
   updatedAt: DateValue,
 });
 
+export const KbEntryVersionSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  entryId: z.string(),
+  version: z.number().int(),
+  slug: z.string(),
+  frontmatter: AnyObject,
+  bodyMd: z.string(),
+  status: z.string().nullable(),
+  savedBy: JsonValue.nullable(),
+  createdAt: DateValue,
+});
+
 export const KbEntryDraftSchema = z.object({
   id: z.literal("__draft__"),
   type: z.string(),
@@ -478,6 +505,24 @@ export const KbEntryDraftSchema = z.object({
   bodyMd: z.string(),
   status: z.string().optional(),
   supersedes: z.null(),
+});
+
+export const KbDecisionSchema = KbEntrySchema.extend({
+  artifactId: z.string(),
+  /** Artifact id of the decision that superseded this one, when retired. */
+  supersededBy: z.string().nullable(),
+  /** Still governing: not superseded and not marked superseded itself. */
+  active: z.boolean(),
+});
+
+export const KbNeighborSchema = z.object({
+  id: z.string(),
+  artifactId: z.string(),
+  type: z.string(),
+  number: z.number().int(),
+  slug: z.string(),
+  status: z.string().nullable(),
+  relation: z.enum(["supersedes", "superseded-by", "linked"]),
 });
 
 export const TaskSchema = z.object({

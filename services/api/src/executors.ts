@@ -2131,11 +2131,26 @@ async function executeKbAmendment(db: Db, proposal: ProposalExecutionContext) {
   const links = arrayOfStrings(payload.links);
   const parentEntries = graph.entries.filter((entry) => links.includes(entry.id));
   if (parentEntries.length !== links.length) throw new Error("kb_amendment_link_target_missing");
+  // Optional supersedence: the approved amendment retires an existing entry
+  // (payload.supersedes = artifact id, e.g. "D2"). Decisions change only this
+  // way — never edited in place.
+  const supersedesId = stringField(payload.supersedes);
+  const predecessor = supersedesId
+    ? graph.entries.find((entry) => artifactIdFor(entry) === supersedesId)
+    : undefined;
+  if (supersedesId && !predecessor) throw new Error("kb_amendment_supersedes_target_missing");
+  if (predecessor && predecessor.type !== type) {
+    throw new Error("kb_amendment_supersedes_type_mismatch");
+  }
+  const status =
+    stringField(payload.status) ?? (supersedesId && type === "D" ? "decided" : "draft");
   const normalized = normalizeKbDraft({
     type,
     number: max + 1,
     slug,
-    frontmatter: objectOrEmpty(payload.frontmatter),
+    frontmatter: supersedesId
+      ? { ...objectOrEmpty(payload.frontmatter), supersedes: supersedesId }
+      : objectOrEmpty(payload.frontmatter),
     bodyMd,
     parentEntries,
   });
@@ -2146,8 +2161,8 @@ async function executeKbAmendment(db: Db, proposal: ProposalExecutionContext) {
     slug,
     frontmatter: normalized.frontmatter,
     bodyMd: normalized.bodyMd,
-    status: "draft",
-    supersedes: null,
+    status,
+    supersedes: supersedesId ?? null,
   };
   const report = validate({
     space: toHarnessSpace(space),
@@ -2176,11 +2191,18 @@ async function executeKbAmendment(db: Db, proposal: ProposalExecutionContext) {
           slug,
           frontmatter: normalized.frontmatter,
           bodyMd: normalized.bodyMd,
-          status: "draft",
+          status,
+          supersedes: supersedesId ?? null,
         })
         .returning()
     )[0];
     if (!inserted) throw new Error("kb_amendment_insert_failed");
+    if (predecessor) {
+      await tx
+        .update(kbEntries)
+        .set({ status: "superseded", updatedAt: new Date() })
+        .where(and(eq(kbEntries.orgId, proposal.orgId), eq(kbEntries.id, predecessor.id)));
+    }
     const childArtifactId = artifactIdFor(toHarnessEntry(inserted));
     for (const link of links) {
       await tx

@@ -141,6 +141,7 @@ describe("api", async () => {
     publicUrl: "http://localhost:4400",
     sandboxApiUrl: "http://localhost:4400",
     sandboxGatewayUrl: "http://localhost:4410",
+    gatewayUrl: "http://localhost:4410",
     sandboxRunnerImage: "facility-runner:dev",
     sandboxDriver: "docker",
     webUrl: "http://localhost:3000",
@@ -286,7 +287,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(122);
+    ).toBe(133);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },
@@ -2993,6 +2994,71 @@ describe("api", async () => {
       payload: { type: "E", slug: "experiment", bodyMd: "body", links: [parent.json().id] },
     });
     expect(child.statusCode).toBe(200);
+  });
+
+  it("links cited artifacts on body edits and captures the prior version", async () => {
+    // Partial PUT: only config — charter/active must survive untouched.
+    const space = await app.inject({
+      method: "PUT",
+      url: `/v1/projects/${projectId}/kb/space`,
+      headers: { cookie },
+      payload: { config: { artifact_types: [{ prefix: "H", name: "Hypothesis" }] } },
+    });
+    expect(space.statusCode, space.body).toBe(200);
+    const first = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/kb/entries`,
+      headers: { cookie },
+      payload: { type: "H", slug: "cited-hypothesis", bodyMd: "the cited one", links: [] },
+    });
+    expect(first.statusCode).toBe(200);
+    const second = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/kb/entries`,
+      headers: { cookie },
+      payload: { type: "H", slug: "citing-hypothesis", bodyMd: "no links yet", links: [] },
+    });
+    expect(second.statusCode).toBe(200);
+    const citedRef = `H${String(first.json().number).padStart(3, "0")}`;
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/v1/kb/entries/${second.json().id}`,
+      headers: { cookie },
+      payload: { bodyMd: `Builds on [[${citedRef}]].` },
+    });
+    expect(patched.statusCode, patched.body).toBe(200);
+    const hood = await app.inject({
+      method: "GET",
+      url: `/v1/kb/entries/${second.json().id}/neighborhood`,
+      headers: { cookie },
+    });
+    expect(hood.statusCode).toBe(200);
+    const linkedIds = hood.json().linked.map((neighbor: { id: string }) => neighbor.id);
+    expect(linkedIds).toContain(first.json().id);
+    const versions = await app.inject({
+      method: "GET",
+      url: `/v1/kb/entries/${second.json().id}/versions`,
+      headers: { cookie },
+    });
+    expect(versions.statusCode).toBe(200);
+    expect(versions.json().length).toBe(1);
+    // The captured prior is the creation-normalized body (## Links appended).
+    expect(versions.json()[0].bodyMd.startsWith("no links yet")).toBe(true);
+    // Dropping the cite unlinks it again (validation-guarded removal).
+    const uncited = await app.inject({
+      method: "PATCH",
+      url: `/v1/kb/entries/${second.json().id}`,
+      headers: { cookie },
+      payload: { bodyMd: "Standalone again." },
+    });
+    expect(uncited.statusCode, uncited.body).toBe(200);
+    const hoodAfter = await app.inject({
+      method: "GET",
+      url: `/v1/kb/entries/${second.json().id}/neighborhood`,
+      headers: { cookie },
+    });
+    const linkedAfter = hoodAfter.json().linked.map((neighbor: { id: string }) => neighbor.id);
+    expect(linkedAfter).not.toContain(first.json().id);
   });
 
   it("returns null for a project whose KB space has not been created", async () => {

@@ -176,7 +176,22 @@ export const api = {
     apiFetch("GET", "/v1/registry/items", { query: queryFromParams(params) }),
   registryItem: (id: string) => apiFetch("GET", `/v1/registry/items/${id}`),
   kbSpace: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/kb/space`),
-  kbEntries: (projectId: string) => apiFetch("GET", `/v1/projects/${projectId}/kb/entries`),
+  kbEntries: (projectId: string) =>
+    apiFetch("GET", `/v1/projects/${projectId}/kb/entries`, {
+      // Server default is 100 (max 200) — take the max so the nav doesn't
+      // silently truncate mid-size KBs; pagination is the follow-up.
+      query: { limit: 200 } as never,
+    }),
+  kbDecisions: (projectId: string, activeOnly = false) =>
+    apiFetch("GET", `/v1/projects/${projectId}/kb/decisions`, {
+      query: (activeOnly ? { active: 1 } : {}) as never,
+    }),
+  kbEntry: (entryId: string) => apiFetch("GET", `/v1/kb/entries/${entryId}`),
+  kbNeighborhood: (entryId: string) => apiFetch("GET", `/v1/kb/entries/${entryId}/neighborhood`),
+  kbSearch: (projectId: string, q: string, type?: string) =>
+    apiFetch("GET", `/v1/projects/${projectId}/kb/search`, {
+      query: { q, ...(type ? { type } : {}) } as never,
+    }),
   spend: (params = "") => apiFetch("GET", "/v1/spend", { query: queryFromParams(params) }),
   sandboxProfiles: () => apiFetch("GET", "/v1/sandbox-profiles"),
   members: () => apiFetch("GET", "/v1/members"),

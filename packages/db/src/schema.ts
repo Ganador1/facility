@@ -428,12 +428,16 @@ export const conversations = pgTable(
     lastRunId: text("last_run_id").references(() => runs.id),
     engineSessionId: text("engine_session_id"),
     status: text("status").notNull().default("idle"),
+    // sandbox = each turn spawns a containerized run (legacy conversation path)
+    // assistant = turns execute in the API's in-process Product Owner loop
+    kind: text("kind").notNull().default("sandbox"),
     createdBy: jsonb("created_by").notNull(),
     ...timestamps,
   },
   (table) => [
     index("conversations_org_project_idx").on(table.orgId, table.projectId),
     check("conversations_status_check", sql`${table.status} in ('idle', 'running')`),
+    check("conversations_kind_check", sql`${table.kind} in ('sandbox', 'assistant')`),
   ],
 );
 
@@ -679,6 +683,8 @@ export const kbSpaces = pgTable(
     charterMd: text("charter_md").notNull().default(""),
     activeMd: text("active_md").notNull().default(""),
     config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
+    charterUpdatedAt: timestamp("charter_updated_at", { withTimezone: true }),
+    activeUpdatedAt: timestamp("active_updated_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [index("kb_spaces_org_idx").on(table.orgId)],
@@ -706,6 +712,48 @@ export const kbEntries = pgTable(
   (table) => [
     unique("kb_entries_space_type_number_uidx").on(table.spaceId, table.type, table.number),
     index("kb_entries_org_idx").on(table.orgId),
+  ],
+);
+
+export const kbEntryVersions = pgTable(
+  "kb_entry_versions",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    entryId: text("entry_id")
+      .notNull()
+      .references(() => kbEntries.id, { onDelete: "cascade" }),
+    version: integer("version").notNull(),
+    slug: text("slug").notNull(),
+    frontmatter: jsonb("frontmatter").notNull().default({}),
+    bodyMd: text("body_md").notNull().default(""),
+    status: text("status"),
+    savedBy: jsonb("saved_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("kb_entry_versions_unique").on(table.entryId, table.version),
+    index("kb_entry_versions_entry_idx").on(table.entryId, table.version),
+  ],
+);
+
+export const kbSpaceDocVersions = pgTable(
+  "kb_space_doc_versions",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id").notNull(),
+    spaceId: text("space_id")
+      .notNull()
+      .references(() => kbSpaces.id, { onDelete: "cascade" }),
+    doc: text("doc").notNull(),
+    version: integer("version").notNull(),
+    bodyMd: text("body_md").notNull().default(""),
+    savedBy: jsonb("saved_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex("kb_space_doc_versions_unique").on(table.spaceId, table.doc, table.version),
+    index("kb_space_doc_versions_space_idx").on(table.spaceId, table.doc, table.version),
   ],
 );
 

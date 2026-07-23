@@ -48,6 +48,12 @@ export function CommandPalette({
             href: `/projects/${currentProject.id}/sessions`,
           },
           {
+            id: "p-approvals",
+            label: `${currentProject.slug} · approvals`,
+            hint: "project",
+            href: `/projects/${currentProject.id}/approvals`,
+          },
+          {
             id: "p-settings",
             label: `${currentProject.slug} · settings`,
             hint: "project",
@@ -57,7 +63,6 @@ export function CommandPalette({
       : [];
     const org: Entry[] = [
       { id: "o-projects", label: "projects", hint: "org", href: "/projects" },
-      { id: "o-inbox", label: "inbox", hint: "org", href: "/inbox" },
       { id: "o-harness", label: "harness", hint: "org", href: "/harness" },
       { id: "o-audit", label: "audit", hint: "org", href: "/audit" },
       { id: "o-settings", label: "org settings", hint: "org", href: "/settings" },

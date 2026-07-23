@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { AppConfig } from "../types.js";
 import { registerAdminDoctorRoutes } from "./v1/admin-doctor.js";
 import { registerAgentsSandboxesRoutes } from "./v1/agents-sandboxes.js";
+import { registerAssistantRoutes } from "./v1/assistant.js";
 import { registerCatalogIntegrationsRoutes } from "./v1/catalog-integrations.js";
 import { registerConversationsRoutes } from "./v1/conversations.js";
 import { registerGithubV1Routes } from "./v1/github.js";
@@ -32,6 +33,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
   await registerRegistryRoutes(app, context);
   await registerRunsRoutes(app, context);
   await registerConversationsRoutes(app, context);
+  await registerAssistantRoutes(app, context);
   await registerGithubV1Routes(app, context);
   await registerProvidersBudgetsSpendRoutes(app, context);
   await registerPreviewRoutes(app, context);

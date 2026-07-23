@@ -38,6 +38,7 @@ describe("sandbox docker e2e", () => {
     publicUrl: `http://host.docker.internal:${port}`,
     sandboxApiUrl: `http://host.docker.internal:${port}`,
     sandboxGatewayUrl: `http://host.docker.internal:${port}`,
+    gatewayUrl: "http://localhost:4410",
     sandboxRunnerImage: "facility-runner:dev",
     sandboxDriver: "docker",
     webUrl: "http://localhost:3000",
@@ -190,11 +191,15 @@ describe("sandbox docker e2e", () => {
     expect(types).toEqual(
       expect.arrayContaining(["hello", "shell", "assistant", "steer", "check"]),
     );
-    const revoked = await db
-      .select()
-      .from(virtualKeys)
-      .where(and(eq(virtualKeys.runId, run.id), isNotNull(virtualKeys.revokedAt)));
-    expect(revoked.length).toBe(1);
+    // Revocation trails the terminal status (it runs in the orchestrator's
+    // cleanup, not the status transition) — poll instead of racing it.
+    await waitFor(async () => {
+      const revoked = await db
+        .select()
+        .from(virtualKeys)
+        .where(and(eq(virtualKeys.runId, run.id), isNotNull(virtualKeys.revokedAt)));
+      return revoked.length === 1;
+    }, 20_000);
     expect(
       (finished.receipt as { events?: { count?: number; checks?: number } })?.events?.checks,
     ).toBeGreaterThanOrEqual(1);

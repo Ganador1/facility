@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { AskBar } from "@/components/ask/ask-bar";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { CommandPalette } from "@/components/shell/cmdk";
 import { MobileNav, Sidebar } from "@/components/shell/nav";
@@ -40,18 +41,25 @@ export default async function ProjectLayout({
 
   const p = project.data;
   const projectList = projects.ok ? projects.data : [];
-  const inboxCount = inbox.ok ? inbox.data.proposals.length + inbox.data.issues.length : undefined;
+  // Approvals are a project surface — the badge counts only this project's.
+  const inboxCount = inbox.ok
+    ? inbox.data.proposals.filter((item) => item.projectId === p.id).length +
+      inbox.data.issues.filter((item) => item.projectId === p.id).length
+    : undefined;
   const navProject = { id: p.id, slug: p.slug, name: p.name };
 
   return (
-    <div className="flex min-h-dvh">
+    // App shell: the viewport is the frame; only the work area (main) scrolls,
+    // so full-height tabs like Product can fill it edge to edge.
+    <div className="flex h-dvh">
       <Sidebar project={navProject} inboxCount={inboxCount} />
-      <div className="min-w-0 flex-1">
+      <div className="flex min-w-0 flex-1 flex-col">
         <MobileNav project={navProject} inboxCount={inboxCount} />
         {me.ok ? <Topbar me={me.data} projects={projectList} current={p} /> : null}
-        <main className="px-5 py-8 sm:px-8 lg:px-10">{children}</main>
+        <main className="app-main min-h-0 flex-1 overflow-y-auto">{children}</main>
       </div>
       <CommandPalette projects={projectList} currentProject={p} />
+      <AskBar projectId={p.id} />
       <RememberProject projectId={p.id} />
     </div>
   );

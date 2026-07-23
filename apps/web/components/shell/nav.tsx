@@ -15,24 +15,33 @@ export function orgNav(): NavItem[] {
 }
 
 /** Cross-project operator surfaces — secondary by design; explained, not assumed. */
-export function orgPlatformNav(inboxCount?: number): NavItem[] {
+export function orgPlatformNav(): NavItem[] {
   return [
     { href: "/sessions", label: "Activity", sub: "live agent work, all projects" },
     { href: "/harness", label: "Skills & Rules", sub: "what your agents know" },
     { href: "/audit", label: "Audit log", sub: "every action, recorded" },
-    { href: "/inbox", label: "Approvals", badge: inboxCount, sub: "decisions waiting on you" },
     { href: "/settings", label: "Settings" },
   ];
 }
 
 /** The project world: everything scoped to the project in focus. */
-export function projectNav(projectId: string): NavItem[] {
+export function projectNav(projectId: string, inboxCount?: number): NavItem[] {
   const base = `/projects/${projectId}`;
   return [
     { href: base, label: "Overview" },
+    {
+      href: `${base}/product`,
+      label: "Product",
+      sub: "decisions & docs — the project's knowledge base",
+    },
     { href: `${base}/issues`, label: "Pipeline", sub: "issues by stage" },
     { href: `${base}/sessions`, label: "Runs", sub: "agent work on this project" },
-    { href: `${base}/owner`, label: "Project Manager", sub: "the agent that runs this project" },
+    {
+      href: `${base}/approvals`,
+      label: "Approvals",
+      badge: inboxCount,
+      sub: "decisions waiting on you",
+    },
     { href: `${base}/agents`, label: "Agents" },
     { href: `${base}/settings`, label: "Settings" },
   ];
@@ -112,7 +121,7 @@ function NavSections({
         <NavLinks items={orgNav()} onNavigate={onNavigate} />
         <div className="flex flex-col gap-2">
           <SectionLabel>platform</SectionLabel>
-          <NavLinks items={orgPlatformNav(inboxCount)} onNavigate={onNavigate} />
+          <NavLinks items={orgPlatformNav()} onNavigate={onNavigate} />
         </div>
       </div>
     );
@@ -133,7 +142,7 @@ function NavSections({
       </Link>
       <div className="flex flex-col gap-2">
         <SectionLabel>{project.name ?? project.slug}</SectionLabel>
-        <NavLinks items={projectNav(project.id)} exactFirst onNavigate={onNavigate} />
+        <NavLinks items={projectNav(project.id, inboxCount)} exactFirst onNavigate={onNavigate} />
       </div>
     </div>
   );

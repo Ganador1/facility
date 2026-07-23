@@ -225,6 +225,135 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
     },
   );
 
+  // Product Owner delegation: dispatch a read-only architect run to answer a
+  // question against the actual code. Architect modes never ship changes and
+  // skip acceptance checks, so a consult is safe to run on any repo state.
+  app.post(
+    "/v1/projects/:projectId/consult",
+    {
+      config: { permission: "runs:trigger", auditAction: "run.started", idempotent: true },
+      schema: {
+        params: IdParams,
+        body: z.object({
+          question: z.string().min(8),
+          agent: z.string().default("architect"),
+        }),
+        response: { 200: RunSchema },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
+      const body = request.body as { question: string; agent: string };
+      const agent = await resolveRunAgentDef(p.orgId, projectId, { agent: body.agent });
+      if (agent.name !== "architect" && agent.name !== "codex-architect") {
+        throw new ApiError(
+          400,
+          "consult_agent_invalid",
+          "Consult dispatches read-only architect agents only",
+        );
+      }
+      const run = (
+        await db
+          .insert(runs)
+          .values({
+            id: newId("run"),
+            orgId: p.orgId,
+            projectId,
+            agentDefId: agent.id,
+            mode: agent.name,
+            engine: agent.engine,
+            trigger: {
+              type: "consult",
+              question: body.question,
+              requestedBy: { type: p.type, id: p.id },
+            },
+            gh: {},
+            createdBy: { type: p.type, id: p.id },
+          })
+          .returning()
+      )[0];
+      if (!run) throw new ApiError(500, "insert_failed", "Could not create run");
+      await db.insert(runEvents).values({
+        orgId: p.orgId,
+        runId: run.id,
+        seq: 1,
+        type: "queued",
+        data: { queue: "runs.dispatch" },
+      });
+      await app.enqueue("runs.dispatch", { runId: run.id, orgId: p.orgId });
+      return redactRunSecrets(run);
+    },
+  );
+
+  // The distilled outcome of a run: terminal status plus the last assistant
+  // message. Lets a consulting agent (or the UI) read an answer without
+  // walking the whole event stream.
+  app.get(
+    "/v1/runs/:runId/result",
+    {
+      config: { permission: "runs:read" },
+      schema: {
+        params: IdParams,
+        response: {
+          200: z.object({
+            id: z.string(),
+            status: z.string(),
+            terminal: z.boolean(),
+            answer: z.string().nullable(),
+            error: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { runId } = request.params as { runId: string };
+      const run = await loadRun(p, runId);
+      const terminal = terminalStatus(run.status);
+      if (!terminal) {
+        return { id: run.id, status: run.status, terminal, answer: null, error: null };
+      }
+      const events = await db
+        .select()
+        .from(runEvents)
+        .where(and(eq(runEvents.orgId, p.orgId), eq(runEvents.runId, runId)))
+        .orderBy(desc(runEvents.seq))
+        .limit(500);
+      let answer: string | null = null;
+      let error: string | null = null;
+      for (const event of events) {
+        const data =
+          event.data && typeof event.data === "object"
+            ? (event.data as Record<string, unknown>)
+            : {};
+        if (!error && event.type === "result" && typeof data.error === "string") {
+          error = data.error;
+        }
+        if (!answer && event.type === "engine" && data.type === "assistant") {
+          const message =
+            data.message && typeof data.message === "object"
+              ? (data.message as { content?: unknown })
+              : {};
+          const content = Array.isArray(message.content) ? message.content : [];
+          const text = content
+            .map((part) =>
+              part && typeof part === "object" && (part as { type?: unknown }).type === "text"
+                ? String((part as { text?: unknown }).text ?? "")
+                : "",
+            )
+            .filter(Boolean)
+            .join("\n")
+            .trim();
+          if (text) answer = text.length > 20_000 ? text.slice(-20_000) : text;
+        }
+        if (answer && error) break;
+      }
+      return { id: run.id, status: run.status, terminal, answer, error };
+    },
+  );
+
   // Bare-id run access: org scope always; project-scoped keys are pinned to
   // their project (404 on anything else — no existence oracle).
   async function loadRun(p: ReturnType<typeof principal>, runId: string) {

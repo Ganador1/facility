@@ -205,7 +205,7 @@ export default async function ProjectOverviewPage({
             {proposals.slice(0, 5).map((proposal) => (
               <Link
                 key={proposal.id}
-                href={`/inbox?focus=${proposal.id}&projectId=${projectId}`}
+                href={`/projects/${projectId}/approvals?focus=${proposal.id}`}
                 className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
               >
                 <StatusDot tone="human" />
@@ -230,7 +230,7 @@ export default async function ProjectOverviewPage({
             {watchtower.slice(0, 5).map((issue) => (
               <Link
                 key={issue.id}
-                href="/inbox"
+                href={`/projects/${projectId}/approvals`}
                 className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
               >
                 <StatusDot tone="bad" />
@@ -335,7 +335,12 @@ export default async function ProjectOverviewPage({
                 </p>
               ) : (
                 signals.slice(0, 5).map((signal) => (
-                  <div key={`${signal.kind}-${signal.title}`} className="flex items-center gap-3">
+                  // lastSeen disambiguates repeated kind/title pairs (three
+                  // sandbox_lost signals are three rows, not one).
+                  <div
+                    key={`${signal.kind}-${signal.title}-${signal.lastSeen}`}
+                    className="flex items-center gap-3"
+                  >
                     <StatusDot tone={signal.severity === "info" ? "machine" : "bad"} />
                     <span className="text-[11.5px] text-(--dim)">{signal.kind}</span>
                     <span className="truncate text-[12.5px] text-(--mut)">{signal.title}</span>

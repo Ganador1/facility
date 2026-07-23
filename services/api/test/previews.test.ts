@@ -45,6 +45,7 @@ describe("SSO-protected preview sandboxes", async () => {
     publicUrl: "http://facility.test",
     sandboxApiUrl: "http://127.0.0.1:0",
     sandboxGatewayUrl: "http://127.0.0.1:0",
+    gatewayUrl: "http://localhost:4410",
     sandboxRunnerImage: "facility-runner:dev",
     sandboxDriver: "docker",
     facilityInsecureDev: true,

@@ -1,8 +1,10 @@
 import { newId } from "@facility/core";
 import {
+  actionTypes,
   ghIssues,
   githubInstallations,
   insertAuditEvent,
+  proposals,
   repos,
   runEvents,
   runs,
@@ -14,6 +16,7 @@ import { ApiError, notFound } from "../../errors.js";
 import { createGithubClientFactory } from "../../github/client.js";
 import { createGithubClientForRepo } from "../../github/kickstart.js";
 import { findAgentDef } from "../../github/router.js";
+import { classifyPipeline, PIPELINE_STAGES } from "../../pipeline.js";
 import {
   assertProjectScope,
   DateValue,
@@ -241,6 +244,99 @@ export async function registerGithubV1Routes(app: FastifyInstance, context: V1Ro
           rows.length > query.limit && page.at(-1)
             ? encodeIssueCursor(page.at(-1)?.ghUpdatedAt ?? null, page.at(-1)?.number ?? 0)
             : null,
+      };
+    },
+  );
+
+  // The pipeline as data: mirrored issues classified into stages with their
+  // current run, PRs, and gates. Server-side source of truth — the Product
+  // Owner reads this as a tool; the web can consume it too.
+  app.get(
+    "/v1/projects/:projectId/pipeline",
+    {
+      config: { permission: "runs:read" },
+      schema: {
+        params: IdParams,
+        response: {
+          200: z.object({
+            stages: z.array(
+              z.object({
+                key: z.string(),
+                label: z.string(),
+                sub: z.string(),
+                kind: z.string(),
+                count: z.number().int(),
+                issues: z.array(
+                  z.object({
+                    number: z.number().int(),
+                    title: z.string(),
+                    state: z.string(),
+                    htmlUrl: z.string().nullable(),
+                    runState: z.enum(["live", "failed"]).nullable(),
+                    currentRun: z
+                      .object({ id: z.string(), mode: z.string(), status: z.string() })
+                      .nullable(),
+                    prs: z.array(z.object({ number: z.number().int(), url: z.string() })),
+                  }),
+                ),
+              }),
+            ),
+          }),
+        },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { projectId } = request.params as { projectId: string };
+      assertProjectScope(p, projectId);
+      const rows = await db
+        .select()
+        .from(ghIssues)
+        .where(and(eq(ghIssues.orgId, p.orgId), eq(ghIssues.projectId, projectId)))
+        .orderBy(desc(ghIssues.ghUpdatedAt), desc(ghIssues.number));
+      const linkedRuns = await linkedRunsForIssues(
+        db,
+        p.orgId,
+        projectId,
+        rows.map((row) => row.number),
+      );
+      const openProposals = await db
+        .select({ payload: proposals.payload })
+        .from(proposals)
+        .innerJoin(actionTypes, eq(actionTypes.id, proposals.actionTypeId))
+        .where(
+          and(
+            eq(proposals.orgId, p.orgId),
+            eq(proposals.projectId, projectId),
+            eq(proposals.state, "open"),
+            eq(actionTypes.name, "plan_acceptance"),
+          ),
+        );
+      const proposalIssueNumbers = new Set<number>();
+      for (const proposal of openProposals) {
+        const value =
+          proposal.payload && typeof proposal.payload === "object"
+            ? (proposal.payload as { issueNumber?: unknown }).issueNumber
+            : undefined;
+        if (typeof value === "number") proposalIssueNumbers.add(value);
+      }
+      const staged = classifyPipeline(
+        rows.map((row) => ({
+          number: row.number,
+          title: row.title,
+          state: row.state,
+          htmlUrl: row.htmlUrl,
+          ghUpdatedAt: row.ghUpdatedAt,
+          closedAt: row.closedAt,
+          linkedRuns: linkedRuns.get(row.number) ?? [],
+        })),
+        proposalIssueNumbers,
+      );
+      return {
+        stages: PIPELINE_STAGES.map((stage) => {
+          const issues = staged.get(stage.key) ?? [];
+          return { ...stage, count: issues.length, issues };
+        }),
       };
     },
   );
