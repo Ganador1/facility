@@ -1,28 +1,22 @@
 "use client";
 
-import { Button } from "@facility/ui";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
+import { useEffect, useRef, useState } from "react";
+import { AskComposer } from "./ask-composer";
 import { AskPanel } from "./ask-panel";
 
-/** Pastes longer than this offer the intake path instead of a chat message. */
-const PASTE_INTAKE_CHARS = 1_500;
-
-type IntakeReceipt = { artifactId: string; runId: string | null };
-
 /**
- * The omnipresent ask bar: one input, on every project page. Questions go to
- * the in-process Product Owner; long pastes offer the governed intake path.
+ * The omnipresent floating host of the conversation composer: one input, on
+ * every project page, with the slide-up thread panel. The Product → Sessions
+ * tab renders the same composer in its own workspace, so the floating bar
+ * steps aside there (same rule tam-os applies on duplicate-input routes).
  */
 export function AskBar({ projectId }: { projectId: string }) {
-  const [value, setValue] = useState("");
+  const pathname = usePathname();
   const [panelOpen, setPanelOpen] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [pendingQuestion, setPendingQuestion] = useState<string | null>(null);
-  const [pendingPaste, setPendingPaste] = useState<string | null>(null);
-  const [intakeReceipt, setIntakeReceipt] = useState<IntakeReceipt | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const storageKey = `facility-ask-thread:${projectId}`;
 
@@ -51,83 +45,8 @@ export function AskBar({ projectId }: { projectId: string }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [panelOpen]);
 
-  const ask = useCallback(
-    async (question: string) => {
-      const body = question.trim();
-      if (!body || busy) return;
-      setBusy(true);
-      setError(null);
-      setIntakeReceipt(null);
-      try {
-        const response = await fetch(`/api/v1/projects/${projectId}/ask`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ body, ...(conversationId ? { conversationId } : {}) }),
-        });
-        const payload = (await response.json().catch(() => null)) as {
-          conversationId?: string;
-          runId?: string;
-          error?: { message?: string };
-        } | null;
-        if (!response.ok || !payload?.runId || !payload.conversationId) {
-          throw new Error(payload?.error?.message ?? `ask failed (${response.status})`);
-        }
-        setConversationId(payload.conversationId);
-        try {
-          sessionStorage.setItem(storageKey, payload.conversationId);
-        } catch {
-          // Best-effort thread persistence.
-        }
-        setActiveRunId(payload.runId);
-        setPendingQuestion(body);
-        setPanelOpen(true);
-        setValue("");
-        setPendingPaste(null);
-      } catch (askError) {
-        setError(askError instanceof Error ? askError.message : "ask failed");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [busy, conversationId, projectId, storageKey],
-  );
-
-  async function fileAsSignal(content: string) {
-    setBusy(true);
-    setError(null);
-    try {
-      const title = content
-        .split("\n")
-        .map((line) => line.trim())
-        .find(Boolean)
-        ?.slice(0, 80);
-      const response = await fetch(`/api/v1/projects/${projectId}/kb/intake`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          title: title || "Pasted material",
-          source: "pasted via ask bar",
-          bodyMd: content,
-          dispatch: true,
-        }),
-      });
-      const payload = (await response.json().catch(() => null)) as {
-        artifactId?: string;
-        runId?: string | null;
-        error?: { message?: string };
-      } | null;
-      if (!response.ok || !payload?.artifactId) {
-        throw new Error(payload?.error?.message ?? `intake failed (${response.status})`);
-      }
-      setIntakeReceipt({ artifactId: payload.artifactId, runId: payload.runId ?? null });
-      setPendingPaste(null);
-      setValue("");
-    } catch (intakeError) {
-      setError(intakeError instanceof Error ? intakeError.message : "intake failed");
-    } finally {
-      setBusy(false);
-    }
-  }
+  // The Sessions workspace owns the composer on its route — no duplicate input.
+  if (pathname.endsWith("/product/sessions")) return null;
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-4">
@@ -151,103 +70,29 @@ export function AskBar({ projectId }: { projectId: string }) {
             }}
           />
         ) : null}
-        {pendingPaste ? (
-          <div className="flex flex-wrap items-center gap-2 border border-(--line) bg-(--bg) px-3 py-2">
-            <span className="font-mono text-[11px] text-(--dim)">
-              {pendingPaste.length.toLocaleString()} chars pasted —
-            </span>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void fileAsSignal(pendingPaste)}
-            >
-              file as signal + backlog review
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void ask(pendingPaste)}
-            >
-              ask about it
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setPendingPaste(null)}>
-              dismiss
-            </Button>
-          </div>
-        ) : null}
-        {intakeReceipt ? (
-          <div className="flex flex-wrap items-center gap-2 border border-(--line) bg-(--bg) px-3 py-2 font-mono text-[11px] text-(--mut)">
-            filed as <span className="text-(--ink)">{intakeReceipt.artifactId}</span>
-            {intakeReceipt.runId ? (
-              <a
-                href={`/projects/${projectId}/sessions/${intakeReceipt.runId}`}
-                className="text-(--info,--mut) underline-offset-2 hover:underline"
-              >
-                backlog review run ↗
-              </a>
-            ) : null}
-            <button
-              type="button"
-              className="ml-auto text-(--dim) hover:text-(--ink)"
-              onClick={() => setIntakeReceipt(null)}
-            >
-              ×
-            </button>
-          </div>
-        ) : null}
-        {error ? (
-          <p className="border border-(--line) bg-(--bg) px-3 py-2 font-mono text-[11px] text-(--bad,--mut)">
-            {error}
-          </p>
-        ) : null}
-        <form
-          className="flex items-center gap-2 border border-(--line) bg-(--bg) px-3 py-2 shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void ask(value);
+        <div
+          onFocusCapture={() => {
+            if (conversationId || activeRunId) setPanelOpen(true);
           }}
         >
-          <span aria-hidden className="font-mono text-[12px] text-(--accent)">
-            ▸
-          </span>
-          <input
-            ref={inputRef}
-            // Plain search-style text input: the name/type plus the vendor
-            // ignore attributes keep password managers (1Password, LastPass,
-            // Bitwarden, browser autofill) from treating it as a credential.
-            type="text"
-            name="facility-ask-question"
-            inputMode="text"
-            autoComplete="off"
-            autoCorrect="off"
-            autoCapitalize="off"
-            spellCheck={false}
-            data-1p-ignore="true"
-            data-lpignore="true"
-            data-bwignore="true"
-            data-form-type="other"
-            aria-label="Ask the product owner"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-            onFocus={() => {
-              if (conversationId || activeRunId) setPanelOpen(true);
-            }}
-            onPaste={(event) => {
-              const pasted = event.clipboardData.getData("text");
-              if (pasted.length > PASTE_INTAKE_CHARS) {
-                event.preventDefault();
-                setPendingPaste(pasted);
+          <AskComposer
+            projectId={projectId}
+            conversationId={conversationId}
+            placeholder="chat with the digital product owner ( / to focus )"
+            inputRef={inputRef}
+            onTurnStarted={({ conversationId: nextId, runId, question }) => {
+              setConversationId(nextId);
+              try {
+                sessionStorage.setItem(storageKey, nextId);
+              } catch {
+                // Best-effort thread persistence.
               }
+              setActiveRunId(runId);
+              setPendingQuestion(question);
+              setPanelOpen(true);
             }}
-            placeholder="ask the product owner — or paste a transcript ( / to focus )"
-            className="min-w-0 flex-1 bg-transparent text-[13px] text-(--ink) outline-none placeholder:text-(--dim)"
           />
-          <Button size="sm" variant="outline" type="submit" disabled={busy || !value.trim()}>
-            {busy ? "…" : "ask"}
-          </Button>
-        </form>
+        </div>
       </div>
     </div>
   );

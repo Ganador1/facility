@@ -3,29 +3,22 @@ import { Suspense } from "react";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { ProductWorkspace } from "@/components/product/workspace";
 import { LiveRefresh } from "@/components/shell/live-refresh";
-import { api, untypedApi } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { KbDecision, KbEntry, KbSpace } from "@/lib/kb";
+import { ProductTabs } from "./tabs";
 
 export const metadata = { title: "product" };
 
 type IntakeTrigger = { type?: string; entryId?: string };
 
-export type ProductThread = {
-  id: string;
-  title: string | null;
-  kind?: string;
-  updatedAt?: string;
-};
-
 export default async function ProductPage({ params }: { params: Promise<{ projectId: string }> }) {
   const { projectId } = await params;
-  const [space, entries, decisions, runs, me, conversations] = await Promise.all([
+  const [space, entries, decisions, runs, me] = await Promise.all([
     api.kbSpace(projectId),
     api.kbEntries(projectId),
     api.kbDecisions(projectId),
     api.runs(projectId),
     api.me(),
-    untypedApi<ProductThread[]>("GET", `/v1/projects/${projectId}/conversations`),
   ]);
 
   if (!space.ok && space.offline) return <Offline />;
@@ -45,10 +38,6 @@ export default async function ProductPage({ params }: { params: Promise<{ projec
   const kbSpace = (space.ok ? space.data : { charterMd: "", activeMd: "" }) as KbSpace;
   const kbEntries = (entries.ok ? entries.data : []) as unknown as KbEntry[];
   const kbDecisions = (decisions.ok ? decisions.data : []) as unknown as KbDecision[];
-  // Assistant threads only — sandbox-conversation rows are agent plumbing.
-  const threads = (conversations.ok ? conversations.data : []).filter(
-    (thread) => thread.kind === "assistant",
-  );
 
   return (
     <div className="flex flex-col gap-8">
@@ -60,6 +49,8 @@ export default async function ProductPage({ params }: { params: Promise<{ projec
           the project's knowledge base — decisions, documentation, and the signals they came from
         </p>
       </div>
+
+      <ProductTabs />
 
       {!space.ok || !entries.ok ? (
         <ErrorNotice
@@ -73,7 +64,6 @@ export default async function ProductPage({ params }: { params: Promise<{ projec
             entries={kbEntries}
             decisions={kbDecisions}
             signalRuns={signalRuns}
-            threads={threads}
             canWrite={canWriteKb}
           />
         </Suspense>

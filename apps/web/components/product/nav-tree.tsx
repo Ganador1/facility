@@ -18,7 +18,6 @@ const EMPTY_HINTS: Record<string, string> = {
 export function NavTree({
   sections,
   decisions,
-  threads,
   selected,
   canWrite,
   onSelect,
@@ -26,7 +25,6 @@ export function NavTree({
 }: {
   sections: KbSection[];
   decisions: KbDecision[];
-  threads: { id: string; title: string | null; updatedAt?: string }[];
   selected: string;
   canWrite: boolean;
   onSelect: (doc: string) => void;
@@ -58,11 +56,11 @@ export function NavTree({
         className="border border-(--line) bg-(--bg-subtle) px-3 py-1.5 text-[12px] text-(--ink) outline-none placeholder:text-(--dim) focus:border-(--line-strong)"
       />
 
-      <div className="flex flex-col border border-(--line)">
+      <SectionBlock label="context" count={2}>
         {(
           [
-            { key: "charter", label: "charter" },
-            { key: "active", label: "active" },
+            { key: "charter", id: "CHARTER", label: "charter" },
+            { key: "active", id: "ACTIVE", label: "active" },
           ] as const
         ).map((pin) => (
           <button
@@ -70,14 +68,15 @@ export function NavTree({
             type="button"
             onClick={() => onSelect(pin.key)}
             className={cx(
-              "border-b border-(--line) px-4 py-2.5 text-left text-[12.5px] font-medium last:border-b-0 hover:bg-(--card)",
-              selected === pin.key ? "bg-(--card) text-(--ink)" : "text-(--mut)",
+              "flex items-baseline gap-2 px-2 py-1.5 text-left text-[12.5px] hover:text-(--ink)",
+              selected === pin.key ? "font-medium text-(--ink)" : "text-(--mut)",
             )}
           >
-            {pin.label}
+            <span className="shrink-0 font-mono text-[10.5px] text-(--dim)">{pin.id}</span>
+            <span className="min-w-0 truncate">{pin.label}</span>
           </button>
         ))}
-      </div>
+      </SectionBlock>
 
       {sections
         .filter((s) => !s.secondary)
@@ -115,29 +114,6 @@ export function NavTree({
             </SectionBlock>
           );
         })}
-
-      <SectionBlock label="conversations" count={threads.length}>
-        {threads.length === 0 ? (
-          <p className="px-2 py-1.5 text-[11.5px] italic text-(--dim)">
-            no threads yet — use the ask bar below
-          </p>
-        ) : (
-          threads.map((thread) => (
-            <button
-              key={thread.id}
-              type="button"
-              onClick={() => onSelect(`thread:${thread.id}`)}
-              title={thread.title ?? thread.id}
-              className={cx(
-                "flex items-baseline gap-2 px-2 py-1.5 text-left text-[12.5px] hover:text-(--ink)",
-                selected === `thread:${thread.id}` ? "font-medium text-(--ink)" : "text-(--mut)",
-              )}
-            >
-              <span className="min-w-0 truncate">{thread.title ?? "untitled thread"}</span>
-            </button>
-          ))
-        )}
-      </SectionBlock>
 
       {sections.some((s) => s.secondary) ? (
         <div className="flex flex-col gap-2">
