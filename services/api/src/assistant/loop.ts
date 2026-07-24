@@ -15,6 +15,7 @@ import { appendRunEvents } from "../sandbox/state.js";
 import type { AppConfig } from "../types.js";
 import { assistantSystemPrompt } from "./prompt.js";
 import { ASSISTANT_TOOLS } from "./tools.js";
+import { registerAssistantTurn, releaseAssistantTurn } from "./turn-registry.js";
 
 type Db = ReturnType<typeof createDb>["db"];
 
@@ -117,6 +118,7 @@ function toolSummary(name: string, payload: unknown): Record<string, unknown> {
   if (name === "intake_capture")
     return { artifactId: data.artifactId ?? null, runId: data.runId ?? null };
   if (name === "draft_task") return { taskId: data.id ?? null };
+  if (name === "propose_issue_update") return { proposalId: data.id ?? null };
   return {};
 }
 
@@ -124,6 +126,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<void>
   const { app, config, db, runId, orgId, projectId, conversationId } = input;
   const abort = new AbortController();
   turns.set(runId, abort);
+  const turnToken = registerAssistantTurn(runId);
   const timer = setTimeout(() => abort.abort(), WALL_CLOCK_MS);
   const emit = (type: string, data: Record<string, unknown>) =>
     appendRunEvents(db, orgId, runId, [{ type, data }]);
@@ -173,6 +176,10 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<void>
             : {}),
           ...(request.body === undefined ? {} : { "content-type": "application/json" }),
           "user-agent": `facility-assistant/${runId}`,
+          // In-process turn binding: lets proposal routes record the AGENT as
+          // requester (see assistant/turn-registry.ts). Worthless off-process.
+          "x-facility-assistant-run": runId,
+          "x-facility-assistant-token": turnToken,
         },
       });
       let parsed: unknown;
@@ -347,6 +354,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<void>
   } finally {
     clearTimeout(timer);
     turns.delete(runId);
+    releaseAssistantTurn(runId);
     if (virtualKeyId) await revokeRunKeys(db, { virtualKeyId }).catch(() => undefined);
     await writeUsageReceipt(db, orgId, runId).catch(() => undefined);
   }

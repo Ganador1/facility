@@ -51,6 +51,17 @@ export type Octokit = {
       listReviews?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
       listReviewComments?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
       listCommits?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
+      get?: (args: Record<string, unknown>) => Promise<{
+        data: {
+          number: number;
+          title: string;
+          body?: string | null;
+          state: string;
+          merged_at?: string | null;
+          html_url: string;
+          user?: { login?: string } | null;
+        };
+      }>;
     };
     issues: {
       create: (
@@ -67,6 +78,15 @@ export type Octokit = {
         args: Record<string, unknown>,
       ) => Promise<{ data: { id: number; html_url?: string } }>;
       listForRepo: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
+      listComments?: (args: Record<string, unknown>) => Promise<{
+        data: Array<{
+          id: number;
+          user?: { login?: string; type?: string } | null;
+          body?: string | null;
+          created_at: string;
+          html_url: string;
+        }>;
+      }>;
     };
     gitignore?: unknown;
   };
@@ -413,6 +433,57 @@ export class FacilityGithubClient {
       per_page: params.perPage,
     });
     return response.data;
+  }
+
+  async listIssueComments(number: number): Promise<
+    Array<{
+      id: number;
+      author: string;
+      authorType: string;
+      body: string;
+      createdAt: string;
+      url: string;
+    }>
+  > {
+    if (!this.octokit.rest.issues.listComments) return [];
+    const response = await this.octokit.rest.issues.listComments({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      issue_number: number,
+      per_page: 100,
+    });
+    return response.data.map((comment) => ({
+      id: comment.id,
+      author: comment.user?.login ?? "unknown",
+      authorType: comment.user?.type ?? "User",
+      body: comment.body ?? "",
+      createdAt: comment.created_at,
+      url: comment.html_url,
+    }));
+  }
+
+  async getPullRequest(number: number): Promise<{
+    number: number;
+    title: string;
+    body: string;
+    author: string;
+    url: string;
+    state: string;
+  }> {
+    if (!this.octokit.rest.pulls.get) throw new Error("GitHub PR reads are unavailable");
+    const response = await this.octokit.rest.pulls.get({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      pull_number: number,
+    });
+    return {
+      number: response.data.number,
+      title: response.data.title,
+      body: response.data.body ?? "",
+      author: response.data.user?.login ?? "unknown",
+      url: response.data.html_url,
+      state: response.data.merged_at ? "merged" : response.data.state,
+    };
   }
 
   async userCanWrite(username: string): Promise<boolean> {

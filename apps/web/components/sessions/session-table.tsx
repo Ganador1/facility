@@ -169,7 +169,7 @@ export function SessionTable({
                     <span className="flex items-center gap-3">
                       {row.issueNumber != null ? (
                         <Link
-                          href={`/projects/${row.projectId}/issues?stage=all`}
+                          href={`/projects/${row.projectId}/stories`}
                           className="font-mono text-[11px] text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
                           title="the issue this run works on"
                         >

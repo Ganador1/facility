@@ -81,13 +81,20 @@ export function IssueRow({
     <div className="flex flex-col gap-2 border-b border-(--line) px-5 py-4 last:border-b-0">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <span className="font-mono text-[11px] text-(--dim)">#{issue.number}</span>
+        <Link
+          href={`/projects/${projectId}/stories/${issue.number}`}
+          className="min-w-0 flex-1 truncate text-[13.5px] text-(--ink) underline-offset-4 hover:underline"
+        >
+          {issue.title}
+        </Link>
         <a
           href={issue.htmlUrl}
           target="_blank"
           rel="noreferrer"
-          className="min-w-0 flex-1 truncate text-[13.5px] text-(--ink) underline-offset-4 hover:underline"
+          title="open on GitHub"
+          className="font-mono text-[11px] text-(--dim) hover:text-(--ink)"
         >
-          {issue.title}
+          ↗
         </a>
         {issue.labels.slice(0, 3).map((label) => (
           <span

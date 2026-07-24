@@ -1,8 +1,9 @@
 import { can, PermissionSchema, validateProviderBaseUrl } from "@facility/core";
-import { projects, roles } from "@facility/db";
+import { projects, roles, runs } from "@facility/db";
 import { and, eq } from "drizzle-orm";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { verifyAssistantTurn } from "../../assistant/turn-registry.js";
 import { ApiError, notFound } from "../../errors.js";
 import type { AppConfig, Principal } from "../../types.js";
 
@@ -10,6 +11,57 @@ export type V1RouteContext = {
   db: FastifyInstance["facilityDb"];
   config: AppConfig;
 };
+
+export type ProposalOpener = {
+  actor: { type: string; id: string };
+  /** Extra provenance for the seq-1 open event (onBehalfOf when agent-opened). */
+  data: Record<string, unknown>;
+};
+
+/**
+ * Who opens a proposal: normally the calling principal — but when the request
+ * carries a valid in-process assistant-turn binding (headers set only by the
+ * loop, token never leaves this process), the AGENT run is the requester and
+ * the human stays a distinct approver by construction. Dual control then
+ * means "a human distinct from the proposing agent", which is the intended
+ * semantics for single-operator orgs. Fails closed: any mismatch falls back
+ * to the calling principal, keeping today's strictness for manual flows.
+ */
+export async function proposalOpener(
+  db: FastifyInstance["facilityDb"],
+  request: FastifyRequest,
+  p: Principal,
+): Promise<ProposalOpener> {
+  const human: ProposalOpener = { actor: { type: p.type, id: p.id }, data: {} };
+  const runId = singleHeader(request.headers["x-facility-assistant-run"]);
+  const token = singleHeader(request.headers["x-facility-assistant-token"]);
+  if (!runId || !token || !verifyAssistantTurn(runId, token)) return human;
+  const run = (
+    await db
+      .select({ mode: runs.mode, status: runs.status, createdBy: runs.createdBy })
+      .from(runs)
+      .where(and(eq(runs.orgId, p.orgId), eq(runs.id, runId)))
+      .limit(1)
+  )[0];
+  const createdBy = (run?.createdBy ?? null) as { type?: string; id?: string } | null;
+  if (
+    !run ||
+    run.mode !== "assistant" ||
+    run.status !== "running" ||
+    createdBy?.type !== p.type ||
+    createdBy?.id !== p.id
+  ) {
+    return human;
+  }
+  return {
+    actor: { type: "agent", id: runId },
+    data: { onBehalfOf: { type: p.type, id: p.id } },
+  };
+}
+
+function singleHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
 
 export const AnyObject = z.record(z.string(), z.unknown());
 export const IsoDateTime = z.string().refine((value) => Number.isFinite(Date.parse(value)), {

@@ -170,6 +170,36 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
     }),
   },
   {
+    name: "propose_issue_update",
+    description:
+      "Propose updating an EXISTING GitHub issue's title and body. Full replacement — read the current issue with get_issue first and carry forward everything that should stay. The proposal goes to the human Approvals queue and onto the issue's story timeline; GitHub is updated only after a human approves.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        issueNumber: { type: "integer", description: "GitHub issue number to update" },
+        title: str("the full new title"),
+        bodyMd: str("the full new body, markdown — a complete replacement"),
+        reason: str("why this update — cited signals/decisions (e.g. S004, D002)"),
+      },
+      required: ["issueNumber", "title", "bodyMd", "reason"],
+      additionalProperties: false,
+    },
+    toRequest: (a, ctx) => ({
+      method: "POST",
+      path: "/v1/proposals",
+      body: {
+        projectId: ctx.projectId,
+        actionType: "issue_update",
+        payload: {
+          issueNumber: Number(a.issueNumber ?? 0),
+          title: String(a.title ?? ""),
+          bodyMd: String(a.bodyMd ?? ""),
+        },
+        contextMd: `Issue update proposal for #${Number(a.issueNumber ?? 0)}: ${String(a.reason ?? "")}`,
+      },
+    }),
+  },
+  {
     name: "draft_task",
     description:
       "Draft a backlog task from an idea. Drafts are NOT issues yet — after drafting, use propose_task so a human can approve it into a GitHub issue.",

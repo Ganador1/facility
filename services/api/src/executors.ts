@@ -78,6 +78,7 @@ export type GitHubIssueClient = {
     labels: string[];
   }): Promise<{ number: number; url: string }>;
   addToBoard?(input: { org: string; number: number; issueUrl: string }): Promise<void>;
+  updateIssue?(input: { number: number; title: string; body: string }): Promise<void>;
 };
 
 type ExecuteApprovedProposalOptions = {
@@ -145,6 +146,8 @@ export async function executeApprovedProposal(
         throw new Error("plan_acceptance_executor_invalid");
       }
       await executePlanAcceptance(db, proposal, actor, executionOptions);
+    } else if (actionType.name === "issue_update") {
+      await executeIssueUpdate(db, proposal, executionOptions);
     } else if (actionType.name === "mcp_tool_call") {
       await executeMcpToolCall(db, proposal, actor, executionOptions);
     } else {
@@ -1890,6 +1893,46 @@ ${JSON.stringify(task.wsjf, null, 2)}
     );
 }
 
+/**
+ * Approved issue_update: full title+body replacement on the GitHub issue,
+ * plus an optimistic mirror update so the story page reflects the change
+ * before the issues webhook echoes it back.
+ */
+async function executeIssueUpdate(
+  db: Db,
+  proposal: typeof proposals.$inferSelect,
+  options: ExecuteApprovedProposalOptions,
+) {
+  const payload = objectOrEmpty(proposal.payload);
+  const issueNumber = typeof payload.issueNumber === "number" ? payload.issueNumber : Number.NaN;
+  const title = stringField(payload.title);
+  const bodyMd = stringField(payload.bodyMd);
+  if (!Number.isFinite(issueNumber) || !title || bodyMd == null) {
+    throw new Error("issue_update_payload_invalid");
+  }
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, proposal.orgId), eq(repos.projectId, proposal.projectId ?? "")))
+      .limit(1)
+  )[0];
+  if (!repo) throw new Error("issue_update_missing_repo");
+  const github = options.github ?? (await githubIssueClientForRepo(db, repo, options));
+  if (!github.updateIssue) throw new Error("issue_update_unsupported_client");
+  await github.updateIssue({ number: issueNumber, title, body: bodyMd });
+  await db
+    .update(ghIssues)
+    .set({ title, bodyMd, ghUpdatedAt: new Date(), updatedAt: new Date() })
+    .where(
+      and(
+        eq(ghIssues.orgId, proposal.orgId),
+        eq(ghIssues.repoId, repo.id),
+        eq(ghIssues.number, issueNumber),
+      ),
+    );
+}
+
 async function githubIssueClientForRepo(
   db: Db,
   repo: typeof repos.$inferSelect,
@@ -1924,6 +1967,9 @@ async function githubIssueClientForRepo(
         body: input.body,
         labels: input.labels,
       });
+    },
+    async updateIssue(input) {
+      await client.updateIssue(input.number, { title: input.title, body: input.body });
     },
   };
 }

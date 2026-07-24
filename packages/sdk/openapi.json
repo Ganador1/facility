@@ -11533,6 +11533,11 @@
                       "nullable": true,
                       "type": "string"
                     },
+                    "ghCreatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
                     "runs": {
                       "type": "array",
                       "items": {
@@ -11563,7 +11568,11 @@
                           "receipt": {
                             "nullable": true
                           },
-                          "pr": {}
+                          "pr": {},
+                          "triggeredBy": {
+                            "nullable": true,
+                            "type": "string"
+                          }
                         },
                         "required": [
                           "id",
@@ -11572,7 +11581,8 @@
                           "status",
                           "startedAt",
                           "endedAt",
-                          "receipt"
+                          "receipt",
+                          "triggeredBy"
                         ],
                         "additionalProperties": false
                       }
@@ -11592,6 +11602,7 @@
                     "closedAt",
                     "linkedRuns",
                     "bodyMd",
+                    "ghCreatedAt",
                     "runs"
                   ],
                   "additionalProperties": false
@@ -11684,6 +11695,209 @@
         "summary": "Get issue",
         "tags": [
           "GitHub"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "runs:read"
+      }
+    },
+    "/v1/projects/{projectId}/stories/{number}/github-activity": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "in": "path",
+            "name": "number",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "comments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "number"
+                          },
+                          "author": {
+                            "type": "string"
+                          },
+                          "bodyMd": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "author",
+                          "bodyMd",
+                          "createdAt",
+                          "url"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "prs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "number": {
+                            "type": "number"
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "bodyMd": {
+                            "type": "string"
+                          },
+                          "author": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "number",
+                          "title",
+                          "bodyMd",
+                          "author",
+                          "url",
+                          "state"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "comments",
+                    "prs"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getProjectsByProjectIdStoriesByNumberGithubActivity",
+        "summary": "List github activity",
+        "tags": [
+          "Projects"
         ],
         "security": [
           {
@@ -16992,6 +17206,9 @@
                   "actionTypeId": {
                     "type": "string"
                   },
+                  "actionType": {
+                    "type": "string"
+                  },
                   "payload": {
                     "type": "object",
                     "additionalProperties": {}
@@ -17004,7 +17221,6 @@
                   }
                 },
                 "required": [
-                  "actionTypeId",
                   "payload",
                   "contextMd"
                 ]

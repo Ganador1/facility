@@ -799,6 +799,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/stories/{number}/github-activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List github activity */
+        get: operations["getProjectsByProjectIdStoriesByNumberGithubActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/issues/sync": {
         parameters: {
             query?: never;
@@ -8701,6 +8718,8 @@ export interface operations {
                             pr?: unknown;
                         }[];
                         bodyMd: string | null;
+                        /** Format: date-time */
+                        ghCreatedAt: string | null;
                         runs: {
                             id: string;
                             mode: string;
@@ -8712,6 +8731,118 @@ export interface operations {
                             endedAt: string | null;
                             receipt: unknown;
                             pr?: unknown;
+                            triggeredBy: string | null;
+                        }[];
+                    };
+                };
+            };
+            /** @description The request is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication is required or invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The authenticated principal lacks the required permission. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The requested resource was not found or is outside the principal scope. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request conflicts with current resource state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request rate limit was exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error occurred. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A required service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    getProjectsByProjectIdStoriesByNumberGithubActivity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                projectId: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Default Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        comments: {
+                            id: number;
+                            author: string;
+                            bodyMd: string;
+                            createdAt: string;
+                            url: string;
+                        }[];
+                        prs: {
+                            number: number;
+                            title: string;
+                            bodyMd: string;
+                            author: string;
+                            url: string;
+                            state: string;
                         }[];
                     };
                 };
@@ -11815,7 +11946,8 @@ export interface operations {
                 "application/json": {
                     projectId?: string;
                     runId?: string;
-                    actionTypeId: string;
+                    actionTypeId?: string;
+                    actionType?: string;
                     payload: {
                         [key: string]: unknown;
                     };

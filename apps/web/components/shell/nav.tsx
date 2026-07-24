@@ -34,7 +34,7 @@ export function projectNav(projectId: string, inboxCount?: number): NavItem[] {
       label: "Product",
       sub: "decisions & docs — the project's knowledge base",
     },
-    { href: `${base}/issues`, label: "Pipeline", sub: "issues by stage" },
+    { href: `${base}/stories`, label: "Stories", sub: "the story of every unit of work" },
     { href: `${base}/sessions`, label: "Runs", sub: "agent work on this project" },
     {
       href: `${base}/approvals`,
