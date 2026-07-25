@@ -10,6 +10,7 @@ one coherent change, explicit verification, and human review before merge.
 - Open an issue before implementing a substantial or behavior-changing feature
   so its contract can be agreed on first.
 - Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+- Be decent to each other — see the [code of conduct](CODE_OF_CONDUCT.md).
 
 ## What belongs in this tracker
 
