@@ -37,3 +37,11 @@ allowBuilds:
   cpu-features: false
   protobufjs: false
   ssh2: false
+
+# brace-expansion OOM advisory (GHSA-mh99-v99m-4gvg): only patched in v5; v5's CJS export is
+# an object, incompatible with minimatch@3's callable import (docusaurus dev
+# server chain, dev-only). The 1.x/2.x lines are pinned to their own latest.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-mh99-v99m-4gvg
+
