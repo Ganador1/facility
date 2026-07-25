@@ -11,6 +11,18 @@ one coherent change, explicit verification, and human review before merge.
   so its contract can be agreed on first.
 - Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
+## What belongs in this tracker
+
+This repository is public: issues, pull requests, comments and CI logs are all
+visible. Keep the tracker to **product-technical work** — a bug, a capability,
+a design question about how Facility behaves — written so that a contributor
+who has never met the maintainers can act on it.
+
+Deployment plans, customer or pilot names, deadlines, private infrastructure
+and commercial strategy do not belong here, even when they motivate the work.
+When private context drives a public change, the public issue states the
+technical problem on its own terms and the private tracker links to it.
+
 ## Set up the repository
 
 The monorepo requires Node.js 22 or newer and pnpm 11. Docker is required for

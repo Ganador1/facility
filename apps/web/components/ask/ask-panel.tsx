@@ -152,7 +152,7 @@ export function AskPanel({
               </div>
             ) : null}
             {/* The user must always see the question was received — before the
-                first event lands, "thinking" holds the line (tam-os pattern). */}
+                first event lands, "thinking" holds the line. */}
             {turn.status || !turn.text ? (
               <p className="flex items-center gap-2 font-mono text-[11px] text-(--dim)">
                 <StatusDot tone="agent" pulse />
