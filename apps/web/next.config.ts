@@ -7,6 +7,9 @@ const monorepoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // Dev via the external tunnel: Next 16 blocks cross-origin dev requests
+  // (HMR websocket, RSC fetches) unless the origin is allow-listed.
+  allowedDevOrigins: ["javi.theagilemonkeys.dev"],
   // Monorepo: tell Turbopack and the standalone tracer where the root is.
   turbopack: { root: monorepoRoot },
   outputFileTracingRoot: monorepoRoot,

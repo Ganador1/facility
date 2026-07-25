@@ -1,4 +1,5 @@
 import { PillTag } from "@facility/ui";
+import { SignOutButton } from "@/components/shell/sign-out";
 import { ProjectSwitcher } from "@/components/shell/switcher";
 import type { Me, Project } from "@/lib/api";
 
@@ -21,11 +22,7 @@ export function Topbar({
       <div className="flex items-center gap-4">
         <span className="hidden text-[11px] font-medium text-(--dim) xl:inline">⌘K</span>
         <span className="font-mono text-[11px] text-(--dim)">{me.principal.email}</span>
-        <form action="/api/auth/logout" method="post">
-          <button type="submit" className="text-[12px] font-medium text-(--mut) hover:text-(--ink)">
-            sign out
-          </button>
-        </form>
+        <SignOutButton />
       </div>
     </header>
   );
