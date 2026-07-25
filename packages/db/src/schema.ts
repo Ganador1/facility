@@ -24,13 +24,32 @@ const timestamps = {
 
 export const users = pgTable("users", {
   id: text("id").primaryKey(),
-  workosUserId: text("workos_user_id").unique(),
   email: text("email").notNull().unique(),
   name: text("name"),
   avatarUrl: text("avatar_url"),
   status: text("status").notNull().default("active"),
   ...timestamps,
 });
+
+export const userIdentities = pgTable(
+  "user_identities",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    provider: text("provider").notNull(),
+    providerSubject: text("provider_subject").notNull(),
+    login: text("login"),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    ...timestamps,
+  },
+  (table) => [
+    unique("user_identities_provider_subject_uidx").on(table.provider, table.providerSubject),
+    unique("user_identities_user_provider_uidx").on(table.userId, table.provider),
+    index("user_identities_user_idx").on(table.userId),
+  ],
+);
 
 export const orgs = pgTable("orgs", {
   id: text("id").primaryKey(),
@@ -135,11 +154,35 @@ export const githubInstallations = pgTable("github_installations", {
     .notNull()
     .references(() => orgs.id),
   installationId: bigint("installation_id", { mode: "number" }).notNull().unique(),
+  accountId: bigint("account_id", { mode: "number" }).notNull().default(0),
   accountLogin: text("account_login").notNull(),
   targetType: text("target_type").notNull(),
   suspendedAt: timestamp("suspended_at", { withTimezone: true }),
   ...timestamps,
 });
+
+/** Encrypted persistence used by the per-instance OAuth authorization server. */
+export const oauthArtifacts = pgTable(
+  "oauth_artifacts",
+  {
+    model: text("model").notNull(),
+    idHash: text("id_hash").notNull(),
+    payload: text("payload").notNull(),
+    grantIdHash: text("grant_id_hash"),
+    userCodeHash: text("user_code_hash"),
+    uidHash: text("uid_hash"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    primaryKey({ columns: [table.model, table.idHash] }),
+    index("oauth_artifacts_grant_idx").on(table.grantIdHash),
+    index("oauth_artifacts_user_code_idx").on(table.userCodeHash),
+    index("oauth_artifacts_uid_idx").on(table.uidHash),
+    index("oauth_artifacts_expiry_idx").on(table.expiresAt),
+  ],
+);
 
 export const repos = pgTable(
   "repos",
@@ -898,7 +941,7 @@ export const previewSandboxes = pgTable(
     driver: text("driver").notNull(),
     ref: text("ref"),
     status: text("status").notNull().default("provisioning"),
-    authMode: text("auth_mode").notNull().default("workos_sso"),
+    authMode: text("auth_mode").notNull().default("facility_session"),
     originUrl: text("origin_url"),
     config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
     error: text("error"),
@@ -918,7 +961,7 @@ export const previewSandboxes = pgTable(
       "preview_sandboxes_status_check",
       sql`${table.status} in ('provisioning', 'running', 'failed', 'expired', 'destroyed')`,
     ),
-    check("preview_sandboxes_auth_check", sql`${table.authMode} = 'workos_sso'`),
+    check("preview_sandboxes_auth_check", sql`${table.authMode} = 'facility_session'`),
     check("preview_sandboxes_driver_check", sql`${table.driver} in ('docker', 'aws')`),
   ],
 );

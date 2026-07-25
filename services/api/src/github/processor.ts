@@ -31,7 +31,11 @@ import { renderGithubRunProgress } from "./run-progress.js";
 
 type WebhookPayload = TriggerPayload & {
   action?: string;
-  installation?: { id?: number; account?: { login?: string; type?: string }; target_type?: string };
+  installation?: {
+    id?: number;
+    account?: { id?: number; login?: string; type?: string };
+    target_type?: string;
+  };
   repositories?: {
     full_name?: string;
     name?: string;
@@ -164,8 +168,9 @@ async function processInstallation(
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
   const installationId = payload.installation?.id;
+  const accountId = payload.installation?.account?.id;
   const accountLogin = payload.installation?.account?.login;
-  if (!installationId || !accountLogin) return;
+  if (!installationId || !accountId || !accountLogin) return;
   const row = (
     await db
       .insert(githubInstallations)
@@ -173,6 +178,7 @@ async function processInstallation(
         id: newId("int"),
         orgId,
         installationId,
+        accountId,
         accountLogin,
         targetType:
           payload.installation?.target_type ??
@@ -184,6 +190,7 @@ async function processInstallation(
         target: githubInstallations.installationId,
         set: {
           accountLogin,
+          accountId,
           targetType:
             payload.installation?.target_type ??
             payload.installation?.account?.type ??

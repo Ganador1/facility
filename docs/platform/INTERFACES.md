@@ -15,7 +15,7 @@ curl --fail http://localhost:4420/healthz
 
 The MCP container listens on `4420`. For a public deployment set
 `MCP_PUBLIC_URL`, `MCP_ALLOWED_HOSTS`, and `MCP_AUTHORIZATION_SERVER`, terminate
-TLS at the edge, and configure the API's WorkOS issuer/audience settings. Set
+TLS at the edge, and configure GitHub/OIDC login plus the instance OAuth issuer. Set
 `MCP_TRUST_PROXY_HOPS` to the exact trusted proxy count when applicable; its
 default `0` ignores spoofable forwarded addresses. A non-loopback MCP bind fails
 closed unless a trusted authority is configured.

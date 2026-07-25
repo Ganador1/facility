@@ -992,7 +992,7 @@ async function requestConfiguredPreview(
     actor: { type: "agent", id: run.id },
     action: "preview.requested",
     target: { type: "preview", id: created.id },
-    payload: { runId: run.id, repoId: repo.id, prNumber, commitSha, auth_mode: "workos_sso" },
+    payload: { runId: run.id, repoId: repo.id, prNumber, commitSha, auth_mode: "facility_session" },
   });
 }
 

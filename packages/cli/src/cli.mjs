@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { init } from "./init.mjs";
 import { addModule } from "./add.mjs";
 import { doctor } from "./doctor.mjs";
+import { bootstrapInstance } from "./instance.mjs";
 import { runPlatformCommand } from "./platform.mjs";
 import { banner, bold, dim, item } from "./ui.mjs";
 
@@ -67,6 +68,7 @@ function help() {
     ["catalog", "discover engines, models, permissions, and triggers"],
   ]);
   helpGroup("Platform administration", [
+    ["instance bootstrap", "bootstrap a dedicated Facility instance"],
     ["org", "organization settings"],
     ["members", "organization membership"],
     ["roles", "permission policy"],
@@ -136,6 +138,10 @@ export async function main(argv) {
     }
     case "doctor":
       return doctor(flags, version);
+    case "instance":
+      if (positional[0] === "bootstrap") return bootstrapInstance(flags);
+      console.error("Usage: facility instance bootstrap [options]");
+      return 1;
     case "login":
     case "logout":
     case "profiles":
@@ -226,6 +232,20 @@ function validateLocalFlags(command, flags) {
       "json",
       "help",
     ]),
+    instance: new Set([
+      "org-name",
+      "org-slug",
+      "owner-email",
+      "owner-name",
+      "github-user-id",
+      "github-login",
+      "github-account-id",
+      "github-installation-id",
+      "github-account-login",
+      "github-account-type",
+      "json",
+      "help",
+    ]),
   }[command];
   if (!allowed) return null;
   const unknown = Object.keys(flags).filter((flag) => !allowed.has(flag));
@@ -235,7 +255,9 @@ function validateLocalFlags(command, flags) {
   const valueNames =
     command === "doctor"
       ? ["dir", "profile", "url", "key", "timeout"]
-      : command === "init"
+      : command === "instance"
+        ? [...allowed].filter((name) => !["json", "help"].includes(name))
+        : command === "init"
         ? [
             "dir",
             "branch",

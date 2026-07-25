@@ -77,7 +77,7 @@ describe("learning evidence packet", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `learning-${Date.now()}@example.com` },
     });
     orgId = login.json().orgId;

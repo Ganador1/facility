@@ -60,7 +60,7 @@ describe("sandbox docker e2e", () => {
     await app.listen({ port, host: "0.0.0.0" });
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `sandbox-e2e-${Date.now()}@example.com` },
     });
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");

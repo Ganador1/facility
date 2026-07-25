@@ -38,6 +38,11 @@ variable "api_hostname" {
   type        = string
 }
 
+variable "mcp_hostname" {
+  description = "Public hostname for the Facility MCP resource server."
+  type        = string
+}
+
 variable "route53_zone_id" {
   description = "Optional Route53 hosted zone ID. When set, app/api alias records are created."
   type        = string
@@ -56,10 +61,26 @@ variable "enable_cloudfront_api_endpoint" {
   default     = false
 }
 
-variable "enable_workos" {
-  description = "Inject WorkOS secrets into API, worker, gateway, and migrate tasks. Disable only for a non-interactive validation deployment."
-  type        = bool
-  default     = true
+variable "auth_identity_provider" {
+  description = "Upstream human identity mode: github for direct self-hosted OAuth, oidc for the commercial broker."
+  type        = string
+  default     = "github"
+  validation {
+    condition     = contains(["github", "oidc"], var.auth_identity_provider)
+    error_message = "auth_identity_provider must be github or oidc."
+  }
+}
+
+variable "oidc_issuer" {
+  description = "Commercial identity broker issuer when auth_identity_provider is oidc."
+  type        = string
+  default     = ""
+}
+
+variable "facility_instance_id" {
+  description = "Stable SaaS instance identifier required by the commercial OIDC broker."
+  type        = string
+  default     = ""
 }
 
 variable "enable_dev_provider_fallback" {
@@ -117,6 +138,7 @@ variable "container_image_tags" {
     worker  = string
     gateway = string
     web     = string
+    mcp     = string
     runner  = string
   })
   default = {
@@ -124,6 +146,7 @@ variable "container_image_tags" {
     worker  = "latest"
     gateway = "latest"
     web     = "latest"
+    mcp     = "latest"
     runner  = "latest"
   }
 }
@@ -169,6 +192,12 @@ variable "web_desired_count" {
   default     = 2
 }
 
+variable "mcp_desired_count" {
+  description = "Desired ECS task count for the public MCP service."
+  type        = number
+  default     = 2
+}
+
 variable "target_deregistration_delay_seconds" {
   description = "Seconds ALB target groups wait for in-flight requests before completing an ECS rollout. Keep the 300-second default for normal production traffic; validation stacks may use a shorter value."
   type        = number
@@ -187,6 +216,7 @@ variable "task_cpu" {
     worker  = number
     gateway = number
     web     = number
+    mcp     = number
     runner  = number
     migrate = number
   })
@@ -195,6 +225,7 @@ variable "task_cpu" {
     worker  = 512
     gateway = 512
     web     = 512
+    mcp     = 256
     runner  = 1024
     migrate = 512
   }
@@ -207,6 +238,7 @@ variable "task_memory" {
     worker  = number
     gateway = number
     web     = number
+    mcp     = number
     runner  = number
     migrate = number
   })
@@ -215,15 +247,10 @@ variable "task_memory" {
     worker  = 1024
     gateway = 1024
     web     = 1024
+    mcp     = 512
     runner  = 2048
     migrate = 1024
   }
-}
-
-variable "mcp_oauth_audience" {
-  type        = string
-  default     = ""
-  description = "Expected `aud` for WorkOS OAuth access tokens. Set (with WORKOS_AUTHKIT_DOMAIN) to enable interactive-client OAuth 2.1 on the MCP resource server; empty leaves MCP on fak_ API keys only."
 }
 
 variable "envelope_retention_days" {

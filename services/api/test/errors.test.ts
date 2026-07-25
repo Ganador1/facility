@@ -43,12 +43,12 @@ describe("sendError", () => {
     const { reply, captured } = fakeReply();
     sendError(
       reply,
-      new ApiError(501, "workos_unconfigured", "WorkOS login is not configured", undefined, true),
+      new ApiError(501, "auth_unconfigured", "Login is not configured", undefined, true),
     );
     expect(captured.status).toBe(501);
     expect(captured.body?.error).toEqual({
-      code: "workos_unconfigured",
-      message: "WorkOS login is not configured",
+      code: "auth_unconfigured",
+      message: "Login is not configured",
     });
   });
 });

@@ -424,7 +424,7 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
   );
 
   // The global clone token is a dev / single-tenant convenience. In a
-  // production-serious deployment (dev-login off, !facilityInsecureDev) it would
+  // production-serious deployment (no internal test session, !facilityInsecureDev) it would
   // let any tenant clone an arbitrary repo they named with a shared token, so it
   // is refused there — a repo needs a real GitHub App installation instead. This
   // mirrors the doctor's production posture and the gateway's dev-key fallback.

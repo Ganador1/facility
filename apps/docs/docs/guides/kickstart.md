@@ -26,7 +26,7 @@ From zero to a working factory:
    external deployment adapter. For a native preview, provide an immutable
    image, optional command, internal port, readiness path, and TTL. Add
    `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
-   `FACILITY_PREVIEW_KEY` to the repo. In production, WorkOS SSO must be fully
+   `FACILITY_PREVIEW_KEY` to the repo. In production, interactive GitHub/OIDC login must be fully
    configured before Facility accepts preview creation. The private origin is
    never returned to callers.
 7. **Merge it.** That's Gate 2 muscle memory from day zero. Validate the live

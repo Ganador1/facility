@@ -117,7 +117,7 @@ node /absolute/path/to/facility/packages/cli/bin/facility.mjs init \
 
 Configure `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
 `FACILITY_PREVIEW_KEY` in GitHub. Production Facility deployments must have a
-complete WorkOS SSO configuration or preview creation fails closed. The review
+complete GitHub/OIDC login configuration or preview creation fails closed. The review
 image must already exist; Facility does not build application images.
 
 After installation, follow the human-only steps printed by the CLI: configure
@@ -132,8 +132,11 @@ See the [CLI reference](apps/docs/docs/reference/cli.md) and
 
 ## Quick start: self-host the platform
 
-For local evaluation, you need Docker, Node.js 22 or newer, and pnpm 11.
-One command prepares the repository and runs the complete development stack:
+Running Facility locally takes one command for the stack plus a one-time GitHub
+App setup for sign-in and repository automation. You need Docker, Node.js 22 or
+newer, and pnpm 11 (via corepack).
+
+### 1. Clone and boot the stack
 
 ```bash
 git clone https://github.com/theam/facility.git
@@ -143,21 +146,113 @@ pnpm dev
 ```
 
 `pnpm dev` creates `.env` when needed, fills only blank required development
-values, starts Postgres and MinIO, installs dependencies, builds shared
-packages, migrates and seeds the database, then launches the API, worker,
-gateway, web app, and documentation site. Existing `.env` values are never
-replaced. Because the command seeds development data, it refuses a non-local
-`DATABASE_URL`.
+values (including `SECRET_MASTER_KEY` and the MCP signing keys), starts
+Postgres and MinIO, installs dependencies, builds shared packages, migrates and
+seeds platform essentials, then launches the API (`:4400`), worker, gateway
+(`:4410`), web app (`:3400`), and documentation site. Existing `.env` values
+are never replaced, and the command refuses a non-local `DATABASE_URL`.
 
-Open `http://localhost:3400` and use the development sign-in. Ctrl-C stops the
-foreground development processes; the Docker infrastructure remains available
-for the next `pnpm dev`.
+The stack is now up, but sign-in answers `501 auth_unconfigured` until you
+finish the steps below.
 
-To delegate setup to Claude Code or Codex, paste this prompt:
+### 2. Create the GitHub App
 
-> Set up and launch Facility from this repository. Run `pnpm dev`, fix
-> prerequisite errors without replacing existing `.env` values, wait for the
-> services to be ready, then report their local URLs.
+Facility uses one GitHub App per instance for BOTH human sign-in and
+repository automation. Create it on the organization (or user account) that
+owns the repositories you will automate: **Settings → Developer settings →
+GitHub Apps → New GitHub App**.
+
+- **GitHub App name / Homepage URL**: anything you like.
+- **Callback URL**: `http://localhost:3400/api/auth/callback` — it must match
+  `AUTH_CALLBACK_URL` in `.env` exactly, byte for byte.
+- Check **"Request user authorization (OAuth) during installation"**.
+- **Webhook**: optional for local evaluation — you can disable it and use the
+  "sync from GitHub" button instead. To receive events locally, point it at a
+  public tunnel that forwards to `http://localhost:4400/webhooks/github` and
+  set a webhook secret.
+- **Permissions**:
+
+  | Scope | Permission | Access |
+  |---|---|---|
+  | Repository | Actions, Checks, Deployments, Metadata | Read-only |
+  | Repository | Contents, Workflows | Read and write |
+  | Repository | Issues, Pull requests | Read and write |
+  | Organization | Members | Read-only |
+  | **Account** | **Email addresses** | **Read-only — required for sign-in** |
+
+  Sign-in verifies your GitHub account's verified email; without the Email
+  addresses permission every login fails with a generic
+  `auth_failed` error.
+- **Subscribe to events** (only if the webhook is enabled): Installation,
+  Push, Issues, Issue comment, Pull request, Pull request review, Workflow
+  run, Check run, Deployment status.
+
+### 3. Collect the App credentials
+
+From the App's **General** tab:
+
+1. Note the **App ID** and the **Client ID**.
+2. **Client secrets → Generate a new client secret** — copy it immediately,
+   GitHub shows it once.
+3. **Private keys → Generate a private key** — a `.pem` file downloads.
+4. **Install App** (left sidebar) on your organization/account, selecting the
+   repositories Facility may automate. Note the **installation id** — it is
+   the number at the end of the installation page URL
+   (`…/settings/installations/<id>`).
+
+### 4. Configure `.env`
+
+Fill these values (everything else was auto-filled by `pnpm dev`):
+
+```dotenv
+# Human sign-in (the App acts as the OAuth provider)
+AUTH_IDENTITY_PROVIDER=github
+AUTH_CALLBACK_URL=http://localhost:3400/api/auth/callback
+GITHUB_OAUTH_CLIENT_ID=<Client ID from step 3>
+GITHUB_OAUTH_CLIENT_SECRET=<client secret from step 3>
+
+# Repository automation (the same App)
+GITHUB_APP_ID=<App ID from step 3>
+GITHUB_APP_SLUG=<the app slug from its URL>
+GITHUB_APP_PRIVATE_KEY="<contents of the .pem, kept as a quoted multiline value>"
+GITHUB_APP_WEBHOOK_SECRET=<only if you enabled the webhook>
+
+# Model provider for local development (or store credentials via the API later)
+DEV_ANTHROPIC_API_KEY=<your key>
+```
+
+Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` together — the
+configuration refuses one without the other.
+
+### 5. Bind the instance and provision yourself
+
+Every instance is dedicated to one Facility organization, one GitHub account,
+and one App installation, and sign-in only admits explicitly provisioned
+members. Bootstrap that binding once:
+
+```bash
+# Find your ids:
+#   your user id:          gh api /user --jq .id
+#   the account id:        gh api /orgs/<org> --jq .id   (or /users/<login> for a personal account)
+#   the installation id:   from step 3.4
+
+pnpm exec facility instance bootstrap \
+  --org-name "My Org" --org-slug my-org \
+  --owner-email you@example.com --owner-name "Your Name" \
+  --github-user-id <your user id> --github-login <your login> \
+  --github-account-id <account id> --github-account-login <org-or-user login> \
+  --github-installation-id <installation id> \
+  --github-account-type organization
+```
+
+The command connects to the local database, is idempotent for the same
+binding, and refuses to modify a database bound to a different instance.
+
+### 6. Sign in
+
+Restart `pnpm dev` (configuration is read at boot), open
+`http://localhost:3400`, and press **continue with GitHub**. GitHub asks you
+to authorize the App once; you land back in Facility with a session.
 
 To run agents in local Docker sandboxes, also build the runner image named in
 `.env`:
@@ -166,10 +261,27 @@ To run agents in local Docker sandboxes, also build the runner image named in
 docker build -t facility-runner:dev runner/
 ```
 
-Your first real setup steps are to add model-provider credentials, configure a
-GitHub App, create a project, connect a repository, preview the generated files,
-and let Facility open the kickstart PR. Follow the
+To delegate all of this to Claude Code or Codex, paste this prompt:
+
+> Set up and launch Facility from this repository. Run `pnpm dev`, fix
+> prerequisite errors without replacing existing `.env` values, wait for the
+> services to be ready, then report their local URLs.
+
+### Troubleshooting sign-in
+
+| Symptom | Cause and fix |
+|---|---|
+| `501 auth_unconfigured` on `/api/auth/login` | `GITHUB_OAUTH_CLIENT_ID`/`SECRET` missing — set both and restart. |
+| GitHub shows a `redirect_uri` mismatch page | The App's Callback URL and `AUTH_CALLBACK_URL` differ — they must match exactly. |
+| `auth_failed: GitHub identity or installation access could not be verified` | The App lacks the **Email addresses: Read-only** account permission, or your verified GitHub email is unavailable. Fix the permission and re-authorize. |
+| `403 not_invited` / `installation_access_required` | Your GitHub user is not provisioned, or the user/account/installation ids in the bootstrap don't match — re-run step 5 with the real ids. |
+| Login succeeds but you land on the wrong host | `WEB_URL` must be the origin your browser uses. |
+| Testing through an HTTPS tunnel: assets/RSC/HMR fail | Set `WEB_URL` and `AUTH_CALLBACK_URL` to the tunnel origin (and the App's Callback URL to match), and add the tunnel hostname to `allowedDevOrigins` in `apps/web/next.config.ts` — Next blocks cross-origin dev requests otherwise. |
+
+Your next steps are to create a project, connect a repository, preview the
+generated files, and let Facility open the kickstart PR. Follow the
 [self-host quickstart](apps/docs/docs/self-host/quickstart.md),
+[authentication guide](apps/docs/docs/self-host/authentication.md),
 [production deployment guide](apps/docs/docs/self-host/production.md), and
 [kickstart guide](apps/docs/docs/guides/kickstart.md).
 
@@ -261,7 +373,7 @@ The web app currently covers projects, agents, sessions and live steering,
 issues, Project Owner knowledge, the human inbox, harness items, analytics,
 audit, integrations, providers, API keys, budgets, and members. The REST API is
 the complete platform surface, with focused subsets exposed through the CLI and
-MCP. Production deployments require WorkOS for human SSO and a separately
+MCP. Production deployments use GitHub directly or the SaaS OIDC broker for human login and a separately
 configured GitHub App for repository automation.
 
 The [architecture document](docs/platform/ARCHITECTURE.md) describes the

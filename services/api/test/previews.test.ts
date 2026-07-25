@@ -6,7 +6,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import {
-  assertPreviewSso,
+  assertPreviewSession,
   createPreviewRecord,
   destroyPreview,
   provisionPreview,
@@ -63,7 +63,7 @@ describe("SSO-protected preview sandboxes", async () => {
     await app.ready();
     const login = await app.inject({
       method: "POST",
-      url: "/auth/dev-login",
+      url: "/__test/session",
       payload: { email: `preview-${Date.now()}@example.com` },
     });
     orgId = login.json().orgId;
@@ -95,12 +95,12 @@ describe("SSO-protected preview sandboxes", async () => {
       orgId,
       permissions: ["runs:read"],
     };
-    expect(() => assertPreviewSso(config, { ...user, type: "key" })).toThrowError(
-      expect.objectContaining({ code: "preview_sso_required", statusCode: 403 }),
+    expect(() => assertPreviewSession(config, { ...user, type: "key" })).toThrowError(
+      expect.objectContaining({ code: "preview_session_required", statusCode: 403 }),
     );
-    expect(() => assertPreviewSso({ ...config, facilityInsecureDev: false }, user)).toThrowError(
-      expect.objectContaining({ code: "preview_sso_unavailable", statusCode: 503 }),
-    );
+    expect(() =>
+      assertPreviewSession({ ...config, facilityInsecureDev: false }, user),
+    ).toThrowError(expect.objectContaining({ code: "preview_auth_unavailable", statusCode: 503 }));
   });
 
   it("provisions a private origin, exposes only the SSO proxy URL, and destroys on demand", async () => {
@@ -152,7 +152,7 @@ describe("SSO-protected preview sandboxes", async () => {
       expect(provisioned).toMatchObject({
         id: preview.id,
         status: "running",
-        authMode: "workos_sso",
+        authMode: "facility_session",
         originUrl: `http://127.0.0.1:${address.port}`,
         config: expect.objectContaining({ readinessPath: "/healthz" }),
         commitSha: "abc123def456",
@@ -167,7 +167,7 @@ describe("SSO-protected preview sandboxes", async () => {
       const row = listed.json().find((item: { id: string }) => item.id === preview.id);
       expect(row).toMatchObject({
         status: "running",
-        authMode: "workos_sso",
+        authMode: "facility_session",
         url: `http://facility.test/preview/${preview.id}/`,
       });
       expect(row).not.toHaveProperty("originUrl");

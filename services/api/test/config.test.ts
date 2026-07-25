@@ -28,4 +28,41 @@ describe("API configuration", () => {
       readConfig({ ...validEnv, NODE_ENV: "production", FACILITY_INSECURE_DEV: "1" }),
     ).toThrow("FACILITY_INSECURE_DEV is refused in production");
   });
+
+  it("requires direct GitHub client credentials as a pair", () => {
+    expect(() => readConfig({ ...validEnv, GITHUB_OAUTH_CLIENT_ID: "client" })).toThrow(
+      "GitHub OAuth client id and secret must be configured together",
+    );
+  });
+
+  it("requires the issuer, client, and instance binding in broker mode", () => {
+    expect(() => readConfig({ ...validEnv, AUTH_IDENTITY_PROVIDER: "oidc" })).toThrow(
+      "OIDC issuer, client id, and Facility instance id are required in oidc mode",
+    );
+  });
+
+  it("accepts only private P-256 signing keys with unique key ids", () => {
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        FACILITY_OAUTH_JWKS: JSON.stringify({
+          keys: [{ kty: "EC", crv: "P-256", x: "x", y: "y", kid: "public-only" }],
+        }),
+      }),
+    ).toThrow("FACILITY_OAUTH_JWKS keys must be private ES256 JWKs with unique kid values");
+
+    const privateKey = { kty: "EC", crv: "P-256", x: "x", y: "y", d: "d", kid: "key-1" };
+    expect(
+      readConfig({
+        ...validEnv,
+        FACILITY_OAUTH_ISSUER: "https://api.example.com/",
+        MCP_PUBLIC_URL: "https://mcp.example.com/",
+        FACILITY_OAUTH_JWKS: JSON.stringify({ keys: [privateKey] }),
+      }),
+    ).toMatchObject({
+      oauthIssuer: "https://api.example.com",
+      mcpPublicUrl: "https://mcp.example.com",
+      oauthJwks: { keys: [privateKey] },
+    });
+  });
 });

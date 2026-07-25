@@ -147,7 +147,7 @@ describe("github integration", async () => {
   it("verifies GitHub HMAC before storing and no-ops replayed deliveries", async () => {
     const payload = Buffer.from(
       JSON.stringify({
-        installation: { id: 123, account: { login: "octo", type: "Organization" } },
+        installation: { id: 123, account: { id: 456, login: "octo", type: "Organization" } },
         repository: { name: "repo", owner: { login: "octo" } },
       }),
     );

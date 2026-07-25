@@ -2,6 +2,7 @@ import { can, keyLookup, newId, open, seal, verifyKey } from "@facility/core";
 import {
   apiKeys,
   createDb,
+  githubInstallations,
   insertAuditEvent,
   orgMembers,
   orgs,
@@ -25,6 +26,7 @@ import type { JWTVerifyGetKey } from "jose";
 import PgBoss from "pg-boss";
 import { uuidv7 } from "uuidv7";
 import { z } from "zod";
+import { registerAuthorizationServer } from "./auth/authorization-server.js";
 import { readConfig } from "./config.js";
 import { ApiError, sendError } from "./errors.js";
 import { beginIdempotentRequest, completeIdempotentRequest } from "./idempotency.js";
@@ -43,7 +45,6 @@ import type { AppConfig, Principal } from "./types.js";
 
 const publicRoutes = new Set([
   "GET /health",
-  "POST /auth/dev-login",
   "GET /auth/login",
   "GET /auth/callback",
   "POST /auth/logout",
@@ -52,7 +53,7 @@ const publicPrefixes = ["/docs"];
 
 export async function buildApp(
   config: AppConfig = readConfig(),
-  deps: { oauthJwks?: JWTVerifyGetKey; rateLimitMax?: number } = {},
+  deps: { oauthJwks?: JWTVerifyGetKey; rateLimitMax?: number; authFetch?: typeof fetch } = {},
 ): Promise<FastifyInstance> {
   const oauthConfig = oauthConfigFromApp(config);
   const app = Fastify({
@@ -148,13 +149,12 @@ export async function buildApp(
     reply.status(404).send({ error: { code: "not_found", message: "Route not found" } }),
   );
 
-  await app.register(cookie, { secret: config.workosCookiePassword ?? config.secretMasterKey });
+  await app.register(cookie, { secret: config.secretMasterKey });
   await app.register(cors, {
     origin: [config.publicUrl, config.webUrl].filter((value): value is string => Boolean(value)),
     credentials: true,
   });
-  // Insecure-dev already relaxes auth (dev-login); relax the rate limit there too
-  // so local/CI test runs aren't throttled. Production keeps the 200/min ceiling.
+  // Local and CI runs use a generous ceiling; production keeps 200 requests/minute.
   await app.register(rateLimit, {
     max: deps.rateLimitMax ?? (config.facilityInsecureDev ? 100_000 : 200),
     timeWindow: "1 minute",
@@ -295,7 +295,31 @@ export async function buildApp(
   app.get("/health", healthOptions, healthHandler);
   app.get("/readyz", healthOptions, healthHandler);
 
-  await registerAuthRoutes(app, config);
+  await registerAuthorizationServer(app, config);
+  if (process.env.NODE_ENV === "test" || process.env.VITEST === "true") {
+    app.post(
+      "/__test/session",
+      {
+        config: { public: true },
+        schema: { body: z.object({ email: z.string().email() }) },
+      },
+      async (request, reply) => {
+        const session = await ensureDevUser(db, (request.body as { email: string }).email);
+        reply.setCookie(
+          "facility_session",
+          await mintSessionCookie(config, session.userId, session.orgId),
+          {
+            httpOnly: true,
+            sameSite: "lax",
+            path: "/",
+            secure: false,
+          },
+        );
+        return { ok: true, ...session };
+      },
+    );
+  }
+  await registerAuthRoutes(app, config, { fetch: deps.authFetch });
   await registerInternalRoutes(app, config);
   await registerWebhookRoutes(app, config);
   await registerV1Routes(app, config);
@@ -369,30 +393,32 @@ async function resolvePrincipal(
     throw new ApiError(401, "unauthorized", "Invalid API key");
   }
 
-  // OAuth 2.1 resource server: a WorkOS AuthKit access-token JWT, used by
-  // interactive MCP clients. `fak_` keys are handled above and never reach here.
+  // OAuth access tokens are issued by this Facility instance for its MCP resource.
   if (auth?.startsWith("Bearer ") && oauthConfig) {
     const token = auth.slice("Bearer ".length);
     if (looksLikeJwt(token)) {
-      let workosUserId: string;
+      let userId: string;
+      let orgId: string;
       try {
-        ({ workosUserId } = await verifyAccessToken(token, oauthConfig, oauthJwks));
+        ({ userId, orgId } = await verifyAccessToken(token, oauthConfig, oauthJwks));
       } catch {
         throw new ApiError(401, "unauthorized", "Invalid access token");
       }
-      // Map the verified WorkOS subject to a platform member. An authenticated
-      // token with no platform membership is forbidden, not anonymous.
       const member = (
         await db
           .select({ role: rolesTable, user: users, member: orgMembers })
           .from(orgMembers)
           .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
           .innerJoin(users, eq(orgMembers.userId, users.id))
-          .where(and(eq(users.workosUserId, workosUserId), eq(users.status, "active")))
-          // Deterministic primary org for a multi-membership subject (the token
-          // carries no platform org): the earliest membership wins, not an
-          // arbitrary row.
-          .orderBy(orgMembers.createdAt, orgMembers.orgId)
+          .innerJoin(githubInstallations, eq(githubInstallations.orgId, orgMembers.orgId))
+          .where(
+            and(
+              eq(users.id, userId),
+              eq(orgMembers.orgId, orgId),
+              eq(users.status, "active"),
+              isNull(githubInstallations.suspendedAt),
+            ),
+          )
           .limit(1)
       )[0];
       if (!member) {

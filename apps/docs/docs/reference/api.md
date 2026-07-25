@@ -13,7 +13,7 @@ clients can generate from the committed OpenAPI document until SDK distribution.
 
 ## Authentication
 
-- **Session cookie** — browser OAuth sign-in (WorkOS AuthKit) or development login.
+- **Session cookie** — browser sign-in backed by a verified GitHub identity.
 - **API key** — `Authorization: Bearer fak_…`, issued with
   `facility keys issue` or `POST /v1/keys`; each key binds a role, so RBAC is identical for
   humans and machines.

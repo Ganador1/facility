@@ -12,7 +12,7 @@ Roadmap items have no committed date until they move into a release plan.
 **Status: available with rough edges.** Facility provisions an isolated Docker
 or AWS sandbox from a project-defined immutable image, waits for an optional
 readiness path, and exposes the private origin only through its SSO-authenticated
-proxy. Production creation fails closed until WorkOS SSO is configured.
+proxy. Production creation fails closed until interactive GitHub/OIDC login is configured.
 
 The native preview system now:
 

@@ -19,7 +19,7 @@ pnpm dev
 
 The command creates `.env` when needed and fills only blank required development
 values; it never replaces configured values. It then starts Postgres and MinIO,
-installs the workspace, migrates and seeds the database, and launches every
+installs the workspace, migrates and seeds platform essentials, and launches every
 development process — including the **worker** for run dispatch, watchtower, and
 learning jobs, plus the documentation site. Shared runtime packages are built
 before database setup, so a clean clone does not depend on old build artifacts.
@@ -40,9 +40,11 @@ run `SECRET_MASTER_KEY="$(openssl rand -base64 32)" docker compose up -d --wait`
 That stack builds the runner image, migrates and seeds once, and starts the API,
 worker, gateway, MCP server, and optional web application together.
 
-Open `http://localhost:3400`, sign in with **dev sign in** (enabled by
-`FACILITY_INSECURE_DEV=1` — refused in production builds), and you're in the
-seeded organization.
+Create a GitHub App for the local instance, configure its OAuth callback and
+credentials, and run `facility instance bootstrap` before opening
+`http://localhost:3400`. See [Authentication modes](authentication) for the exact
+callback, permissions, and bootstrap arguments. Local login uses GitHub exactly
+like a self-hosted deployment; there is no public development-login bypass.
 
 For a production-like check, issue an owner/admin API key and run:
 
@@ -83,7 +85,7 @@ AWS S3, R2, and other S3-compatible endpoints.
    [GitHub App guide](github-app) so kickstart, webhook triggers, outcomes, and
    repository delivery work against your organization.
 3. **Kickstart** — connect a repo and open the kickstart PR.
-4. **Protected previews** — in production, finish the WorkOS AuthKit settings
+4. **Protected previews** — in production, finish the GitHub/OIDC login settings
    before enabling previews. Configure the project with an immutable review
    image, command, port, readiness path, and TTL; give repository automation a
    project-scoped `runs:write` key. Human preview access is SSO-only even when

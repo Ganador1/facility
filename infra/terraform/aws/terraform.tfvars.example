@@ -4,6 +4,7 @@ project     = "facility"
 
 app_hostname = "app.example.com"
 api_hostname = "api.example.com"
+mcp_hostname = "mcp.example.com"
 
 # Optional. Leave empty to create only HTTP listeners and print the ALB DNS name.
 acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/placeholder"
@@ -14,9 +15,11 @@ route53_zone_id     = "ZPLACEHOLDER"
 # your own hostname and ACM certificate.
 enable_cloudfront_api_endpoint = false
 
-# WorkOS is required for production interactive login and protected previews.
-# A webhook-only validation deployment can leave it disabled.
-enable_workos = true
+# Self-hosted instances use their own GitHub App. SaaS instances select oidc and
+# point oidc_issuer at the commercial identity broker.
+auth_identity_provider = "github"
+oidc_issuer             = ""
+facility_instance_id    = ""
 
 # Local/bootstrap provider fallback only. Production gateways should load
 # provider credentials through the Facility API instead.
@@ -32,11 +35,6 @@ database_backup_retention_days = 7
 enable_deletion_protection = true
 force_destroy_bucket       = false
 
-# Interactive-client MCP OAuth 2.1: set (together with the WORKOS_AUTHKIT_DOMAIN
-# secret) to enable WorkOS access-token auth on the MCP resource server; empty
-# leaves remote MCP on fak_ API keys only. envelope_retention_days bounds how
-# long stored LLM request/response envelopes are kept.
-mcp_oauth_audience      = ""
 envelope_retention_days = 90
 
 container_image_tags = {
@@ -44,6 +42,7 @@ container_image_tags = {
   worker  = "replace-with-git-sha"
   gateway = "replace-with-git-sha"
   web     = "replace-with-git-sha"
+  mcp     = "replace-with-git-sha"
   runner  = "replace-with-git-sha"
 }
 

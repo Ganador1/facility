@@ -25,7 +25,7 @@ with compose.
   configured `S3_ENDPOINT` stores.
 - **Secrets**: `SECRET_MASTER_KEY` (32-byte base64 — everything sealed at
   rest derives from it; store it in your secret manager, rotate = re-seal),
-  WorkOS credentials, GitHub App credentials.
+  upstream identity credentials, OAuth signing keys, and GitHub App credentials.
 - **TLS + public URLs** for the API (webhooks, OAuth callbacks) and remote MCP.
   The web application is optional.
 
@@ -42,7 +42,7 @@ with compose.
    AWS-compatible credentials. The development compose stack auto-creates its
    MinIO bucket; external stores should be provisioned by your
    infrastructure.
-3. Load secrets into the runtime: `SECRET_MASTER_KEY`, WorkOS variables, and
+3. Load secrets into the runtime: `SECRET_MASTER_KEY`, identity/OAuth variables, and
    the GitHub App variables when repo automation is enabled.
 4. Run migrations once, before app traffic:
 
@@ -63,8 +63,8 @@ with compose.
 6. Start or roll the services in this order: `api`, `worker`, `gateway`, `mcp`,
    then optional `web`.
 7. Bootstrap the first owner and issue an API key. On an empty installation,
-   open `https://<api-host>/auth/login`; the first WorkOS-authenticated user
-   creates the first organization and becomes its owner. With the optional web
+   run `facility instance bootstrap`, then open `https://<web-host>/api/auth/login`; the configured GitHub user
+   signs into the organization already created by bootstrap. With the optional web
    app, issue the key in settings. Without it, reopen
    `https://<api-host>/docs` after login and call `POST /v1/keys` from Swagger;
    the API session cookie authenticates the request and the key secret is
@@ -79,7 +79,7 @@ with compose.
    scheduler heartbeat, object-store
    envelope write/read with SigV4, seed essentials, the `sandbox_runner` profile
    (its driver + runner image match this deployment), production `auth_config`
-   (WorkOS configured when dev-login is off), GitHub App env completeness when
+   (GitHub/OIDC login configured), GitHub App env completeness when
    enabled, and the org audit hash chain.
 
    The doctor runs through the API task's object-store configuration. Give
@@ -115,26 +115,24 @@ settings make that work (the bundled `docker-compose.yml` pre-wires all three):
 If a run never leaves `provisioning` and the sandbox logs show connection
 failures to the api or gateway, one of these two is almost always the cause.
 
-## WorkOS SSO
+## GitHub login
 
-Production authentication is WorkOS AuthKit (the dev-login path refuses to
-enable in production):
+Self-hosted installations create their own GitHub App and enable user authorization.
+Set its callback to `https://<web-host>/api/auth/callback`, grant read access to
+user email addresses, and configure `AUTH_IDENTITY_PROVIDER=github`,
+`GITHUB_OAUTH_CLIENT_ID`, and `GITHUB_OAUTH_CLIENT_SECRET`. Bootstrap the dedicated
+organization, owner, account, and installation binding with `facility instance bootstrap`.
 
-1. Create a WorkOS environment; note client id + API key.
-2. Set the redirect URI to `https://<api-host>/auth/callback`.
-3. Configure your IdP connection (SAML/OIDC) in WorkOS.
-4. Set `WORKOS_API_KEY`, `WORKOS_CLIENT_ID`, `WORKOS_COOKIE_PASSWORD` (32+
-   random chars), `WORKOS_AUTHKIT_DOMAIN`.
+SaaS instances instead set `AUTH_IDENTITY_PROVIDER=oidc` and use the commercial
+identity broker. See [Authentication modes](authentication) for the broker claim contract.
 
 ### Remote MCP OAuth 2.1 (interactive clients)
 
-To let interactive MCP clients (Claude, Cursor, ChatGPT) authenticate with WorkOS
-OAuth 2.1 access tokens instead of `fak_` API keys, set **`MCP_OAUTH_AUDIENCE`**
-on the API service — the control plane keeps OAuth JWT auth
-disabled until it is set (so audience is always validated). Run `facility-mcp
-serve` with `MCP_PUBLIC_URL` (this MCP server's public URL) and
-`MCP_AUTHORIZATION_SERVER` (defaults to `WORKOS_AUTHKIT_DOMAIN`) so it advertises
-`/.well-known/oauth-protected-resource`. `fak_` keys keep working for services.
+Each Facility instance is the authorization server for its MCP resource. Set
+`FACILITY_OAUTH_ISSUER`, a private ES256 `FACILITY_OAUTH_JWKS`, and
+`MCP_PUBLIC_URL`; point `MCP_AUTHORIZATION_SERVER` at the issuer. Interactive
+clients use Authorization Code + PKCE and receive 15-minute, audience-bound JWTs
+plus rotating refresh tokens. `fak_` keys remain available for services.
 
 ## GitHub App
 

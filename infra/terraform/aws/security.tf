@@ -91,6 +91,14 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_web" {
   to_port                      = local.ports.web
 }
 
+resource "aws_vpc_security_group_egress_rule" "alb_to_mcp" {
+  security_group_id            = aws_security_group.alb.id
+  referenced_security_group_id = aws_security_group.service.id
+  from_port                    = local.ports.mcp
+  ip_protocol                  = "tcp"
+  to_port                      = local.ports.mcp
+}
+
 resource "aws_vpc_security_group_ingress_rule" "service_from_alb_api" {
   security_group_id            = aws_security_group.service.id
   referenced_security_group_id = aws_security_group.alb.id
@@ -105,6 +113,14 @@ resource "aws_vpc_security_group_ingress_rule" "service_from_alb_web" {
   from_port                    = local.ports.web
   ip_protocol                  = "tcp"
   to_port                      = local.ports.web
+}
+
+resource "aws_vpc_security_group_ingress_rule" "service_from_alb_mcp" {
+  security_group_id            = aws_security_group.service.id
+  referenced_security_group_id = aws_security_group.alb.id
+  from_port                    = local.ports.mcp
+  ip_protocol                  = "tcp"
+  to_port                      = local.ports.mcp
 }
 
 resource "aws_vpc_security_group_ingress_rule" "gateway_from_services" {

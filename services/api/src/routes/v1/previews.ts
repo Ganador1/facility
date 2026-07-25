@@ -5,7 +5,7 @@ import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import {
   assertPreviewProvisioningAvailable,
-  assertPreviewSso,
+  assertPreviewSession,
   createPreviewRecord,
   destroyPreview,
   proxyPreviewRequest,
@@ -45,7 +45,7 @@ const PreviewSchema = z.object({
   commitSha: z.string().nullable(),
   driver: z.string(),
   status: z.string(),
-  authMode: z.literal("workos_sso"),
+  authMode: z.literal("facility_session"),
   config: z.record(z.string(), z.unknown()),
   error: z.string().nullable(),
   expiresAt: z.date(),
@@ -68,7 +68,7 @@ export async function registerPreviewRoutes(
       schema: { params: PreviewParams, response: { 200: z.array(PreviewSchema) } },
     },
     async (request) => {
-      assertPreviewSso(config, request.principal);
+      assertPreviewSession(config, request.principal);
       const { projectId } = request.params as z.infer<typeof PreviewParams>;
       const rows = await db
         .select()
@@ -164,7 +164,7 @@ export async function registerPreviewRoutes(
       schema: { params: PreviewParams, response: { 200: PreviewSchema } },
     },
     async (request) => {
-      assertPreviewSso(config, request.principal);
+      assertPreviewSession(config, request.principal);
       const principal = request.principal;
       const { projectId, previewId } = request.params as z.infer<typeof PreviewParams>;
       const preview = (
@@ -189,7 +189,7 @@ export async function registerPreviewRoutes(
   );
 
   const proxy = async (request: FastifyRequest, reply: FastifyReply) => {
-    assertPreviewSso(config, request.principal);
+    assertPreviewSession(config, request.principal);
     const { previewId } = request.params as { previewId: string; "*"?: string };
     const preview = (
       await db
@@ -266,7 +266,7 @@ function present(preview: typeof previewSandboxes.$inferSelect, publicUrl: strin
   return {
     ...preview,
     originUrl: undefined,
-    authMode: "workos_sso" as const,
+    authMode: "facility_session" as const,
     config: (preview.config ?? {}) as Record<string, unknown>,
     url: `${publicUrl.replace(/\/$/, "")}/preview/${encodeURIComponent(preview.id)}/`,
   };

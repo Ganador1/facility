@@ -13,6 +13,11 @@ output "api_url" {
   value       = local.public_urls.api
 }
 
+output "mcp_url" {
+  description = "Configured public MCP resource URL."
+  value       = local.public_urls.mcp
+}
+
 output "github_webhook_url" {
   description = "Public GitHub App webhook URL."
   value       = "${local.public_urls.api}/webhooks/github"

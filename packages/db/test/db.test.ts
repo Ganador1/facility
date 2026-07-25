@@ -375,11 +375,12 @@ describe("db", async () => {
         ORDER BY name
       `,
     )) as Iterable<{ name: string }>;
-    expect(
-      Array.from(applied)
-        .map((row) => row.name)
-        .at(-1),
-    ).toBe("0027_kb_space_doc_versions.sql");
+    // A developer database can include later migrations from another worktree;
+    // assert this checkout's latest migration was applied without assuming it
+    // is the newest row in that shared database.
+    expect(Array.from(applied).map((row) => row.name)).toContain(
+      "0028_github_identity_and_oauth.sql",
+    );
     const invalidOutcomeRollups = (await db.execute(
       sql`
         SELECT count(*)::int AS count

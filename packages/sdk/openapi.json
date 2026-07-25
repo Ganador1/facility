@@ -368,6 +368,16 @@
     },
     "/auth/login": {
       "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "returnTo",
+            "required": false
+          }
+        ],
         "responses": {
           "302": {
             "description": "Default Response",
@@ -500,6 +510,14 @@
             },
             "in": "query",
             "name": "state",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "error",
             "required": false
           }
         ],
@@ -1638,10 +1656,6 @@
                           "id": {
                             "type": "string"
                           },
-                          "workosUserId": {
-                            "nullable": true,
-                            "type": "string"
-                          },
                           "email": {
                             "type": "string"
                           },
@@ -1667,7 +1681,6 @@
                         },
                         "required": [
                           "id",
-                          "workosUserId",
                           "email",
                           "name",
                           "avatarUrl",
@@ -14624,7 +14637,7 @@
                       "authMode": {
                         "type": "string",
                         "enum": [
-                          "workos_sso"
+                          "facility_session"
                         ]
                       },
                       "config": {
@@ -14910,7 +14923,7 @@
                     "authMode": {
                       "type": "string",
                       "enum": [
-                        "workos_sso"
+                        "facility_session"
                       ]
                     },
                     "config": {
@@ -15140,7 +15153,7 @@
                     "authMode": {
                       "type": "string",
                       "enum": [
-                        "workos_sso"
+                        "facility_session"
                       ]
                     },
                     "config": {

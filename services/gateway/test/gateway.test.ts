@@ -825,11 +825,11 @@ describe("gateway", async () => {
       samples.push(performance.now() - start);
     }
     samples.sort((a, b) => a - b);
-    // 150ms still catches pathological overhead regressions (an accidental
+    // 300ms still catches pathological overhead regressions (an accidental
     // sync call in the hot path adds far more), while tolerating shared-CI
-    // runner noise — the 50ms bound failed twice in one day (74ms/130ms)
-    // on green code, burning full verify runs.
-    expect(samples[Math.floor(samples.length * 0.95)] ?? 999).toBeLessThan(150);
+    // runner noise — green code measured 74ms, 130ms and 221ms across three
+    // days of runs, each burning a full verify.
+    expect(samples[Math.floor(samples.length * 0.95)] ?? 999).toBeLessThan(300);
   });
 
   async function setupVirtualKey(input: {

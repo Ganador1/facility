@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { chmod, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import process from "node:process";
@@ -75,7 +75,11 @@ export function assertLocalDatabaseUrl(value) {
 
 export async function prepareDevEnv(
   root = repoRoot,
-  { generateSecret = () => randomBytes(32).toString("base64"), environment = process.env } = {},
+  {
+    generateSecret = () => randomBytes(32).toString("base64"),
+    generateOauthJwks = defaultOauthJwks,
+    environment = process.env,
+  } = {},
 ) {
   const envPath = join(root, ".env");
   const example = await readFile(join(root, ".env.example"), "utf8");
@@ -98,6 +102,9 @@ export async function prepareDevEnv(
   if (!envValue(content, "SECRET_MASTER_KEY")) {
     required.push(["SECRET_MASTER_KEY", generateSecret()]);
   }
+  if (!envValue(content, "FACILITY_OAUTH_JWKS")) {
+    required.push(["FACILITY_OAUTH_JWKS", generateOauthJwks()]);
+  }
 
   for (const [key, value] of required) {
     const next = setEnvIfBlank(content, key, value);
@@ -115,6 +122,15 @@ export async function prepareDevEnv(
   // preserve accidentally broad permissions.
   await chmod(envPath, 0o600);
   return { created, filled, databaseUrl: effectiveDatabaseUrl };
+}
+
+function defaultOauthJwks() {
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  return JSON.stringify({
+    keys: [
+      { ...privateKey.export({ format: "jwk" }), alg: "ES256", use: "sig", kid: randomUUID() },
+    ],
+  });
 }
 
 export function assertSupportedNode(version = process.versions.node) {
@@ -157,6 +173,9 @@ export async function startDevelopment(root = repoRoot) {
     console.log("✓ Added the local development database URL");
   if (prepared.filled.includes("SECRET_MASTER_KEY")) {
     console.log("✓ Generated SECRET_MASTER_KEY (stored only in .env)");
+  }
+  if (prepared.filled.includes("FACILITY_OAUTH_JWKS")) {
+    console.log("✓ Generated FACILITY_OAUTH_JWKS (stored only in .env)");
   }
   if (!prepared.created && prepared.filled.length === 0)
     console.log("✓ Preserved the existing .env");
@@ -203,7 +222,7 @@ export async function startDevelopment(root = repoRoot) {
   });
   await run(pnpm, ["--filter", "@facility/db", "seed"], {
     cwd: root,
-    environment,
+    environment: { ...environment, FACILITY_SEED_DEMO: "0" },
     label: "database seed",
   });
 

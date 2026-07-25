@@ -406,72 +406,57 @@ function checkGithubApp(config: AppConfig): DoctorCheck {
 }
 
 function checkAuthConfig(config: AppConfig): DoctorCheck {
-  const domain = Boolean(config.workosAuthkitDomain);
-  const audience = Boolean(config.mcpOauthAudience);
-  const workosConfigured = Boolean(
-    config.workosApiKey && config.workosClientId && config.workosAuthkitDomain,
-  );
-  // A half-configured OAuth resource server fails closed at runtime (JWT auth
-  // stays off), so surface it rather than reporting a false "ready".
-  if (audience && !domain) {
-    return fail(
-      "auth_config",
-      "Authentication configuration",
-      "MCP_OAUTH_AUDIENCE is set but WORKOS_AUTHKIT_DOMAIN is missing — OAuth JWT auth will not enable.",
-      "Set WORKOS_AUTHKIT_DOMAIN (the WorkOS AuthKit issuer) alongside MCP_OAUTH_AUDIENCE.",
-    );
-  }
-  if (!workosConfigured) {
-    // Production (dev-login disabled) has no other interactive auth, so treat
-    // missing WorkOS as a hard readiness failure; in insecure-dev it's a warning.
+  const upstreamConfigured =
+    config.authIdentityProvider === "oidc"
+      ? Boolean(config.oidcIssuer && config.oidcClientId && config.facilityInstanceId)
+      : Boolean(config.githubOauthClientId && config.githubOauthClientSecret);
+  const mcpConfigured = Boolean(config.oauthIssuer && config.oauthJwks && config.mcpPublicUrl);
+  if (!upstreamConfigured) {
     const level = config.facilityInsecureDev ? warn : fail;
     return level(
       "auth_config",
       "Authentication configuration",
       config.facilityInsecureDev
-        ? "WorkOS SSO is not fully configured (session + dev-login still work)."
-        : "WorkOS SSO is not configured and dev-login is disabled — production authentication is unavailable.",
-      "Set WORKOS_API_KEY, WORKOS_CLIENT_ID, and WORKOS_AUTHKIT_DOMAIN for production SSO.",
+        ? "GitHub/OIDC login is not configured; only internal test helpers are available."
+        : "GitHub/OIDC login is not configured — production authentication is unavailable.",
+      "Configure the selected AUTH_IDENTITY_PROVIDER and its client credentials.",
     );
   }
-  if (!audience) {
+  if (!mcpConfigured) {
     return warn(
       "auth_config",
       "Authentication configuration",
-      "WorkOS AuthKit is configured but MCP_OAUTH_AUDIENCE is unset — interactive MCP OAuth is disabled (fak_ keys only).",
-      "Set MCP_OAUTH_AUDIENCE to enable OAuth 2.1 access-token auth for interactive MCP clients.",
+      "Interactive login is configured but the per-instance MCP OAuth server is disabled.",
+      "Set FACILITY_OAUTH_ISSUER, FACILITY_OAUTH_JWKS, and MCP_PUBLIC_URL.",
     );
   }
   return pass(
     "auth_config",
     "Authentication configuration",
-    "WorkOS SSO and the MCP OAuth audience are configured.",
+    "GitHub/OIDC login and instance MCP OAuth are configured.",
   );
 }
 
 function checkPreviewProtection(config: AppConfig): DoctorCheck {
-  const configured = Boolean(
-    config.workosApiKey &&
-      config.workosClientId &&
-      config.workosAuthkitDomain &&
-      config.workosRedirectUri &&
-      config.workosCookiePassword,
-  );
+  const configured =
+    config.authIdentityProvider === "oidc"
+      ? Boolean(config.oidcIssuer && config.oidcClientId && config.facilityInstanceId)
+      : Boolean(config.githubOauthClientId && config.githubOauthClientSecret);
   if (configured) {
     return pass(
       "preview_protection",
-      "Protected preview SSO",
-      "Preview creation and access are protected by a complete WorkOS SSO configuration.",
+      "Protected preview sessions",
+      "Preview creation and access are protected by Facility sessions.",
     );
   }
   const level = config.facilityInsecureDev ? warn : fail;
   return level(
     "preview_protection",
-    "Protected preview SSO",
+    "Protected preview sessions",
     config.facilityInsecureDev
-      ? "Native previews are available only for local development sessions."
-      : "Native preview creation fails closed because WorkOS SSO is incomplete.",
-    "Set WORKOS_API_KEY, WORKOS_CLIENT_ID, WORKOS_AUTHKIT_DOMAIN, WORKOS_REDIRECT_URI, and WORKOS_COOKIE_PASSWORD.",
+      ? "Native previews require an internal test session in local development."
+      : "Native preview creation fails closed because interactive login is incomplete.",
+    "Configure GitHub or OIDC interactive authentication.",
   );
 }
 

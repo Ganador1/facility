@@ -72,7 +72,7 @@ Deployable by any organization on any cloud using containers, Postgres, and obje
 - The two gates stay human: plan acceptance in Facility (or `/builder` in the repo lane), then live-preview validation, PR review, and squash merge in GitHub. The platform makes gates cheap to exercise, never optional.
 
 ### P7 — Access: identity & interfaces
-- AuthN: **WorkOS SSO** (AuthKit) for humans; hashed API keys for machines.
+- AuthN: **GitHub identity** (direct OAuth or SaaS OIDC broker) for humans; hashed API keys for machines.
 - AuthZ: bundled roles (owner, admin, maintainer, engineer, viewer) + **custom roles** from a permission catalog; org- and project-scoped grants.
 - **GitHub App**: installed in the org's environment; webhooks drive triggers, kickstart/upgrade PRs, fingerprint checks; App identity for pushes (hardening note 14).
 - **AI-operable**: a first-class **MCP server** and **CLI** expose the same governed API, so the platform is safely manageable from Claude Code, Cowork, Codex, etc. RBAC applies identically to humans, agents, MCP, and CLI.

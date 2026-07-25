@@ -13,6 +13,7 @@ import {
 const example = [
   "DATABASE_URL=postgres://facility:facility@localhost:5461/facility",
   "SECRET_MASTER_KEY=",
+  "FACILITY_OAUTH_JWKS=",
   "FACILITY_INSECURE_DEV=1",
   "",
 ].join("\n");
@@ -27,13 +28,17 @@ test("creates a private dev env and fills its generated secret", async () => {
   const root = await fixture();
   const secret = Buffer.alloc(32, 7).toString("base64");
 
-  const result = await prepareDevEnv(root, { generateSecret: () => secret, environment: {} });
+  const result = await prepareDevEnv(root, {
+    generateSecret: () => secret,
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
+    environment: {},
+  });
   const content = await readFile(join(root, ".env"), "utf8");
   const mode = (await stat(join(root, ".env"))).mode & 0o777;
 
   assert.deepEqual(result, {
     created: true,
-    filled: ["SECRET_MASTER_KEY"],
+    filled: ["SECRET_MASTER_KEY", "FACILITY_OAUTH_JWKS"],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
   });
   assert.match(content, new RegExp(`^SECRET_MASTER_KEY=${secret}$`, "m"));
@@ -57,28 +62,35 @@ test("fills only missing required values and preserves existing values", async (
       generated = true;
       return "must-not-be-used";
     },
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
     environment: {},
   });
   const content = await readFile(join(root, ".env"), "utf8");
 
   assert.deepEqual(result, {
     created: false,
-    filled: ["DATABASE_URL"],
+    filled: ["DATABASE_URL", "FACILITY_OAUTH_JWKS"],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
   });
   assert.match(content, /^SECRET_MASTER_KEY=already-configured$/m);
   assert.match(content, /^CUSTOM_VALUE=keep-me$/m);
   assert.doesNotMatch(content, /must-not-be-used/);
+  assert.match(content, /^FACILITY_OAUTH_JWKS=\{"keys":\[\{"kid":"test"\}\]\}$/m);
   assert.equal(generated, false);
 });
 
 test("rerunning env preparation is byte-stable", async () => {
   const root = await fixture();
-  await prepareDevEnv(root, { generateSecret: () => "first-secret", environment: {} });
+  await prepareDevEnv(root, {
+    generateSecret: () => "first-secret",
+    generateOauthJwks: () => "first-jwks",
+    environment: {},
+  });
   const first = await readFile(join(root, ".env"), "utf8");
 
   const result = await prepareDevEnv(root, {
     generateSecret: () => "second-secret",
+    generateOauthJwks: () => "second-jwks",
     environment: {},
   });
   const second = await readFile(join(root, ".env"), "utf8");

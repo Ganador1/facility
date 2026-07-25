@@ -13,13 +13,14 @@ locals {
     ManagedBy   = "terraform"
   }
 
-  ecr_repositories = toset(["api", "worker", "gateway", "web", "runner"])
+  ecr_repositories = toset(["api", "worker", "gateway", "web", "mcp", "runner"])
 
   ports = {
     api     = 4400
     worker  = 4400
     gateway = 4410
     web     = 3400
+    mcp     = 4420
     runner  = 8080
     migrate = 0
   }
@@ -35,6 +36,7 @@ locals {
   public_urls = {
     api = var.enable_cloudfront_api_endpoint ? "https://${aws_cloudfront_distribution.api[0].domain_name}" : "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.api_hostname}"
     web = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.app_hostname}"
+    mcp = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.mcp_hostname}"
   }
 
   common_environment = [
@@ -42,7 +44,6 @@ locals {
     { name = "LOG_LEVEL", value = "info" },
     { name = "S3_BUCKET", value = aws_s3_bucket.objects.bucket },
     { name = "AWS_REGION", value = var.aws_region },
-    { name = "MCP_OAUTH_AUDIENCE", value = var.mcp_oauth_audience },
     # The Fargate stack runs sandboxes via the AWS driver, so the seeded default
     # sandbox profile (created by the migrate+seed task) must use it too.
     { name = "FACILITY_SANDBOX_DRIVER", value = "aws" },
@@ -61,6 +62,12 @@ locals {
     { name = "PORT", value = tostring(local.ports.api) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
+    { name = "AUTH_IDENTITY_PROVIDER", value = var.auth_identity_provider },
+    { name = "AUTH_CALLBACK_URL", value = "${local.public_urls.web}/api/auth/callback" },
+    { name = "OIDC_ISSUER", value = var.oidc_issuer },
+    { name = "FACILITY_INSTANCE_ID", value = var.facility_instance_id },
+    { name = "FACILITY_OAUTH_ISSUER", value = local.public_urls.api },
+    { name = "MCP_PUBLIC_URL", value = local.public_urls.mcp },
     { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
     { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
@@ -85,14 +92,22 @@ locals {
     { name = "FACILITY_API_URL", value = local.public_urls.api },
   ]
 
+  mcp_environment = [
+    { name = "NODE_ENV", value = "production" },
+    { name = "FACILITY_API_URL", value = local.public_urls.api },
+    { name = "MCP_PUBLIC_URL", value = local.public_urls.mcp },
+    { name = "MCP_AUTHORIZATION_SERVER", value = local.public_urls.api },
+    { name = "MCP_ALLOWED_HOSTS", value = var.mcp_hostname },
+  ]
+
   app_secret_names = toset([
     "database_url",
     "secret_master_key",
-    "workos_api_key",
-    "workos_client_id",
-    "workos_cookie_password",
-    "workos_authkit_domain",
-    "next_public_workos_redirect_uri",
+    "github_oauth_client_id",
+    "github_oauth_client_secret",
+    "oidc_client_id",
+    "oidc_client_secret",
+    "facility_oauth_jwks",
     "github_app_id",
     "github_app_private_key",
     "github_app_webhook_secret",
@@ -110,15 +125,18 @@ locals {
     { name = "GITHUB_APP_SLUG", valueFrom = aws_secretsmanager_secret.app["github_app_slug"].arn },
   ]
 
-  workos_secrets = [
-    { name = "WORKOS_API_KEY", valueFrom = aws_secretsmanager_secret.app["workos_api_key"].arn },
-    { name = "WORKOS_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["workos_client_id"].arn },
-    { name = "WORKOS_COOKIE_PASSWORD", valueFrom = aws_secretsmanager_secret.app["workos_cookie_password"].arn },
-    { name = "WORKOS_AUTHKIT_DOMAIN", valueFrom = aws_secretsmanager_secret.app["workos_authkit_domain"].arn },
-    { name = "NEXT_PUBLIC_WORKOS_REDIRECT_URI", valueFrom = aws_secretsmanager_secret.app["next_public_workos_redirect_uri"].arn },
+  identity_secrets = var.auth_identity_provider == "github" ? [
+    { name = "GITHUB_OAUTH_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["github_oauth_client_id"].arn },
+    { name = "GITHUB_OAUTH_CLIENT_SECRET", valueFrom = aws_secretsmanager_secret.app["github_oauth_client_secret"].arn },
+    ] : [
+    { name = "OIDC_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["oidc_client_id"].arn },
+    { name = "OIDC_CLIENT_SECRET", valueFrom = aws_secretsmanager_secret.app["oidc_client_secret"].arn },
   ]
 
-  common_secrets = concat(local.core_secrets, var.enable_workos ? local.workos_secrets : [])
+  common_secrets = local.core_secrets
+  api_secrets = concat(local.core_secrets, local.identity_secrets, [
+    { name = "FACILITY_OAUTH_JWKS", valueFrom = aws_secretsmanager_secret.app["facility_oauth_jwks"].arn },
+  ])
 
   dev_provider_secrets = [
     { name = "DEV_ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.app["dev_anthropic_api_key"].arn },
@@ -127,7 +145,7 @@ locals {
 
   gateway_secrets = concat(local.common_secrets, var.enable_dev_provider_fallback ? local.dev_provider_secrets : [])
 
-  log_groups = toset(["api", "worker", "gateway", "web", "runner", "migrate"])
+  log_groups = toset(["api", "worker", "gateway", "web", "mcp", "runner", "migrate"])
 
   ecs_services = {
     api = {
@@ -136,7 +154,7 @@ locals {
       command       = ["node", "dist/start.js"]
       port          = local.ports.api
       environment   = local.api_environment
-      secrets       = local.common_secrets
+      secrets       = local.api_secrets
       public        = true
       health_path   = "/health"
     }
@@ -169,6 +187,16 @@ locals {
       secrets       = []
       public        = true
       health_path   = "/"
+    }
+    mcp = {
+      desired_count = var.mcp_desired_count
+      image         = local.images.mcp
+      command       = ["node", "dist/bin/facility-mcp.js", "serve", "--host", "0.0.0.0", "--port", "4420"]
+      port          = local.ports.mcp
+      environment   = local.mcp_environment
+      secrets       = []
+      public        = true
+      health_path   = "/readyz"
     }
   }
 }

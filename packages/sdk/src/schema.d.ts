@@ -2168,7 +2168,9 @@ export interface operations {
     };
     getAuthLogin: {
         parameters: {
-            query?: never;
+            query?: {
+                returnTo?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2274,6 +2276,7 @@ export interface operations {
             query?: {
                 code?: string;
                 state?: string;
+                error?: string;
             };
             header?: never;
             path?: never;
@@ -3054,7 +3057,6 @@ export interface operations {
                         };
                         user: {
                             id: string;
-                            workosUserId: string | null;
                             email: string;
                             name: string | null;
                             avatarUrl: string | null;
@@ -10515,7 +10517,7 @@ export interface operations {
                         driver: string;
                         status: string;
                         /** @enum {string} */
-                        authMode: "workos_sso";
+                        authMode: "facility_session";
                         config: {
                             [key: string]: unknown;
                         };
@@ -10654,7 +10656,7 @@ export interface operations {
                         driver: string;
                         status: string;
                         /** @enum {string} */
-                        authMode: "workos_sso";
+                        authMode: "facility_session";
                         config: {
                             [key: string]: unknown;
                         };
@@ -10778,7 +10780,7 @@ export interface operations {
                         driver: string;
                         status: string;
                         /** @enum {string} */
-                        authMode: "workos_sso";
+                        authMode: "facility_session";
                         config: {
                             [key: string]: unknown;
                         };
