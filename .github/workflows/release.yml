@@ -1,0 +1,90 @@
+# Publishes @theam/facility to npm from a tag. The tag is the decision: nothing
+# is published on a merge to main. Run the workflow by hand first — it defaults
+# to a dry run — to see exactly what would be uploaded.
+#
+# Requires an npm automation token in the NPM_TOKEN secret. Provenance links the
+# tarball to this workflow run, which npm only accepts from a public repository;
+# while the repository is private the publish falls back to a plain one.
+# Actions are pinned to full SHAs (guards/actions-pinned.mjs enforces it).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Pack and verify without uploading
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      # A tag that disagrees with package.json publishes a version nobody can
+      # trace back to a commit. Refuse before anything reaches the registry.
+      - name: The tag and the package version must agree
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: packages/cli
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          packaged="v$(node -p "require('./package.json').version")"
+          if [ "$packaged" != "$TAG" ]; then
+            echo "tag $TAG does not match packages/cli/package.json ($packaged)" >&2
+            exit 1
+          fi
+          echo "Publishing $packaged"
+
+      - name: Test the CLI
+        run: pnpm --filter @theam/facility test
+
+      # The published tarball is what users get, not the checkout: install it
+      # the way npx would and run the binary. Catches a `files` list that
+      # forgot a directory — a failure mode no repository-level test sees.
+      - name: Install the packed tarball and run the binary
+        run: |
+          set -euo pipefail
+          tarball="$(cd packages/cli && npm pack --silent --pack-destination "$RUNNER_TEMP")"
+          mkdir -p "$RUNNER_TEMP/smoke" && cd "$RUNNER_TEMP/smoke"
+          npm init -y >/dev/null
+          npm install --silent "$RUNNER_TEMP/$tarball"
+          ./node_modules/.bin/facility --help
+
+      - name: Decide the publish flags
+        id: flags
+        env:
+          VISIBILITY: ${{ github.event.repository.visibility }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          flags="--access public"
+          if [ "$VISIBILITY" = "public" ]; then flags="$flags --provenance"; fi
+          if [ "$DRY_RUN" = "true" ]; then flags="$flags --dry-run"; fi
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+          echo "npm publish $flags"
+
+      - name: Publish
+        working-directory: packages/cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish ${{ steps.flags.outputs.flags }}
