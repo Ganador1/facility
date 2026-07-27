@@ -10,6 +10,19 @@ one coherent change, explicit verification, and human review before merge.
 - Open an issue before implementing a substantial or behavior-changing feature
   so its contract can be agreed on first.
 - Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+- Be decent to each other — see the [code of conduct](CODE_OF_CONDUCT.md).
+
+## What belongs in this tracker
+
+This repository is public: issues, pull requests, comments and CI logs are all
+visible. Keep the tracker to **product-technical work** — a bug, a capability,
+a design question about how Facility behaves — written so that a contributor
+who has never met the maintainers can act on it.
+
+Deployment plans, customer or pilot names, deadlines, private infrastructure
+and commercial strategy do not belong here, even when they motivate the work.
+When private context drives a public change, the public issue states the
+technical problem on its own terms and the private tracker links to it.
 
 ## Set up the repository
 

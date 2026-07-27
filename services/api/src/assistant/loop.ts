@@ -363,7 +363,7 @@ export async function runAssistantTurn(input: AssistantTurnInput): Promise<void>
 /**
  * After the FIRST completed exchange, replace the provisional title (the
  * truncated opening question, set by the ask route) with a short
- * model-generated one — the tam-os auto-titling pattern. One tiny call on
+ * model-generated one. One tiny call on
  * the same per-turn key; any failure leaves the provisional title in place.
  */
 async function maybeTitleConversation(

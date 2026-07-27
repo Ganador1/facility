@@ -12,12 +12,26 @@
 </p>
 
 Facility is open-source, self-hosted tooling for running AI coding agents as
-part of a reviewable software delivery process. It installs the process into a
-GitHub repository and, when a team needs shared operations, provides a control
-plane for projects, credentials, budgets, sandboxes, approvals, knowledge, and
-run data.
+part of a reviewable software delivery process — with the humans, the gates
+and the evidence in one place.
 
-You can use the repository installer by itself. The platform is optional.
+**Connect a repository and your repository stays yours.** Install the GitHub
+App, and the work already in it appears in Facility: every issue, with its
+history. From there a person dispatches agents, reads the plan they wrote,
+approves or refuses it, and follows the work to a merged pull request —
+without a single file being added to the repository. Agents run in Facility's
+own sandboxes and write back only what a human collaborator would: branches,
+pull requests, and comments. The project's context — its charter, its
+decisions, its documentation — lives in the platform, not vendored into the
+codebase.
+
+That matters most where it is hardest to adopt anything: a team with a working
+process can connect Facility, watch it for a week, and disconnect it without a
+trace if it does not earn its place.
+
+When a team *wants* the process in the repository — agents running in its own
+CI, invoked from issue comments — Facility installs that too. It is the second
+step, not the entry price.
 
 ## Who Facility is for
 
@@ -31,8 +45,8 @@ You can use the repository installer by itself. The platform is optional.
   run records, and model traffic in their own environment while using scoped
   machine credentials and human approval gates.
 
-For one repository, start with the installer. Add the platform when you need
-shared governance or platform-hosted agent runs.
+Start by connecting one repository. Install the process into the repository
+itself when the team wants agents running in its own CI.
 
 ## What you can do with it
 

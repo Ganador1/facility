@@ -9,7 +9,7 @@ import { AskPanel } from "./ask-panel";
  * The omnipresent floating host of the conversation composer: one input, on
  * every project page, with the slide-up thread panel. The Product → Sessions
  * tab renders the same composer in its own workspace, so the floating bar
- * steps aside there (same rule tam-os applies on duplicate-input routes).
+ * steps aside there, so the two inputs never compete for the same turn.
  */
 export function AskBar({ projectId }: { projectId: string }) {
   const pathname = usePathname();

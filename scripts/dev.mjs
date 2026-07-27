@@ -121,7 +121,15 @@ export async function prepareDevEnv(
   // Keep a pre-existing secrets file owner-only too; a no-op rerun must not
   // preserve accidentally broad permissions.
   await chmod(envPath, 0o600);
-  return { created, filled, databaseUrl: effectiveDatabaseUrl };
+  return {
+    created,
+    filled,
+    databaseUrl: effectiveDatabaseUrl,
+    // Next reads this from its own process env: it is spawned from apps/web
+    // and never loads the repository-root .env itself.
+    devOrigins:
+      environment.FACILITY_DEV_ORIGINS?.trim() || envValue(content, "FACILITY_DEV_ORIGINS"),
+  };
 }
 
 function defaultOauthJwks() {
@@ -168,6 +176,7 @@ export async function startDevelopment(root = repoRoot) {
 
   const prepared = await prepareDevEnv(root);
   const environment = { ...process.env, DATABASE_URL: prepared.databaseUrl };
+  if (prepared.devOrigins) environment.FACILITY_DEV_ORIGINS = prepared.devOrigins;
   if (prepared.created) console.log("✓ Created .env from .env.example");
   if (prepared.filled.includes("DATABASE_URL"))
     console.log("✓ Added the local development database URL");
