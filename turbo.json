@@ -14,7 +14,7 @@
     },
     "dev": {
       "cache": false,
-      "env": ["DATABASE_URL"],
+      "env": ["DATABASE_URL", "FACILITY_DEV_ORIGINS"],
       "persistent": true
     },
     "dev:worker": {

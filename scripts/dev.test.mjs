@@ -40,6 +40,7 @@ test("creates a private dev env and fills its generated secret", async () => {
     created: true,
     filled: ["SECRET_MASTER_KEY", "FACILITY_OAUTH_JWKS"],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
+    devOrigins: undefined,
   });
   assert.match(content, new RegExp(`^SECRET_MASTER_KEY=${secret}$`, "m"));
   assert.match(content, /^DATABASE_URL=postgres:\/\//m);
@@ -71,6 +72,7 @@ test("fills only missing required values and preserves existing values", async (
     created: false,
     filled: ["DATABASE_URL", "FACILITY_OAUTH_JWKS"],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
+    devOrigins: undefined,
   });
   assert.match(content, /^SECRET_MASTER_KEY=already-configured$/m);
   assert.match(content, /^CUSTOM_VALUE=keep-me$/m);
@@ -99,6 +101,7 @@ test("rerunning env preparation is byte-stable", async () => {
     created: false,
     filled: [],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
+    devOrigins: undefined,
   });
   assert.equal(second, first);
   assert.doesNotMatch(second, /second-secret/);
@@ -153,4 +156,41 @@ test("falls back to the env file when the exported database is blank", async () 
 test("requires Node.js 22 or newer", () => {
   assert.doesNotThrow(() => assertSupportedNode("22.0.0"));
   assert.throws(() => assertSupportedNode("21.7.3"), /Node\.js 22 or newer is required/);
+});
+
+test("surfaces the development origins so the web server can receive them", async () => {
+  const root = await fixture();
+  await writeFile(
+    join(root, ".env"),
+    `${example}FACILITY_DEV_ORIGINS=tunnel.example.dev, lab.example.dev\n`,
+  );
+
+  const result = await prepareDevEnv(root, {
+    generateSecret: () => "local-secret",
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
+    environment: {},
+  });
+
+  // Next is spawned from apps/web and never reads the repository-root .env,
+  // so the value has to travel through the child environment instead.
+  assert.equal(result.devOrigins, "tunnel.example.dev, lab.example.dev");
+});
+
+test("an exported development origin overrides the env file, and a blank one is absent", async () => {
+  const root = await fixture();
+  await writeFile(join(root, ".env"), `${example}FACILITY_DEV_ORIGINS=from-file.example.dev\n`);
+
+  const exported = await prepareDevEnv(root, {
+    generateSecret: () => "local-secret",
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
+    environment: { FACILITY_DEV_ORIGINS: "from-shell.example.dev" },
+  });
+  assert.equal(exported.devOrigins, "from-shell.example.dev");
+
+  const blank = await prepareDevEnv(root, {
+    generateSecret: () => "local-secret",
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
+    environment: { FACILITY_DEV_ORIGINS: "   " },
+  });
+  assert.equal(blank.devOrigins, "from-file.example.dev");
 });
