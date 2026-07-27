@@ -75,14 +75,18 @@ export function AskComposer({
           {error}
         </p>
       ) : null}
+      {/* The accent stroke is the one thing that must never be missed on a
+          project page: this is the always-available line to the Product Owner,
+          so it carries a 2px accent border and an accent-tinted lift that pulls
+          it clear of the hairline surfaces behind it. */}
       <form
-        className="flex items-end gap-2 border border-(--line) bg-(--bg) px-3 py-2 shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
+        className="flex items-end gap-3 border-2 border-(--accent) bg-(--bg) px-4 py-3 shadow-[0_8px_30px_rgba(0,0,0,0.45),0_0_24px_-4px_color-mix(in_srgb,var(--accent)_40%,transparent)]"
         onSubmit={(event) => {
           event.preventDefault();
           void ask(value);
         }}
       >
-        <span aria-hidden className="font-mono text-[12px] text-(--accent)">
+        <span aria-hidden className="font-mono text-[15px] leading-7 text-(--accent)">
           ▸
         </span>
         <textarea
@@ -116,9 +120,15 @@ export function AskComposer({
             }
           }}
           placeholder={placeholder}
-          className="max-h-[50vh] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-[13px] leading-relaxed text-(--ink) outline-none placeholder:text-(--dim)"
+          className="max-h-[50vh] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-[15px] leading-7 text-(--ink) outline-none placeholder:text-(--mut)"
         />
-        <Button size="sm" variant="outline" type="submit" disabled={busy || !value.trim()}>
+        <Button
+          size="md"
+          variant="primary"
+          tone="agent"
+          type="submit"
+          disabled={busy || !value.trim()}
+        >
           {busy ? "…" : "send"}
         </Button>
       </form>
