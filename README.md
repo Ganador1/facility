@@ -181,9 +181,11 @@ GitHub Apps → New GitHub App**.
   `AUTH_CALLBACK_URL` in `.env` exactly, byte for byte.
 - Check **"Request user authorization (OAuth) during installation"**.
 - **Webhook**: optional for local evaluation — you can disable it and use the
-  "sync from GitHub" button instead. To receive events locally, point it at a
-  public tunnel that forwards to `http://localhost:4400/webhooks/github` and
-  set a webhook secret.
+  "sync from GitHub" button instead. To receive events on a development
+  machine you need a public URL for your laptop; the
+  [local development guide](apps/docs/docs/self-host/local-development.md)
+  walks through a Cloudflare tunnel and the exact payload URL
+  (`https://<your-host>/api/webhooks/github` — through the `/api` proxy).
 - **Permissions**:
 
   | Scope | Permission | Access |
@@ -290,7 +292,7 @@ To delegate all of this to Claude Code or Codex, paste this prompt:
 | `auth_failed: GitHub identity or installation access could not be verified` | The App lacks the **Email addresses: Read-only** account permission, or your verified GitHub email is unavailable. Fix the permission and re-authorize. |
 | `403 not_invited` / `installation_access_required` | Your GitHub user is not provisioned, or the user/account/installation ids in the bootstrap don't match — re-run step 5 with the real ids. |
 | Login succeeds but you land on the wrong host | `WEB_URL` must be the origin your browser uses. |
-| Testing through an HTTPS tunnel: assets/RSC/HMR fail | Set `WEB_URL` and `AUTH_CALLBACK_URL` to the tunnel origin (and the App's Callback URL to match), and add the tunnel hostname to `allowedDevOrigins` in `apps/web/next.config.ts` — Next blocks cross-origin dev requests otherwise. |
+| Testing through an HTTPS tunnel: navigation, live updates or hot reload fail | Set `WEB_URL` and `AUTH_CALLBACK_URL` to the tunnel origin (and the App's Callback URL to match), and put the tunnel hostname in `FACILITY_DEV_ORIGINS` — Next blocks cross-origin development requests otherwise. Full walkthrough: [local development](apps/docs/docs/self-host/local-development.md). |
 
 Your next steps are to create a project, connect a repository, preview the
 generated files, and let Facility open the kickstart PR. Follow the
