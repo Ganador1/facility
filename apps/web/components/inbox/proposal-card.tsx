@@ -3,6 +3,7 @@
 import { Button, cx, Eyebrow } from "@facility/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { Markdown } from "@/components/markdown";
 import type { Proposal } from "@/lib/api";
 
 /**
@@ -60,9 +61,9 @@ export function ProposalCard({ proposal, focused }: { proposal: Proposal; focuse
         </span>
       </div>
 
-      <div className="whitespace-pre-wrap text-sm leading-relaxed text-(--ink)">
-        {proposal.contextMd}
-      </div>
+      {/* Agents write the gate's evidence as markdown (plans arrive with
+          headings, lists, and code spans) — render it, don't dump the source. */}
+      <Markdown source={proposal.contextMd} />
 
       <details className="group">
         <summary className="cursor-pointer select-none text-[12px] font-medium text-(--dim) hover:text-(--mut)">
