@@ -25,6 +25,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         "self-host/quickstart",
+        "self-host/local-development",
         "self-host/production",
         "self-host/github-app",
         "self-host/aws",

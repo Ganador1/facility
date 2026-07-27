@@ -42,7 +42,9 @@ worker, gateway, MCP server, and optional web application together.
 
 Create a GitHub App for the local instance, configure its OAuth callback and
 credentials, and run `facility instance bootstrap` before opening
-`http://localhost:3400`. See [Authentication modes](authentication) for the exact
+`http://localhost:3400`. To let GitHub reach a development machine —
+webhooks, so the loop reacts to issues, comments and pull requests — see
+[Local development](local-development). See [Authentication modes](authentication) for the exact
 callback, permissions, and bootstrap arguments. Local login uses GitHub exactly
 like a self-hosted deployment; there is no public development-login bypass.
 
