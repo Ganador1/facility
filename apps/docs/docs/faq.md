@@ -1,3 +1,7 @@
+---
+title: FAQ
+---
+
 # FAQ
 
 ## GitHub already lets me assign issues to Claude, Codex, or Copilot. Why this?
@@ -75,7 +79,7 @@ on a dashboard issue, a daily health monitor with per-workflow budgets that
 goes red on breach, and a weekly canary that flies a synthetic
 /architect probe through the real pipeline. It reads only the GitHub API,
 never the facility's own telemetry, and it's pinned by its own guard so it
-can't quietly rot. Full design: [watchtower.md](watchtower.md).
+can't quietly rot. Full design: [the watchtower](concepts/watchtower.md).
 
 ## Why "facility"?
 

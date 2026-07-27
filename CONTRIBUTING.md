@@ -60,7 +60,7 @@ To delegate setup to Claude Code or Codex:
 - Treat files under `packages/cli/templates/` and `packages/cli/modules/` as
   product surfaces. Comments should explain why a constraint exists, not
   narrate the code.
-- Add entries to `docs/hardening.md` only for observed failures and the
+- Add entries to `apps/docs/docs/reference/hardening.md` only for observed failures and the
   countermeasure that worked.
 
 ## Verify the change

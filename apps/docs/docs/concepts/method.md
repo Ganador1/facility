@@ -1,3 +1,7 @@
+---
+title: The method
+---
+
 # The method
 
 Facility is a small set of decisions about how AI agents and humans share a
@@ -120,7 +124,7 @@ hash rather than by sender. The whole layer reads only the GitHub API — never
 telemetry the facility writes — and is pinned in place by the
 `watchtower-locked` guard so it cannot quietly rot. The reasoning, the
 canary's authorization design, and what's deliberately not built yet are in
-[watchtower.md](watchtower.md).
+[the watchtower](watchtower.md).
 
 "Everything gets measured" is the second half of the method: the crew makes
 work cheap, the gates keep judgment human, and the watchtower is how you know

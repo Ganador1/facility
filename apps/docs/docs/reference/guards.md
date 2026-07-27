@@ -1,3 +1,7 @@
+---
+title: Guards
+---
+
 # Guards
 
 A guard is a deterministic check for a repo-specific invariant — the things

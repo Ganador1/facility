@@ -15,7 +15,7 @@
 # BEFORE the agent starts), against your STANDARD.md, with bypassed permissions
 # on an isolated, ephemeral runner.
 #
-# Security model (see docs: theam/facility → docs/hardening.md):
+# Security model (see docs: theam/facility → apps/docs/docs/reference/hardening.md):
 #   * Only users with write access trigger the crew (action default).
 #   * All issue/PR/comment text is treated as untrusted DATA, never instructions.
 #   * Agents never approve, merge, force-push, or push to protected branches.

@@ -96,3 +96,21 @@ deduplicated per integration. Outbound delivery is at least once, never follows
 redirects, and durably retries network failures and HTTP 408/425/429/5xx up to
 eight attempts. See the OpenAPI integration routes for delivery inspection and
 manual retry.
+
+The full wire contract — integration types, the `facility.signal.v1` envelope
+for lifecycle telemetry, and outbound delivery semantics — is in the
+[webhooks reference](webhooks.md).
+
+## Troubleshooting
+
+- `facility doctor [--json]` checks the local installation; `facility doctor
+  --platform [--profile <name>] [--allow-insecure] [--json]` checks deployment
+  readiness. Both modes print actionable remediation and preserve the JSON
+  contract.
+- HTTP 401 / CLI exit 2 means missing, invalid, expired, or revoked credentials.
+- HTTP 403 identifies the needed permission in `error.details`.
+- HTTP 409 means current resource state or idempotency ownership conflicts.
+- MCP HTTP 421 means the request `Host` or browser `Origin` is not trusted.
+- Outbound webhooks require HTTPS in production, reject private/reserved DNS
+  answers, pin the validated address for delivery, sign timestamp plus body,
+  never follow redirects, and retry transient failures durably.

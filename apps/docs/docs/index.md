@@ -45,7 +45,9 @@ makes those decisions cheap to exercise — it never makes them optional.
 
 ## Where to go next
 
+- [The method](concepts/method) — the decisions the tooling makes structural.
 - [The loop](concepts/the-loop) — how a change travels the factory.
 - [Self-host quickstart](self-host/quickstart) — up in one compose file.
 - [Kickstart a project](guides/kickstart) — greenfield or an existing repo.
 - [Roadmap](roadmap) — what is available now and what is planned.
+- [FAQ](faq) — the questions that arrive before the second week does.

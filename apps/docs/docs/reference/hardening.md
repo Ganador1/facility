@@ -1,3 +1,7 @@
+---
+title: Hardening notes
+---
+
 # Hardening notes
 
 Everything in this file was learned by running agents in CI on a production
@@ -153,7 +157,7 @@ On the production system this generalizes, a telemetry bug failed successful
 runs for a week and silently under-reported the dashboard, and the repair
 lane had a permissions bug from day one. Nothing caught either — monitors
 tell you a workflow ran, not that the system works, and silence looks exactly
-like health. The fix is the watchtower (docs/watchtower.md): outcome
+like health. The fix is the watchtower ([concepts/watchtower](../concepts/watchtower.md)): outcome
 collection and health monitoring that read only the GitHub API (never the
 telemetry the system itself writes), a weekly synthetic canary through the
 real pipeline — authorized by message hash, not by sender — and a guard

@@ -1,6 +1,10 @@
+---
+title: Architecture
+---
+
 # Facility Platform — Architecture
 
-**Status**: v1 · companion to [PRD.md](PRD.md)
+**Status**: v1
 
 ## 1. Stance
 

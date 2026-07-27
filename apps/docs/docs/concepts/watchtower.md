@@ -46,3 +46,45 @@ the system is unhealthy. The read-only security agent emits structured
 findings; trusted code creates or updates issues only for actionable,
 high-confidence, high/critical findings. Receipts and outcomes remain evidence,
 not backlog generators.
+
+## How the canary is authorized
+
+The canary is the one bot allowed to summon the crew, and it earns that with
+the narrowest authorization in the system — **the message is authorized, not
+the sender**:
+
+1. The probe must be posted with a GitHub App token (`CANARY_APP_ID` /
+   `CANARY_APP_PRIVATE_KEY`): comments posted with a workflow's own
+   `GITHUB_TOKEN` trigger no workflows at all, so a `GITHUB_TOKEN` canary
+   would test nothing (see [hardening note 14](../reference/hardening.md)).
+2. `facility-crew.yml` admits that bot login only for an `issue_comment` on
+   an `agent-canary`-labeled issue, resolving to `/architect` (never
+   `/builder`), whose body is **byte-identical — SHA-256, CR-stripped — to
+   the pinned probe** in `.github/facility/watchtower/canary.mjs`.
+3. The hash in the crew workflow is generated from that same constant at
+   `init` time and held in sync by the `watchtower-locked` guard.
+
+A leaked canary App key can therefore at worst replay one fixed, read-only,
+bounded-cost probe — never attacker-chosen instructions. Without the App
+secrets the canary skips with a notice, and everything else keeps working.
+
+## In the repository lane
+
+Projects that installed the process into their own repository run the same
+instruments as vendored scripts, with two differences worth knowing.
+
+**The watchtower is locked by a guard.** A disabled schedule or a drifted
+canary hash fails `node guards/run.mjs`, because a watchtower that quietly
+rotted is worse than none: it keeps vouching. The monitor also stays out of
+its own watchlist — nothing may depend on what it monitors.
+
+**Budgets are a reviewed file.** `.github/facility/watchtower/budgets.json`
+caps daily failures and weekly runs per workflow; a breach turns the daily
+health run red and lands in the incident issue. Keeping budgets in the
+repository means a budget change is a diff with an author and a reason —
+"costs will run away" gets answered with a file rather than a promise.
+
+Numbers are published where the team already lives: the dashboard issue and
+the Actions tab, with no dashboard product to stand up. An optional
+`WATCHTOWER_WEBHOOK_URL` repository variable also POSTs each outcomes summary
+as JSON to the sink of your choice.
