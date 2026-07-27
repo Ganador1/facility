@@ -51,18 +51,29 @@ export default async function ProjectOverviewPage({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  const [project, runs, spend, health, inbox, agentsStatus, outcomes, allOutcomes, ghIssues] =
-    await Promise.all([
-      api.project(projectId),
-      api.runs(projectId),
-      api.spend(`?projectId=${projectId}&groupBy=agent`),
-      api.projectHealth(projectId),
-      api.inboxFull(),
-      api.agentsStatus(projectId),
-      api.outcomes(`?state=open&projectId=${projectId}&limit=10`),
-      api.outcomes(`?state=all&projectId=${projectId}&limit=6`),
-      fetchAllProjectIssues(projectId),
-    ]);
+  const [
+    project,
+    runs,
+    spend,
+    health,
+    inbox,
+    agentsStatus,
+    outcomes,
+    allOutcomes,
+    ghIssues,
+    repos,
+  ] = await Promise.all([
+    api.project(projectId),
+    api.runs(projectId),
+    api.spend(`?projectId=${projectId}&groupBy=agent`),
+    api.projectHealth(projectId),
+    api.inboxFull(),
+    api.agentsStatus(projectId),
+    api.outcomes(`?state=open&projectId=${projectId}&limit=10`),
+    api.outcomes(`?state=all&projectId=${projectId}&limit=6`),
+    fetchAllProjectIssues(projectId),
+    api.projectRepos(projectId),
+  ]);
 
   if (!project.ok) {
     return project.offline ? (
@@ -116,6 +127,7 @@ export default async function ProjectOverviewPage({
       issueByPr.set(gh.pr.number, gh.issueNumber);
     }
   }
+  const repoList = repos.ok ? repos.data : [];
   const spendSummary = spend.ok ? summarizeSpend(spend.data) : null;
   const shipped = allOutcomes.ok
     ? allOutcomes.data.filter((outcome) => outcome.terminalAt).slice(0, 5)
@@ -141,6 +153,28 @@ export default async function ProjectOverviewPage({
         </div>
         {p.description ? (
           <p className="max-w-xl text-sm leading-relaxed text-(--mut)">{p.description}</p>
+        ) : null}
+        {repoList.length > 0 ? (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+            {repoList.map((repo) => (
+              <a
+                key={repo.id}
+                href={`https://github.com/${repo.owner}/${repo.name}`}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-[12px] text-(--info) underline-offset-4 hover:underline"
+                title={`Open ${repo.owner}/${repo.name} on GitHub`}
+              >
+                {repo.owner}/{repo.name} ↗
+              </a>
+            ))}
+            <Link
+              href={`/projects/${projectId}/settings`}
+              className="text-[11.5px] text-(--dim) hover:text-(--ink)"
+            >
+              manage repositories →
+            </Link>
+          </div>
         ) : null}
       </div>
 

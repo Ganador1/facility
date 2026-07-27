@@ -19,12 +19,23 @@
 
   /* semantics — AI is yellow, humans are orange, machines are gray */
   --accent: #ffd923;
+  /* The resting tone for large agent surfaces. The full accent works at the
+   * scale of a badge or a 1px button edge, but across a whole bar it reads as
+   * an alarm — same hue, lower intensity, with the full accent kept for hover
+   * and focus so the surface still answers when you reach for it. */
+  --accent-soft: color-mix(in srgb, var(--accent) 55%, var(--bg));
   --human: #ffb238;
   --ok: #2fbf71;
   --bad: #ff6b60;
   --info: #79c0ff;
   --code: #c8cfd8;
   --machine: #8a93a0;
+
+  /* Floating surfaces: the plain lift, and the lift the agent surfaces take on
+   * when hovered or focused. */
+  --shadow-lift: 0 8px 30px rgba(0, 0, 0, 0.45);
+  --shadow-agent-lift: 0 8px 30px rgba(0, 0, 0, 0.45),
+    0 0 24px -4px color-mix(in srgb, var(--accent) 40%, transparent);
 
   color-scheme: dark;
 }

@@ -50,7 +50,7 @@ export function AskBar({ projectId }: { projectId: string }) {
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-4">
-      <div className="pointer-events-auto flex w-full max-w-2xl flex-col gap-2">
+      <div className="pointer-events-auto flex w-full max-w-3xl flex-col gap-2">
         {panelOpen ? (
           <AskPanel
             projectId={projectId}

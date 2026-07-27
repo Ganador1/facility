@@ -93,8 +93,10 @@ export function AskPanel({
     ?.body?.trim();
   const liveEcho = pendingQuestion && !turn.final && lastUserBody !== pendingQuestion.trim();
 
+  // Same resting accent stroke as the composer below it — the thread and its
+  // input are one agent surface, not a gray panel above a yellow bar.
   return (
-    <div className="flex max-h-[60vh] flex-col border border-(--line) bg-(--bg) shadow-[0_-12px_40px_rgba(0,0,0,0.35)]">
+    <div className="flex max-h-[60vh] flex-col border-2 border-(--accent-soft) bg-(--bg) shadow-(--shadow-lift)">
       <div className="flex items-center justify-between border-b border-(--line) px-4 py-2.5">
         <span className="font-mono text-[11px] uppercase tracking-[0.08em] text-(--dim)">
           product owner

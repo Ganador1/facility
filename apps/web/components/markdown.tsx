@@ -26,38 +26,70 @@ const ARTIFACT_TOKEN_RE = /(\[\[[^\]]+\]\]|\b(?:S|D|T|V|R|H|E|F|L|CR|SR)\d{3}\b)
 const WIKILINK_RE = /^\[\[([^\]|#]+)(?:[|#]([^\]]*))?\]\]$/;
 const BARE_ID_RE = /^(?:S|D|T|V|R|H|E|F|L|CR|SR)\d{3}$/;
 
+/**
+ * Code spans are lifted out before anything else — their contents must stay
+ * literal, so a `**` inside backticks never becomes bold. They are replaced by
+ * a placeholder rather than split into sibling chunks, because agents routinely
+ * write emphasis *around* code (`**Reuse the `dateOfBirth` pattern.**` is one
+ * bold run). Splitting first would strand the `**` markers in separate chunks
+ * and leak them as literal asterisks. The placeholder rides through the
+ * artifact/link/emphasis passes as ordinary text and expands back into a
+ * <code> element at the leaves.
+ *
+ * The marker is a Private Use Area codepoint, stripped from the source, so a
+ * placeholder can never be forged by document content.
+ */
+const CODE_MARK = "\uE000";
+const CODE_SPLIT_RE = /\uE000c(\d+)\uE000/;
+
 function renderInline(
   text: string,
   key: string,
   linkArtifact?: LinkArtifact,
 ): (string | JSX.Element)[] {
-  // Order matters: code spans first (their contents are literal), then
-  // artifact references, then links, then bold, then italic.
-  const nodes: (string | JSX.Element)[] = [];
-  let n = 0;
-  for (const chunk of text.split(/(`[^`]+`)/g)) {
-    if (/^`[^`]+`$/.test(chunk)) {
-      nodes.push(
-        <code
-          key={`${key}-c${n++}`}
-          className="rounded-[2px] bg-(--card) px-1 py-0.5 font-mono text-[0.92em] text-(--code)"
-        >
-          {chunk.slice(1, -1)}
-        </code>,
-      );
+  const codes: string[] = [];
+  const masked = text.replace(/`([^`]+)`/g, (_match, body: string) => {
+    codes.push(body);
+    return `${CODE_MARK}c${codes.length - 1}${CODE_MARK}`;
+  });
+  // Order matters: artifact references, then links, then bold, then italic.
+  return renderArtifacts(masked, key, linkArtifact, codes);
+}
+
+/** Expand code placeholders in a fully-parsed text leaf. */
+function renderCode(text: string, key: string, codes: string[]): (string | JSX.Element)[] {
+  if (codes.length === 0) return text ? [text] : [];
+  const out: (string | JSX.Element)[] = [];
+  // split() with one capture group alternates text, index, text, index…
+  const parts = text.split(CODE_SPLIT_RE);
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i] ?? "";
+    if (i % 2 === 1) {
+      const body = codes[Number(part)];
+      if (body !== undefined) {
+        out.push(
+          <code
+            key={`${key}-c${i}`}
+            className="rounded-[2px] bg-(--card) px-1 py-0.5 font-mono text-[0.92em] text-(--code)"
+          >
+            {body}
+          </code>,
+        );
+      }
       continue;
     }
-    nodes.push(...renderArtifacts(chunk, `${key}-c${n++}`, linkArtifact));
+    if (part) out.push(part);
   }
-  return nodes;
+  return out;
 }
 
 function renderArtifacts(
   text: string,
   key: string,
-  linkArtifact?: LinkArtifact,
+  linkArtifact: LinkArtifact | undefined,
+  codes: string[],
 ): (string | JSX.Element)[] {
-  if (!linkArtifact) return renderLinks(text, key, linkArtifact);
+  if (!linkArtifact) return renderLinks(text, key, linkArtifact, codes);
   const out: (string | JSX.Element)[] = [];
   let n = 0;
   for (const part of text.split(ARTIFACT_TOKEN_RE)) {
@@ -83,7 +115,7 @@ function renderArtifacts(
       );
       continue;
     }
-    if (part) out.push(...renderLinks(part, `${key}-a${n++}`, linkArtifact));
+    if (part) out.push(...renderLinks(part, `${key}-a${n++}`, linkArtifact, codes));
   }
   return out;
 }
@@ -91,49 +123,53 @@ function renderArtifacts(
 function renderLinks(
   text: string,
   key: string,
-  _linkArtifact?: LinkArtifact,
+  _linkArtifact: LinkArtifact | undefined,
+  codes: string[],
 ): (string | JSX.Element)[] {
   const out: (string | JSX.Element)[] = [];
   let n = 0;
   for (const part of text.split(/(\[[^\]]+\]\((?:https?:\/\/|\/)[^)]+\))/g)) {
     const match = part.match(/^\[([^\]]+)\]\(((?:https?:\/\/|\/)[^)]+)\)$/);
     if (match?.[1] && match[2]) {
+      const lkey = `${key}-l${n++}`;
       out.push(
         <a
-          key={`${key}-l${n++}`}
+          key={lkey}
           href={match[2]}
           target={match[2].startsWith("http") ? "_blank" : undefined}
           rel="noreferrer"
           className="text-(--info) underline underline-offset-4"
         >
-          {match[1]}
+          {renderCode(match[1], lkey, codes)}
         </a>,
       );
       continue;
     }
-    out.push(...renderEmphasis(part, `${key}-l${n++}`));
+    out.push(...renderEmphasis(part, `${key}-l${n++}`, codes));
   }
   return out;
 }
 
-function renderEmphasis(text: string, key: string): (string | JSX.Element)[] {
+function renderEmphasis(text: string, key: string, codes: string[]): (string | JSX.Element)[] {
   const out: (string | JSX.Element)[] = [];
   let n = 0;
   for (const part of text.split(/(\*\*[^*]+\*\*|\*[^*]+\*|_[^_]+_)/g)) {
     if (/^\*\*[^*]+\*\*$/.test(part)) {
+      const bkey = `${key}-b${n++}`;
       out.push(
-        <strong key={`${key}-b${n++}`} className="font-semibold text-(--ink)">
-          {part.slice(2, -2)}
+        <strong key={bkey} className="font-semibold text-(--ink)">
+          {renderCode(part.slice(2, -2), bkey, codes)}
         </strong>,
       );
     } else if (/^\*[^*]+\*$/.test(part) || /^_[^_]+_$/.test(part)) {
+      const ikey = `${key}-i${n++}`;
       out.push(
-        <em key={`${key}-i${n++}`} className="italic">
-          {part.slice(1, -1)}
+        <em key={ikey} className="italic">
+          {renderCode(part.slice(1, -1), ikey, codes)}
         </em>,
       );
     } else if (part) {
-      out.push(part);
+      out.push(...renderCode(part, `${key}-t${n++}`, codes));
     }
   }
   return out;
@@ -160,7 +196,9 @@ export function Markdown({
   source: string;
   linkArtifact?: LinkArtifact;
 }) {
-  const lines = source.replaceAll("\r\n", "\n").split("\n");
+  // Strip the code-span placeholder marker (see renderInline) so no document
+  // can smuggle a forged placeholder past the masking pass.
+  const lines = source.replaceAll("\r\n", "\n").replaceAll("\uE000", "").split("\n");
   const blocks: JSX.Element[] = [];
   let list: { ordered: boolean; items: string[] } | null = null;
   let code: string[] | null = null;

@@ -75,14 +75,20 @@ export function AskComposer({
           {error}
         </p>
       ) : null}
+      {/* The always-available line to the Product Owner reads as agent surface,
+          not as chrome: a 2px stroke in the resting accent tone, going to the
+          full accent with its lift on hover and while focused. */}
       <form
-        className="flex items-end gap-2 border border-(--line) bg-(--bg) px-3 py-2 shadow-[0_8px_30px_rgba(0,0,0,0.35)]"
+        className="flex items-end gap-3 border-2 border-(--accent-soft) bg-(--bg) px-4 py-3 shadow-(--shadow-lift) transition-[border-color,box-shadow] duration-200 hover:border-(--accent) hover:shadow-(--shadow-agent-lift) focus-within:border-(--accent) focus-within:shadow-(--shadow-agent-lift)"
         onSubmit={(event) => {
           event.preventDefault();
           void ask(value);
         }}
       >
-        <span aria-hidden className="font-mono text-[12px] text-(--accent)">
+        {/* py-1.5 gives the glyph and the one-line input the same 40px box as
+            the send button, so at rest they sit on its centre line instead of
+            hanging off the bottom edge that items-end aligns to. */}
+        <span aria-hidden className="py-1.5 font-mono text-[15px] leading-7 text-(--accent)">
           ▸
         </span>
         <textarea
@@ -116,9 +122,15 @@ export function AskComposer({
             }
           }}
           placeholder={placeholder}
-          className="max-h-[50vh] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-[13px] leading-relaxed text-(--ink) outline-none placeholder:text-(--dim)"
+          className="max-h-[50vh] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-1.5 text-[15px] leading-7 text-(--ink) outline-none placeholder:text-(--mut)"
         />
-        <Button size="sm" variant="outline" type="submit" disabled={busy || !value.trim()}>
+        <Button
+          size="md"
+          variant="primary"
+          tone="agent"
+          type="submit"
+          disabled={busy || !value.trim()}
+        >
           {busy ? "…" : "send"}
         </Button>
       </form>

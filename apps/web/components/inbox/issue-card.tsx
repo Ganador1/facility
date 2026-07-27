@@ -3,6 +3,7 @@
 import { Button, Eyebrow } from "@facility/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { Markdown } from "@/components/markdown";
 import type { Issue } from "@/lib/api";
 
 const SEVERITY_TONE: Record<string, string> = {
@@ -62,9 +63,7 @@ export function IssueCard({ issue }: { issue: Issue }) {
 
       <div className="flex flex-col gap-2">
         <h3 className="text-sm font-medium text-(--ink)">{issue.title}</h3>
-        <div className="whitespace-pre-wrap text-[13px] leading-relaxed text-(--mut)">
-          {issue.bodyMd}
-        </div>
+        <Markdown source={issue.bodyMd} />
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
