@@ -75,18 +75,20 @@ export function AskComposer({
           {error}
         </p>
       ) : null}
-      {/* The accent stroke is the one thing that must never be missed on a
-          project page: this is the always-available line to the Product Owner,
-          so it carries a 2px accent border and an accent-tinted lift that pulls
-          it clear of the hairline surfaces behind it. */}
+      {/* The always-available line to the Product Owner reads as agent surface,
+          not as chrome: a 2px stroke in the resting accent tone, going to the
+          full accent with its lift on hover and while focused. */}
       <form
-        className="flex items-end gap-3 border-2 border-(--accent) bg-(--bg) px-4 py-3 shadow-[0_8px_30px_rgba(0,0,0,0.45),0_0_24px_-4px_color-mix(in_srgb,var(--accent)_40%,transparent)]"
+        className="flex items-end gap-3 border-2 border-(--accent-soft) bg-(--bg) px-4 py-3 shadow-(--shadow-lift) transition-[border-color,box-shadow] duration-200 hover:border-(--accent) hover:shadow-(--shadow-agent-lift) focus-within:border-(--accent) focus-within:shadow-(--shadow-agent-lift)"
         onSubmit={(event) => {
           event.preventDefault();
           void ask(value);
         }}
       >
-        <span aria-hidden className="font-mono text-[15px] leading-7 text-(--accent)">
+        {/* py-1.5 gives the glyph and the one-line input the same 40px box as
+            the send button, so at rest they sit on its centre line instead of
+            hanging off the bottom edge that items-end aligns to. */}
+        <span aria-hidden className="py-1.5 font-mono text-[15px] leading-7 text-(--accent)">
           ▸
         </span>
         <textarea
@@ -120,7 +122,7 @@ export function AskComposer({
             }
           }}
           placeholder={placeholder}
-          className="max-h-[50vh] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-[15px] leading-7 text-(--ink) outline-none placeholder:text-(--mut)"
+          className="max-h-[50vh] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-1.5 text-[15px] leading-7 text-(--ink) outline-none placeholder:text-(--mut)"
         />
         <Button
           size="md"
