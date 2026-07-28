@@ -1,4 +1,4 @@
-# Publishes @theam/facility to npm from a tag. The tag is the decision: nothing
+# Publishes @theagilemonkeys/facility to npm from a tag. The tag is the decision: nothing
 # is published on a merge to main. Run the workflow by hand first — it defaults
 # to a dry run — to see exactly what would be uploaded.
 #
@@ -57,7 +57,7 @@ jobs:
           echo "Publishing $packaged"
 
       - name: Test the CLI
-        run: pnpm --filter @theam/facility test
+        run: pnpm --filter @theagilemonkeys/facility test
 
       # The published tarball is what users get, not the checkout: install it
       # the way npx would and run the binary. Catches a `files` list that

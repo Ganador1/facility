@@ -86,7 +86,7 @@ function inspectLocalInstall(dir, options = {}) {
     checks.push(
       existsSync(join(dir, file))
         ? localCheck("Files", file, "pass", "Present")
-        : localCheck("Files", file, "fail", "missing", "Run `npx @theam/facility init`."),
+        : localCheck("Files", file, "fail", "missing", "Run `npx @theagilemonkeys/facility init`."),
     );
   }
 
@@ -181,7 +181,7 @@ function inspectLocalInstall(dir, options = {}) {
           ".facility.json",
           "fail",
           `Invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-          "Repair the manifest or rerun `npx @theam/facility init --force`.",
+          "Repair the manifest or rerun `npx @theagilemonkeys/facility init --force`.",
         ),
       );
     }

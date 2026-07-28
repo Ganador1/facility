@@ -1,4 +1,4 @@
-# @theam/facility
+# @theagilemonkeys/facility
 
 The command-line half of [Facility](https://github.com/theam/facility) —
 open-source, self-hosted tooling for running AI coding agents as part of a
@@ -15,7 +15,7 @@ One binary with two jobs, and you rarely need both:
   the standard, the skills and the guards into the repository.
 
 ```bash
-npx @theam/facility --help
+npx @theagilemonkeys/facility --help
 ```
 
 Node.js 20 or newer. Zero configuration to read; one dependency.
@@ -23,10 +23,10 @@ Node.js 20 or newer. Zero configuration to read; one dependency.
 ## Talking to a platform
 
 ```bash
-npx @theam/facility login --url https://facility.example.com --key fak_…
-npx @theam/facility status      # runs, approvals, issues and spend at a glance
-npx @theam/facility inbox       # review and decide pending proposals
-npx @theam/facility sessions    # trigger, watch, steer or cancel agent runs
+npx @theagilemonkeys/facility login --url https://facility.example.com --key fak_…
+npx @theagilemonkeys/facility status      # runs, approvals, issues and spend at a glance
+npx @theagilemonkeys/facility inbox       # review and decide pending proposals
+npx @theagilemonkeys/facility sessions    # trigger, watch, steer or cancel agent runs
 ```
 
 Platform commands take a global `--json`, `--profile <name>` and
@@ -38,8 +38,8 @@ application: what your key cannot do, the CLI will not do either.
 
 ```bash
 cd your-repository
-npx @theam/facility init
-npx @theam/facility doctor --run-guards --github
+npx @theagilemonkeys/facility init
+npx @theagilemonkeys/facility doctor --run-guards --github
 ```
 
 `init` asks about the package manager, the default branch, the commands that

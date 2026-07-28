@@ -80,7 +80,7 @@ self-host images and applies the Docker-backed sandbox E2E policy documented in
 Useful narrower commands include:
 
 ```bash
-pnpm --filter @theam/facility test
+pnpm --filter @theagilemonkeys/facility test
 pnpm --filter @facility/api test
 pnpm --filter @facility/gateway test
 pnpm --filter @facility/docs build
@@ -103,5 +103,5 @@ request so the change can be reviewed and reverted independently.
 1. Bump the version in `package.json` and `packages/cli/package.json` according
    to semver (before 1.0, a minor release may contain breaking changes).
 2. Run `pnpm verify` and the build for every publishable artifact.
-3. Publish `@theam/facility` with public access.
+3. Publish `@theagilemonkeys/facility` with public access.
 4. Tag `vX.Y.Z` and write release notes in terms of behavior, not commit titles.

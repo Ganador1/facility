@@ -16,7 +16,7 @@ actually hold:
 Install one with:
 
 ```
-npx @theam/facility add <module>
+npx @theagilemonkeys/facility add <module>
 ```
 
 | module | what it enforces |
@@ -30,6 +30,6 @@ npx @theam/facility add <module>
 
 Copy the shape of any module here: a `module.json` manifest, a
 `standard-section.md`, and optional `agents/`, `guards/`, and `hooks/`
-fragments. Then `npx @theam/facility add ./path/to/your-module`. If a concern
+fragments. Then `npx @theagilemonkeys/facility add ./path/to/your-module`. If a concern
 keeps biting your team, it deserves the full triple — a rule that exists only
 as prose will be missed again.

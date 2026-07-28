@@ -49,7 +49,7 @@ packages/core       # domain logic: permissions, pricing, fingerprints, template
 packages/db         # drizzle schema + migrations
 packages/ui         # TAM-50 design system (React)
 packages/sdk        # typed client: schema.d.ts generated from OpenAPI + hand-maintained ergonomic contracts (drift-guarded against openapi.json)
-packages/cli        # @theam/facility (v0.2 installer + platform commands + bundled templates/)
+packages/cli        # @theagilemonkeys/facility (v0.2 installer + platform commands + bundled templates/)
 packages/mcp        # platform MCP server
 packages/harness    # session protocols: PO agent, learning mode, KB validation
 runner/             # sandbox agent-host + Dockerfiles

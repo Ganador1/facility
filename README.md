@@ -415,7 +415,7 @@ apps/web            Next.js operator interface
 apps/docs           Docusaurus documentation
 services/api        REST control plane, workers, GitHub integration, HITL
 services/gateway    model proxy, budgets, metering, envelope capture
-packages/cli        @theam/facility installer and platform client
+packages/cli        @theagilemonkeys/facility installer and platform client
 packages/core       domain logic, permissions, receipts, fingerprints
 packages/db         Postgres schema and migrations
 packages/mcp        MCP server
