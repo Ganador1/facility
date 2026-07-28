@@ -125,6 +125,11 @@ test("init installs the method end to end", async (t) => {
   assert.ok(crew.includes("PROJECT_NUMBER: '7'"), "board step not rendered");
   assert.ok(crew.includes("npm ci"), "toolchain steps not rendered for npm");
   assert.ok(
+    crew.includes("apps/docs/docs/reference/hardening.md"),
+    "crew workflow must point to the consolidated hardening documentation",
+  );
+  assert.ok(!crew.includes("docs/hardening.md"), "crew workflow must not retain the obsolete docs path");
+  assert.ok(
     crew.includes("Request Facility SSO-protected preview"),
     "configured delivery must request a protected preview",
   );
