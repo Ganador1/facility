@@ -82,9 +82,18 @@ const transcript = await facility.runTranscript(runId); // raw NDJSON text
 
 GETs retry transient failures. POSTs retry only when the caller supplies an
 idempotency key; non-idempotent writes are never retried automatically.
-Timeouts, aborts, malformed success bodies, and API failures become
-`FacilityApiError`; it exposes `status`, `code`, `details`, and the original
-`payload` when available.
+For ordinary JSON requests, non-2xx responses become `FacilityApiError` with
+the HTTP `status`, the server's `code` and `details`, and the parsed error
+`payload` when available. A non-empty 2xx body that is not valid JSON becomes
+`FacilityApiError` with the response status and code `invalid_response`. If the
+SDK's deadline aborts a request before a response arrives, it reports status
+`408` and code `request_timeout`; a caller-supplied `AbortSignal` instead
+preserves the rejection produced by `fetch` rather than wrapping it.
+
+Streams do not turn every termination into `FacilityApiError`. A
+non-retryable HTTP response rejects `done` with that type; retryable HTTP and
+transport failures are passed to `onError` while reconnecting. Calling
+`close()` or aborting the stream's caller signal stops it and fulfills `done`.
 
 ## Facility-signed webhooks
 
