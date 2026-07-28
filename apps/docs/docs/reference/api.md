@@ -16,7 +16,7 @@ clients can generate from the committed OpenAPI document until SDK distribution.
 - **Session cookie** — browser sign-in backed by a verified GitHub identity.
 - **API key** — `Authorization: Bearer fak_…`, issued with
   `facility keys issue` or `POST /v1/keys`; each key binds a role, so RBAC is identical for
-  humans and machines.
+  humans and machines. Use a project-scoped key wherever possible.
 
 ## Conventions
 
@@ -37,7 +37,9 @@ clients can generate from the committed OpenAPI document until SDK distribution.
   `Last-Event-ID` or `afterSeq`.
 - Creation routes that advertise `Idempotency-Key` accept 8–200 characters.
   The same principal/method/path/key and body replays the stored response for
-  24 hours; a changed body is a `409 idempotency_key_reused`.
+  24 hours; a changed body is a `409 idempotency_key_reused`. An active first
+  request returns `409 idempotency_in_progress` with `Retry-After`; pending
+  claims older than 15 minutes may be reclaimed after a crashed request.
 
 ## Resource map
 
@@ -80,6 +82,9 @@ const transcript = await facility.runTranscript(runId); // raw NDJSON text
 
 GETs retry transient failures. POSTs retry only when the caller supplies an
 idempotency key; non-idempotent writes are never retried automatically.
+Timeouts, aborts, malformed success bodies, and API failures become
+`FacilityApiError`; it exposes `status`, `code`, `details`, and the original
+`payload` when available.
 
 ## Facility-signed webhooks
 

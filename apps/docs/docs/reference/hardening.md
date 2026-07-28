@@ -157,13 +157,14 @@ On the production system this generalizes, a telemetry bug failed successful
 runs for a week and silently under-reported the dashboard, and the repair
 lane had a permissions bug from day one. Nothing caught either — monitors
 tell you a workflow ran, not that the system works, and silence looks exactly
-like health. The fix is the watchtower ([concepts/watchtower](../concepts/watchtower.md)): outcome
+like health. The fix is the watchtower
+([concepts/watchtower](../concepts/watchtower.md)): repository-lane outcome
 collection and health monitoring that read only the GitHub API (never the
 telemetry the system itself writes), a weekly synthetic canary through the
-real pipeline — authorized by message hash, not by sender — and a guard
-(`watchtower-locked`) so the watchtower itself cannot quietly rot. Its first
-production flight caught a real authorization bug; the fix merged the same
-day through the normal PR flow.
+real pipeline — authorized by message hash, not by sender — and a
+`watchtower-locked` guard that checks the required cron entries and pinned
+canary hash. Its first production flight caught a real authorization bug; the
+fix merged the same day through the normal PR flow.
 
 ---
 

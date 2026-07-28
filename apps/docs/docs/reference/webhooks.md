@@ -60,9 +60,29 @@ fingerprinted issue, recovered/succeeded signals resolve it, and pending
 signals are recorded without claiming failure. GitHub deployment-status and
 check-run webhooks are adapted into this same contract.
 
+Keep `fingerprint` stable across every status update for the same lifecycle
+condition. In particular, a recovery must use the fingerprint from the failed
+signal so Facility can resolve the existing issue instead of addressing a
+different one.
+
+A project-scoped integration always routes to its configured project. You may
+omit `projectId` or repeat that project, but naming another project is rejected
+with `generic_inbound_project_scope_mismatch`. An organization-scoped
+integration may select a project in its organization through its configuration
+or payload. A fingerprint already owned by another project is rejected with
+`generic_inbound_fingerprint_scope_mismatch` rather than mutating that issue.
+
 Outbound webhook integrations receive the same four headers and signing
 formula. Supported events are `run.finished` and `proposal.decided`; set
 `config.events` to an array to subscribe to a subset, or omit it for both.
+
+Receivers must compute the HMAC from the exact raw request bytes before parsing
+or re-serializing JSON, compare the expected and supplied signatures in
+constant time, and reject stale timestamps. Persist `X-Facility-Delivery` as
+the stable idempotency key and suppress duplicates before performing side
+effects; the id stays the same across delivery attempts even though a retry's
+timestamp and signature can change.
+
 Delivery is at least once. A durable outbox claims with row locks, recovers
 five-minute-stale claims, times out requests after ten seconds, follows no
 redirects, and retries network errors plus HTTP 408/425/429/5xx up to eight
