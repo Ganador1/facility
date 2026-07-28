@@ -1,5 +1,5 @@
 {
-  "name": "@theam/facility",
+  "name": "@theagilemonkeys/facility",
   "version": "0.3.0",
   "description": "Run an AI crew on your GitHub repo: agents that plan before building, build to your standard, verify on a provisioned environment, and never merge their own work.",
   "keywords": [

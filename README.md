@@ -64,87 +64,7 @@ itself when the team wants agents running in its own CI.
 | See whether the process works | Receipts, outcomes, health checks, analytics, issues, and a synthetic canary show cost, reliability, acceptance, and recurring failures. | Installer or platform |
 | Operate from different clients | The same permission model is exposed through the web app, REST API, CLI, and MCP server. | Platform |
 
-## Quick start: one repository
-
-The standalone installer needs a GitHub repository and Node.js 20 or newer; its
-runtime floor is lower than the platform's. It does not require you to deploy
-the Facility platform.
-
-```bash
-git clone https://github.com/theam/facility.git /absolute/path/to/facility
-cd your-repository
-node /absolute/path/to/facility/packages/cli/bin/facility.mjs init
-node /absolute/path/to/facility/packages/cli/bin/facility.mjs doctor --run-guards --github
-```
-
-The CLI is currently run from a Facility checkout; npm distribution is a later
-release step and is intentionally not part of this release candidate.
-
-The installer detects the repository's package manager, default branch, checks,
-and useful quality modules. It asks for the commands that create a working
-environment and verify a change, then adds:
-
-- GitHub workflows for planning, building, reviewing, addressing feedback,
-  repairing routine CI failures, security sweeps, and the watchtower;
-- `STANDARD.md`, agent instructions, skills, hooks, and deterministic guards;
-- `.facility.json`, which records the choices needed to reproduce the install.
-
-### Operate without the web application
-
-Every control-plane workflow is available over the versioned REST API and the
-zero-dependency CLI; AI clients use the same permissions through MCP.
-
-```bash
-# REST/OpenAPI
-open http://localhost:4400/docs
-
-# CLI from this checkout (the API key is hidden when entered interactively)
-node packages/cli/bin/facility.mjs login --url http://localhost:4400 --key fak_…
-node packages/cli/bin/facility.mjs status
-node packages/cli/bin/facility.mjs --help
-
-# MCP streamable HTTP (Bearer credentials are forwarded to the API)
-curl http://localhost:4420/healthz
-```
-
-See the [CLI, API, SDK, and MCP operator guide](docs/platform/INTERFACES.md) for
-authentication, automation-safe output, streaming, write approvals, deployment,
-and troubleshooting.
-
-The installer skips existing generated destinations unless you explicitly use
-`--force`. `AGENTS.md` and `CLAUDE.md` receive a delimited managed block instead
-of being replaced, and the current answers are written to `.facility.json`.
-
-For a Facility-owned preview, supply an immutable review image, its start
-command, internal port, and readiness path. The image command may seed
-non-production data before it starts the server. The workflow requests the
-preview only after verified builder delivery:
-
-```bash
-node /absolute/path/to/facility/packages/cli/bin/facility.mjs init \
-  --preview-image='ghcr.io/acme/app:${{ steps.delivery.outputs.head_sha }}' \
-  --preview-command='npm run preview' \
-  --preview-port=3000 \
-  --preview-readiness-path=/healthz \
-  --preview-ttl-hours=24
-```
-
-Configure `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
-`FACILITY_PREVIEW_KEY` in GitHub. Production Facility deployments must have a
-complete GitHub/OIDC login configuration or preview creation fails closed. The review
-image must already exist; Facility does not build application images.
-
-After installation, follow the human-only steps printed by the CLI: configure
-the [selected authentication mode](#repository-automation-authentication),
-install the Claude GitHub App, protect the default branch, and use test-tier
-spend-capped credentials for integration tests. Choose Facility-owned or
-existing-provider previews and require their readiness check. Then commit the generated files, open
-an issue, and comment `/architect` to start the delivery loop described below.
-
-See the [CLI reference](apps/docs/docs/reference/cli.md) and
-[guards guide](docs/guards.md) for the available commands and extension points.
-
-## Quick start: self-host the platform
+## Quick start: run Facility
 
 Running Facility locally takes one command for the stack plus a one-time GitHub
 App setup for sign-in and repository automation. You need Docker, Node.js 22 or
@@ -294,12 +214,106 @@ To delegate all of this to Claude Code or Codex, paste this prompt:
 | Login succeeds but you land on the wrong host | `WEB_URL` must be the origin your browser uses. |
 | Testing through an HTTPS tunnel: navigation, live updates or hot reload fail | Set `WEB_URL` and `AUTH_CALLBACK_URL` to the tunnel origin (and the App's Callback URL to match), and put the tunnel hostname in `FACILITY_DEV_ORIGINS` — Next blocks cross-origin development requests otherwise. Full walkthrough: [local development](apps/docs/docs/self-host/local-development.md). |
 
-Your next steps are to create a project, connect a repository, preview the
-generated files, and let Facility open the kickstart PR. Follow the
+## Connect your first repository
+
+Create a project and connect a repository from the web application. The issues
+already in it appear in Facility with their history, and you can dispatch an
+agent against any of them from there. Nothing is written to the repository by
+connecting it: agents work in Facility's sandboxes and push branches, pull
+requests and comments the way a collaborator would. Disconnecting leaves no
+trace either.
+
+That is the whole entry path. If the repository already runs Facility's
+vendored workflows, follow the
+[existing-repository adoption guide](apps/docs/docs/guides/existing-repo.md).
+For the rest of the platform, follow the
 [self-host quickstart](apps/docs/docs/self-host/quickstart.md),
-[authentication guide](apps/docs/docs/self-host/authentication.md),
-[production deployment guide](apps/docs/docs/self-host/production.md), and
-[kickstart guide](apps/docs/docs/guides/kickstart.md).
+[authentication guide](apps/docs/docs/self-host/authentication.md), and
+[production deployment guide](apps/docs/docs/self-host/production.md).
+
+## Operate without the web application
+
+Every control-plane workflow is available over the versioned REST API and the
+zero-dependency CLI; AI clients use the same permissions through MCP.
+
+```bash
+# REST/OpenAPI
+open http://localhost:4400/docs
+
+# CLI from this checkout (the API key is hidden when entered interactively)
+node packages/cli/bin/facility.mjs login --url http://localhost:4400 --key fak_…
+node packages/cli/bin/facility.mjs status
+node packages/cli/bin/facility.mjs --help
+
+# MCP streamable HTTP (Bearer credentials are forwarded to the API)
+curl http://localhost:4420/healthz
+```
+
+See the [CLI, API, SDK, and MCP operator guide](docs/platform/INTERFACES.md) for
+authentication, automation-safe output, streaming, write approvals, deployment,
+and troubleshooting.
+
+## Optional: install the process into the repository
+
+Everything above happens without touching the repository. When a team decides it
+wants the process *in* the repository — agents running in its own CI, invoked
+from issue comments — the standalone installer writes it there. This is the
+second step, not the entry price, and it is the only step that adds files.
+
+The installer needs a GitHub repository and Node.js 20 or newer; its runtime
+floor is lower than the platform's, and it does not require you to deploy
+Facility at all.
+
+```bash
+git clone https://github.com/theam/facility.git /absolute/path/to/facility
+cd your-repository
+node /absolute/path/to/facility/packages/cli/bin/facility.mjs init
+node /absolute/path/to/facility/packages/cli/bin/facility.mjs doctor --run-guards --github
+```
+
+Until the CLI is published to npm, run it from a Facility checkout as above.
+
+The installer detects the repository's package manager, default branch, checks,
+and useful quality modules. It asks for the commands that create a working
+environment and verify a change, then adds:
+
+- GitHub workflows for planning, building, reviewing, addressing feedback,
+  repairing routine CI failures, security sweeps, and the watchtower;
+- `STANDARD.md`, agent instructions, skills, hooks, and deterministic guards;
+- `.facility.json`, which records the choices needed to reproduce the install.
+
+The installer skips existing generated destinations unless you explicitly use
+`--force`. `AGENTS.md` and `CLAUDE.md` receive a delimited managed block instead
+of being replaced, and the current answers are written to `.facility.json`.
+
+For a Facility-owned preview, supply an immutable review image, its start
+command, internal port, and readiness path. The image command may seed
+non-production data before it starts the server. The workflow requests the
+preview only after verified builder delivery:
+
+```bash
+node /absolute/path/to/facility/packages/cli/bin/facility.mjs init \
+  --preview-image='ghcr.io/acme/app:${{ steps.delivery.outputs.head_sha }}' \
+  --preview-command='npm run preview' \
+  --preview-port=3000 \
+  --preview-readiness-path=/healthz \
+  --preview-ttl-hours=24
+```
+
+Configure `FACILITY_API_URL`, `FACILITY_PROJECT_ID`, and a project-scoped
+`FACILITY_PREVIEW_KEY` in GitHub. Production Facility deployments must have a
+complete GitHub/OIDC login configuration or preview creation fails closed. The review
+image must already exist; Facility does not build application images.
+
+After installation, follow the human-only steps printed by the CLI: configure
+the [selected authentication mode](#repository-automation-authentication),
+install the Claude GitHub App, protect the default branch, and use test-tier
+spend-capped credentials for integration tests. Choose Facility-owned or
+existing-provider previews and require their readiness check. Then commit the generated files, open
+an issue, and comment `/architect` to start the delivery loop described below.
+
+See the [CLI reference](apps/docs/docs/reference/cli.md) and
+[guards guide](docs/guards.md) for the available commands and extension points.
 
 ## Repository automation authentication
 
@@ -395,6 +409,11 @@ configured GitHub App for repository automation.
 The [architecture document](docs/platform/ARCHITECTURE.md) describes the
 platform topology, security boundaries, and major design decisions.
 
+Once this repository is public, a maintainer must enable GitHub Pages with
+**GitHub Actions** as its source. After that one-time setting, the docs workflow
+deploys pushes to `main` (or a manual run from `main`); it does not require an
+admin token or PAT.
+
 ## Repository map
 
 ```text
@@ -402,7 +421,7 @@ apps/web            Next.js operator interface
 apps/docs           Docusaurus documentation
 services/api        REST control plane, workers, GitHub integration, HITL
 services/gateway    model proxy, budgets, metering, envelope capture
-packages/cli        @theam/facility installer and platform client
+packages/cli        @theagilemonkeys/facility installer and platform client
 packages/core       domain logic, permissions, receipts, fingerprints
 packages/db         Postgres schema and migrations
 packages/mcp        MCP server
