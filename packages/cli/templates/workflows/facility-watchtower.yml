@@ -13,8 +13,10 @@
 #                       maintains a single incident issue and goes RED when
 #                       the facility is unhealthy.
 #
-# This workflow is not in its own watchlist (no self-recursion), and the
-# watchtower-locked guard keeps these schedules from quietly rotting.
+# This workflow is not in its own watchlist (no self-recursion). The
+# watchtower-locked guard structurally checks these cron entries and the canary
+# hash; it does not evaluate job conditions or GitHub repository settings, so
+# it cannot guarantee that a schedule is enabled or runnable.
 
 name: facility-watchtower
 

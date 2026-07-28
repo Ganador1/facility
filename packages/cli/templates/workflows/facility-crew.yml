@@ -126,10 +126,13 @@ jobs:
           # one MESSAGE, not for a sender: an issue comment on an
           # agent-canary-labeled issue, resolving to /architect (never
           # /builder), byte-identical (SHA-256, CR-stripped) to the pinned
-          # probe in .github/facility/watchtower/canary.mjs. A leaked App key
-          # can therefore at worst replay this fixed read-only probe — never
-          # run attacker-chosen instructions. The watchtower-locked guard
-          # keeps the hash in sync.
+          # probe in .github/facility/watchtower/canary.mjs. Within this crew
+          # trigger the hash gate blocks attacker-chosen instructions. It does
+          # not cap replay frequency or aggregate cost, or restrict any other
+          # GitHub permissions granted to the App. Use a dedicated App,
+          # installed only on canary repositories, with Issues: read and write
+          # as its only requested repository permission. The watchtower-locked
+          # guard keeps the hash in sync.
           if [ "$sender" = "{{CANARY_BOT}}" ]; then
             canary_comment_sha256="{{CANARY_SHA256}}"
             if [ "$GITHUB_EVENT_NAME" != "issue_comment" ]; then

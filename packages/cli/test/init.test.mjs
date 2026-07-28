@@ -35,6 +35,111 @@ function runCli(args, cwd) {
   return spawnSync(process.execPath, [cli, ...args], { cwd, encoding: "utf8" });
 }
 
+function assertWatchtowerSecurityClaims(
+  { crew, canaryWorkflow, canarySource, watchtowerWorkflow, watchtowerGuard },
+  scope,
+) {
+  const prose = (source) =>
+    source
+      .replace(/^\s*(?:#|\/\/)\s?/gm, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const crewClaims = prose(crew);
+  const canaryWorkflowClaims = prose(canaryWorkflow);
+  const canarySourceClaims = prose(canarySource);
+  const watchtowerWorkflowClaims = prose(watchtowerWorkflow);
+  const watchtowerGuardClaims = prose(watchtowerGuard);
+
+  assert.ok(
+    crewClaims.includes("does not cap replay frequency or aggregate cost"),
+    `${scope}: crew must disclose replay and aggregate-cost exposure`,
+  );
+  assert.ok(
+    canarySourceClaims.includes(
+      "hash is an instruction-content gate, not a replay or cost boundary",
+    ),
+    `${scope}: canary must disclose credential replay and cost exposure`,
+  );
+  assert.ok(
+    canarySourceClaims.includes("any other GitHub permissions it carries"),
+    `${scope}: canary must disclose permissions outside the crew hash gate`,
+  );
+  assert.ok(
+    canaryWorkflowClaims.includes("does not cap repeated replays or aggregate cost"),
+    `${scope}: canary workflow must disclose replay and aggregate-cost exposure`,
+  );
+
+  const canaryClaims = `${crewClaims} ${canaryWorkflowClaims} ${canarySourceClaims}`;
+  assert.doesNotMatch(
+    canaryClaims,
+    /at worst replay this fixed|never run attacker-chosen instructions|exactly ONE message/,
+    `${scope}: stale leaked-App-key safety overclaim must not return`,
+  );
+
+  const mintTokenStep =
+    canaryWorkflow.match(/\n      - name: Mint canary App token\n([\s\S]*?)\n      - name:/)?.[1] ?? "";
+  assert.ok(mintTokenStep, `${scope}: canary token mint step must exist`);
+  assert.match(
+    mintTokenStep,
+    /^\s+permission-issues: write$/m,
+    `${scope}: minted canary token must be narrowed to issue comments`,
+  );
+  const permissionInputs = [...mintTokenStep.matchAll(/^\s+permission-([\w-]+):\s*(\S+)$/gm)].map(
+    ([, permission, level]) => [permission, level],
+  );
+  assert.deepEqual(
+    permissionInputs,
+    [["issues", "write"]],
+    `${scope}: canary token must not request unrelated App permissions`,
+  );
+
+  assert.ok(
+    watchtowerGuardClaims.includes(
+      "cannot tell whether Actions or a schedule is enabled or runnable",
+    ),
+    `${scope}: guard must disclose its structural schedule-checking limit`,
+  );
+  assert.doesNotMatch(
+    watchtowerGuardClaims,
+    /disabled schedule|stay scheduled/,
+    `${scope}: guard must not claim to detect runtime schedule state`,
+  );
+  assert.ok(
+    watchtowerWorkflowClaims.includes(
+      "cannot guarantee that a schedule is enabled or runnable",
+    ),
+    `${scope}: watchtower workflow must disclose its structural guard limit`,
+  );
+  assert.doesNotMatch(
+    watchtowerWorkflowClaims,
+    /keeps these schedules from quietly rotting/,
+    `${scope}: watchtower workflow must not overstate schedule detection`,
+  );
+}
+
+test("watchtower templates state credential and schedule-checking boundaries", () => {
+  const templateRoot = join(pkgRoot, "templates");
+  assertWatchtowerSecurityClaims(
+    {
+      crew: readFileSync(join(templateRoot, "workflows/facility-crew.yml"), "utf8"),
+      canaryWorkflow: readFileSync(
+        join(templateRoot, "workflows/facility-canary.yml"),
+        "utf8",
+      ),
+      canarySource: readFileSync(join(templateRoot, "watchtower/canary.mjs"), "utf8"),
+      watchtowerWorkflow: readFileSync(
+        join(templateRoot, "workflows/facility-watchtower.yml"),
+        "utf8",
+      ),
+      watchtowerGuard: readFileSync(
+        join(templateRoot, "guards/watchtower-locked.mjs"),
+        "utf8",
+      ),
+    },
+    "templates",
+  );
+});
+
 test("local help and leading global flags are side-effect free", () => {
   for (const args of [
     ["init", "--help"],
@@ -232,6 +337,11 @@ test("init installs the method end to end", async (t) => {
   const watchtowerWorkflow = readFileSync(
     join(dir, ".github/workflows/facility-watchtower.yml"),
     "utf8",
+  );
+  const watchtowerGuard = readFileSync(join(dir, "guards/watchtower-locked.mjs"), "utf8");
+  assertWatchtowerSecurityClaims(
+    { crew, canaryWorkflow, canarySource, watchtowerWorkflow, watchtowerGuard },
+    "rendered install",
   );
   const outcomesJob = watchtowerWorkflow.match(/\n  outcomes:\n([\s\S]*?)\n  health:/)?.[1] ?? "";
   assert.ok(outcomesJob, "watchtower must contain an outcomes job");
