@@ -1,6 +1,7 @@
 import type { FacilityDb } from "@facility/db";
 import { z } from "zod";
 import {
+  type IssueProjectScope,
   type IssueSeverity,
   normalizeSeverity,
   raisePlatformIssue,
@@ -32,6 +33,7 @@ export async function applyFacilitySignal(
     projectId: string | null;
     signal: FacilitySignal;
     fallbackFingerprint: string;
+    issueScope?: IssueProjectScope;
   },
 ) {
   const status = input.signal.status;
@@ -44,21 +46,26 @@ export async function applyFacilitySignal(
       input.orgId,
       fingerprint,
       `${input.signal.type} signal recovered with status ${status}`,
+      input.issueScope,
     );
     return { action: "resolved" as const, issue };
   }
   if (status === "pending") return { action: "ignored" as const, issue: null };
 
   const severity = signalSeverity(input.signal);
-  const issue = await raisePlatformIssue(db, {
-    orgId: input.orgId,
-    projectId: input.projectId,
-    kind: signalKind(input.signal.type),
-    severity,
-    fingerprint,
-    title: input.signal.title ?? `${capitalize(input.signal.type)} ${status}`,
-    bodyMd: signalBody(input.signal, status),
-  });
+  const issue = await raisePlatformIssue(
+    db,
+    {
+      orgId: input.orgId,
+      projectId: input.projectId,
+      kind: signalKind(input.signal.type),
+      severity,
+      fingerprint,
+      title: input.signal.title ?? `${capitalize(input.signal.type)} ${status}`,
+      bodyMd: signalBody(input.signal, status),
+    },
+    input.issueScope,
+  );
   return { action: "raised" as const, issue };
 }
 
