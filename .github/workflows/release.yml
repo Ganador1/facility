@@ -1,33 +1,33 @@
-# Publishes @theagilemonkeys/facility to npm from a tag. The tag is the decision: nothing
-# is published on a merge to main. Run the workflow by hand first — it defaults
-# to a dry run — to see exactly what would be uploaded.
+# npm publication has two deliberately separate entry points:
 #
-# Requires an npm automation token in the NPM_TOKEN secret. Provenance links the
-# tarball to this workflow run, which npm only accepts from a public repository;
-# while the repository is private the publish falls back to a plain one.
+# - A manual run is always a credential-free dry run. There is no input that
+#   can turn it into a release.
+# - ci.yml calls this workflow from a public version-tag run only after every
+#   acceptance job passes. Keeping publication in that original run gives npm
+#   provenance the tested tag and commit rather than a downstream default-branch
+#   identity.
+#
+# The first public release needs a granular npm token in the protected `npm`
+# environment as NPM_BOOTSTRAP_TOKEN. After that one publish, configure npm
+# trusted publishing for ci.yml + the `npm` environment, revoke/delete the
+# bootstrap token, and disallow token publishing.
 # Actions are pinned to full SHAs (guards/actions-pinned.mjs enforces it).
 name: release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_call:
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Pack and verify without uploading
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
 jobs:
-  npm:
+  dry-run:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -37,54 +37,97 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          registry-url: https://registry.npmjs.org
 
       - run: pnpm install --frozen-lockfile
-
-      # A tag that disagrees with package.json publishes a version nobody can
-      # trace back to a commit. Refuse before anything reaches the registry.
-      - name: The tag and the package version must agree
-        if: startsWith(github.ref, 'refs/tags/v')
-        working-directory: packages/cli
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          packaged="v$(node -p "require('./package.json').version")"
-          if [ "$packaged" != "$TAG" ]; then
-            echo "tag $TAG does not match packages/cli/package.json ($packaged)" >&2
-            exit 1
-          fi
-          echo "Publishing $packaged"
 
       - name: Test the CLI
         run: pnpm --filter @theagilemonkeys/facility test
 
-      # The published tarball is what users get, not the checkout: install it
-      # the way npx would and run the binary. Catches a `files` list that
-      # forgot a directory — a failure mode no repository-level test sees.
-      - name: Install the packed tarball and run the binary
+      - name: Pack, install, and dry-run the exact release candidate
+        shell: bash
         run: |
           set -euo pipefail
-          tarball="$(cd packages/cli && npm pack --silent --pack-destination "$RUNNER_TEMP")"
-          mkdir -p "$RUNNER_TEMP/smoke" && cd "$RUNNER_TEMP/smoke"
+          release_dir="$RUNNER_TEMP/facility-release"
+          smoke_dir="$RUNNER_TEMP/facility-release-smoke"
+          mkdir -p "$release_dir" "$smoke_dir"
+          tarball="$(cd packages/cli && npm pack --ignore-scripts --pack-destination "$release_dir")"
+          candidate="$release_dir/$tarball"
+          node scripts/release.mjs artifact "$candidate"
+          cd "$smoke_dir"
           npm init -y >/dev/null
-          npm install --silent "$RUNNER_TEMP/$tarball"
+          npm install --ignore-scripts --silent "$candidate"
           ./node_modules/.bin/facility --help
+          cd "$GITHUB_WORKSPACE"
+          node scripts/release.mjs dry-run "$candidate"
 
-      - name: Decide the publish flags
-        id: flags
-        env:
-          VISIBILITY: ${{ github.event.repository.visibility }}
-          DRY_RUN: ${{ inputs.dry_run }}
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: npm-theagilemonkeys-facility
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    environment: npm
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Install the trusted-publishing npm client
         run: |
-          flags="--access public"
-          if [ "$VISIBILITY" = "public" ]; then flags="$flags --provenance"; fi
-          if [ "$DRY_RUN" = "true" ]; then flags="$flags --dry-run"; fi
-          echo "flags=$flags" >> "$GITHUB_OUTPUT"
-          echo "npm publish $flags"
+          npm install --global npm@11.15.0
+          test "$(npm --version)" = "11.15.0"
 
-      - name: Publish
-        working-directory: packages/cli
+      - name: Download the accepted release candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: facility-release-package
+          path: ${{ runner.temp }}/facility-release
+
+      - name: Revalidate the tag and release artifact
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/release.mjs validate
+          shopt -s nullglob
+          tarballs=("$RUNNER_TEMP/facility-release/"*.tgz)
+          if [ "${#tarballs[@]}" -ne 1 ]; then
+            echo "expected exactly one release tarball, found ${#tarballs[@]}" >&2
+            exit 1
+          fi
+          node scripts/release.mjs artifact "${tarballs[0]}"
+          echo "path=${tarballs[0]}" >> "$GITHUB_OUTPUT"
+
+      # This lookup is unauthenticated and fails closed on network errors,
+      # malformed metadata, and any response other than an exact package 404
+      # or valid existing-package document.
+      - name: Determine the allowed authentication path
+        id: registry
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm publish ${{ steps.flags.outputs.flags }}
+          CANDIDATE: ${{ steps.candidate.outputs.path }}
+        run: node scripts/release.mjs registry-state "$CANDIDATE"
+
+      - name: Publish with npm trusted publishing
+        if: steps.registry.outputs.state == 'existing'
+        env:
+          CANDIDATE: ${{ steps.candidate.outputs.path }}
+        run: node scripts/release.mjs publish "$CANDIDATE" --auth=oidc
+
+      # The environment secret is materialized only on the exact first-publish
+      # branch. The helper probes the unauthenticated registry twice more before
+      # spawning npm, preventing token fallback for existing packages or
+      # uncertain registry state.
+      - name: Bootstrap the package once with a granular token
+        if: steps.registry.outputs.state == 'missing'
+        env:
+          CANDIDATE: ${{ steps.candidate.outputs.path }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: node scripts/release.mjs publish "$CANDIDATE" --auth=bootstrap

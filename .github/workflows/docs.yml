@@ -1,8 +1,8 @@
-# Publishes the Docusaurus site (apps/docs) to GitHub Pages on every push to
-# main. Pages only serves public repositories outside Enterprise, so the job
-# is a no-op while this repository is private: merging this workflow changes
-# nothing today, and the first push after the repository is made public
-# publishes the site without anyone having to remember this file exists.
+# Publishes the Docusaurus site (apps/docs) to GitHub Pages from main. After the
+# repository becomes public, a maintainer must enable Pages with "GitHub
+# Actions" as its source once; a push to main (or a manual run from main) can
+# then deploy it. That repository setting intentionally remains a human admin
+# action instead of requiring an admin token in this workflow.
 # Actions are pinned to full SHAs (guards/actions-pinned.mjs enforces it).
 name: docs
 
@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.event.repository.visibility == 'public'
+    if: github.event.repository.visibility == 'public' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

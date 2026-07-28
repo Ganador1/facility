@@ -100,8 +100,57 @@ request so the change can be reviewed and reverted independently.
 
 ## Releasing (maintainers)
 
+Publishing is tag-driven. A `vX.Y.Z` tag starts `.github/workflows/ci.yml`,
+which must pass root verification, the self-host build, and the required
+sandbox E2E before it calls the reusable release workflow. Do not run
+`npm publish` locally or invoke the release workflow as a substitute for those
+gates; its manual entry point is a dry run.
+
 1. Bump the version in `package.json` and `packages/cli/package.json` according
    to semver (before 1.0, a minor release may contain breaking changes).
-2. Run `pnpm verify` and the build for every publishable artifact.
-3. Publish `@theagilemonkeys/facility` with public access.
-4. Tag `vX.Y.Z` and write release notes in terms of behavior, not commit titles.
+2. Run `pnpm verify` and the build for every publishable artifact, then merge
+   the release change through the normal reviewed pull-request path.
+3. Tag the release commit on `main` as `vX.Y.Z` and push the tag. CI refuses a
+   tag whose version, commit, visibility, or acceptance results do not match the
+   release contract.
+4. After the publish job succeeds, write release notes in terms of behavior,
+   not commit titles.
+
+### First npm publish only
+
+npm cannot attach a trusted publisher until the package exists. Bootstrap
+`@theagilemonkeys/facility` once with a short-lived
+[granular access token](https://docs.npmjs.com/creating-and-viewing-access-tokens/):
+
+1. Give the token read/write access only to the `@theagilemonkeys` scope, no
+   organization-management access, the shortest practical expiry, and bypass
+   2FA for the CI publish.
+2. Protect `v*` tag creation with a repository ruleset. Create the GitHub
+   environment named `npm`, require maintainer approval for deployment, and
+   store the token there as the `NPM_BOOTSTRAP_TOKEN` environment secret.
+3. Push the first release tag through the tag-driven flow above. The release
+   code accepts this credential only while the package is absent from npm.
+
+As soon as the first version exists, configure the package's
+[npm trusted publisher](https://docs.npmjs.com/trusted-publishers/) with these
+exact GitHub Actions values:
+
+- organization or user: `theam`
+- repository: `facility`
+- workflow filename: `ci.yml`
+- environment: `npm`
+- allowed action: `npm publish`
+
+Use `ci.yml`, not `release.yml`: npm validates the caller when a reusable
+workflow contains the publish command. Then delete the `NPM_BOOTSTRAP_TOKEN`
+GitHub secret, revoke the granular token on npm, and set the package's
+**Publishing access** to **Require two-factor authentication and disallow
+tokens**. Later tags publish through short-lived OIDC credentials only.
+
+### One-time GitHub Pages setup
+
+After the repository becomes public, a maintainer must select **GitHub
+Actions** under **Settings → Pages → Build and deployment → Source** once.
+After that, `.github/workflows/docs.yml` deploys pushes to `main` and manual
+runs selected from `main`. The workflow deliberately does not use an admin
+token or PAT to change the repository setting itself.

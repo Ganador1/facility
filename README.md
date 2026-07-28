@@ -223,8 +223,9 @@ connecting it: agents work in Facility's sandboxes and push branches, pull
 requests and comments the way a collaborator would. Disconnecting leaves no
 trace either.
 
-That is the whole entry path — see the
-[connect-an-existing-repository guide](apps/docs/docs/guides/existing-repo.md).
+That is the whole entry path. If the repository already runs Facility's
+vendored workflows, follow the
+[existing-repository adoption guide](apps/docs/docs/guides/existing-repo.md).
 For the rest of the platform, follow the
 [self-host quickstart](apps/docs/docs/self-host/quickstart.md),
 [authentication guide](apps/docs/docs/self-host/authentication.md), and
@@ -407,6 +408,11 @@ configured GitHub App for repository automation.
 
 The [architecture document](docs/platform/ARCHITECTURE.md) describes the
 platform topology, security boundaries, and major design decisions.
+
+Once this repository is public, a maintainer must enable GitHub Pages with
+**GitHub Actions** as its source. After that one-time setting, the docs workflow
+deploys pushes to `main` (or a manual run from `main`); it does not require an
+admin token or PAT.
 
 ## Repository map
 

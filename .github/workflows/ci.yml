@@ -18,6 +18,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
@@ -30,6 +32,49 @@ jobs:
 
       - name: Release-shaped verification
         run: pnpm verify
+
+      - name: Validate the public release tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
+        run: node scripts/release.mjs validate
+
+      # Build the package once in the nonprivileged acceptance job. The npm
+      # environment later receives this exact, already-tested archive rather
+      # than running package lifecycle code with publication credentials.
+      - name: Pack the release candidate
+        id: candidate
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/facility-release"
+          mkdir -p "$release_dir"
+          tarball="$(cd packages/cli && npm pack --ignore-scripts --pack-destination "$release_dir")"
+          candidate="$release_dir/$tarball"
+          node scripts/release.mjs artifact "$candidate"
+          echo "path=$candidate" >> "$GITHUB_OUTPUT"
+
+      - name: Install the release candidate and run the binary
+        if: steps.candidate.outcome == 'success'
+        shell: bash
+        env:
+          CANDIDATE: ${{ steps.candidate.outputs.path }}
+        run: |
+          set -euo pipefail
+          smoke_dir="$RUNNER_TEMP/facility-release-smoke"
+          mkdir -p "$smoke_dir"
+          cd "$smoke_dir"
+          npm init -y >/dev/null
+          npm install --ignore-scripts --silent "$CANDIDATE"
+          ./node_modules/.bin/facility --help
+
+      - name: Preserve the tested release candidate
+        if: steps.candidate.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: facility-release-package
+          path: ${{ steps.candidate.outputs.path }}
+          if-no-files-found: error
+          retention-days: 1
 
   self-host-build:
     runs-on: ubuntu-latest
@@ -120,3 +165,14 @@ jobs:
       - name: Record an allowed skip
         if: steps.policy.outputs.required != 'true'
         run: echo "Sandbox E2E skipped by policy — ${{ steps.policy.outputs.reason }}."
+
+  # Keep publication in the original tag run so npm provenance identifies the
+  # tag and commit that passed every acceptance job. A downstream workflow_run
+  # would instead attest the default branch SHA.
+  publish-npm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
+    needs: [verify, self-host-build, sandbox-e2e]
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/release.yml
