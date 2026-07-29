@@ -119,7 +119,9 @@ GitHub Apps → New GitHub App**.
 - **GitHub App name / Homepage URL**: anything you like.
 - **Callback URL**: `http://localhost:3400/api/auth/callback` — it must match
   `AUTH_CALLBACK_URL` in `.env` exactly, byte for byte.
-- Check **"Request user authorization (OAuth) during installation"**.
+- Leave **"Request user authorization (OAuth) during installation"** unchecked.
+  Facility requests authorization when you sign in after configuring `.env`
+  and restarting the stack.
 - **Webhook**: optional for local evaluation — you can disable it and use the
   "sync from GitHub" button instead. To receive events on a development
   machine you need a public URL for your laptop; the
