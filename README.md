@@ -249,7 +249,8 @@ node packages/cli/bin/facility.mjs --help
 curl http://localhost:4420/healthz
 ```
 
-See the [CLI, API, SDK, and MCP operator guide](docs/platform/INTERFACES.md) for
+See the [API reference](apps/docs/docs/reference/api.md) and
+[webhooks reference](apps/docs/docs/reference/webhooks.md) for
 authentication, automation-safe output, streaming, write approvals, deployment,
 and troubleshooting.
 
@@ -313,7 +314,7 @@ existing-provider previews and require their readiness check. Then commit the ge
 an issue, and comment `/architect` to start the delivery loop described below.
 
 See the [CLI reference](apps/docs/docs/reference/cli.md) and
-[guards guide](docs/guards.md) for the available commands and extension points.
+[guards guide](apps/docs/docs/reference/guards.md) for the available commands and extension points.
 
 ## Repository automation authentication
 
@@ -359,7 +360,7 @@ time. The **platform lane** runs the same contracts in an isolated sandbox and
 adds live streaming, steering, centralized credentials, and platform-enforced
 budgets. A project can move one trigger at a time between lanes.
 
-Read [the method](docs/method.md) for the reasoning behind the roles, gates,
+Read [the method](apps/docs/docs/concepts/method.md) for the reasoning behind the roles, gates,
 standards, guards, and watchtower.
 
 ## Getting the most from Facility
@@ -391,7 +392,7 @@ standards, guards, and watchtower.
 
 The [existing-repository guide](apps/docs/docs/guides/existing-repo.md),
 [security model](apps/docs/docs/reference/security.md), and
-[hardening notes](docs/hardening.md) cover these practices in more detail.
+[hardening notes](apps/docs/docs/reference/hardening.md) cover these practices in more detail.
 
 ## Current status
 
@@ -406,7 +407,7 @@ the complete platform surface, with focused subsets exposed through the CLI and
 MCP. Production deployments use GitHub directly or the SaaS OIDC broker for human login and a separately
 configured GitHub App for repository automation.
 
-The [architecture document](docs/platform/ARCHITECTURE.md) describes the
+The [architecture document](apps/docs/docs/reference/architecture.md) describes the
 platform topology, security boundaries, and major design decisions.
 
 Once this repository is public, a maintainer must enable GitHub Pages with
@@ -433,7 +434,7 @@ infra               Docker and AWS deployment assets
 ```
 
 The full topology and design decisions are in the
-[architecture document](docs/platform/ARCHITECTURE.md).
+[architecture document](apps/docs/docs/reference/architecture.md).
 
 ## Contributing
 

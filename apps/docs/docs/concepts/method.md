@@ -1,3 +1,7 @@
+---
+title: The method
+---
+
 # The method
 
 Facility is a small set of decisions about how AI agents and humans share a
@@ -112,15 +116,16 @@ twice, that problem graduates from prose to a guard, and never comes back.
 Everything above can break politely: a dead trigger stops summoning agents, a
 mis-permissioned review lane approves silence, and no human notices because
 nothing turns red. So the facility watches itself — nightly agent-PR
-**outcomes** (acceptance, one-shot rate, human fixups) on a dashboard issue,
-a daily **health monitor** with per-workflow budgets that goes red on breach
-and manages its own incident issue, and a weekly **canary** that flies a
-synthetic `/architect` probe through the real pipeline, authorized by message
-hash rather than by sender. The whole layer reads only the GitHub API — never
-telemetry the facility writes — and is pinned in place by the
-`watchtower-locked` guard so it cannot quietly rot. The reasoning, the
-canary's authorization design, and what's deliberately not built yet are in
-[watchtower.md](watchtower.md).
+**outcomes** (acceptance, one-shot rate, human fixups) published in the Actions
+run and its immutable artifact, with an optional JSON sink; a daily **health
+monitor** with per-workflow budgets that goes red on breach and manages its own
+incident issue; and a weekly **canary** that flies a synthetic `/architect`
+probe through the real pipeline, authorized by message hash rather than by
+sender. The repository-lane instruments read only the GitHub API — never
+telemetry the facility writes — and the `watchtower-locked` guard checks their
+required cron entries and pinned canary hash. The reasoning, the canary's
+authorization design, and the repository-lane specifics are in [the
+watchtower](watchtower.md).
 
 "Everything gets measured" is the second half of the method: the crew makes
 work cheap, the gates keep judgment human, and the watchtower is how you know

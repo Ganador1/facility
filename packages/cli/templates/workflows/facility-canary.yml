@@ -8,11 +8,16 @@
 # The probe comment must be posted with a GitHub App token
 # (CANARY_APP_ID / CANARY_APP_PRIVATE_KEY in the facility-crew Environment):
 # comments posted with GITHUB_TOKEN trigger no workflows (GitHub's recursion
-# guard). facility-crew.yml admits the canary bot for exactly ONE message —
+# guard). facility-crew.yml admits the canary bot for one exact message body —
 # byte-identical (SHA-256) to the probe body in
 # .github/facility/watchtower/canary.mjs, on an agent-canary-labeled issue,
-# resolving to /architect. Without the App secrets the canary skips with a
-# notice. Cost: one bounded architect run per week.
+# resolving to /architect. The gate blocks attacker-chosen crew instructions,
+# but does not cap repeated replays or aggregate cost and cannot constrain other
+# permissions granted to the App. This workflow narrows its minted token to
+# Issues: write; keep the App dedicated to canary repositories with Issues:
+# read and write as its only requested repository permission. Without the App
+# secrets the canary skips with a notice. The schedule normally starts one
+# architect run per week.
 
 name: facility-canary
 
@@ -47,6 +52,7 @@ jobs:
         with:
           app-id: ${{ secrets.CANARY_APP_ID }}
           private-key: ${{ secrets.CANARY_APP_PRIVATE_KEY }}
+          permission-issues: write
 
       - name: Fly the canary
         env:

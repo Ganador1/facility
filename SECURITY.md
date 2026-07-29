@@ -27,5 +27,5 @@ In scope, with examples:
 The generated setup assumes: secrets live in GitHub Environments with
 TEST-tier credentials, the default branch is protected, and runners are
 GitHub-hosted (ephemeral). If you weaken any of those, you own the resulting
-surface. `docs/hardening.md` documents the threat model behind each generated
+surface. `apps/docs/docs/reference/hardening.md` documents the threat model behind each generated
 decision.

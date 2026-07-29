@@ -1,6 +1,10 @@
+---
+title: Architecture
+---
+
 # Facility Platform — Architecture
 
-**Status**: v1 · companion to [PRD.md](PRD.md)
+**Status**: v1
 
 ## 1. Stance
 
@@ -106,7 +110,14 @@ Scoping chain: **org → project → resource**. Every table carries `org_id` (a
 
 **Gateway request**: sandbox/proxy client → `POST /v1/{provider}/…` with virtual key → key lookup (cache) → budget check (hard-stop ⇒ 402 envelope) → model policy check → forward to provider with org's sealed credential → stream back; tee usage (tokens from provider usage blocks; cost from `packages/core` price table) → `llm_requests` + spend counters + envelopes to storage. p99 overhead target ≤ 20ms + provider latency, backpressure-safe streaming.
 
-**Watchtower (platformized)**: worker crons per project — outcomes nightly (GitHub API join of agent PRs → `outcomes`), health daily (workflow failure streaks + run budgets from repo `budgets.json` compat + platform budgets → incident `platform_issues`), canary weekly (posts pinned probe via App as canary identity, verifies flight, message-hash contract preserved). All read GitHub API, never the platform's own telemetry (watchtower independence rule).
+**Watchtower**: repository-lane instruments remain vendored and read the GitHub
+API directly rather than Facility telemetry. The platform worker runs per
+project: outcomes collect independent GitHub evidence into `outcomes`; health
+combines GitHub workflow and budget evidence with control-plane run, gateway,
+and dispatch state into `platform_issues`; repository-lane canaries verify the
+GitHub workflow, while platform-lane canaries dispatch a pinned control-plane
+run and count it as passing only when independent GitHub canary evidence
+corroborates its success.
 
 **Learning mode**: nightly cron per enabled project → sandbox session with the learning harness: reads the day's sessions/reviews/failures (via API, read-only key) → drafts proposals (new skill/rule/KB entries/guard candidates — the ratchet) → each proposal = HITL item with diff preview → human approves ⇒ Harness version created (draft→active) / KB entry committed; rejects ⇒ recorded, feeds next night's context.
 

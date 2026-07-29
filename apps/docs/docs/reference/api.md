@@ -16,7 +16,7 @@ clients can generate from the committed OpenAPI document until SDK distribution.
 - **Session cookie** — browser sign-in backed by a verified GitHub identity.
 - **API key** — `Authorization: Bearer fak_…`, issued with
   `facility keys issue` or `POST /v1/keys`; each key binds a role, so RBAC is identical for
-  humans and machines.
+  humans and machines. Use a project-scoped key wherever possible.
 
 ## Conventions
 
@@ -37,7 +37,9 @@ clients can generate from the committed OpenAPI document until SDK distribution.
   `Last-Event-ID` or `afterSeq`.
 - Creation routes that advertise `Idempotency-Key` accept 8–200 characters.
   The same principal/method/path/key and body replays the stored response for
-  24 hours; a changed body is a `409 idempotency_key_reused`.
+  24 hours; a changed body is a `409 idempotency_key_reused`. An active first
+  request returns `409 idempotency_in_progress` with `Retry-After`; pending
+  claims older than 15 minutes may be reclaimed after a crashed request.
 
 ## Resource map
 
@@ -80,6 +82,18 @@ const transcript = await facility.runTranscript(runId); // raw NDJSON text
 
 GETs retry transient failures. POSTs retry only when the caller supplies an
 idempotency key; non-idempotent writes are never retried automatically.
+For ordinary JSON requests, non-2xx responses become `FacilityApiError` with
+the HTTP `status`, the server's `code` and `details`, and the parsed error
+`payload` when available. A non-empty 2xx body that is not valid JSON becomes
+`FacilityApiError` with the response status and code `invalid_response`. If the
+SDK's deadline aborts a request before a response arrives, it reports status
+`408` and code `request_timeout`; a caller-supplied `AbortSignal` instead
+preserves the rejection produced by `fetch` rather than wrapping it.
+
+Streams do not turn every termination into `FacilityApiError`. A
+non-retryable HTTP response rejects `done` with that type; retryable HTTP and
+transport failures are passed to `onError` while reconnecting. Calling
+`close()` or aborting the stream's caller signal stops it and fulfills `done`.
 
 ## Facility-signed webhooks
 
@@ -96,3 +110,21 @@ deduplicated per integration. Outbound delivery is at least once, never follows
 redirects, and durably retries network failures and HTTP 408/425/429/5xx up to
 eight attempts. See the OpenAPI integration routes for delivery inspection and
 manual retry.
+
+The full wire contract — integration types, the `facility.signal.v1` envelope
+for lifecycle telemetry, and outbound delivery semantics — is in the
+[webhooks reference](webhooks.md).
+
+## Troubleshooting
+
+- `facility doctor [--json]` checks the local installation; `facility doctor
+  --platform [--profile <name>] [--allow-insecure] [--json]` checks deployment
+  readiness. Both modes print actionable remediation and preserve the JSON
+  contract.
+- HTTP 401 / CLI exit 2 means missing, invalid, expired, or revoked credentials.
+- HTTP 403 identifies the needed permission in `error.details`.
+- HTTP 409 means current resource state or idempotency ownership conflicts.
+- MCP HTTP 421 means the request `Host` or browser `Origin` is not trusted.
+- Outbound webhooks require HTTPS in production, reject private/reserved DNS
+  answers, pin the validated address for delivery, sign timestamp plus body,
+  never follow redirects, and retry transient failures durably.

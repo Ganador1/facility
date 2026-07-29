@@ -10,9 +10,15 @@
 // Authorization is by MESSAGE, not by sender: the crew workflow admits the
 // canary bot only for a comment that is byte-identical (SHA-256, CR-stripped)
 // to CANARY_PROBE_BODY below, on an agent-canary-labeled issue, resolving to
-// /architect. A leaked App key can therefore at worst replay this fixed
-// read-only probe — never run attacker-chosen instructions. The pinned hash
-// in facility-crew.yml is kept in sync by the watchtower-locked guard.
+// /architect. Within the crew trigger that blocks attacker-chosen
+// instructions, but the hash is an instruction-content gate, not a replay or
+// cost boundary: the token can post the fixed probe repeatedly, and it can
+// exercise any other GitHub permissions it carries. The generated workflow
+// narrows its minted token to Issues: write. Keep the backing App dedicated to
+// canary repositories with Issues: read and write as its only requested
+// repository permission, because its private key can mint tokens up to the
+// App's installed permissions. The pinned hash in facility-crew.yml is kept in
+// sync by the watchtower-locked guard.
 //
 // The probe must be posted with a GitHub App or PAT token (CANARY_COMMENT_TOKEN):
 // comments posted with the workflow's own GITHUB_TOKEN trigger no workflows
