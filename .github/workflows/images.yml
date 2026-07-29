@@ -6,9 +6,12 @@
 # publishes only the sha tag, which is what you want when deploying an instance
 # from a commit that is not a release.
 #
-# ECS can pull these anonymously only once the packages are public, which
-# follows the repository's own visibility. While the repository is private,
-# deployments keep building into their own registry — see the AWS runbook.
+# A package is created PRIVATE regardless of the repository's visibility: what
+# it inherits from the linked repository is access permissions, not visibility.
+# Making each of the six public is a one-time manual step in the package
+# settings, after which anyone — including ECS — can pull without authenticating.
+# Until then, deployments keep building into their own registry (see the AWS
+# runbook), which also stays the right answer for private forks.
 # Actions are pinned to full SHAs (guards/actions-pinned.mjs enforces it).
 name: images
 

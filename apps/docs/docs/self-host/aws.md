@@ -119,9 +119,10 @@ image_overrides = {
 ```
 
 They are `linux/amd64`, matching the module's default `task_cpu_architecture`,
-and ECS pulls them anonymously once the packages are public. A Graviton
-deployment, a commit that is not a release, or a fork whose packages stay
-private builds its own — continue below.
+and ECS pulls them without credentials because the packages are public. A
+Graviton deployment, a commit that is not a release, or a fork of this
+repository whose own packages are private builds its images instead — continue
+below.
 
 ### Building them yourself
 
