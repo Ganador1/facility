@@ -74,10 +74,16 @@ Record these outputs:
 
 ## 3. Build and push images
 
-From the repository root:
+From the module directory used above, build from the repository root and return
+afterward:
 
 ```bash
-AWS_REGION=us-east-1 IMAGE_TAG=$(git rev-parse --short HEAD) ./infra/build-images.sh
+cd ../../..
+AWS_REGION=us-east-1 \
+ECR_PREFIX="$(terraform -chdir=infra/terraform/aws output -raw ecs_cluster_name)" \
+IMAGE_TAG=$(git rev-parse --short HEAD) \
+./infra/build-images.sh
+cd infra/terraform/aws
 ```
 
 The script expects Dockerfiles for `api`, `worker`, `gateway`, `web`, `mcp`, and
