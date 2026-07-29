@@ -15,9 +15,9 @@ This command fails unless all of the following execute successfully:
 1. repository lint and typecheck;
 2. every declared build output removed, then every workspace rebuilt with the
    Turbo cache disabled;
-3. database, API, and gateway integration suites invoked directly (not through
-   Turbo), against `facility_test` and `facility_gw`; any reported skip is a
-   failure;
+3. database, CLI bootstrap, API, and gateway integration suites invoked
+   directly (not through Turbo), against `facility_test` and `facility_gw`; any
+   reported skip is a failure;
 4. the development-launcher tests and all remaining workspace tests with the
    Turbo cache disabled;
 5. deterministic repository guards; and

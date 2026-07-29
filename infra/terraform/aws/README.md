@@ -24,6 +24,8 @@ cp terraform.tfvars.example playground.tfvars
 
 Edit `playground.tfvars`:
 
+- Set `aws_region` and change the copied `environment = "playground"` value if
+  this is not a playground deployment; a filename does not set the variable.
 - Set `app_hostname`, `api_hostname`, and `mcp_hostname`.
 - Set `acm_certificate_arn` for HTTPS, or leave it empty for HTTP-only testing.
 - Set `route53_zone_id` if Terraform should create alias records.
@@ -34,6 +36,21 @@ Edit `playground.tfvars`:
 - Select direct `github` authentication for self-hosting or `oidc` for a SaaS
   broker. MCP OAuth is always issued by the dedicated Facility instance.
 - Tune `envelope_retention_days` for your data-retention policy.
+
+For the first apply, set every service count to zero. The images and secret
+values do not exist yet, and `mcp_desired_count` otherwise defaults to `2`:
+
+```hcl
+api_desired_count     = 0
+worker_desired_count  = 0
+gateway_desired_count = 0
+web_desired_count     = 0
+mcp_desired_count     = 0
+```
+
+For the AWS-managed CloudFront validation endpoint, also clear the copied
+placeholder `acm_certificate_arn` and `route53_zone_id`; placeholder values are
+not disabled merely by setting `enable_cloudfront_api_endpoint = true`.
 
 No secret values belong in tfvars.
 
@@ -57,10 +74,16 @@ Record these outputs:
 
 ## 3. Build and push images
 
-From the repository root:
+From the module directory used above, build from the repository root and return
+afterward:
 
 ```bash
-AWS_REGION=us-east-1 IMAGE_TAG=$(git rev-parse --short HEAD) ./infra/build-images.sh
+cd ../../..
+AWS_REGION=us-east-1 \
+ECR_PREFIX="$(terraform -chdir=infra/terraform/aws output -raw ecs_cluster_name)" \
+IMAGE_TAG=$(git rev-parse --short HEAD) \
+./infra/build-images.sh
+cd infra/terraform/aws
 ```
 
 The script expects Dockerfiles for `api`, `worker`, `gateway`, `web`, `mcp`, and
@@ -76,7 +99,10 @@ Apply again with matching `container_image_tags`.
 ## 4. Populate Secrets Manager
 
 Terraform creates encrypted secret containers but never writes secret values.
-Populate them with `aws secretsmanager put-secret-value`.
+Populate them with `aws secretsmanager put-secret-value`, loading plaintext from
+standard input or a protected file rather than a process argument. The
+[deployment runbook](https://github.com/theam/facility/blob/main/apps/docs/docs/self-host/aws.md#4-populate-the-secret-containers)
+has commands that populate every required value without printing it.
 
 Required runtime values:
 
@@ -98,14 +124,9 @@ The production service image loads Amazon's published global RDS CA bundle so
 `sslmode=verify-full` encrypts the connection and verifies the database
 hostname. Do not downgrade this to a non-verifying TLS mode.
 
-Fetch the RDS managed password:
-
-```bash
-aws secretsmanager get-secret-value \
-  --secret-id "$(terraform output -raw rds_master_user_secret_arn)" \
-  --query SecretString \
-  --output text
-```
+The RDS master password is in `rds_master_user_secret_arn`; use the runbook's
+captured pipeline to URL-encode it into `database_url` without writing the
+plaintext to the terminal.
 
 ## 5. Run the migrate + seed task once
 
@@ -126,7 +147,30 @@ Watch `/facility/<environment>/migrate` in CloudWatch Logs for
 `applied 0001_control_plane.sql` (or `already applied`) followed by the seed
 summary. `facility doctor` will flag `seed_essentials` if this task did not run.
 
-## 6. Verify service health
+## 6. Bind the instance
+
+`facility instance bootstrap` creates the organization, its owner, and the
+GitHub account/installation binding that sign-in checks. The database is
+reachable only from the service security group, so run it as a one-shot task
+using this module's `migrate` task definition — the API image carries the CLI —
+with a container override. The
+[AWS deployment runbook](https://github.com/theam/facility/blob/main/apps/docs/docs/self-host/aws.md#6-bind-the-instance-to-your-github-organization)
+has the exact invocation and the ids it needs.
+
+Until this runs, every sign-in fails with `not_invited` or
+`installation_access_required`.
+
+## 7. Start and verify the services
+
+Raise all five desired counts in `playground.tfvars`, apply the same file, and
+wait for every service, including MCP:
+
+```bash
+terraform apply -var-file=playground.tfvars
+aws ecs wait services-stable \
+  --cluster "$(terraform output -raw ecs_cluster_name)" \
+  --services api worker gateway web mcp
+```
 
 ```bash
 curl -fsS "https://${api_hostname}/health"
@@ -154,6 +198,9 @@ The reference module has been checked with:
 
 A full `terraform apply` provisions ~89 billed resources (RDS, NAT gateway,
 ALB, ECS services) — run it when you want a live environment, then
-`build-images.sh` + the one-shot migrate task per the steps above. Tear down
-with `terraform destroy` (set `enable_deletion_protection=false` and
-`force_destroy_bucket=true` for an ephemeral playground).
+`build-images.sh` + the one-shot migrate task per the steps above. For an
+ephemeral playground, set `enable_deletion_protection=false` and
+`force_destroy_bucket=true`, apply `playground.tfvars`, remove the non-empty ECR
+repositories, then destroy with that same variable file. The published
+[deployment runbook](https://github.com/theam/facility/blob/main/apps/docs/docs/self-host/aws.md#repeated-deployments-and-teardown)
+contains the exact, state-safe teardown commands.
