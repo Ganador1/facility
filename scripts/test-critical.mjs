@@ -32,7 +32,10 @@ function run(command, args, database) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 
   const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  if (/\bskip(?:ped)?\b/i.test(output)) {
+  const reportedSkip =
+    /# SKIP\b/i.test(output) ||
+    /\b(?:[1-9]\d*\s+skipped|skipped\s+[1-9]\d*)\b/i.test(output);
+  if (reportedSkip) {
     console.error(
       `Critical integration suite for ${database} reported a skip. Critical tests must run, not degrade to green.`,
     );
