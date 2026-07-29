@@ -81,6 +81,9 @@ COPY --from=build-api /prod/api /app
 # hundred kilobytes of plain ESM whose only dependency, `postgres`, is already
 # here for @facility/db.
 COPY --from=build-api /app/packages/cli /app/cli
+# Regression guard for the deployed operator path: importing the bootstrap
+# command also proves that its production `postgres` dependency resolves.
+RUN node cli/bin/facility.mjs instance bootstrap --help >/dev/null
 EXPOSE 4400
 CMD ["node", "dist/start.js"]
 
