@@ -10,6 +10,16 @@ signal to production; people decide what ships; every run leaves a receipt.
 Facility is the control plane that makes that operable for an organization —
 not one repo at a time, but as a governed system.
 
+:::warning Early software
+
+Facility runs the delivery of the team that builds it, and nowhere else yet.
+The schema moves, the API is young, features arrive ahead of their
+documentation, and no upgrade path is promised between `0.x` releases. It is
+published this early on purpose — it improves by being used and corrected —
+but Apache-2.0 means what it says: no warranty, use at your own risk.
+
+:::
+
 ## The problem it closes
 
 Wiring an AI agent into a repository is the easy part. The second month is
