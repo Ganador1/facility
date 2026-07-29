@@ -101,7 +101,29 @@ terraform -chdir="$FACILITY_TF_DIR" init
 terraform -chdir="$FACILITY_TF_DIR" apply -var-file="${FACILITY_ENV}.tfvars"
 ```
 
-## 3. Build and push images
+## 3. Get the images
+
+Released images are published to the GitHub Container Registry, so a deployment
+that tracks a release builds nothing. Point Terraform at them instead of the
+repositories this module creates:
+
+```hcl
+image_overrides = {
+  api     = "ghcr.io/theam/facility/api:0.3.0"
+  worker  = "ghcr.io/theam/facility/worker:0.3.0"
+  gateway = "ghcr.io/theam/facility/gateway:0.3.0"
+  web     = "ghcr.io/theam/facility/web:0.3.0"
+  mcp     = "ghcr.io/theam/facility/mcp:0.3.0"
+  runner  = "ghcr.io/theam/facility/runner:0.3.0"
+}
+```
+
+They are `linux/amd64`, matching the module's default `task_cpu_architecture`,
+and ECS pulls them anonymously once the packages are public. A Graviton
+deployment, a commit that is not a release, or a fork whose packages stay
+private builds its own — continue below.
+
+### Building them yourself
 
 The build script defaults to a playground prefix, so `ECR_PREFIX` is mandatory:
 
