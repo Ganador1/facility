@@ -20,6 +20,11 @@ npx @theagilemonkeys/facility --help
 
 Node.js 20 or newer. Zero configuration to read; one dependency.
 
+**Early software.** Facility is published while it is still being built: the
+API is young, generated files change shape between `0.x` releases, and no
+upgrade path is promised across them. Apache-2.0 means what it says — no
+warranty, use at your own risk.
+
 ## Talking to a platform
 
 ```bash

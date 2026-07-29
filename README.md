@@ -33,6 +33,26 @@ When a team *wants* the process in the repository — agents running in its own
 CI, invoked from issue comments — Facility installs that too. It is the second
 step, not the entry price.
 
+## Status: early software, published early on purpose
+
+Facility runs the delivery of the team that builds it, and nowhere else yet. It
+is published at this stage deliberately: a platform for governing AI-assisted
+delivery is not something to design in private for a year and then unveil. It
+gets better by being used, argued with, and corrected.
+
+What that means in practice: the database schema moves, the API is versioned
+but young, features arrive ahead of their documentation, and no upgrade path is
+promised between `0.x` releases. Point it at repositories where a bad agent
+pull request is an inconvenience rather than an incident, and read the
+[security model](apps/docs/docs/reference/security.md) and the
+[hardening notes](apps/docs/docs/reference/hardening.md) before pointing it at
+anything else. Apache-2.0 means what it says: no warranty, use at your own
+risk.
+
+Bug reports, questions and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md). Rough edges are expected, and the ones you
+hit are the ones worth fixing first.
+
 ## Who Facility is for
 
 - **Engineering teams** that want one explicit standard for humans and agents,
