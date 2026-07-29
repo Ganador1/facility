@@ -30,10 +30,13 @@ Use these general settings:
 | Callback URL | `https://<web-host>/api/auth/callback`, exactly matching `AUTH_CALLBACK_URL` |
 | Setup URL | empty |
 | Device flow | disabled |
-| Request user authorization (OAuth) during installation | enabled |
+| Request user authorization (OAuth) during installation | disabled |
 | Where can this GitHub App be installed? | **Only on this account** for a private installation |
 
-Leave the webhook inactive until the API has a public HTTPS URL.
+Keep automatic user authorization disabled when installing the App before
+Facility is deployed. This does not disable OAuth: signing in to Facility later
+starts GitHub authorization after the callback URL is reachable. Leave the
+webhook inactive until the API has a public HTTPS URL.
 
 ## 2. Grant permissions
 

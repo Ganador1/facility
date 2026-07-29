@@ -323,7 +323,7 @@ doctor judge the deployment rather than judging it yourself:
 
 ```bash
 node packages/cli/bin/facility.mjs login --url "$FACILITY_API_URL"
-node packages/cli/bin/facility.mjs doctor
+node packages/cli/bin/facility.mjs doctor --platform
 ```
 
 Do not send traffic until it reports no `FAIL`. It verifies migrations, object
