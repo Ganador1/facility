@@ -190,11 +190,14 @@ describe("gateway", async () => {
     stubState.lastOpenAiRequest = null;
     stubState.abortObserved = false;
     envelopes.objects.clear();
+    // A streamed response is delivered before its usage record is written, so
+    // without this the previous test's write can land after the delete below
+    // and hold a foreign key on a virtual key this block then tries to remove.
+    await gateway.meteringSettled();
     await db.delete(llmRequests).where(eq(llmRequests.orgId, orgId));
     await db.delete(spendCounters).where(eq(spendCounters.orgId, orgId));
     await db.delete(platformIssues).where(eq(platformIssues.orgId, orgId));
     await db.delete(providerCredentials).where(eq(providerCredentials.orgId, orgId));
-    await db.delete(llmRequests).where(eq(llmRequests.orgId, orgId));
     await db.delete(virtualKeys).where(eq(virtualKeys.orgId, orgId));
     await db.delete(budgets).where(eq(budgets.orgId, orgId));
   });
