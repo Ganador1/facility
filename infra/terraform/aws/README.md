@@ -126,7 +126,20 @@ Watch `/facility/<environment>/migrate` in CloudWatch Logs for
 `applied 0001_control_plane.sql` (or `already applied`) followed by the seed
 summary. `facility doctor` will flag `seed_essentials` if this task did not run.
 
-## 6. Verify service health
+## 6. Bind the instance
+
+`facility instance bootstrap` creates the organization, its owner, and the
+GitHub account/installation binding that sign-in checks. The database is
+reachable only from the service security group, so run it as a one-shot task
+using this module's `migrate` task definition — the API image carries the CLI —
+with a container override. The
+[AWS deployment runbook](https://github.com/theam/facility/blob/main/apps/docs/docs/self-host/aws.md#6-bind-the-instance-to-your-github-organization)
+has the exact invocation and the ids it needs.
+
+Until this runs, every sign-in fails with `not_invited` or
+`installation_access_required`.
+
+## 7. Verify service health
 
 ```bash
 curl -fsS "https://${api_hostname}/health"

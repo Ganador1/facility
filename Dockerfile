@@ -74,6 +74,13 @@ RUN pnpm --filter '@facility/mcp' deploy --prod --legacy /prod/mcp
 FROM base AS api
 ENV NODE_ENV=production
 COPY --from=build-api /prod/api /app
+# The CLI travels with the API image so operator commands can be run as one-shot
+# tasks inside the VPC. `facility instance bootstrap` needs the database, and in
+# a reference deployment the database accepts connections only from the service
+# security group — there is nowhere else to run it from. The package is a few
+# hundred kilobytes of plain ESM whose only dependency, `postgres`, is already
+# here for @facility/db.
+COPY --from=build-api /app/packages/cli /app/cli
 EXPOSE 4400
 CMD ["node", "dist/start.js"]
 
