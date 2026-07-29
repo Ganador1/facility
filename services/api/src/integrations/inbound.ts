@@ -10,7 +10,13 @@ import {
   runs,
 } from "@facility/db";
 import { and, eq } from "drizzle-orm";
-import { type IssueSeverity, normalizeSeverity, raisePlatformIssue } from "../watchtower/issues.js";
+import { ApiError } from "../errors.js";
+import {
+  type IssueSeverity,
+  normalizeSeverity,
+  PlatformIssueScopeMismatchError,
+  raisePlatformIssue,
+} from "../watchtower/issues.js";
 import { applyFacilitySignal, FacilitySignalSchema } from "./signals.js";
 
 type Enqueue = (queue: string, data: Record<string, unknown>) => Promise<unknown>;
@@ -33,7 +39,13 @@ export async function processGenericInboundEvent(
   try {
     const payload = objectOrEmpty(row.event.payload);
     const config = objectOrEmpty(row.integration.config);
-    const projectId = await resolveProjectId(db, row.event.orgId, payload, config);
+    const projectId = await resolveProjectId(
+      db,
+      row.event.orgId,
+      row.integration.projectId,
+      payload,
+      config,
+    );
     const signalCandidate = objectOrEmpty(payload.signal).schema ? payload.signal : payload;
     const isTypedSignal = objectOrEmpty(signalCandidate).schema === "facility.signal.v1";
     const issue = isTypedSignal
@@ -47,6 +59,7 @@ export async function processGenericInboundEvent(
               row.event.eventType,
               payload,
             ),
+            ...(projectId ? { issueScope: { projectId } } : {}),
           })
         ).issue
       : await raiseLegacyIssue(
@@ -65,11 +78,19 @@ export async function processGenericInboundEvent(
       .where(eq(inboundEvents.id, inboundEventId));
     return { issue, run };
   } catch (error) {
+    const failure =
+      error instanceof PlatformIssueScopeMismatchError
+        ? new ApiError(
+            400,
+            "generic_inbound_fingerprint_scope_mismatch",
+            "Inbound fingerprints cannot target an issue in another project",
+          )
+        : error;
     await db
       .update(inboundEvents)
-      .set({ error: error instanceof Error ? error.message : "unknown error" })
+      .set({ error: failure instanceof Error ? failure.message : "unknown error" })
       .where(eq(inboundEvents.id, inboundEventId));
-    throw error;
+    throw failure;
   }
 }
 
@@ -82,39 +103,40 @@ async function raiseLegacyIssue(
   eventType: string,
   payload: Record<string, unknown>,
 ) {
-  return raisePlatformIssue(db, {
-    orgId,
-    projectId,
-    kind: stringField(payload.issue, "kind") ?? stringField(payload, "kind") ?? "generic_inbound",
-    severity: severityField(payload.issue) ?? severityField(payload) ?? "warn",
-    fingerprint:
-      stringField(payload.issue, "fingerprint") ??
-      stringField(payload, "fingerprint") ??
-      fallbackFingerprint(integrationId, eventType, payload),
-    title:
-      stringField(payload.issue, "title") ??
-      stringField(payload, "title") ??
-      `${integrationName} inbound event`,
-    bodyMd:
-      stringField(payload.issue, "bodyMd") ??
-      stringField(payload.issue, "body") ??
-      stringField(payload, "bodyMd") ??
-      stringField(payload, "body") ??
-      "Generic inbound payload received.",
-  });
+  return raisePlatformIssue(
+    db,
+    {
+      orgId,
+      projectId,
+      kind: stringField(payload.issue, "kind") ?? stringField(payload, "kind") ?? "generic_inbound",
+      severity: severityField(payload.issue) ?? severityField(payload) ?? "warn",
+      fingerprint:
+        stringField(payload.issue, "fingerprint") ??
+        stringField(payload, "fingerprint") ??
+        fallbackFingerprint(integrationId, eventType, payload),
+      title:
+        stringField(payload.issue, "title") ??
+        stringField(payload, "title") ??
+        `${integrationName} inbound event`,
+      bodyMd:
+        stringField(payload.issue, "bodyMd") ??
+        stringField(payload.issue, "body") ??
+        stringField(payload, "bodyMd") ??
+        stringField(payload, "body") ??
+        "Generic inbound payload received.",
+    },
+    projectId ? { projectId } : undefined,
+  );
 }
 
 async function resolveProjectId(
   db: FacilityDb,
   orgId: string,
+  integrationProjectId: string | null,
   payload: Record<string, unknown>,
   config: Record<string, unknown>,
 ) {
-  const projectId =
-    stringField(payload.signal, "projectId") ??
-    stringField(payload.issue, "projectId") ??
-    stringField(payload, "projectId") ??
-    stringField(config, "projectId");
+  const projectId = selectInboundProjectId(integrationProjectId, payload, config);
   if (!projectId) return null;
   const project = (
     await db
@@ -123,8 +145,30 @@ async function resolveProjectId(
       .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)))
       .limit(1)
   )[0];
-  if (!project) throw new Error("generic_inbound_project_not_found");
+  if (!project) {
+    throw new ApiError(400, "generic_inbound_project_not_found", "Inbound project was not found");
+  }
   return project.id;
+}
+
+export function selectInboundProjectId(
+  integrationProjectId: string | null,
+  payload: Record<string, unknown>,
+  config: Record<string, unknown>,
+) {
+  const requestedProjectId =
+    stringField(payload.signal, "projectId") ??
+    stringField(payload.issue, "projectId") ??
+    stringField(payload, "projectId") ??
+    stringField(config, "projectId");
+  if (integrationProjectId && requestedProjectId && requestedProjectId !== integrationProjectId) {
+    throw new ApiError(
+      400,
+      "generic_inbound_project_scope_mismatch",
+      "Project-scoped integrations cannot target another project",
+    );
+  }
+  return integrationProjectId ?? requestedProjectId ?? null;
 }
 
 async function maybeEnqueueRun(
@@ -138,7 +182,7 @@ async function maybeEnqueueRun(
   const runConfig = objectOrEmpty(payload.run);
   const shouldRun = config.enqueueRun === true || runConfig.enqueue === true;
   if (!shouldRun) return null;
-  const projectId = await resolveProjectId(db, event.orgId, payload, config);
+  const projectId = await resolveProjectId(db, event.orgId, integration.projectId, payload, config);
   if (!projectId) throw new Error("generic_inbound_run_project_required");
   const agent = await resolveAgent(db, event.orgId, projectId, runConfig, config);
   const run = (

@@ -1,6 +1,6 @@
 # Facility Platform — Product Requirements
 
-**Status**: v1 draft · source: [docs/method.md](../method.md)
+**Status**: v1 draft · source: [the method](../../apps/docs/docs/concepts/method.md)
 **One-liner**: The self-hostable platform that governs an organization's entire AI SDLC — "Vercel for the AI software factory."
 
 ## 1. Problem

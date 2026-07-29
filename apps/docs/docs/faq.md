@@ -1,3 +1,7 @@
+---
+title: FAQ
+---
+
 # FAQ
 
 ## GitHub already lets me assign issues to Claude, Codex, or Copilot. Why this?
@@ -71,11 +75,12 @@ you what state you're in.
 The layer that answers "is any of this actually working?" with numbers
 instead of vibes: nightly agent-PR outcomes (human squash-merge acceptance,
 assessment coverage, issue-to-merge lead time, one-shot rate, human fixups)
-on a dashboard issue, a daily health monitor with per-workflow budgets that
-goes red on breach, and a weekly canary that flies a synthetic
-/architect probe through the real pipeline. It reads only the GitHub API,
-never the facility's own telemetry, and it's pinned by its own guard so it
-can't quietly rot. Full design: [watchtower.md](watchtower.md).
+published in the Actions run and its immutable artifact (plus an optional JSON
+sink), a daily health monitor with per-workflow budgets that goes red on
+breach, and a weekly canary that flies a synthetic `/architect` probe through
+the real pipeline. Repository-lane instruments read the GitHub API rather than
+self-reported telemetry, and their guard checks the required cron entries and
+pinned canary hash. Full design: [the watchtower](concepts/watchtower.md).
 
 ## Why "facility"?
 

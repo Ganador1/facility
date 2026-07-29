@@ -18,7 +18,9 @@ Security and privacy are first-class concerns; this page is the contract.
 
 - **Stored secrets** — provider API keys and integration signing secrets are
   sealed (libsodium) with a master key from your secret manager/KMS, decrypted
-  only in the service that needs them, and never returned by any API.
+  only in the service that needs them. Provider credentials are never returned;
+  integration signing secrets appear only in create/rotate responses and never
+  in read responses.
 - **Service credentials** — the GitHub App, upstream identity, and OAuth signing credentials
   are supplied to the services as environment variables from your secret
   manager; the platform reads them at boot and does not persist them in its

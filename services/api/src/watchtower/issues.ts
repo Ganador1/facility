@@ -43,10 +43,24 @@ export type IssueInput = {
   bodyMd: string;
 };
 
-export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
+export type IssueProjectScope = { projectId: string };
+
+export class PlatformIssueScopeMismatchError extends Error {
+  constructor() {
+    super("platform_issue_project_scope_mismatch");
+    this.name = "PlatformIssueScopeMismatchError";
+  }
+}
+
+export async function raisePlatformIssue(
+  db: FacilityDb,
+  input: IssueInput,
+  scope?: IssueProjectScope,
+) {
   const severity = normalizeSeverity(input.severity);
   const now = new Date();
   const projectId = input.projectId ?? null;
+  if (scope && projectId !== scope.projectId) throw new PlatformIssueScopeMismatchError();
   // Read the prior state ONLY to decide whether this raise is a reopen (an audit
   // signal). Correctness and dedupe are handled atomically by the ON CONFLICT
   // upsert below, so a race here can at worst mislabel the audit event — it can
@@ -59,6 +73,7 @@ export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
         and(
           eq(platformIssues.orgId, input.orgId),
           eq(platformIssues.fingerprint, input.fingerprint),
+          scope ? eq(platformIssues.projectId, scope.projectId) : undefined,
         ),
       )
       .limit(1)
@@ -79,6 +94,11 @@ export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
       })
       .onConflictDoUpdate({
         target: [platformIssues.orgId, platformIssues.fingerprint],
+        // Project-scoped callers may update only an issue already owned by that
+        // project. PostgreSQL evaluates this in the conflict update itself, so
+        // a concurrent insert cannot turn a check-then-write race into a
+        // cross-project mutation.
+        setWhere: scope ? eq(platformIssues.projectId, scope.projectId) : sql`true`,
         set: {
           projectId: sql`coalesce(${projectId}, ${platformIssues.projectId})`,
           kind: input.kind,
@@ -94,6 +114,7 @@ export async function raisePlatformIssue(db: FacilityDb, input: IssueInput) {
       })
       .returning()
   )[0];
+  if (!updated && scope) throw new PlatformIssueScopeMismatchError();
   if (prior?.state === "resolved") {
     await insertAuditEvent(db, {
       orgId: input.orgId,
@@ -112,6 +133,7 @@ export async function resolvePlatformIssue(
   orgId: string,
   fingerprint: string,
   note: string,
+  scope?: IssueProjectScope,
 ) {
   const existing = (
     await db
@@ -120,8 +142,11 @@ export async function resolvePlatformIssue(
       .where(and(eq(platformIssues.orgId, orgId), eq(platformIssues.fingerprint, fingerprint)))
       .limit(1)
   )[0];
+  if (existing && scope && existing.projectId !== scope.projectId) {
+    throw new PlatformIssueScopeMismatchError();
+  }
   if (!existing || existing.state === "resolved") return existing ?? null;
-  return (
+  const resolved = (
     await db
       .update(platformIssues)
       .set({
@@ -130,9 +155,17 @@ export async function resolvePlatformIssue(
         lastSeen: new Date(),
         updatedAt: new Date(),
       })
-      .where(and(eq(platformIssues.orgId, orgId), eq(platformIssues.id, existing.id)))
+      .where(
+        and(
+          eq(platformIssues.orgId, orgId),
+          eq(platformIssues.id, existing.id),
+          scope ? eq(platformIssues.projectId, scope.projectId) : undefined,
+        ),
+      )
       .returning()
   )[0];
+  if (!resolved && scope) throw new PlatformIssueScopeMismatchError();
+  return resolved;
 }
 
 export async function openIssuesForProject(db: FacilityDb, orgId: string, projectId: string) {

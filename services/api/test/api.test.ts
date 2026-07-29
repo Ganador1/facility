@@ -4844,7 +4844,7 @@ describe("api", async () => {
           projectId,
           kind: "generic_inbound",
           name: "Generic Inbound",
-          config: { projectId },
+          config: {},
           sealedSecret: await seal(secret, masterKey),
         })
         .returning()
@@ -4889,6 +4889,20 @@ describe("api", async () => {
       payload,
     });
     expect(valid.statusCode).toBe(202);
+    const replay = await app.inject({
+      method: "POST",
+      url: `/webhooks/inbound/${integration.id}`,
+      headers: {
+        "content-type": "application/json",
+        "x-facility-delivery": delivery,
+        "x-facility-event": eventType,
+        "x-facility-timestamp": timestamp,
+        "x-facility-signature": signature,
+      },
+      payload,
+    });
+    expect(replay.statusCode).toBe(202);
+    expect(replay.json()).toEqual({ ok: true, replayed: true });
     const replayWithChangedDelivery = await app.inject({
       method: "POST",
       url: `/webhooks/inbound/${integration.id}`,
@@ -4920,6 +4934,26 @@ describe("api", async () => {
       payload,
     });
     expect(stale.statusCode).toBe(401);
+    const malformedPayload = Buffer.from("{");
+    const malformedDelivery = newId("evt");
+    const malformedSignature = `sha256=${createHmac("sha256", secret)
+      .update(`${timestamp}.${malformedDelivery}.${eventType}.`)
+      .update(malformedPayload)
+      .digest("hex")}`;
+    const malformed = await app.inject({
+      method: "POST",
+      url: `/webhooks/inbound/${integration.id}`,
+      headers: {
+        "content-type": "application/json",
+        "x-facility-delivery": malformedDelivery,
+        "x-facility-event": eventType,
+        "x-facility-timestamp": timestamp,
+        "x-facility-signature": malformedSignature,
+      },
+      payload: malformedPayload,
+    });
+    expect(malformed.statusCode).toBe(400);
+    expect(malformed.json().error.code).toBe("bad_request");
     const events = await db
       .select()
       .from(inboundEvents)
@@ -4937,6 +4971,369 @@ describe("api", async () => {
     expect(issue?.projectId).toBe(projectId);
     expect(issue?.title).toBe("Generic alert");
     expect(issue?.severity).toBe("error");
+
+    await db
+      .update(integrations)
+      .set({ enabled: false })
+      .where(eq(integrations.id, integration.id));
+    const revokedDelivery = newId("evt");
+    const revokedSignature = `sha256=${createHmac("sha256", secret)
+      .update(`${timestamp}.${revokedDelivery}.${eventType}.`)
+      .update(payload)
+      .digest("hex")}`;
+    const revoked = await app.inject({
+      method: "POST",
+      url: `/webhooks/inbound/${integration.id}`,
+      headers: {
+        "content-type": "application/json",
+        "x-facility-delivery": revokedDelivery,
+        "x-facility-event": eventType,
+        "x-facility-timestamp": timestamp,
+        "x-facility-signature": revokedSignature,
+      },
+      payload,
+    });
+    expect(revoked.statusCode).toBe(401);
+  });
+
+  it("rejects cross-project and cross-tenant targets from project-scoped inbound integrations", async () => {
+    const secret = "project-scoped-inbound-secret";
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const otherProject = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Other inbound project",
+          slug: `other-inbound-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    const foreignOrgId = newId("org");
+    await db.insert(orgs).values({
+      id: foreignOrgId,
+      name: "Foreign inbound org",
+      slug: `foreign-inbound-${suffix}`,
+      settings: {},
+    });
+    const foreignProject = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId: foreignOrgId,
+          name: "Foreign inbound project",
+          slug: `foreign-inbound-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({
+          id: newId("int"),
+          orgId,
+          projectId,
+          kind: "generic_inbound",
+          name: "Project-scoped inbound",
+          config: {},
+          sealedSecret: await seal(secret, masterKey),
+        })
+        .returning()
+    )[0];
+    if (!integration || !otherProject || !foreignProject) {
+      throw new Error("project scope fixtures missing");
+    }
+
+    const attemptTarget = async (targetProjectId: string, label: string) => {
+      const fingerprint = `${label}:${suffix}`;
+      const payload = Buffer.from(
+        JSON.stringify({
+          projectId: targetProjectId,
+          title: "Must not cross project scope",
+          fingerprint,
+        }),
+      );
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const delivery = newId("evt");
+      const eventType = "alert";
+      const signature = `sha256=${createHmac("sha256", secret)
+        .update(`${timestamp}.${delivery}.${eventType}.`)
+        .update(payload)
+        .digest("hex")}`;
+      const response = await app.inject({
+        method: "POST",
+        url: `/webhooks/inbound/${integration.id}`,
+        headers: {
+          "content-type": "application/json",
+          "x-facility-delivery": delivery,
+          "x-facility-event": eventType,
+          "x-facility-timestamp": timestamp,
+          "x-facility-signature": signature,
+        },
+        payload,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe("generic_inbound_project_scope_mismatch");
+      expect(
+        await db.select().from(platformIssues).where(eq(platformIssues.fingerprint, fingerprint)),
+      ).toHaveLength(0);
+    };
+
+    await attemptTarget(otherProject.id, "cross-project");
+    await attemptTarget(foreignProject.id, "cross-tenant");
+  });
+
+  it("routes organization-scoped inbound integrations only within their organization", async () => {
+    const secret = "org-scoped-inbound-secret";
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const sameOrgProject = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Organization-scoped inbound project",
+          slug: `org-inbound-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    const foreignOrgId = newId("org");
+    await db.insert(orgs).values({
+      id: foreignOrgId,
+      name: "Foreign organization-scoped inbound org",
+      slug: `foreign-org-inbound-${suffix}`,
+      settings: {},
+    });
+    const foreignProject = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId: foreignOrgId,
+          name: "Foreign organization-scoped inbound project",
+          slug: `foreign-org-inbound-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({
+          id: newId("int"),
+          orgId,
+          projectId: null,
+          kind: "generic_inbound",
+          name: "Organization-scoped inbound",
+          config: {},
+          sealedSecret: await seal(secret, masterKey),
+        })
+        .returning()
+    )[0];
+    if (!integration || !sameOrgProject || !foreignProject) {
+      throw new Error("organization scope fixtures missing");
+    }
+
+    const post = async (targetProjectId: string, fingerprint: string, enqueueRun = false) => {
+      const payload = Buffer.from(
+        JSON.stringify({
+          projectId: targetProjectId,
+          title: "Organization-scoped inbound event",
+          fingerprint,
+          ...(enqueueRun ? { run: { enqueue: true } } : {}),
+        }),
+      );
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const delivery = newId("evt");
+      const eventType = "alert";
+      const signature = `sha256=${createHmac("sha256", secret)
+        .update(`${timestamp}.${delivery}.${eventType}.`)
+        .update(payload)
+        .digest("hex")}`;
+      return app.inject({
+        method: "POST",
+        url: `/webhooks/inbound/${integration.id}`,
+        headers: {
+          "content-type": "application/json",
+          "x-facility-delivery": delivery,
+          "x-facility-event": eventType,
+          "x-facility-timestamp": timestamp,
+          "x-facility-signature": signature,
+        },
+        payload,
+      });
+    };
+
+    const sameOrgFingerprint = `org-inbound-success:${suffix}`;
+    const sameOrgResponse = await post(sameOrgProject.id, sameOrgFingerprint);
+    expect(sameOrgResponse.statusCode).toBe(202);
+    expect(
+      (
+        await db
+          .select()
+          .from(platformIssues)
+          .where(eq(platformIssues.fingerprint, sameOrgFingerprint))
+      )[0]?.projectId,
+    ).toBe(sameOrgProject.id);
+
+    const runCountBefore = Number(
+      (await db.select({ count: sql<number>`count(*)` }).from(runs))[0]?.count ?? 0,
+    );
+    const foreignFingerprint = `org-inbound-cross-tenant:${suffix}`;
+    const foreignResponse = await post(foreignProject.id, foreignFingerprint, true);
+    expect(foreignResponse.statusCode).toBe(400);
+    expect(foreignResponse.json().error.code).toBe("generic_inbound_project_not_found");
+    expect(
+      await db
+        .select()
+        .from(platformIssues)
+        .where(eq(platformIssues.fingerprint, foreignFingerprint)),
+    ).toHaveLength(0);
+    expect(
+      Number((await db.select({ count: sql<number>`count(*)` }).from(runs))[0]?.count ?? 0),
+    ).toBe(runCountBefore);
+  });
+
+  it("does not mutate another project's issue through an inbound fingerprint collision", async () => {
+    const secret = "fingerprint-scoped-inbound-secret";
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const otherProject = (
+      await db
+        .insert(projects)
+        .values({
+          id: newId("proj"),
+          orgId,
+          name: "Fingerprint owner project",
+          slug: `fingerprint-owner-${suffix}`,
+          settings: {},
+        })
+        .returning()
+    )[0];
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({
+          id: newId("int"),
+          orgId,
+          projectId,
+          kind: "generic_inbound",
+          name: "Fingerprint-scoped inbound",
+          config: {},
+          sealedSecret: await seal(secret, masterKey),
+        })
+        .returning()
+    )[0];
+    if (!integration || !otherProject) throw new Error("fingerprint scope fixtures missing");
+
+    const post = async (body: Record<string, unknown>) => {
+      const payload = Buffer.from(JSON.stringify(body));
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const delivery = newId("evt");
+      const eventType = "alert";
+      const signature = `sha256=${createHmac("sha256", secret)
+        .update(`${timestamp}.${delivery}.${eventType}.`)
+        .update(payload)
+        .digest("hex")}`;
+      return app.inject({
+        method: "POST",
+        url: `/webhooks/inbound/${integration.id}`,
+        headers: {
+          "content-type": "application/json",
+          "x-facility-delivery": delivery,
+          "x-facility-event": eventType,
+          "x-facility-timestamp": timestamp,
+          "x-facility-signature": signature,
+        },
+        payload,
+      });
+    };
+
+    const legacyFingerprint = `legacy-fingerprint-owner:${suffix}`;
+    const legacyIssue = (
+      await db
+        .insert(platformIssues)
+        .values({
+          id: newId("iss"),
+          orgId,
+          projectId: otherProject.id,
+          kind: "existing_issue",
+          severity: "error",
+          fingerprint: legacyFingerprint,
+          title: "Owned by another project",
+          bodyMd: "Original issue body",
+          state: "acked",
+        })
+        .returning()
+    )[0];
+    const legacyResponse = await post({
+      fingerprint: legacyFingerprint,
+      title: "Attacker-controlled replacement",
+      bodyMd: "Must not overwrite",
+    });
+    expect(legacyResponse.statusCode).toBe(400);
+    expect(legacyResponse.json().error.code).toBe("generic_inbound_fingerprint_scope_mismatch");
+    expect(
+      (
+        await db
+          .select()
+          .from(platformIssues)
+          .where(eq(platformIssues.id, legacyIssue?.id ?? ""))
+      )[0],
+    ).toMatchObject({
+      projectId: otherProject.id,
+      kind: "existing_issue",
+      title: "Owned by another project",
+      bodyMd: "Original issue body",
+      state: "acked",
+      count: 1,
+    });
+
+    const recoveryFingerprint = `recovery-fingerprint-owner:${suffix}`;
+    const recoveryIssue = (
+      await db
+        .insert(platformIssues)
+        .values({
+          id: newId("iss"),
+          orgId,
+          projectId: otherProject.id,
+          kind: "deployment_failure",
+          severity: "error",
+          fingerprint: recoveryFingerprint,
+          title: "Other project deployment failure",
+          bodyMd: "Failure is still active",
+          state: "open",
+        })
+        .returning()
+    )[0];
+    const recoveryResponse = await post({
+      schema: "facility.signal.v1",
+      type: "deployment",
+      status: "recovered",
+      fingerprint: recoveryFingerprint,
+      source: "untrusted-project-hook",
+    });
+    expect(recoveryResponse.statusCode).toBe(400);
+    expect(recoveryResponse.json().error.code).toBe("generic_inbound_fingerprint_scope_mismatch");
+    expect(
+      (
+        await db
+          .select()
+          .from(platformIssues)
+          .where(eq(platformIssues.id, recoveryIssue?.id ?? ""))
+      )[0],
+    ).toMatchObject({
+      projectId: otherProject.id,
+      title: "Other project deployment failure",
+      bodyMd: "Failure is still active",
+      state: "open",
+      count: 1,
+    });
   });
 
   it("does not let one integration's delivery id suppress another's identical id", async () => {

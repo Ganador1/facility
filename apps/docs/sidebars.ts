@@ -4,11 +4,13 @@ const sidebars: SidebarsConfig = {
   docs: [
     "index",
     "roadmap",
+    "faq",
     {
       type: "category",
       label: "concepts",
       collapsed: false,
       items: [
+        "concepts/method",
         "concepts/the-loop",
         "concepts/projects-and-governance",
         "concepts/sandboxes",
@@ -40,7 +42,16 @@ const sidebars: SidebarsConfig = {
     {
       type: "category",
       label: "reference",
-      items: ["reference/api", "reference/cli", "reference/mcp", "reference/security"],
+      items: [
+        "reference/architecture",
+        "reference/api",
+        "reference/cli",
+        "reference/mcp",
+        "reference/webhooks",
+        "reference/guards",
+        "reference/security",
+        "reference/hardening",
+      ],
     },
   ],
 };

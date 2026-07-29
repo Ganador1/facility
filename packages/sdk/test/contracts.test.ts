@@ -18,7 +18,7 @@ import type {
   Task,
   TriggerRunRequest,
 } from "../src/index.js";
-import { type FacilityApiError, FacilityClient } from "../src/index.js";
+import { FacilityApiError, FacilityClient } from "../src/index.js";
 
 type CapturedRequest = {
   url: string;
@@ -182,9 +182,16 @@ describe("FacilityClient request behaviour", () => {
     expect(requestAt(requests, 0).url).toBe("https://api.facility.test/v1/me");
   });
 
-  it("rejects non-2xx responses with the response error message and status", async () => {
+  it("rejects non-2xx responses with the typed server error contract", async () => {
+    const payload = {
+      error: {
+        code: "project_access_denied",
+        message: "Project access denied",
+        details: { projectId: "project-1" },
+      },
+    };
     const { client } = makeClient({
-      payload: { error: { message: "Project access denied" } },
+      payload,
       status: 403,
     });
     let thrown: unknown;
@@ -195,9 +202,15 @@ describe("FacilityClient request behaviour", () => {
       thrown = error;
     }
 
-    expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).message).toBe("Project access denied");
-    expect((thrown as { status?: number }).status).toBe(403);
+    expect(thrown).toBeInstanceOf(FacilityApiError);
+    expect(thrown).toMatchObject({
+      name: "FacilityApiError",
+      message: "Project access denied",
+      status: 403,
+      code: "project_access_denied",
+      details: { projectId: "project-1" },
+      payload,
+    } satisfies Partial<FacilityApiError>);
   });
 
   it("returns parsed 2xx JSON bodies without wrapping bare arrays", async () => {
@@ -352,6 +365,7 @@ describe("FacilityClient request behaviour", () => {
         }),
     });
     await expect(timed.projects()).rejects.toMatchObject({
+      name: "FacilityApiError",
       status: 408,
       code: "request_timeout",
     });
@@ -361,9 +375,30 @@ describe("FacilityClient request behaviour", () => {
       fetch: async () => new Response("not json", { status: 200 }),
     });
     await expect(malformed.projects()).rejects.toMatchObject({
+      name: "FacilityApiError",
       status: 200,
       code: "invalid_response",
     });
+  });
+
+  it("preserves caller-initiated request abort rejections", async () => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled by caller");
+    const client = new FacilityClient({
+      baseUrl: "https://api.facility.test",
+      maxRetries: 0,
+      fetch: (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
+            once: true,
+          });
+        }),
+    });
+
+    const request = client.get("/v1/projects", undefined, { signal: controller.signal });
+    controller.abort(reason);
+
+    await expect(request).rejects.toBe(reason);
   });
 
   it("reconnects event streams from the last observed event id", async () => {
