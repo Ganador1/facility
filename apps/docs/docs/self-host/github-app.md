@@ -4,16 +4,17 @@ title: GitHub App
 
 # Configure the GitHub App
 
-Facility uses a GitHub App installation to discover repositories, clone private
-repositories, create governed branches and pull requests, collect delivery
-outcomes, and receive repository events. It does not use GitHub user OAuth, so
-the App does not need a callback URL, client secret, device flow, or user
-authorization during installation.
+Self-hosted Facility uses one GitHub App for two jobs: direct GitHub OAuth for
+human sign-in, and an App installation for repository automation. The OAuth
+side verifies a user's stable id and verified email; the installation side
+discovers repositories, creates governed branches and pull requests, collects
+delivery outcomes, and receives repository events.
 
-Configuration has two phases. Set the App's identity, permissions, and
-credentials first. After the public Facility API is reachable, activate the
-webhook, select its events, and install the App; otherwise the initial
-`installation` event has nowhere to go.
+Configuration has two phases. First set the App's OAuth identity, permissions,
+and credentials, then install it to obtain the installation id used by
+`facility instance bootstrap`. The webhook can remain inactive during initial
+deployment: bootstrap records the installation binding directly. After the
+public Facility API is reachable, activate and test the webhook.
 
 ## 1. Create or edit the App
 
@@ -26,10 +27,10 @@ Use these general settings:
 |---|---|
 | GitHub App name | a unique name, such as `facility-production` |
 | Homepage URL | the Facility web URL or project homepage |
-| Callback URL | empty |
+| Callback URL | `https://<web-host>/api/auth/callback`, exactly matching `AUTH_CALLBACK_URL` |
 | Setup URL | empty |
 | Device flow | disabled |
-| Request user authorization during installation | disabled |
+| Request user authorization (OAuth) during installation | enabled |
 | Where can this GitHub App be installed? | **Only on this account** for a private installation |
 
 Leave the webhook inactive until the API has a public HTTPS URL.
@@ -49,8 +50,10 @@ For an existing-repository lifecycle, set these **Repository permissions**:
 | Pull requests | Read and write | open and close PRs and collect review evidence |
 | Workflows | Read and write | install or update files under `.github/workflows` during kickstart |
 
-Set **Organization permissions → Members** to **Read-only**. Leave account and
-user permissions at **No access**.
+Set **Organization permissions → Members** and **Account permissions → Email
+addresses** to **Read-only**. The latter is required for direct GitHub sign-in;
+without it Facility cannot obtain a verified email and rejects the login. Leave
+all other account and user permissions at **No access**.
 
 `Administration: Read and write` is optional and high privilege. Enable it only
 when Facility must create repositories in the organization. It is not required
@@ -67,7 +70,7 @@ and [webhook event reference](https://docs.github.com/en/webhooks/webhook-events
 
 GitHub shows **Subscribe to events** only after the App's webhook is active and
 its URL has been saved. If the API is not reachable yet, complete sections 4
-and 5, save the active webhook, then return to **Permissions & events**.
+and 6, deploy and bootstrap Facility, then return here after section 5.
 
 On **Permissions & events**, scroll below the permission panels to **Subscribe
 to events** and select:
@@ -94,9 +97,11 @@ must approve the new permissions on the installation.
 
 ## 4. Create the credentials
 
-The Facility API needs four values:
+The Facility API needs six values in direct-GitHub mode:
 
 ```dotenv
+GITHUB_OAUTH_CLIENT_ID=<Client ID from the App's General page>
+GITHUB_OAUTH_CLIENT_SECRET=<generated client secret>
 GITHUB_APP_ID=<numeric App ID, not the Client ID>
 GITHUB_APP_SLUG=<the suffix from https://github.com/apps/<slug>>
 GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
@@ -104,6 +109,14 @@ GITHUB_APP_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----
 -----END RSA PRIVATE KEY-----"
 GITHUB_APP_WEBHOOK_SECRET=<random secret shared with GitHub>
 ```
+
+### OAuth client credentials
+
+Copy the **Client ID** from the App's General page. Under **Client secrets**,
+select **Generate a new client secret** and store it immediately; GitHub shows
+the plaintext once. These values become `GITHUB_OAUTH_CLIENT_ID` and
+`GITHUB_OAUTH_CLIENT_SECRET`. They are distinct from the numeric App ID and the
+private key used for installation authentication.
 
 ### Private key
 
@@ -183,7 +196,8 @@ configure:
 | Webhook secret | the exact `GITHUB_APP_WEBHOOK_SECRET` value |
 | SSL verification | enabled |
 
-Save the changes before installing the App.
+Save the changes. An App installed while the webhook was inactive does not need
+to be reinstalled; bootstrap already recorded its installation binding.
 
 Return to **Permissions & events** and complete section 3. The event checkboxes
 will now appear below the permission panels.
@@ -194,10 +208,11 @@ Open **Install App**, choose the organization, and select **Only select
 repositories** for the least-privilege validation setup. Select the repositories
 Facility will govern and confirm the installation.
 
-Install only after the webhook is active so Facility receives the initial
-`installation` event. If the App was installed earlier, remove and re-add the
-repository to the installation, or reinstall the App, after the endpoint is
-ready.
+Install before running `facility instance bootstrap`, and note the installation
+id at the end of the installation-settings URL. It is safe to do this while the
+webhook is inactive: bootstrap creates the initial binding. Once the webhook is
+active, adding or removing a test repository generates an
+`installation_repositories` delivery if you need to verify that event family.
 
 ## 7. Verify the integration
 
@@ -210,15 +225,15 @@ attestations are available for the repository's visibility and organization
 plan; otherwise leave it unset so receipt collection remains green without an
 unsupported attestation call.
 
-1. In the GitHub App settings, open **Advanced → Recent deliveries**.
-2. Confirm the `installation` delivery received a `2xx` response.
-3. Create a test issue or comment in an installed repository.
-4. Submit a non-approving review on a disposable pull request.
-5. Confirm the corresponding `issues` or `issue_comment` and
+1. Create a test issue or comment in an installed repository.
+2. In the GitHub App settings, open **Advanced → Recent deliveries** and confirm
+   it received a `2xx` response.
+3. Submit a non-approving review on a disposable pull request.
+4. Confirm the corresponding `issues` or `issue_comment` and
    `pull_request_review` deliveries received a `2xx` response and appear in
    Facility's inbound event history. Without `pull_request_review`, the
    address-review agent cannot receive actionable feedback.
-6. Run the platform readiness check:
+5. Run the platform readiness check:
 
    ```bash
    node packages/cli/bin/facility.mjs doctor --url https://<api-host> --key fak_...
@@ -228,6 +243,9 @@ Common failures:
 
 | symptom | likely cause |
 |---|---|
+| `501 auth_unconfigured` on sign-in | OAuth client id/secret missing — configure both and restart the API |
+| GitHub reports a redirect URI mismatch | the App callback and `AUTH_CALLBACK_URL` differ; they must match exactly |
+| `auth_failed` after GitHub authorization | the App lacks **Email addresses: Read-only**, or the user has no verified email |
 | `404` delivery | wrong hostname or path; the path must be `/webhooks/github` |
 | `401` delivery | GitHub and Facility have different webhook secrets |
 | TLS delivery error | DNS or certificate is not valid for the API hostname |

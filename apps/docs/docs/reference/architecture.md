@@ -137,7 +137,7 @@ corroborates its success.
 ## 7. Deployment
 
 - **Self-host quickstart**: `docker compose up` → postgres, minio, api, worker, gateway, web, and MCP. An administrator binds the dedicated org, owner, GitHub account, and installation with `facility instance bootstrap`; login never auto-creates tenancy.
-- **AWS reference deployment**: Terraform — VPC, RDS Postgres, S3, ECS Fargate services (api/worker/gateway/web), ALB, ECR, Fargate runner tasks, KMS for master key, CloudWatch logs.
+- **AWS reference deployment**: Terraform — VPC, RDS Postgres, S3, ECS Fargate services (api/worker/gateway/web/MCP), ALB, ECR, Fargate runner tasks, KMS for master key, CloudWatch logs.
 - **Any-cloud claim**: everything is containers + PG + S3-API; drivers isolate compute specifics; helm chart is a documented follow-up with the k8s Job driver.
 
 ## 8. What stays deliberately simple (v1)
