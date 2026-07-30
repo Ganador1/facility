@@ -18,9 +18,9 @@ const subjectScript = fileURLToPath(
 );
 const repoRoot = dirname(dirname(subjectScript));
 
-function subjectCli(command, environment) {
+function subjectCli(command, environment, cwd = repoRoot) {
   return spawnSync(process.execPath, [subjectScript, command], {
-    cwd: repoRoot,
+    cwd,
     encoding: "utf8",
     env: { ...process.env, ...environment },
   });
@@ -117,8 +117,15 @@ test("breaking markers and established punctuation in scopes are accepted", () =
 test("unknown types and malformed subjects are rejected", () => {
   for (const subject of [
     "unknown: describe the change",
+    "  fix: describe the change",
     "fix(): describe the change",
     "fix(api(auth)): describe the change",
+    "fix((): describe the change",
+    "fix(api)): describe the change",
+    "fix( ): describe the change",
+    "fix(api\nauth): describe the change",
+    "fix(api): describe\u001b[31m the change",
+    "fix: render \u009b31mred output",
     "fix(api):",
     "fix(api):   ",
   ]) {
@@ -132,7 +139,7 @@ test("commit ranges are read as non-merge subjects from base-exclusive history",
     repoDir: "/fixture/repository",
     exec(command, args, options) {
       calls.push({ command, args, options });
-      return "feat: add the capability\0fix(api/auth)!: close the gap\0";
+      return "feat: add the capability\n\nExplain the change.\0fix(api/auth)!: close the gap\n\0";
     },
   });
 
@@ -143,7 +150,7 @@ test("commit ranges are read as non-merge subjects from base-exclusive history",
     "log",
     "-z",
     "--no-merges",
-    "--format=%s",
+    "--format=%B",
     "base-sha..head-sha",
   ]);
   assert.equal(calls[0].options.cwd, "/fixture/repository");
@@ -213,6 +220,45 @@ test("an empty commit subject is retained and rejected", (t) => {
   );
 });
 
+test("the exact first commit-message line is validated by the range CLI", (t) => {
+  const repoDir = localRepository(t, "multiline-header");
+  const baseSha = git(repoDir, ["rev-parse", "HEAD"]);
+  git(repoDir, [
+    "commit",
+    "--allow-empty",
+    "--cleanup=verbatim",
+    "-m",
+    "fix:\nsummary continued on a second line",
+  ]);
+  const headSha = git(repoDir, ["rev-parse", "HEAD"]);
+
+  assert.deepEqual(subjectsInRange(baseSha, headSha, { repoDir }), ["fix:"]);
+  const denied = subjectCli("range", { BASE_SHA: baseSha, HEAD_SHA: headSha }, repoDir);
+  assert.notEqual(denied.status, 0, denied.stdout);
+  assert.match(denied.stderr, /commit subject is not allowed:[\s\S]*"fix:"/);
+});
+
+test("leading whitespace in a landed subject is retained and rejected", (t) => {
+  const repoDir = localRepository(t, "leading-whitespace");
+  const baseSha = git(repoDir, ["rev-parse", "HEAD"]);
+  git(repoDir, [
+    "commit",
+    "--allow-empty",
+    "--cleanup=verbatim",
+    "-m",
+    "  fix: do not normalize the version input",
+  ]);
+  const headSha = git(repoDir, ["rev-parse", "HEAD"]);
+
+  assert.deepEqual(subjectsInRange(baseSha, headSha, { repoDir }), [
+    "  fix: do not normalize the version input",
+  ]);
+  assert.throws(
+    () => assertRange(baseSha, headSha, { repoDir }),
+    /commit subject is not allowed:[\s\S]*  fix: do not normalize/,
+  );
+});
+
 test("the title CLI accepts valid input and denies invalid input", () => {
   const accepted = subjectCli("title", {
     TITLE: "feat(web+api)!: replace the public contract",
@@ -224,30 +270,45 @@ test("the title CLI accepts valid input and denies invalid input", () => {
   assert.match(denied.stderr, /unknown: hide a release change/);
 });
 
-test("workflows validate edited titles, pull request commits, and landed main commits", () => {
-  const titleWorkflow = readFileSync(
+test("workflows validate edited titles, retargeted ranges, and landed main commits", () => {
+  const subjectWorkflow = readFileSync(
     new URL("../.github/workflows/pull-request-title.yml", import.meta.url),
     "utf8",
   );
   const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 
-  const titleTriggers = titleWorkflow.split(/^jobs:/m)[0];
-  assert.match(titleTriggers, /pull_request:\s*\n\s+types:/);
+  const subjectTriggers = subjectWorkflow.split(/^jobs:/m)[0];
+  assert.match(subjectTriggers, /push:\s*\n\s+branches:\s*\[main\]/);
+  assert.match(subjectTriggers, /pull_request:\s*\n\s+types:/);
   for (const activity of ["opened", "synchronize", "reopened", "edited"]) {
-    assert.match(titleTriggers, new RegExp(`\\b${activity}\\b`));
+    assert.match(subjectTriggers, new RegExp(`\\b${activity}\\b`));
   }
-  assert.match(titleWorkflow, /node scripts\/conventional-commit-subjects\.mjs title\b/);
+  assert.match(subjectWorkflow, /node scripts\/conventional-commit-subjects\.mjs title\b/);
 
-  const rangeJobs = ciWorkflow
-    .split(/(?=^  [a-zA-Z0-9_-]+:\s*$)/m)
-    .filter((job) => /node scripts\/conventional-commit-subjects\.mjs range\b/.test(job));
-  assert(rangeJobs.length > 0, "ci.yml must invoke the commit-range validator");
-  assert(
-    rangeJobs.some((job) => /github\.event_name == 'pull_request'/.test(job)),
-    "ci.yml must validate pull request commits",
+  const jobs = subjectWorkflow.split(/(?=^  [a-zA-Z0-9_-]+:\s*$)/m);
+  const titleJobs = jobs.filter((job) =>
+    /node scripts\/conventional-commit-subjects\.mjs title\b/.test(job),
   );
-  assert(
-    rangeJobs.some((job) => /github\.ref == 'refs\/heads\/main'/.test(job)),
-    "ci.yml must revalidate commits landed on main",
+  assert.equal(titleJobs.length, 1);
+  assert.match(titleJobs[0], /if: github\.event_name == 'pull_request'/);
+
+  const rangeJobs = jobs
+    .filter((job) => /node scripts\/conventional-commit-subjects\.mjs range\b/.test(job));
+  assert.equal(rangeJobs.length, 1, "the lightweight workflow must validate commit ranges");
+  const rangeJob = rangeJobs[0];
+  assert.doesNotMatch(rangeJob.split(/^\s+steps:/m)[0], /^\s+if:/m);
+  assert.match(rangeJob, /fetch-depth:\s*0/);
+  assert.match(
+    rangeJob,
+    /BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| github\.event\.before \}\}/,
+  );
+  assert.match(
+    rangeJob,
+    /HEAD_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.head\.sha \|\| github\.sha \}\}/,
+  );
+  assert.doesNotMatch(
+    ciWorkflow,
+    /node scripts\/conventional-commit-subjects\.mjs range\b/,
+    "title or base edits must not rerun the full acceptance workflow",
   );
 });

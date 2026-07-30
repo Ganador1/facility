@@ -220,6 +220,29 @@ describe("workspace preparation", () => {
     );
     await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("commit_not_conventional");
 
+    for (const commitMessage of [
+      "  fix: normalize formatting",
+      "fix((): normalize formatting",
+      "fix(api)): normalize formatting",
+      "fix( ): normalize formatting",
+      "fix(api\tauth): normalize formatting",
+      "fix: render \u001b[31mred output",
+      "fix: render \u009b31mred output",
+    ]) {
+      await writeFile(
+        path,
+        JSON.stringify({
+          branch: "feature/format-auth-api",
+          commitMessage,
+          pullRequest: {
+            title: "fix(api/auth): require scoped credentials",
+            body: "Summary",
+          },
+        }),
+      );
+      await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("commit_not_conventional");
+    }
+
     await writeFile(
       path,
       JSON.stringify({
@@ -227,6 +250,19 @@ describe("workspace preparation", () => {
         commitMessage: "style(web+api): normalize formatting",
         pullRequest: {
           title: "fix(api(auth)): require scoped credentials",
+          body: "Summary",
+        },
+      }),
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("pr_title_not_conventional");
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage: "fix: normalize formatting",
+        pullRequest: {
+          title: "  fix: require scoped credentials",
           body: "Summary",
         },
       }),
@@ -257,14 +293,18 @@ describe("workspace preparation", () => {
         token: "installation-token",
         requestedBranch: "feature/task",
         baseSha: "base_sha",
-        headline: "feat: deliver task",
+        commitMessage:
+          "feat!: deliver task\n\nExplain the migration.\n\nBREAKING CHANGE: use the new task API",
         changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
         runId: "run_12345678",
         fetchImpl,
       }),
     ).resolves.toEqual({ branch: "feature/task", headSha: "signed_sha" });
     const mutation = JSON.parse(String(requests[2]?.init?.body));
-    expect(mutation.variables.input.message.headline).toBe("feat: deliver task");
+    expect(mutation.variables.input.message).toEqual({
+      headline: "feat!: deliver task",
+      body: "Delivered by Facility run run_12345678.\n\nExplain the migration.\n\nBREAKING CHANGE: use the new task API",
+    });
     expect(mutation.variables.input.fileChanges.additions[0]).toEqual({
       path: "src/task.js",
       contents: "Y29udGVudA==",
@@ -272,6 +312,78 @@ describe("workspace preparation", () => {
     expect(requests[1]?.init?.headers).toMatchObject({
       authorization: "Bearer installation-token",
     });
+  });
+
+  it("fails before publishing when a Conventional Commit prefix cannot fit GitHub", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify({ message: "unexpected request" }), { status: 500 });
+    };
+
+    await expect(
+      publishVerifiedGithubChanges({
+        repo: "acme/widget",
+        token: "installation-token",
+        requestedBranch: "feature/task",
+        baseSha: "base_sha",
+        commitMessage: `feat(${"a".repeat(112)}): x`,
+        changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
+        runId: "run_12345678",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("commit_subject_too_long");
+    expect(requests).toHaveLength(0);
+  });
+
+  it("keeps multipart signed commit headlines conventional at the Unicode limit", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(
+        JSON.stringify({
+          data: {
+            createCommitOnBranch: { commit: { oid: `updated_${requests.length}` } },
+          },
+        }),
+        { status: 200 },
+      );
+    };
+    const changes = Array.from({ length: 101 }, (_, index) => ({
+      kind: "addition" as const,
+      path: `src/task-${index}.js`,
+      contents: "Y29udGVudA==",
+    }));
+
+    await expect(
+      publishVerifiedGithubBranchUpdate({
+        repo: "acme/widget",
+        token: "installation-token",
+        branch: "automation/dependency-refresh",
+        expectedHeadSha: "current_sha",
+        commitMessage: `feat(web+api)!: ${"x".repeat(92)}😀tail\n\nBREAKING CHANGE: use the new task API`,
+        changes,
+        runId: "run_12345678",
+        fetchImpl,
+      }),
+    ).resolves.toEqual({
+      branch: "automation/dependency-refresh",
+      headSha: "updated_2",
+    });
+
+    expect(requests).toHaveLength(2);
+    for (const [index, request] of requests.entries()) {
+      const mutation = JSON.parse(String(request.init?.body));
+      const message = mutation.variables.input.message;
+      expect([...message.headline]).toHaveLength(120);
+      expect(message.headline).toMatch(
+        /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: \S.*$/,
+      );
+      expect(message.headline.endsWith(`😀 (part ${index + 1}/2)`)).toBe(true);
+      expect(message.body).toBe(
+        "Delivered by Facility run run_12345678.\n\nBREAKING CHANGE: use the new task API",
+      );
+    }
   });
 
   it("updates the existing PR branch without creating a generic branch", async () => {
@@ -289,7 +401,7 @@ describe("workspace preparation", () => {
         token: "installation-token",
         branch: "automation/dependency-refresh",
         expectedHeadSha: "current_sha",
-        headline: "fix: address review",
+        commitMessage: "fix: address review\n\nKeep the explanation in the commit body.",
         changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
         runId: "run_12345678",
         fetchImpl,
@@ -300,6 +412,10 @@ describe("workspace preparation", () => {
     const mutation = JSON.parse(String(requests[0]?.init?.body));
     expect(mutation.variables.input.branch.branchName).toBe("automation/dependency-refresh");
     expect(mutation.variables.input.expectedHeadOid).toBe("current_sha");
+    expect(mutation.variables.input.message).toEqual({
+      headline: "fix: address review",
+      body: "Delivered by Facility run run_12345678.\n\nKeep the explanation in the commit body.",
+    });
   });
 
   it("parses null-delimited git changes and preserves semantic branches", () => {
@@ -325,6 +441,14 @@ describe("workspace preparation", () => {
       branch: "automation/dependency-refresh",
       commitMessage: "fix: address review\n\nKeep the explanation in the commit body.",
     });
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "automation/dependency-refresh",
+        commitMessage: "  fix: address review",
+      }),
+    );
+    await expect(readAgentUpdateMetadata(path)).rejects.toThrow("commit_not_conventional");
     await writeFile(
       path,
       JSON.stringify({ branch: "bad..branch", commitMessage: "fix: address review" }),

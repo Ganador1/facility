@@ -47,7 +47,7 @@ test("delivery verifier rejects agent-prefixed branches and false co-authorship"
 test("delivery verifier accepts style commits and punctuation in scopes", (t) => {
   for (const message of [
     "style: normalize formatting",
-    "  fix(web+api): align shared routes  ",
+    "fix(web+api): align shared routes",
     "feat(api/auth)!: require scoped credentials",
   ]) {
     const fixture = makeFixture(t, { message });
@@ -59,7 +59,14 @@ test("delivery verifier accepts style commits and punctuation in scopes", (t) =>
 test("delivery verifier rejects unknown types and malformed subjects", (t) => {
   for (const message of [
     "feature: add incident triage",
+    "  fix: add incident triage",
     "fix(api(auth)): require scoped credentials",
+    "fix((): require scoped credentials",
+    "fix(api)): require scoped credentials",
+    "fix( ): require scoped credentials",
+    "fix(api\tauth): require scoped credentials",
+    "fix: render \u001b[31mred output",
+    "fix: render \u009b31mred output",
     "feat:  summary starts after an extra space",
   ]) {
     const fixture = makeFixture(t, { message });

@@ -21,12 +21,25 @@ export const ALLOWED_TYPES = Object.freeze([
 ]);
 
 const SUBJECT = new RegExp(
-  `^(?<type>${ALLOWED_TYPES.join("|")})(?:\\((?<scope>[^()]+)\\))?(?<breaking>!)?: (?<summary>\\S.*)$`,
+  `^(?<type>${ALLOWED_TYPES.join("|")})(?:\\((?<scope>(?=\\S)[^()\\r\\n]*[^\\s()\\r\\n])\\))?(?<breaking>!)?: (?<summary>\\S.*)$`,
 );
+
+function hasForbiddenSubjectCharacters(subject) {
+  return [...subject].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    );
+  });
+}
 
 export function parseSubject(subject) {
   if (typeof subject !== "string") return null;
-  const match = SUBJECT.exec(subject.trim());
+  if (hasForbiddenSubjectCharacters(subject)) return null;
+  const match = SUBJECT.exec(subject);
   if (!match?.groups) return null;
   return {
     type: match.groups.type,
@@ -54,13 +67,13 @@ export function subjectsInRange(
   if (!baseSha || !headSha) throw new Error("both BASE_SHA and HEAD_SHA are required");
   const output = exec(
     "git",
-    ["log", "-z", "--no-merges", "--format=%s", `${baseSha}..${headSha}`],
+    ["log", "-z", "--no-merges", "--format=%B", `${baseSha}..${headSha}`],
     { cwd: repoDir, encoding: "utf8" },
   );
   if (!output) return [];
   const subjects = output.split("\0");
   if (subjects.at(-1) === "") subjects.pop();
-  return subjects.map((subject) => subject.trim());
+  return subjects.map((message) => message.split(/\r?\n/, 1)[0] ?? "");
 }
 
 export function assertRange(baseSha, headSha, options) {

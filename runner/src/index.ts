@@ -933,7 +933,7 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
           token,
           branch: requestedBranch,
           expectedHeadSha: baseSha,
-          headline: delivery.commitMessage,
+          commitMessage: delivery.commitMessage,
           changes,
           runId: currentRunId(),
         })
@@ -942,7 +942,7 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
           token,
           requestedBranch,
           baseSha,
-          headline: delivery.commitMessage,
+          commitMessage: delivery.commitMessage,
           changes,
           runId: currentRunId(),
         });
@@ -974,11 +974,62 @@ type GithubFileChange =
 const SEMANTIC_BRANCH =
   /^(feature|fix|chore|ci|docs|refactor|perf|test|build|revert)\/[a-z0-9][a-z0-9._/-]*$/;
 const CONVENTIONAL_SUBJECT =
-  /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: \S.*$/;
+  /^(?<prefix>(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\((?=\S)[^()\r\n]*[^\s()\r\n]\))?!?: )(?<summary>\S.*)$/;
 const GITHUB_CHANGE_BATCH = 100;
+const GITHUB_COMMIT_HEADLINE_LIMIT = 120;
+
+function hasForbiddenSubjectCharacters(subject: string) {
+  return [...subject].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    );
+  });
+}
+
+function conventionalSubject(message: string) {
+  const subject = message.split(/\r?\n/, 1)[0] ?? "";
+  if (hasForbiddenSubjectCharacters(subject)) return null;
+  const match = CONVENTIONAL_SUBJECT.exec(subject);
+  const prefix = match?.groups?.prefix;
+  const summary = match?.groups?.summary;
+  return prefix && summary ? { subject, prefix, summary } : null;
+}
 
 function hasConventionalSubject(message: string) {
-  return CONVENTIONAL_SUBJECT.test(message.split("\n", 1)[0]?.trim() ?? "");
+  return conventionalSubject(message) !== null;
+}
+
+function githubCommitMessage(commitMessage: string, multipart: string, runId: string) {
+  const parsed = conventionalSubject(commitMessage);
+  if (!parsed) throw new Error("github_signed_delivery_commit_not_conventional");
+  const availableSummaryCharacters =
+    GITHUB_COMMIT_HEADLINE_LIMIT - [...parsed.prefix].length - [...multipart].length;
+  if (availableSummaryCharacters < 1) {
+    throw new Error("github_signed_delivery_commit_subject_too_long");
+  }
+  const summary = [...parsed.summary].slice(0, availableSummaryCharacters).join("").trimEnd();
+  const headline = `${parsed.prefix}${summary}${multipart}`;
+  if (!hasConventionalSubject(headline)) {
+    throw new Error("github_signed_delivery_commit_subject_too_long");
+  }
+  const [, ...bodyLines] = commitMessage.split(/\r?\n/);
+  const suppliedBody = bodyLines.join("\n").trim();
+  return {
+    headline,
+    body: [`Delivered by Facility run ${runId}.`, suppliedBody].filter(Boolean).join("\n\n"),
+  };
+}
+
+function assertGithubCommitMessages(commitMessage: string, changeCount: number, runId: string) {
+  const batchCount = Math.ceil(changeCount / GITHUB_CHANGE_BATCH);
+  for (let index = 0; index < batchCount; index += 1) {
+    const multipart = batchCount > 1 ? ` (part ${index + 1}/${batchCount})` : "";
+    githubCommitMessage(commitMessage, multipart, runId);
+  }
 }
 
 export function semanticDeliveryBranch(current: string, base: string) {
@@ -1094,14 +1145,18 @@ export async function readAgentDeliveryMetadata(path: string): Promise<AgentDeli
   const root = objectValue(parsed);
   const pullRequest = objectValue(root.pullRequest);
   const branch = typeof root.branch === "string" ? root.branch.trim() : "";
-  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage.trim() : "";
-  const title = typeof pullRequest.title === "string" ? pullRequest.title.trim() : "";
+  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage : "";
+  const title = typeof pullRequest.title === "string" ? pullRequest.title : "";
   const body = typeof pullRequest.body === "string" ? pullRequest.body.trim() : "";
   if (!SEMANTIC_BRANCH.test(branch)) throw new Error("agent_delivery_branch_not_semantic");
   if (!hasConventionalSubject(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
     throw new Error("agent_delivery_commit_not_conventional");
   }
-  if (!CONVENTIONAL_SUBJECT.test(title) || title.length > 256) {
+  if (
+    hasForbiddenSubjectCharacters(title) ||
+    !hasConventionalSubject(title) ||
+    title.length > 256
+  ) {
     throw new Error("agent_delivery_pr_title_not_conventional");
   }
   if (!body || body.length > 60_000) throw new Error("agent_delivery_pr_body_invalid");
@@ -1119,7 +1174,7 @@ export async function readAgentUpdateMetadata(
   }
   const root = objectValue(parsed);
   const branch = typeof root.branch === "string" ? root.branch.trim() : "";
-  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage.trim() : "";
+  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage : "";
   existingGithubBranch(branch);
   if (!hasConventionalSubject(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
     throw new Error("agent_delivery_commit_not_conventional");
@@ -1138,11 +1193,12 @@ export async function publishVerifiedGithubChanges(input: {
   token: string;
   requestedBranch: string;
   baseSha: string;
-  headline: string;
+  commitMessage: string;
   changes: GithubFileChange[];
   runId: string;
   fetchImpl?: typeof fetch;
 }) {
+  assertGithubCommitMessages(input.commitMessage, input.changes.length, input.runId);
   const request = input.fetchImpl ?? fetch;
   const branch = await availableGithubBranch(
     request,
@@ -1169,12 +1225,13 @@ export async function publishVerifiedGithubBranchUpdate(input: {
   token: string;
   branch: string;
   expectedHeadSha: string;
-  headline: string;
+  commitMessage: string;
   changes: GithubFileChange[];
   runId: string;
   fetchImpl?: typeof fetch;
 }) {
   existingGithubBranch(input.branch);
+  assertGithubCommitMessages(input.commitMessage, input.changes.length, input.runId);
   const request = input.fetchImpl ?? fetch;
   const headSha = await commitVerifiedGithubChanges({ ...input, request });
   return { branch: input.branch, headSha };
@@ -1185,7 +1242,7 @@ async function commitVerifiedGithubChanges(input: {
   token: string;
   branch: string;
   expectedHeadSha: string;
-  headline: string;
+  commitMessage: string;
   changes: GithubFileChange[];
   runId: string;
   request: typeof fetch;
@@ -1206,6 +1263,7 @@ async function commitVerifiedGithubChanges(input: {
       )
       .map(({ path }) => ({ path }));
     const multipart = batches.length > 1 ? ` (part ${index + 1}/${batches.length})` : "";
+    const message = githubCommitMessage(input.commitMessage, multipart, input.runId);
     const data = await githubRequest<{
       data?: { createCommitOnBranch?: { commit?: { oid?: string } } };
       errors?: Array<{ message?: string }>;
@@ -1218,10 +1276,7 @@ async function commitVerifiedGithubChanges(input: {
           input: {
             branch: { repositoryNameWithOwner: input.repo, branchName: input.branch },
             expectedHeadOid,
-            message: {
-              headline: `${input.headline}${multipart}`.slice(0, 120),
-              body: `Delivered by Facility run ${input.runId}.`,
-            },
+            message,
             fileChanges: {
               ...(additions.length > 0 ? { additions } : {}),
               ...(deletions.length > 0 ? { deletions } : {}),
