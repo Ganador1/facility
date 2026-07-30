@@ -63,10 +63,7 @@ test("malformed, private, and unvalidated release inputs fail closed", () => {
     [{ release: { tag: "vlatest", version: "0.3.0" } }, /does not match v0\.3\.0/],
     [{ ref: "refs/tags/v0.3.0" }, /release images come from main/],
     [{ ref: "refs/heads/feature" }, /release images come from main/],
-    [
-      { release: { tag: "v0.3.0,latest", version: "0.3.0,latest" } },
-      /invalid container tag/,
-    ],
+    [{ release: { tag: "v0.3.0,latest", version: "0.3.0,latest" } }, /invalid container tag/],
   ];
   for (const [override, message] of invalid) {
     assert.throws(() => publicationPlan({ ...valid, ...override }), message);
