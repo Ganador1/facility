@@ -14,16 +14,20 @@ Write every commit subject as a [Conventional Commit](https://www.conventionalco
 <type>[(scope)][!]: <what changed>
 ```
 
-This is not a style preference. Merging to `main` releases, and the subjects
-merged since the last release are what decide the version — so a subject that
-lies about the kind of change ships the wrong version number to everyone who
-installed the package.
+Use one of these types: `feat`, `fix`, `perf`, `docs`, `style`, `refactor`,
+`test`, `build`, `ci`, `chore`, or `revert`.
+
+This is not a style preference. Release-on-merge derives the next version from
+the subjects merged since the last release. Subject validation lands before
+that workflow so the history it will consume is already trustworthy: a subject
+that lies about the kind of change ships the wrong version number to everyone
+who installed the package.
 
 | Subject | What it releases while the version is `0.x` |
 |---|---|
-| `fix: …`, `perf: …` | a patch |
+| `fix: …`, `perf: …`, `revert: …` | a patch |
 | `feat: …` | a patch |
-| `feat!: …`, or a `BREAKING CHANGE:` footer | a minor |
+| `<type>!: …`, or a `BREAKING CHANGE:` footer | a minor |
 | `docs: …`, `test: …`, `refactor: …`, `ci: …`, `chore: …`, `build: …`, `style: …` | nothing on its own |
 
 Two consequences worth internalising:
@@ -34,6 +38,7 @@ Two consequences worth internalising:
 - **A breaking change without `!` ships as a patch.** Mark it, in the subject or
   in a `BREAKING CHANGE:` footer, and say in the body what a user has to change.
 
-The pull request title follows the same rule and is checked in CI, because a
-squash merge makes that title the subject on `main`.
-
+The pull request title follows the same rule: it supplies the subject for a
+squash merge, while merge and rebase preserve the branch's commit subjects. CI
+checks the title, every non-merge commit in the pull request, and the actual
+subjects landed on `main`.

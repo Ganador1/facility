@@ -1,0 +1,27 @@
+# Title edits do not trigger the default pull_request activity set. Keep this
+# check separate from ci.yml so correcting a title neither reruns the full
+# acceptance suite nor replaces an earlier failing acceptance check with skips.
+name: pull request title
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  pull-request-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: The title is a conventional commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/conventional-commit-subjects.mjs title

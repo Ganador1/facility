@@ -44,6 +44,31 @@ test("delivery verifier rejects agent-prefixed branches and false co-authorship"
   assert.match(trailer.stderr, /Co-authored-by trailer/);
 });
 
+test("delivery verifier accepts style commits and punctuation in scopes", (t) => {
+  for (const message of [
+    "style: normalize formatting",
+    "  fix(web+api): align shared routes  ",
+    "feat(api/auth)!: require scoped credentials",
+  ]) {
+    const fixture = makeFixture(t, { message });
+    const result = runVerifier(fixture, "discover");
+    assert.equal(result.status, 0, `${message}\n${result.stdout}${result.stderr}`);
+  }
+});
+
+test("delivery verifier rejects unknown types and malformed subjects", (t) => {
+  for (const message of [
+    "feature: add incident triage",
+    "fix(api(auth)): require scoped credentials",
+    "feat:  summary starts after an extra space",
+  ]) {
+    const fixture = makeFixture(t, { message });
+    const result = runVerifier(fixture, "discover");
+    assert.notEqual(result.status, 0, message);
+    assert.match(result.stderr, /not Conventional Commits/);
+  }
+});
+
 test("delivery verifier rejects a rewritten existing PR baseline", (t) => {
   const fixture = makeFixture(t, { omitBaseline: true });
   const result = runVerifier(fixture, "discover");

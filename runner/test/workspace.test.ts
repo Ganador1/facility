@@ -185,6 +185,53 @@ describe("workspace preparation", () => {
     await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("branch_not_semantic");
   });
 
+  it("accepts style and punctuation scopes and rejects malformed conventional subjects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, "delivery.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage: "  style(web+api): normalize formatting  ",
+        pullRequest: {
+          title: "fix(api/auth)!: require scoped credentials",
+          body: "## Summary\n- Normalize formatting and scope credentials.",
+        },
+      }),
+    );
+
+    await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+      commitMessage: "style(web+api): normalize formatting",
+      pullRequest: { title: "fix(api/auth)!: require scoped credentials" },
+    });
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage: "feature(web+api): normalize formatting",
+        pullRequest: {
+          title: "fix(api/auth): require scoped credentials",
+          body: "Summary",
+        },
+      }),
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("commit_not_conventional");
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage: "style(web+api): normalize formatting",
+        pullRequest: {
+          title: "fix(api(auth)): require scoped credentials",
+          body: "Summary",
+        },
+      }),
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("pr_title_not_conventional");
+  });
+
   it("publishes agent-owned metadata through GitHub's signed commit mutation", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl: typeof fetch = async (input, init) => {

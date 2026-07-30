@@ -974,7 +974,7 @@ type GithubFileChange =
 const SEMANTIC_BRANCH =
   /^(feature|fix|chore|ci|docs|refactor|perf|test|build|revert)\/[a-z0-9][a-z0-9._/-]*$/;
 const CONVENTIONAL_SUBJECT =
-  /^(feat|fix|chore|ci|docs|refactor|perf|test|build|revert)(\([^)]+\))?!?: .+/;
+  /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: \S.*$/;
 const GITHUB_CHANGE_BATCH = 100;
 
 export function semanticDeliveryBranch(current: string, base: string) {

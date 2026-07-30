@@ -54,9 +54,11 @@ function discover() {
 
   for (const commit of delivered) {
     const message = commit.commit?.message ?? "";
-    const subject = message.split("\n", 1)[0];
+    const subject = message.split("\n", 1)[0].trim();
     assert(
-      /^(feat|fix|chore|ci|docs|refactor|perf|test|build|revert)(\([^)]+\))?!?: .+/.test(subject),
+      /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: \S.*$/.test(
+        subject,
+      ),
       `commit ${commit.sha} is not Conventional Commits: ${subject}`,
     );
     assert(
