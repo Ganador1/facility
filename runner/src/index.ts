@@ -937,6 +937,15 @@ export async function shipGitChanges(
     // their public boundary, but the runner must fail locally before acquiring
     // privileged credentials for an undeliverable message.
     assertGithubCommitMessages(delivery.commitMessage, changes.length, runId);
+    if (repairRepositoryMode(mode)) {
+      await assertRepairDeliveryReleaseImpact(
+        cwd,
+        bundle.scope,
+        baseRef,
+        delivery.commitMessage,
+        runId,
+      );
+    }
     const { token } = await api<{ token: string }>(`/internal/runs/${runId}/push-token`, {
       method: "POST",
     });
@@ -990,7 +999,9 @@ type GithubFileChange =
 const SEMANTIC_BRANCH =
   /^(feature|fix|chore|ci|docs|refactor|perf|test|build|revert)\/[a-z0-9][a-z0-9._/-]*$/;
 const CONVENTIONAL_SUBJECT =
-  /^(?<prefix>(?:feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\((?=\S)[^()\r\n]*[^\s()\r\n]\))?!?: )(?<summary>\S.*)$/;
+  /^(?<prefix>(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\((?=\S)[^()\r\n]*[^\s()\r\n]\))?(?<breaking>!)?: )(?<summary>\S.*)$/;
+const PATCH_COMMIT_TYPES = new Set(["feat", "fix", "perf", "revert"]);
+const DELIVERY_IMPACT_RANK = { none: 0, patch: 1, minor: 2 } as const;
 const GITHUB_CHANGE_BATCH = 100;
 const GITHUB_COMMIT_HEADLINE_LIMIT = 120;
 
@@ -1011,12 +1022,95 @@ function conventionalSubject(message: string) {
   if (hasForbiddenSubjectCharacters(subject)) return null;
   const match = CONVENTIONAL_SUBJECT.exec(subject);
   const prefix = match?.groups?.prefix;
+  const type = match?.groups?.type;
   const summary = match?.groups?.summary;
-  return prefix && summary ? { subject, prefix, summary } : null;
+  return prefix && type && summary
+    ? { subject, prefix, type, breaking: match?.groups?.breaking === "!", summary }
+    : null;
 }
 
 function hasConventionalSubject(message: string) {
   return conventionalSubject(message) !== null;
+}
+
+function hasBreakingFooter(message: string) {
+  const blocks = message
+    .replace(/\r\n/g, "\n")
+    .trimEnd()
+    .split(/\n[ \t]*\n+/);
+  if (blocks.length < 2) return false;
+  const lines = (blocks.at(-1) ?? "").split("\n");
+  const trailer = /^(?:(?:[A-Za-z0-9-]+|BREAKING CHANGE): +\S|[A-Za-z0-9-]+ #\S)/;
+  const breakingTrailer = /^BREAKING(?: |-)CHANGE: +\S/;
+  if (!trailer.test(lines[0] ?? "")) return false;
+  return lines.some((line) => breakingTrailer.test(line));
+}
+
+type DeliveryReleaseImpact = keyof typeof DELIVERY_IMPACT_RANK;
+
+export function deliveryReleaseImpact(message: string): DeliveryReleaseImpact {
+  const parsed = conventionalSubject(message);
+  if (!parsed) throw new Error("agent_delivery_commit_not_conventional");
+  if (parsed.breaking || hasBreakingFooter(message)) return "minor";
+  return PATCH_COMMIT_TYPES.has(parsed.type) ? "patch" : "none";
+}
+
+function maximumDeliveryReleaseImpact(messages: string[]) {
+  return messages.reduce<DeliveryReleaseImpact>((highest, message) => {
+    const impact = deliveryReleaseImpact(message);
+    return DELIVERY_IMPACT_RANK[impact] > DELIVERY_IMPACT_RANK[highest] ? impact : highest;
+  }, "none");
+}
+
+function assertDeliveryReleaseImpact(commitMessage: string, pullRequestTitle: string) {
+  // GitHub stores headline and body as one commit message separated by a
+  // blank line. Classify that exact transported message, including Facility's
+  // provenance paragraph, rather than the raw manifest text.
+  const transported = githubCommitMessage(commitMessage, "", "release-impact-check");
+  const commitImpact = deliveryReleaseImpact(`${transported.headline}\n\n${transported.body}`);
+  const titleImpact = deliveryReleaseImpact(pullRequestTitle);
+  if (commitImpact !== titleImpact) {
+    throw new Error(
+      `agent_delivery_release_impact_mismatch: commit ${commitImpact}, pull request title ${titleImpact}`,
+    );
+  }
+}
+
+async function assertRepairDeliveryReleaseImpact(
+  cwd: string,
+  scope: Record<string, unknown>,
+  headRef: string,
+  commitMessage: string,
+  runId: string,
+) {
+  const pullRequest = objectValue(scope.pullRequest);
+  const baseBranch = typeof pullRequest.base === "string" ? pullRequest.base.trim() : "";
+  if (!baseBranch) throw new Error("agent_delivery_pr_base_missing");
+  existingGithubBranch(baseBranch);
+  const baseRef = `origin/${baseBranch}`;
+  const output = await gitOutput(cwd, [
+    "log",
+    "-z",
+    "--no-merges",
+    "--format=%B",
+    `${baseRef}..${headRef}`,
+    "--",
+  ]);
+  const messages = output ? output.split("\0") : [];
+  if (messages.at(-1) === "") messages.pop();
+  if (messages.length === 0) throw new Error("agent_delivery_pr_range_empty");
+  const currentImpact = maximumDeliveryReleaseImpact(messages);
+  const title = typeof pullRequest.title === "string" ? pullRequest.title : "";
+  if (title && deliveryReleaseImpact(title) !== currentImpact) {
+    throw new Error("agent_delivery_existing_release_impact_mismatch");
+  }
+  const transported = githubCommitMessage(commitMessage, "", runId);
+  const addedImpact = deliveryReleaseImpact(`${transported.headline}\n\n${transported.body}`);
+  if (DELIVERY_IMPACT_RANK[addedImpact] > DELIVERY_IMPACT_RANK[currentImpact]) {
+    throw new Error(
+      `agent_delivery_release_impact_mismatch: repair commit ${addedImpact}, existing PR range ${currentImpact}`,
+    );
+  }
 }
 
 function githubCommitMessage(commitMessage: string, multipart: string, runId: string) {
@@ -1033,7 +1127,12 @@ function githubCommitMessage(commitMessage: string, multipart: string, runId: st
     throw new Error("github_signed_delivery_commit_subject_too_long");
   }
   const [, ...bodyLines] = commitMessage.split(/\r?\n/);
-  const suppliedBody = bodyLines.join("\n").trim();
+  if (bodyLines.length > 0 && !/^[ \t]*$/.test(bodyLines[0] ?? "")) {
+    throw new Error("github_signed_delivery_commit_body_separator_invalid");
+  }
+  // Remove only the required structural separator. Preserve leading
+  // indentation because stripping it can turn a code example into a trailer.
+  const suppliedBody = bodyLines.slice(1).join("\n").trimEnd();
   return {
     headline,
     body: [`Delivered by Facility run ${runId}.`, suppliedBody].filter(Boolean).join("\n\n"),
@@ -1175,6 +1274,7 @@ export async function readAgentDeliveryMetadata(path: string): Promise<AgentDeli
   ) {
     throw new Error("agent_delivery_pr_title_not_conventional");
   }
+  assertDeliveryReleaseImpact(commitMessage, title);
   if (!body || body.length > 60_000) throw new Error("agent_delivery_pr_body_invalid");
   return { branch, commitMessage, pullRequest: { title, body } };
 }
@@ -1558,10 +1658,10 @@ export function composedPrompt(bundle: RunBundle) {
         .join("\n")}`
     : "";
   const deliveryNote = requiresDelivery(bundle.mode)
-    ? `\n\n## Agent-owned delivery\nFacility will create the signed commit, push, and non-draft pull request with the GitHub App after your engine exits. You own all delivery metadata. Before finishing, create \`.agent-sdlc/delivery.json\` with exactly this shape:\n\n\`\`\`json\n{\n  "branch": "feature/task-slug",\n  "commitMessage": "feat: describe the change",\n  "pullRequest": {\n    "title": "feat: describe the change",\n    "body": "## Summary\\n- ...\\n\\n## Context\\n- ...\\n\\n## Verification\\n- ...\\n\\n## Linked issues\\n- Closes #123"\n  }\n}\n\`\`\`\n\nThe branch must be semantic; the commit and PR title must use Conventional Commits; the PR body must be your complete team-lead-ready description. Do not commit this managed file. Do not require \`gh\`, a writable clone token, or a local signing key: Facility transports your exact metadata and fails closed if it is absent or invalid.`
+    ? `\n\n## Agent-owned delivery\nFacility will create the signed commit, push, and non-draft pull request with the GitHub App after your engine exits. You own all delivery metadata. Before finishing, create \`.agent-sdlc/delivery.json\` with exactly this shape:\n\n\`\`\`json\n{\n  "branch": "feature/task-slug",\n  "commitMessage": "feat: describe the change",\n  "pullRequest": {\n    "title": "feat: describe the change",\n    "body": "## Summary\\n- ...\\n\\n## Context\\n- ...\\n\\n## Verification\\n- ...\\n\\n## Linked issues\\n- Closes #123"\n  }\n}\n\`\`\`\n\nThe branch must be semantic; the commit and PR title must use Conventional Commits and have the same release impact. If the commit has a \`BREAKING CHANGE:\` footer, mark the PR title with \`!\` too. The PR body must be your complete team-lead-ready description. Do not commit this managed file. Do not require \`gh\`, a writable clone token, or a local signing key: Facility transports your exact metadata and fails closed if it is absent or invalid.`
     : "";
   const repairDeliveryNote = repairRepositoryMode(normalizedMode(bundle.mode))
-    ? `\n\n## Agent-owned PR update\nIf and only if you make verified repository changes, create \`.agent-sdlc/delivery.json\` before finishing with exactly \`{"branch":"<the existing PR branch>","commitMessage":"fix: describe the correction"}\`. Facility will add a signed commit to that same branch through the GitHub App. The branch must exactly match the checked-out PR branch and the message must use Conventional Commits. Do not run \`git push\`, create another branch or pull request, force-push, or depend on \`gh\`. If no code change is needed, do not create the manifest.`
+    ? `\n\n## Agent-owned PR update\nIf and only if you make verified repository changes, create \`.agent-sdlc/delivery.json\` before finishing with exactly \`{"branch":"<the existing PR branch>","commitMessage":"<matching Conventional Commit type>: describe the correction"}\`. Facility will add a signed commit to that same branch through the GitHub App. The branch must exactly match the checked-out PR branch. Choose a truthful Conventional Commit type whose release impact is no greater than the existing pull request range; do not add \`!\` or a \`BREAKING CHANGE:\` footer unless that range is already breaking. If a truthful message would raise the impact, leave the manifest absent and report that the PR title must be updated first. Do not run \`git push\`, create another branch or pull request, force-push, or depend on \`gh\`. If no code change is needed, do not create the manifest.`
     : "";
   return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}${steeringNote}${conversationNote}${progressNote}${repositoryOutputNote}${githubEventNote}${projectSkillsNote}${deliveryNote}${repairDeliveryNote}`;
 }

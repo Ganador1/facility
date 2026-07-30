@@ -44,6 +44,15 @@ beforeEach(() => {
     string | undefined
   >;
   previousFetch = globalThis.fetch;
+  globalThis.fetch = async (request, init) => {
+    const url = new URL(
+      typeof request === "string" ? request : request instanceof URL ? request.href : request.url,
+    );
+    if (url.protocol !== "http:" || url.hostname !== "127.0.0.1") {
+      throw new Error(`integration test blocked external request to ${url.origin}`);
+    }
+    return previousFetch(request, init);
+  };
 });
 
 afterEach(async () => {
@@ -148,8 +157,9 @@ async function startGithubServer(input: {
   scenario: GithubScenario;
   token: string;
   baseSha: string;
+  branch?: string;
 }) {
-  const refs = new Map<string, string>([["main", input.baseSha]]);
+  const refs = new Map<string, string>([[input.branch ?? "main", input.baseSha]]);
   const allowedRepo = "acme/widget";
   let committed = false;
   const local = await startJsonServer((request) => {
@@ -223,7 +233,7 @@ async function startGithubServer(input: {
       throw new Error(`unexpected external GitHub origin ${url.origin}`);
     }
     originalUrls.push(url.href);
-    return previousFetch(new URL(`${url.pathname}${url.search}`, local.origin), init);
+    return globalThis.fetch(new URL(`${url.pathname}${url.search}`, local.origin), init);
   };
   return {
     ...local,
@@ -234,7 +244,7 @@ async function startGithubServer(input: {
   };
 }
 
-function runBundle(cloneUrl: string): RunBundle {
+function runBundle(cloneUrl: string, overrides: Partial<RunBundle> = {}): RunBundle {
   return {
     runId: "run_integration",
     mode: "builder",
@@ -249,10 +259,18 @@ function runBundle(cloneUrl: string): RunBundle {
     gatewayUrls: { anthropic: "https://anthropic.test", openai: "https://openai.test" },
     scope: {},
     timeoutMin: 5,
+    ...overrides,
   };
 }
 
-async function deliveryFixture(commitMessage: string) {
+async function deliveryFixture(
+  commitMessage: string,
+  pullRequestTitle = "fix: deliver signed task",
+  {
+    repair = false,
+    repairCodeChange = false,
+  }: { repair?: boolean; repairCodeChange?: boolean } = {},
+) {
   const fixtureRoot = await mkdtemp(join(tmpdir(), "facility-github-delivery-"));
   cleanups.push(() => rm(fixtureRoot, { recursive: true, force: true }));
   const origin = join(fixtureRoot, "origin");
@@ -266,8 +284,30 @@ async function deliveryFixture(commitMessage: string) {
   await writeFile(join(origin, "README.md"), "# Signed delivery fixture\n");
   execFileSync("git", ["add", "README.md"], { cwd: origin });
   execFileSync("git", ["commit", "-m", "test: seed signed delivery fixture"], { cwd: origin });
+  if (repair) {
+    execFileSync("git", ["checkout", "-b", "feature/task"], { cwd: origin });
+    await writeFile(join(origin, "existing.md"), "Existing pull request change.\n");
+    execFileSync("git", ["add", "existing.md"], { cwd: origin });
+    execFileSync("git", ["commit", "-m", "docs: document the existing behavior"], {
+      cwd: origin,
+    });
+  }
 
-  const bundle = runBundle(origin);
+  const bundle = runBundle(
+    origin,
+    repair
+      ? {
+          mode: "address_review",
+          repo: { cloneUrl: origin, branch: "feature/task", installationTokenRef: null },
+          scope: {
+            pullRequest: {
+              base: "main",
+              title: pullRequestTitle,
+            },
+          },
+        }
+      : {},
+  );
   await prepareWorkspace(
     bundle,
     "virtual-integration-key",
@@ -281,41 +321,42 @@ async function deliveryFixture(commitMessage: string) {
   );
   bundle.repo.cloneUrl = "https://github.com/acme/widget.git";
   const repo = join(workspace, "repo");
-  await mkdir(join(repo, "src"), { recursive: true });
-  await writeFile(join(repo, "src", "task.ts"), "export const delivered = true;\n");
+  if (repair && !repairCodeChange) {
+    await writeFile(
+      join(repo, "README.md"),
+      "# Signed delivery fixture\n\nClarify the existing behavior.\n",
+    );
+  } else {
+    await mkdir(join(repo, "src"), { recursive: true });
+    await writeFile(join(repo, "src", "task.ts"), "export const delivered = true;\n");
+  }
   await mkdir(join(repo, ".agent-sdlc"), { recursive: true });
   await writeFile(
     join(repo, ".agent-sdlc", "delivery.json"),
-    JSON.stringify({
-      branch: "feature/task",
-      commitMessage,
-      pullRequest: {
-        title: "fix: deliver signed task",
-        body: "## Summary\n\n- Deliver the signed task.",
-      },
-    }),
+    JSON.stringify(
+      repair
+        ? { branch: "feature/task", commitMessage }
+        : {
+            branch: "feature/task",
+            commitMessage,
+            pullRequest: {
+              title: pullRequestTitle,
+              body: "## Summary\n\n- Deliver the signed task.",
+            },
+          },
+    ),
   );
-  const baseSha = execFileSync("git", ["rev-parse", "origin/main"], {
+  const baseSha = execFileSync("git", ["rev-parse", `origin/${repair ? "feature/task" : "main"}`], {
     cwd: repo,
     encoding: "utf8",
   }).trim();
   return { bundle, workspace, repo, baseSha };
 }
 
-function configureRunner(facilityOrigin: string, githubOrigin: string) {
+function configureRunner(facilityOrigin: string) {
   process.env.FACILITY_API_URL = facilityOrigin;
   process.env.RUN_ID = "run_integration";
   process.env.RUNNER_TOKEN = "runner-integration-token";
-  const allowedOrigins = new Set([facilityOrigin, githubOrigin]);
-  globalThis.fetch = async (request, init) => {
-    const url = new URL(
-      typeof request === "string" ? request : request instanceof URL ? request.href : request.url,
-    );
-    if (!allowedOrigins.has(url.origin)) {
-      throw new Error(`integration test blocked external request to ${url.origin}`);
-    }
-    return previousFetch(request, init);
-  };
 }
 
 function facilityRequests(requests: RecordedRequest[], suffix: string) {
@@ -338,6 +379,7 @@ describe.sequential("signed GitHub delivery integration", () => {
   it("publishes the real workspace diff with exact Conventional Commit metadata", async () => {
     const fixture = await deliveryFixture(
       "fix: deliver signed task\n\nExplain the migration.\n\nBREAKING CHANGE: use the new task API",
+      "fix!: deliver signed task",
     );
     const token = "installation-token-success";
     const facility = await startFacilityServer(token);
@@ -346,7 +388,7 @@ describe.sequential("signed GitHub delivery integration", () => {
       token,
       baseSha: fixture.baseSha,
     });
-    configureRunner(facility.origin, github.origin);
+    configureRunner(facility.origin);
 
     const result = await shipGitChanges(fixture.bundle, {
       root: fixture.workspace,
@@ -357,7 +399,7 @@ describe.sequential("signed GitHub delivery integration", () => {
       branch: "feature/task",
       headSha: "signed_sha",
       changed: true,
-      pullRequestTitle: "fix: deliver signed task",
+      pullRequestTitle: "fix!: deliver signed task",
       pullRequestBody: "## Summary\n\n- Deliver the signed task.",
     });
     expect(deliveryFailure(fixture.bundle, result)).toBeNull();
@@ -410,6 +452,11 @@ describe.sequential("signed GitHub delivery integration", () => {
       "commit_not_conventional",
     ],
     [
+      "missing body separator",
+      "fix: replace the contract\nBREAKING CHANGE: migrate the client",
+      "commit_body_separator_invalid",
+    ],
+    [
       "oversized prefix",
       `feat(${"a".repeat(112)}): x`,
       "github_signed_delivery_commit_subject_too_long",
@@ -423,7 +470,7 @@ describe.sequential("signed GitHub delivery integration", () => {
       token,
       baseSha: fixture.baseSha,
     });
-    configureRunner(facility.origin, github.origin);
+    configureRunner(facility.origin);
 
     const result = await shipGitChanges(fixture.bundle, {
       root: fixture.workspace,
@@ -439,6 +486,94 @@ describe.sequential("signed GitHub delivery integration", () => {
     expect(github.committed()).toBe(false);
   });
 
+  it("rejects mismatched commit and PR-title impact before acquiring a push token", async () => {
+    const fixture = await deliveryFixture(
+      "fix: replace the public contract\n\nBREAKING CHANGE: migrate the client",
+    );
+    const token = "installation-token-impact-mismatch";
+    const facility = await startFacilityServer(token);
+    const github = await startGithubServer({
+      scenario: "success",
+      token,
+      baseSha: fixture.baseSha,
+    });
+    configureRunner(facility.origin);
+
+    const result = await shipGitChanges(fixture.bundle, {
+      root: fixture.workspace,
+      githubFetch: github.githubFetch,
+    });
+
+    expect(result).toMatchObject({
+      changed: true,
+      pushError: expect.stringContaining("agent_delivery_release_impact_mismatch"),
+    });
+    expect(result).not.toHaveProperty("headSha");
+    expect(deliveryFailure(fixture.bundle, result)).toBe("delivery_push_failed");
+    expect(facilityRequests(facility.requests, "/push-token")).toHaveLength(0);
+    expect(github.originalUrls).toEqual([]);
+    expect(failureEvent(facility.requests)).toContain("release_impact_mismatch");
+    expect(github.committed()).toBe(false);
+  });
+
+  it("publishes a repair that does not raise the existing PR range impact", async () => {
+    const fixture = await deliveryFixture(
+      "docs: clarify the existing behavior",
+      "docs: document the existing behavior",
+      { repair: true },
+    );
+    const token = "installation-token-repair-success";
+    const facility = await startFacilityServer(token);
+    const github = await startGithubServer({
+      scenario: "success",
+      token,
+      baseSha: fixture.baseSha,
+      branch: "feature/task",
+    });
+    configureRunner(facility.origin);
+
+    const result = await shipGitChanges(fixture.bundle, {
+      root: fixture.workspace,
+      githubFetch: github.githubFetch,
+    });
+
+    expect(result).toEqual({ branch: "feature/task", headSha: "signed_sha", changed: true });
+    expect(facilityRequests(facility.requests, "/push-token")).toHaveLength(1);
+    expect(github.originalUrls).toEqual(["https://api.github.com/graphql"]);
+    expect(github.committed()).toBe(true);
+  });
+
+  it("rejects a repair that raises PR impact before acquiring a push token", async () => {
+    const fixture = await deliveryFixture(
+      "fix: correct the task behavior",
+      "docs: document the existing behavior",
+      { repair: true, repairCodeChange: true },
+    );
+    const token = "installation-token-repair-impact-mismatch";
+    const facility = await startFacilityServer(token);
+    const github = await startGithubServer({
+      scenario: "success",
+      token,
+      baseSha: fixture.baseSha,
+      branch: "feature/task",
+    });
+    configureRunner(facility.origin);
+
+    const result = await shipGitChanges(fixture.bundle, {
+      root: fixture.workspace,
+      githubFetch: github.githubFetch,
+    });
+
+    expect(result).toMatchObject({
+      changed: true,
+      pushError: expect.stringContaining("agent_delivery_release_impact_mismatch"),
+    });
+    expect(facilityRequests(facility.requests, "/push-token")).toHaveLength(0);
+    expect(github.originalUrls).toEqual([]);
+    expect(failureEvent(facility.requests)).toContain("release_impact_mismatch");
+    expect(github.committed()).toBe(false);
+  });
+
   it.each([
     ["expired", "expired"],
     ["revoked", "revoked"],
@@ -451,7 +586,7 @@ describe.sequential("signed GitHub delivery integration", () => {
     const token = `installation-token-${scenario}`;
     const facility = await startFacilityServer(token);
     const github = await startGithubServer({ scenario, token, baseSha: fixture.baseSha });
-    configureRunner(facility.origin, github.origin);
+    configureRunner(facility.origin);
 
     const result = await shipGitChanges(fixture.bundle, {
       root: fixture.workspace,
@@ -483,7 +618,7 @@ describe.sequential("signed GitHub delivery integration", () => {
       token,
       baseSha: fixture.baseSha,
     });
-    configureRunner(facility.origin, github.origin);
+    configureRunner(facility.origin);
 
     const result = await shipGitChanges(fixture.bundle, {
       root: fixture.workspace,
@@ -511,7 +646,7 @@ describe.sequential("signed GitHub delivery integration", () => {
       token,
       baseSha: fixture.baseSha,
     });
-    configureRunner(facility.origin, github.origin);
+    configureRunner(facility.origin);
 
     const result = await shipGitChanges(fixture.bundle, {
       root: fixture.workspace,

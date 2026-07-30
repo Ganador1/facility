@@ -7,6 +7,7 @@ import {
   buildClaudeCodeArgs,
   buildCodexArgs,
   composedPrompt,
+  deliveryReleaseImpact,
   exitCode,
   handleControlMessage,
   parseGitNameStatus,
@@ -43,6 +44,38 @@ function bundle(overrides: Partial<RunBundle> = {}): RunBundle {
 }
 
 describe("workspace preparation", () => {
+  it("keeps runner release classification aligned with the root policy", async () => {
+    const rootPolicy = (await import(
+      new URL("../../scripts/conventional-commit-subjects.mjs", import.meta.url).href
+    )) as { releaseImpact(message: string): string };
+    const messages = [
+      ...[
+        "feat",
+        "fix",
+        "perf",
+        "revert",
+        "docs",
+        "style",
+        "refactor",
+        "test",
+        "build",
+        "ci",
+        "chore",
+      ].map((type) => `${type}: describe the change`),
+      "docs!: replace the contract",
+      "docs: replace the contract\n\nBREAKING CHANGE: migrate the client",
+      "docs: replace the contract\n\nRefs: #42\ncontext for the reference\nBREAKING-CHANGE: migrate the client\nCloses #123",
+      "docs: quote output\n\nThe tool printed:\nBREAKING CHANGE: example text",
+      "docs: show a fence\n\n```text\nBREAKING CHANGE: example text\n```",
+      "docs: missing separator\nBREAKING CHANGE: example text",
+      "docs: malformed trailer\n\nBREAKING CHANGE:\texample text",
+    ];
+
+    for (const message of messages) {
+      expect(deliveryReleaseImpact(message), message).toBe(rootPolicy.releaseImpact(message));
+    }
+  });
+
   it("accepts only a bounded structured security findings artifact", async () => {
     const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
     const path = join(root, "security-findings.json");
@@ -128,6 +161,17 @@ describe("workspace preparation", () => {
     expect(composedPrompt(bundle())).toContain(".agent-sdlc/progress.md");
     expect(composedPrompt(bundle({ mode: "custom" }))).not.toContain(".agent-sdlc/progress.md");
     expect(composedPrompt(bundle())).toContain(".agent-sdlc/delivery.json");
+    expect(composedPrompt(bundle())).toContain("same release impact");
+    expect(composedPrompt(bundle())).toContain("BREAKING CHANGE:");
+    expect(composedPrompt(bundle({ mode: "address_review" }))).toContain(
+      "release impact is no greater than the existing pull request range",
+    );
+    expect(composedPrompt(bundle({ mode: "ci_doctor" }))).toContain(
+      "do not add `!` or a `BREAKING CHANGE:` footer unless that range is already breaking",
+    );
+    expect(composedPrompt(bundle({ mode: "address_review" }))).toContain(
+      "PR title must be updated first",
+    );
     expect(composedPrompt(bundle({ mode: "architect" }))).not.toContain(
       ".agent-sdlc/delivery.json",
     );
@@ -268,6 +312,66 @@ describe("workspace preparation", () => {
       }),
     );
     await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("pr_title_not_conventional");
+  });
+
+  it("requires matching commit and PR-title impact using only an actual breaking footer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, "delivery.json");
+    const writeDelivery = (commitMessage: string, title: string) =>
+      writeFile(
+        path,
+        JSON.stringify({
+          branch: "feature/release-impact",
+          commitMessage,
+          pullRequest: { title, body: "## Summary\n- Preserve release semantics." },
+        }),
+      );
+
+    await writeDelivery(
+      "fix: document the migration phrase\n\nBREAKING CHANGE: appears in an example\n\nThe behavior remains compatible.",
+      "fix: document the migration phrase",
+    );
+    await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+      pullRequest: { title: "fix: document the migration phrase" },
+    });
+
+    await writeDelivery(
+      "fix: document malformed input\nBREAKING CHANGE: missing footer separator",
+      "fix: document malformed input",
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow(
+      "github_signed_delivery_commit_body_separator_invalid",
+    );
+
+    for (const nonFooter of [
+      "fix: quote output\n\nThe tool printed:\nBREAKING CHANGE: example text",
+      "fix: show a fence\n\n```text\nBREAKING CHANGE: example text\n```",
+      "fix: show indented code\n\n    BREAKING CHANGE: example text",
+      "fix: use a tab separator\n\nBREAKING CHANGE:\tmigrate the client",
+    ]) {
+      await writeDelivery(nonFooter, "fix: preserve compatible behavior");
+      await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+        pullRequest: { title: "fix: preserve compatible behavior" },
+      });
+    }
+
+    const breakingCommit =
+      "fix: replace the public contract\n\nExplain the migration.\n\nBREAKING CHANGE: migrate the client\ncontinue with the second step\nCloses #123";
+    await writeDelivery(breakingCommit, "fix: replace the public contract");
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow(
+      "agent_delivery_release_impact_mismatch",
+    );
+
+    await writeDelivery(breakingCommit, "fix!: replace the public contract");
+    await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+      commitMessage: breakingCommit,
+      pullRequest: { title: "fix!: replace the public contract" },
+    });
+
+    await writeDelivery("docs: explain the public contract", "fix: explain the public contract");
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow(
+      "agent_delivery_release_impact_mismatch",
+    );
   });
 
   it("publishes agent-owned metadata through GitHub's signed commit mutation", async () => {
