@@ -1100,15 +1100,25 @@ async function assertRepairDeliveryReleaseImpact(
   if (messages.at(-1) === "") messages.pop();
   if (messages.length === 0) throw new Error("agent_delivery_pr_range_empty");
   const currentImpact = maximumDeliveryReleaseImpact(messages);
-  const title = typeof pullRequest.title === "string" ? pullRequest.title : "";
-  if (title && deliveryReleaseImpact(title) !== currentImpact) {
-    throw new Error("agent_delivery_existing_release_impact_mismatch");
-  }
   const transported = githubCommitMessage(commitMessage, "", runId);
   const addedImpact = deliveryReleaseImpact(`${transported.headline}\n\n${transported.body}`);
-  if (DELIVERY_IMPACT_RANK[addedImpact] > DELIVERY_IMPACT_RANK[currentImpact]) {
+  const finalImpact =
+    DELIVERY_IMPACT_RANK[addedImpact] > DELIVERY_IMPACT_RANK[currentImpact]
+      ? addedImpact
+      : currentImpact;
+  const title = typeof pullRequest.title === "string" ? pullRequest.title : "";
+  const titleImpact = title ? deliveryReleaseImpact(title) : null;
+  if (titleImpact && titleImpact !== finalImpact) {
     throw new Error(
-      `agent_delivery_release_impact_mismatch: repair commit ${addedImpact}, existing PR range ${currentImpact}`,
+      `agent_delivery_release_impact_mismatch: pull request title ${titleImpact}, final PR range ${finalImpact}`,
+    );
+  }
+  if (
+    titleImpact === null &&
+    DELIVERY_IMPACT_RANK[addedImpact] > DELIVERY_IMPACT_RANK[currentImpact]
+  ) {
+    throw new Error(
+      `agent_delivery_release_impact_mismatch: repair commit ${addedImpact}, existing PR range ${currentImpact}, title unavailable`,
     );
   }
 }

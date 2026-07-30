@@ -269,7 +269,8 @@ async function deliveryFixture(
   {
     repair = false,
     repairCodeChange = false,
-  }: { repair?: boolean; repairCodeChange?: boolean } = {},
+    repairTitleAvailable = true,
+  }: { repair?: boolean; repairCodeChange?: boolean; repairTitleAvailable?: boolean } = {},
 ) {
   const fixtureRoot = await mkdtemp(join(tmpdir(), "facility-github-delivery-"));
   cleanups.push(() => rm(fixtureRoot, { recursive: true, force: true }));
@@ -302,7 +303,7 @@ async function deliveryFixture(
           scope: {
             pullRequest: {
               base: "main",
-              title: pullRequestTitle,
+              ...(repairTitleAvailable ? { title: pullRequestTitle } : {}),
             },
           },
         }
@@ -543,13 +544,43 @@ describe.sequential("signed GitHub delivery integration", () => {
     expect(github.committed()).toBe(true);
   });
 
-  it("rejects a repair that raises PR impact before acquiring a push token", async () => {
+  it("publishes an impact-raising repair after the PR is truthfully retitled", async () => {
+    const fixture = await deliveryFixture(
+      "fix: correct the task behavior",
+      "fix: correct the task behavior",
+      { repair: true, repairCodeChange: true },
+    );
+    const token = "installation-token-retitled-repair-success";
+    const facility = await startFacilityServer(token);
+    const github = await startGithubServer({
+      scenario: "success",
+      token,
+      baseSha: fixture.baseSha,
+      branch: "feature/task",
+    });
+    configureRunner(facility.origin);
+
+    const result = await shipGitChanges(fixture.bundle, {
+      root: fixture.workspace,
+      githubFetch: github.githubFetch,
+    });
+
+    expect(result).toEqual({ branch: "feature/task", headSha: "signed_sha", changed: true });
+    expect(facilityRequests(facility.requests, "/push-token")).toHaveLength(1);
+    expect(github.originalUrls).toEqual(["https://api.github.com/graphql"]);
+    expect(github.committed()).toBe(true);
+  });
+
+  it.each([
+    ["has an incompatible docs title", true],
+    ["has no authoritative title", false],
+  ] as const)("rejects an impact-raising repair that %s before acquiring a push token", async (_case, repairTitleAvailable) => {
     const fixture = await deliveryFixture(
       "fix: correct the task behavior",
       "docs: document the existing behavior",
-      { repair: true, repairCodeChange: true },
+      { repair: true, repairCodeChange: true, repairTitleAvailable },
     );
-    const token = "installation-token-repair-impact-mismatch";
+    const token = `installation-token-repair-impact-mismatch-${repairTitleAvailable}`;
     const facility = await startFacilityServer(token);
     const github = await startGithubServer({
       scenario: "success",
