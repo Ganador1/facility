@@ -58,9 +58,37 @@ cp $FACILITY_TF_DIR/terraform.tfvars.example $FACILITY_TF_DIR/${FACILITY_ENV}.tf
 ```
 
 Set `aws_region` and `environment` to the values exported above, set the
-hostnames, select `auth_identity_provider = "github"` for self-hosting, and use
-the image tag you are about to push. A tfvars filename does not set Terraform's
-`environment` variable, so do not leave the copied `playground` value behind.
+hostnames, and select `auth_identity_provider = "github"` for self-hosting. A
+tfvars filename does not set Terraform's `environment` variable, so do not
+leave the copied `playground` value behind.
+
+Choose the image source now, before the first apply, so every task definition —
+including the one-shot migrate task — is registered with the image it will
+actually run. Release tags publish images as `:<version>` (for example,
+`v0.3.0` publishes `:0.3.0`). GitHub creates each GHCR package private;
+repository visibility does not make it public. Use the release path only after
+a maintainer has made all six packages public and you have verified that each
+chosen image tag is anonymously pullable. Then add the overrides, replacing
+`<version>` with the release version without its leading `v`:
+
+```hcl
+image_overrides = {
+  api     = "ghcr.io/theam/facility/api:<version>"
+  worker  = "ghcr.io/theam/facility/worker:<version>"
+  gateway = "ghcr.io/theam/facility/gateway:<version>"
+  web     = "ghcr.io/theam/facility/web:<version>"
+  mcp     = "ghcr.io/theam/facility/mcp:<version>"
+  runner  = "ghcr.io/theam/facility/runner:<version>"
+}
+```
+
+Release images are `linux/amd64`, matching the module's default
+`task_cpu_architecture`. If any package or tag is absent or private, or if you
+are deploying on Graviton, from a non-release commit, or from a private fork,
+leave `image_overrides` empty and use the build fallback in Step 3. For that
+path, set every `container_image_tags` entry to `FACILITY_IMAGE_TAG` before
+applying.
+
 Start with — deliberately — no running services:
 
 ```hcl
@@ -76,8 +104,9 @@ mcp_desired_count     = 0
 
 The first apply creates repositories, the database, secret containers, the
 network, task definitions and the load balancer **without** starting containers
-whose images and secrets do not exist yet. Starting them early produces a
-crash-loop that is slower to diagnose than it is to avoid.
+before their secrets exist. On the build path it also creates the repositories
+that Step 3 populates. Starting services early produces a crash-loop that is
+slower to diagnose than it is to avoid.
 
 Without a public DNS zone, clear the example's fake certificate and hosted-zone
 values as well as enabling the AWS-managed HTTPS origin:
@@ -101,30 +130,11 @@ terraform -chdir="$FACILITY_TF_DIR" init
 terraform -chdir="$FACILITY_TF_DIR" apply -var-file="${FACILITY_ENV}.tfvars"
 ```
 
-## 3. Get the images
+## 3. Build and push images when needed
 
-Released images are published to the GitHub Container Registry, so a deployment
-that tracks a release builds nothing. Point Terraform at them instead of the
-repositories this module creates:
-
-```hcl
-image_overrides = {
-  api     = "ghcr.io/theam/facility/api:0.3.0"
-  worker  = "ghcr.io/theam/facility/worker:0.3.0"
-  gateway = "ghcr.io/theam/facility/gateway:0.3.0"
-  web     = "ghcr.io/theam/facility/web:0.3.0"
-  mcp     = "ghcr.io/theam/facility/mcp:0.3.0"
-  runner  = "ghcr.io/theam/facility/runner:0.3.0"
-}
-```
-
-They are `linux/amd64`, matching the module's default `task_cpu_architecture`,
-and ECS pulls them without credentials because the packages are public. A
-Graviton deployment, a commit that is not a release, or a fork of this
-repository whose own packages are private builds its images instead — continue
-below.
-
-### Building them yourself
+If you configured and verified public `image_overrides` before the first apply,
+skip this step. Otherwise build the images into the ECR repositories that the
+module created.
 
 The build script defaults to a playground prefix, so `ECR_PREFIX` is mandatory:
 
