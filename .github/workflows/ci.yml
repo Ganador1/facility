@@ -11,6 +11,33 @@ on:
   pull_request:
 
 jobs:
+  # The release notes are written from commit subjects, so the subject has to
+  # carry the change. With squash merges the pull request title becomes that
+  # subject — this is the only place it can be checked before it lands.
+  pull-request-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: The title is a conventional commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._-]+\))?!?: .+'
+          if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
+            echo "Pull request title: $TITLE" >&2
+            echo "" >&2
+            echo "It must read as a conventional commit, because it becomes the commit" >&2
+            echo "subject on main and the line that appears in the release notes:" >&2
+            echo "  <type>[(scope)][!]: <what changed>" >&2
+            echo "  types: feat fix docs style refactor perf test build ci chore revert" >&2
+            echo "  a trailing ! marks a breaking change" >&2
+            exit 1
+          fi
+          echo "OK: $TITLE"
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 35

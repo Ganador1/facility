@@ -1,0 +1,54 @@
+# Keeps a release pull request open on main: the changelog written from the
+# conventional commits since the last release, and the version bumped in both
+# package.json files that scripts/release.mjs requires to agree.
+#
+# Merging that pull request is the release decision. It creates the `v<version>`
+# tag, which is what ci.yml already validates and publishes from — to npm, and
+# to GHCR once the repository is public. Nothing publishes on its own.
+#
+# This needs its own credential. `GITHUB_TOKEN` cannot open pull requests here
+# because "Allow GitHub Actions to create and approve pull requests" is
+# deliberately disabled: that switch also lets automation approve them, and a
+# platform whose promise is that agents cannot approve their own work should not
+# leave it on. Provide RELEASE_PLEASE_TOKEN with contents:write and
+# pull-requests:write instead.
+# Actions are pinned to full SHAs (guards/actions-pinned.mjs enforces it).
+name: release-please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Require the release credential
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "RELEASE_PLEASE_TOKEN is not set." >&2
+            echo "The default GITHUB_TOKEN cannot open pull requests while" >&2
+            echo "'Allow GitHub Actions to create and approve pull requests' is disabled." >&2
+            echo "Add a token with contents:write and pull-requests:write." >&2
+            exit 1
+          fi
+
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json

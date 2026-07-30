@@ -106,15 +106,39 @@ sandbox E2E before it calls the reusable release workflow. Do not run
 `npm publish` locally or invoke the release workflow as a substitute for those
 gates; its manual entry point is a dry run.
 
-1. Bump the version in `package.json` and `packages/cli/package.json` according
-   to semver (before 1.0, a minor release may contain breaking changes).
-2. Run `pnpm verify` and the build for every publishable artifact, then merge
-   the release change through the normal reviewed pull-request path.
-3. Tag the release commit on `main` as `vX.Y.Z` and push the tag. CI refuses a
-   tag whose version, commit, visibility, or acceptance results do not match the
-   release contract.
-4. After the publish job succeeds, write release notes in terms of behavior,
-   not commit titles.
+The version and the changelog are not written by hand. `release-please` keeps a
+release pull request open on `main`, accumulating the commit subjects merged
+since the last release and bumping the version in both `package.json` files
+that `scripts/release.mjs` requires to agree.
+
+1. Read the open release pull request. Its changelog is what users will read, so
+   fix a subject that does not describe a behavior change — editing the entry is
+   fine, it is a normal pull request.
+2. Merge it. That is the release decision: it writes `CHANGELOG.md` and creates
+   the `vX.Y.Z` tag.
+3. The tag starts the pipeline above. CI refuses a tag whose version, commit,
+   visibility, or acceptance results do not match the release contract.
+
+### Commit subjects decide the version
+
+Subjects follow [Conventional Commits](https://www.conventionalcommits.org/),
+and CI checks the pull request title, because a squash merge makes that title
+the subject on `main`.
+
+| Subject | Effect while the version is `0.x` |
+|---|---|
+| `fix: …` | patch |
+| `feat: …` | patch |
+| `feat!: …`, or a `BREAKING CHANGE:` footer | minor |
+| `docs: …`, `ci: …`, `chore: …`, `test: …`, `refactor: …` | no release on their own |
+
+Before 1.0 a breaking change is a minor bump rather than a major one, which is
+the plain reading of "no upgrade path is promised between `0.x` releases". After
+1.0 the same subjects mean patch, minor and major in the usual way.
+
+`docs`, `feat` and `fix` appear in the changelog; the rest are recorded but
+hidden. A release that would contain nothing user-visible produces no release
+pull request at all.
 
 ### First npm publish only
 
