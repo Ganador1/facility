@@ -32,13 +32,39 @@ Edit `playground.tfvars`:
 - Set `enable_cloudfront_api_endpoint = true` to get an AWS-managed HTTPS API
   and webhook URL without a public DNS zone. This is intended for validation;
   use your own hostname and ACM certificate for production.
-- Set image tags matching the images you push.
+- Choose the image source below before the first apply.
 - Select direct `github` authentication for self-hosting or `oidc` for a SaaS
   broker. MCP OAuth is always issued by the dedicated Facility instance.
 - Tune `envelope_retention_days` for your data-retention policy.
 
-For the first apply, set every service count to zero. The images and secret
-values do not exist yet, and `mcp_desired_count` otherwise defaults to `2`:
+Release tags publish images as `:<version>` (for example, `v0.3.0` publishes
+`:0.3.0`). GitHub creates each GHCR package private; repository visibility does
+not make it public. Use the release path only after a maintainer has made all
+six packages public and you have verified that each chosen image tag is
+anonymously pullable. Then add the overrides before the first apply, replacing
+`<version>` with the release version without its leading `v`:
+
+```hcl
+image_overrides = {
+  api     = "ghcr.io/theam/facility/api:<version>"
+  worker  = "ghcr.io/theam/facility/worker:<version>"
+  gateway = "ghcr.io/theam/facility/gateway:<version>"
+  web     = "ghcr.io/theam/facility/web:<version>"
+  mcp     = "ghcr.io/theam/facility/mcp:<version>"
+  runner  = "ghcr.io/theam/facility/runner:<version>"
+}
+```
+
+Release images are `linux/amd64`, matching the module's default
+`task_cpu_architecture`. If any package or tag is absent or private, or if you
+are deploying on Graviton, from a non-release commit, or from a private fork,
+leave `image_overrides` empty and use the build fallback in Step 3. On that
+path, set every `container_image_tags` entry to the commit tag you will push
+before the first apply.
+
+For the first apply, set every service count to zero. Secret values do not exist
+yet, and on the build path neither do the images. `mcp_desired_count` otherwise
+defaults to `2`:
 
 ```hcl
 api_desired_count     = 0
@@ -72,10 +98,11 @@ Record these outputs:
 - `private_subnet_ids`
 - `service_security_group_id`
 
-## 3. Build and push images
+## 3. Build and push images when needed
 
-From the module directory used above, build from the repository root and return
-afterward:
+If you configured and verified public `image_overrides` before the first apply,
+skip this step. Otherwise, from the module directory used above, build from the
+repository root and return afterward:
 
 ```bash
 cd ../../..
@@ -94,7 +121,8 @@ deploy on Graviton, set `CPU_ARCHITECTURE=ARM64` while building and set
 `task_cpu_architecture = "ARM64"` in Terraform. The build exits early if an
 explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
 
-Apply again with matching `container_image_tags`.
+If you changed `container_image_tags` after the first apply, apply again before
+running the migrate task. Keeping the tag stable avoids that extra apply.
 
 ## 4. Populate Secrets Manager
 

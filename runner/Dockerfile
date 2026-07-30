@@ -15,9 +15,9 @@ RUN npm i -g @anthropic-ai/claude-code@2.1.215 @openai/codex@0.144.6
 RUN corepack enable
 
 WORKDIR /app
-COPY package.json tsconfig.json ./
+COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
-RUN npm install && npm run build && npm prune --omit=dev
+RUN npm ci && npm run build && npm prune --omit=dev
 
 # Run non-root: agent CLIs (Claude Code) refuse bypass-permissions as root, and
 # a rogue agent process should never hold uid 0.
