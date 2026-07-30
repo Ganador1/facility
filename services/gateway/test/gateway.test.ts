@@ -257,6 +257,102 @@ describe("gateway", async () => {
     expect(row?.outputTokens).toBe(1_000_000);
   });
 
+  it("2b. shutdown drains post-response metering before closing Postgres", async () => {
+    const setup = await setupVirtualKey({
+      provider: "anthropic",
+      baseUrl: `${stubOrigin}/anthropic/v1`,
+    });
+    const meteringStarted = deferred<void>();
+    const releaseMetering = deferred<void>();
+    const closeStarted = deferred<void>();
+    const drainingGateway = await buildApp(baseConfig, {
+      envelopeStore: {
+        putEnvelope: async () => {
+          meteringStarted.resolve();
+          await releaseMetering.promise;
+          return null;
+        },
+      },
+    });
+    let closePromise: Promise<void> | undefined;
+    let finishDrainPromise: Promise<void> | undefined;
+    let closeFinished = false;
+    let finishDrainFinished = false;
+    drainingGateway.server.on("request", (_request, response) => {
+      response.once("finish", () => {
+        // Observe the same drain boundary the production onClose hook uses at
+        // the exact instant the raw response becomes eligible for shutdown.
+        finishDrainPromise = drainingGateway.meteringSettled();
+        void finishDrainPromise.then(() => {
+          finishDrainFinished = true;
+        });
+        closePromise = drainingGateway.close();
+        void closePromise.then(
+          () => {
+            closeFinished = true;
+          },
+          () => {
+            closeFinished = true;
+          },
+        );
+        closeStarted.resolve();
+      });
+    });
+
+    try {
+      await drainingGateway.listen({ port: 0, host: "127.0.0.1" });
+      const origin = `http://127.0.0.1:${
+        (drainingGateway.server.address() as { port: number }).port
+      }`;
+      const response = await fetch(`${origin}/anthropic/v1/messages`, {
+        method: "POST",
+        headers: {
+          "x-api-key": setup.secret,
+          "content-type": "application/json",
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-5",
+          stream: true,
+          messages: [{ role: "user", content: "hello" }],
+        }),
+      });
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe(anthropicSseBody());
+      await closeStarted.promise;
+      await meteringStarted.promise;
+      await Promise.resolve();
+      // A provider handler must already be registered when its raw response
+      // finishes. Otherwise onClose can observe an empty drain before the
+      // trailing metering promise exists.
+      expect(finishDrainFinished).toBe(false);
+      expect(closeFinished).toBe(false);
+
+      releaseMetering.resolve();
+      if (!closePromise) throw new Error("gateway close did not start");
+      if (!finishDrainPromise) throw new Error("gateway finish drain did not start");
+      await finishDrainPromise;
+      await closePromise;
+      await drainingGateway.meteringSettled();
+
+      const row = (
+        await db.select().from(llmRequests).where(eq(llmRequests.virtualKeyId, setup.keyId))
+      )[0];
+      expect(row?.status).toBe("ok");
+      expect(row?.costCents).toBeGreaterThan(0);
+      const counter = (
+        await db.select().from(spendCounters).where(eq(spendCounters.budgetId, setup.budgetId))
+      )[0];
+      expect(counter?.spentCents).toBeCloseTo(row?.costCents ?? 0, 6);
+    } finally {
+      releaseMetering.resolve();
+      await finishDrainPromise?.catch(() => undefined);
+      await closePromise?.catch(() => undefined);
+      await drainingGateway.meteringSettled();
+      if (!closePromise) await drainingGateway.close().catch(() => undefined);
+    }
+  });
+
   it("3. OpenAI streaming injects include_usage but stores the original request", async () => {
     const setup = await setupVirtualKey({ provider: "openai", baseUrl: `${stubOrigin}/openai/v1` });
     const response = await postOpenAi(setup.secret, {
@@ -942,6 +1038,16 @@ async function waitFor(predicate: () => boolean | Promise<boolean>) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("timed out waiting for condition");
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 async function buildStub(state: StubState) {

@@ -33,6 +33,18 @@ const allowedPaths = {
   openai: new Set(["/chat/completions", "/responses"]),
 } satisfies Record<Provider, Set<string>>;
 
+export function createMeteringDrain() {
+  const pending = new Set<Promise<unknown>>();
+  const track = <T>(work: Promise<T>): Promise<T> => {
+    pending.add(work);
+    return work.finally(() => pending.delete(work));
+  };
+  const settled = async () => {
+    while (pending.size > 0) await Promise.allSettled([...pending]);
+  };
+  return { track, settled };
+}
+
 export async function buildApp(
   config: GatewayConfig = readConfig(),
   deps: GatewayDeps = {},
@@ -60,19 +72,12 @@ export async function buildApp(
   }
   const envelopeStore = deps.envelopeStore ?? createEnvelopeStore(config);
   const now = deps.now ?? (() => new Date());
-  // A streamed response reaches the client when the pipeline finishes; its
-  // usage record is written afterwards. Track those writes so shutdown can wait
-  // for them — otherwise a redeploy drops the usage of every request that was
-  // still settling, and the spend it was about to account for.
-  const pendingMetering = new Set<Promise<unknown>>();
-  const meter = <T>(write: Promise<T>): Promise<T> => {
-    pendingMetering.add(write);
-    return write.finally(() => pendingMetering.delete(write));
-  };
-  const meteringSettled = async () => {
-    while (pendingMetering.size > 0) await Promise.allSettled([...pendingMetering]);
-  };
-  app.decorate("meteringSettled", meteringSettled);
+  // Register the whole provider handler before its raw response can finish.
+  // Registering only enqueueMetering in the handler's finally block is too late:
+  // Fastify may start onClose after the socket finishes but before that block
+  // resumes, observe an empty drain, and close Postgres ahead of the usage write.
+  const meteringDrain = createMeteringDrain();
+  app.decorate("meteringSettled", meteringDrain.settled);
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("x-request-id", request.id);
@@ -103,15 +108,17 @@ export async function buildApp(
   app.get("/readyz", readiness);
 
   app.post("/anthropic/v1/*", (request, reply) =>
-    handleProvider(request, reply, "anthropic", config, db, envelopeStore, now, meter),
+    meteringDrain.track(
+      handleProvider(request, reply, "anthropic", config, db, envelopeStore, now),
+    ),
   );
   app.post("/openai/v1/*", (request, reply) =>
-    handleProvider(request, reply, "openai", config, db, envelopeStore, now, meter),
+    meteringDrain.track(handleProvider(request, reply, "openai", config, db, envelopeStore, now)),
   );
 
   app.addHook("onClose", async () => {
     await revocationListener?.unlisten().catch(() => undefined);
-    await meteringSettled();
+    await meteringDrain.settled();
     await owned?.client.end();
   });
 
@@ -126,7 +133,6 @@ async function handleProvider(
   db: NonNullable<GatewayDeps["db"]>,
   envelopeStore: NonNullable<GatewayDeps["envelopeStore"]>,
   now: () => Date,
-  meter: <T>(write: Promise<T>) => Promise<T>,
 ) {
   const suffix = providerSuffix(request, provider);
   if (!allowedPaths[provider].has(suffix)) {
@@ -193,7 +199,7 @@ async function handleProvider(
       budgets,
       error: "model not priced",
     });
-    await meter(enqueueMetering(db, envelopeStore, request.log, record, now()));
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(402).send(responseBody);
   }
 
@@ -224,7 +230,7 @@ async function handleProvider(
       budgets,
       error: `hard budget ${hardBlock.id} exceeded`,
     });
-    await meter(enqueueMetering(db, envelopeStore, request.log, record, now()));
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(402).send(responseBody);
   }
 
@@ -248,7 +254,7 @@ async function handleProvider(
       budgets,
       error: "allowed_models violation",
     });
-    await meter(enqueueMetering(db, envelopeStore, request.log, record, now()));
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(403).send(responseBody);
   }
 
@@ -293,7 +299,7 @@ async function handleProvider(
       budgets,
       error: `hard budget ${reservation.budget.id} exceeded`,
     });
-    await meter(enqueueMetering(db, envelopeStore, request.log, record, now()));
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     return reply.status(402).send(responseBody);
   }
   const controller = new AbortController();
@@ -341,7 +347,7 @@ async function handleProvider(
       providerMayHaveCharged: false,
       error: "upstream fetch failed",
     });
-    await meter(enqueueMetering(db, envelopeStore, request.log, record, now()));
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
     throw new GatewayError(502, "provider_error", "Upstream provider request failed", provider);
   }
 
@@ -386,7 +392,7 @@ async function handleProvider(
       providerMayHaveCharged: true,
       error,
     });
-    await meter(enqueueMetering(db, envelopeStore, request.log, record, now()));
+    await enqueueMetering(db, envelopeStore, request.log, record, now());
   }
 }
 
