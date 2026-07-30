@@ -9,6 +9,8 @@ const repo = required("GITHUB_REPOSITORY");
 const defaultBranch = required("DEFAULT_BRANCH");
 const receiptDir = join(required("RUNNER_TEMP"), "facility-delivery");
 const receiptPath = join(receiptDir, "receipt.json");
+const conventionalSubject =
+  /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\((?=\S)[^()\r\n]*[^\s()\r\n]\))?!?: \S.*$/;
 
 if (mode === "discover") discover();
 else if (mode === "finalize") finalize();
@@ -54,9 +56,9 @@ function discover() {
 
   for (const commit of delivered) {
     const message = commit.commit?.message ?? "";
-    const subject = message.split("\n", 1)[0];
+    const subject = message.split(/\r?\n/, 1)[0];
     assert(
-      /^(feat|fix|chore|ci|docs|refactor|perf|test|build|revert)(\([^)]+\))?!?: .+/.test(subject),
+      !hasForbiddenSubjectCharacters(subject) && conventionalSubject.test(subject),
       `commit ${commit.sha} is not Conventional Commits: ${subject}`,
     );
     assert(
@@ -130,6 +132,18 @@ function ghJson(args) {
 
 function output(name, value) {
   appendFileSync(required("GITHUB_OUTPUT"), `${name}=${value}\n`);
+}
+
+function hasForbiddenSubjectCharacters(subject) {
+  return [...subject].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    );
+  });
 }
 
 function required(name) {

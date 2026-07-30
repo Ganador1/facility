@@ -882,9 +882,17 @@ export function deliveryFailure(
   return null;
 }
 
-async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown> | undefined> {
+export type ShipGitOptions = {
+  root?: string;
+  githubFetch?: typeof fetch;
+};
+
+export async function shipGitChanges(
+  bundle: RunBundle,
+  options: ShipGitOptions = {},
+): Promise<Record<string, unknown> | undefined> {
   if (!bundle.repo.cloneUrl) return undefined;
-  const cwd = cwdFor(bundle);
+  const cwd = cwdFor(bundle, options.root ?? workRoot);
   const baseBranch = bundle.repo.branch ?? "main";
   try {
     // Stage the final workspace snapshot so this captures both agent commits and
@@ -923,7 +931,22 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
       : semanticDeliveryBranch(delivery.branch, baseBranch);
     const baseSha = (await gitOutput(cwd, ["rev-parse", baseRef])).trim();
     const repo = githubRepositoryName(bundle.repo.cloneUrl);
-    const { token } = await api<{ token: string }>(`/internal/runs/${currentRunId()}/push-token`, {
+    const runId = currentRunId();
+    // Validate every signed-commit headline before asking the platform to mint
+    // a short-lived contents-write token. The publishers repeat this check at
+    // their public boundary, but the runner must fail locally before acquiring
+    // privileged credentials for an undeliverable message.
+    assertGithubCommitMessages(delivery.commitMessage, changes.length, runId);
+    if (repairRepositoryMode(mode)) {
+      await assertRepairDeliveryReleaseImpact(
+        cwd,
+        bundle.scope,
+        baseRef,
+        delivery.commitMessage,
+        runId,
+      );
+    }
+    const { token } = await api<{ token: string }>(`/internal/runs/${runId}/push-token`, {
       method: "POST",
     });
     secretsToRedact.add(token);
@@ -933,18 +956,20 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
           token,
           branch: requestedBranch,
           expectedHeadSha: baseSha,
-          headline: delivery.commitMessage,
+          commitMessage: delivery.commitMessage,
           changes,
-          runId: currentRunId(),
+          runId,
+          fetchImpl: options.githubFetch,
         })
       : await publishVerifiedGithubChanges({
           repo,
           token,
           requestedBranch,
           baseSha,
-          headline: delivery.commitMessage,
+          commitMessage: delivery.commitMessage,
           changes,
-          runId: currentRunId(),
+          runId,
+          fetchImpl: options.githubFetch,
         });
     const pullRequest = requiresDelivery(bundle.mode)
       ? (delivery as AgentDeliveryMetadata).pullRequest
@@ -961,7 +986,7 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
         : {}),
     };
   } catch (error) {
-    const pushError = errorMessage(error);
+    const pushError = redactSecrets(errorMessage(error));
     await emit([{ type: "artifact_error", data: { kind: "git_push_failed", error: pushError } }]);
     return { changed: true, pushError };
   }
@@ -974,8 +999,163 @@ type GithubFileChange =
 const SEMANTIC_BRANCH =
   /^(feature|fix|chore|ci|docs|refactor|perf|test|build|revert)\/[a-z0-9][a-z0-9._/-]*$/;
 const CONVENTIONAL_SUBJECT =
-  /^(feat|fix|chore|ci|docs|refactor|perf|test|build|revert)(\([^)]+\))?!?: .+/;
+  /^(?<prefix>(?<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\((?=\S)[^()\r\n]*[^\s()\r\n]\))?(?<breaking>!)?: )(?<summary>\S.*)$/;
+const PATCH_COMMIT_TYPES = new Set(["feat", "fix", "perf", "revert"]);
+const DELIVERY_IMPACT_RANK = { none: 0, patch: 1, minor: 2 } as const;
 const GITHUB_CHANGE_BATCH = 100;
+const GITHUB_COMMIT_HEADLINE_LIMIT = 120;
+
+function hasForbiddenSubjectCharacters(subject: string) {
+  return [...subject].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return (
+      codePoint <= 0x1f ||
+      (codePoint >= 0x7f && codePoint <= 0x9f) ||
+      codePoint === 0x2028 ||
+      codePoint === 0x2029
+    );
+  });
+}
+
+function conventionalSubject(message: string) {
+  const subject = message.split(/\r?\n/, 1)[0] ?? "";
+  if (hasForbiddenSubjectCharacters(subject)) return null;
+  const match = CONVENTIONAL_SUBJECT.exec(subject);
+  const prefix = match?.groups?.prefix;
+  const type = match?.groups?.type;
+  const summary = match?.groups?.summary;
+  return prefix && type && summary
+    ? { subject, prefix, type, breaking: match?.groups?.breaking === "!", summary }
+    : null;
+}
+
+function hasConventionalSubject(message: string) {
+  return conventionalSubject(message) !== null;
+}
+
+function hasBreakingFooter(message: string) {
+  const blocks = message
+    .replace(/\r\n/g, "\n")
+    .trimEnd()
+    .split(/\n[ \t]*\n+/);
+  if (blocks.length < 2) return false;
+  const lines = (blocks.at(-1) ?? "").split("\n");
+  const trailer = /^(?:(?:[A-Za-z0-9-]+|BREAKING CHANGE): +\S|[A-Za-z0-9-]+ #\S)/;
+  const breakingTrailer = /^BREAKING(?: |-)CHANGE: +\S/;
+  if (!trailer.test(lines[0] ?? "")) return false;
+  return lines.some((line) => breakingTrailer.test(line));
+}
+
+type DeliveryReleaseImpact = keyof typeof DELIVERY_IMPACT_RANK;
+
+export function deliveryReleaseImpact(message: string): DeliveryReleaseImpact {
+  const parsed = conventionalSubject(message);
+  if (!parsed) throw new Error("agent_delivery_commit_not_conventional");
+  if (parsed.breaking || hasBreakingFooter(message)) return "minor";
+  return PATCH_COMMIT_TYPES.has(parsed.type) ? "patch" : "none";
+}
+
+function maximumDeliveryReleaseImpact(messages: string[]) {
+  return messages.reduce<DeliveryReleaseImpact>((highest, message) => {
+    const impact = deliveryReleaseImpact(message);
+    return DELIVERY_IMPACT_RANK[impact] > DELIVERY_IMPACT_RANK[highest] ? impact : highest;
+  }, "none");
+}
+
+function assertDeliveryReleaseImpact(commitMessage: string, pullRequestTitle: string) {
+  // GitHub stores headline and body as one commit message separated by a
+  // blank line. Classify that exact transported message, including Facility's
+  // provenance paragraph, rather than the raw manifest text.
+  const transported = githubCommitMessage(commitMessage, "", "release-impact-check");
+  const commitImpact = deliveryReleaseImpact(`${transported.headline}\n\n${transported.body}`);
+  const titleImpact = deliveryReleaseImpact(pullRequestTitle);
+  if (commitImpact !== titleImpact) {
+    throw new Error(
+      `agent_delivery_release_impact_mismatch: commit ${commitImpact}, pull request title ${titleImpact}`,
+    );
+  }
+}
+
+async function assertRepairDeliveryReleaseImpact(
+  cwd: string,
+  scope: Record<string, unknown>,
+  headRef: string,
+  commitMessage: string,
+  runId: string,
+) {
+  const pullRequest = objectValue(scope.pullRequest);
+  const baseBranch = typeof pullRequest.base === "string" ? pullRequest.base.trim() : "";
+  if (!baseBranch) throw new Error("agent_delivery_pr_base_missing");
+  existingGithubBranch(baseBranch);
+  const baseRef = `origin/${baseBranch}`;
+  const output = await gitOutput(cwd, [
+    "log",
+    "-z",
+    "--no-merges",
+    "--format=%B",
+    `${baseRef}..${headRef}`,
+    "--",
+  ]);
+  const messages = output ? output.split("\0") : [];
+  if (messages.at(-1) === "") messages.pop();
+  if (messages.length === 0) throw new Error("agent_delivery_pr_range_empty");
+  const currentImpact = maximumDeliveryReleaseImpact(messages);
+  const transported = githubCommitMessage(commitMessage, "", runId);
+  const addedImpact = deliveryReleaseImpact(`${transported.headline}\n\n${transported.body}`);
+  const finalImpact =
+    DELIVERY_IMPACT_RANK[addedImpact] > DELIVERY_IMPACT_RANK[currentImpact]
+      ? addedImpact
+      : currentImpact;
+  const title = typeof pullRequest.title === "string" ? pullRequest.title : "";
+  const titleImpact = title ? deliveryReleaseImpact(title) : null;
+  if (titleImpact && titleImpact !== finalImpact) {
+    throw new Error(
+      `agent_delivery_release_impact_mismatch: pull request title ${titleImpact}, final PR range ${finalImpact}`,
+    );
+  }
+  if (
+    titleImpact === null &&
+    DELIVERY_IMPACT_RANK[addedImpact] > DELIVERY_IMPACT_RANK[currentImpact]
+  ) {
+    throw new Error(
+      `agent_delivery_release_impact_mismatch: repair commit ${addedImpact}, existing PR range ${currentImpact}, title unavailable`,
+    );
+  }
+}
+
+function githubCommitMessage(commitMessage: string, multipart: string, runId: string) {
+  const parsed = conventionalSubject(commitMessage);
+  if (!parsed) throw new Error("github_signed_delivery_commit_not_conventional");
+  const availableSummaryCharacters =
+    GITHUB_COMMIT_HEADLINE_LIMIT - [...parsed.prefix].length - [...multipart].length;
+  if (availableSummaryCharacters < 1) {
+    throw new Error("github_signed_delivery_commit_subject_too_long");
+  }
+  const summary = [...parsed.summary].slice(0, availableSummaryCharacters).join("").trimEnd();
+  const headline = `${parsed.prefix}${summary}${multipart}`;
+  if (!hasConventionalSubject(headline)) {
+    throw new Error("github_signed_delivery_commit_subject_too_long");
+  }
+  const [, ...bodyLines] = commitMessage.split(/\r?\n/);
+  if (bodyLines.length > 0 && !/^[ \t]*$/.test(bodyLines[0] ?? "")) {
+    throw new Error("github_signed_delivery_commit_body_separator_invalid");
+  }
+  // Remove only the required structural separator. Preserve leading
+  // indentation because stripping it can turn a code example into a trailer.
+  const suppliedBody = bodyLines.slice(1).join("\n").trimEnd();
+  return {
+    headline,
+    body: [`Delivered by Facility run ${runId}.`, suppliedBody].filter(Boolean).join("\n\n"),
+  };
+}
+
+function assertGithubCommitMessages(commitMessage: string, changeCount: number, runId: string) {
+  const batchCount = Math.ceil(changeCount / GITHUB_CHANGE_BATCH);
+  for (let index = 0; index < batchCount; index += 1) {
+    const multipart = batchCount > 1 ? ` (part ${index + 1}/${batchCount})` : "";
+    githubCommitMessage(commitMessage, multipart, runId);
+  }
+}
 
 export function semanticDeliveryBranch(current: string, base: string) {
   if (current !== base && SEMANTIC_BRANCH.test(current)) return current;
@@ -1090,16 +1270,21 @@ export async function readAgentDeliveryMetadata(path: string): Promise<AgentDeli
   const root = objectValue(parsed);
   const pullRequest = objectValue(root.pullRequest);
   const branch = typeof root.branch === "string" ? root.branch.trim() : "";
-  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage.trim() : "";
-  const title = typeof pullRequest.title === "string" ? pullRequest.title.trim() : "";
+  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage : "";
+  const title = typeof pullRequest.title === "string" ? pullRequest.title : "";
   const body = typeof pullRequest.body === "string" ? pullRequest.body.trim() : "";
   if (!SEMANTIC_BRANCH.test(branch)) throw new Error("agent_delivery_branch_not_semantic");
-  if (!CONVENTIONAL_SUBJECT.test(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
+  if (!hasConventionalSubject(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
     throw new Error("agent_delivery_commit_not_conventional");
   }
-  if (!CONVENTIONAL_SUBJECT.test(title) || title.length > 256) {
+  if (
+    hasForbiddenSubjectCharacters(title) ||
+    !hasConventionalSubject(title) ||
+    title.length > 256
+  ) {
     throw new Error("agent_delivery_pr_title_not_conventional");
   }
+  assertDeliveryReleaseImpact(commitMessage, title);
   if (!body || body.length > 60_000) throw new Error("agent_delivery_pr_body_invalid");
   return { branch, commitMessage, pullRequest: { title, body } };
 }
@@ -1115,9 +1300,9 @@ export async function readAgentUpdateMetadata(
   }
   const root = objectValue(parsed);
   const branch = typeof root.branch === "string" ? root.branch.trim() : "";
-  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage.trim() : "";
+  const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage : "";
   existingGithubBranch(branch);
-  if (!CONVENTIONAL_SUBJECT.test(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
+  if (!hasConventionalSubject(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
     throw new Error("agent_delivery_commit_not_conventional");
   }
   return { branch, commitMessage };
@@ -1134,11 +1319,12 @@ export async function publishVerifiedGithubChanges(input: {
   token: string;
   requestedBranch: string;
   baseSha: string;
-  headline: string;
+  commitMessage: string;
   changes: GithubFileChange[];
   runId: string;
   fetchImpl?: typeof fetch;
 }) {
+  assertGithubCommitMessages(input.commitMessage, input.changes.length, input.runId);
   const request = input.fetchImpl ?? fetch;
   const branch = await availableGithubBranch(
     request,
@@ -1165,12 +1351,13 @@ export async function publishVerifiedGithubBranchUpdate(input: {
   token: string;
   branch: string;
   expectedHeadSha: string;
-  headline: string;
+  commitMessage: string;
   changes: GithubFileChange[];
   runId: string;
   fetchImpl?: typeof fetch;
 }) {
   existingGithubBranch(input.branch);
+  assertGithubCommitMessages(input.commitMessage, input.changes.length, input.runId);
   const request = input.fetchImpl ?? fetch;
   const headSha = await commitVerifiedGithubChanges({ ...input, request });
   return { branch: input.branch, headSha };
@@ -1181,7 +1368,7 @@ async function commitVerifiedGithubChanges(input: {
   token: string;
   branch: string;
   expectedHeadSha: string;
-  headline: string;
+  commitMessage: string;
   changes: GithubFileChange[];
   runId: string;
   request: typeof fetch;
@@ -1202,6 +1389,7 @@ async function commitVerifiedGithubChanges(input: {
       )
       .map(({ path }) => ({ path }));
     const multipart = batches.length > 1 ? ` (part ${index + 1}/${batches.length})` : "";
+    const message = githubCommitMessage(input.commitMessage, multipart, input.runId);
     const data = await githubRequest<{
       data?: { createCommitOnBranch?: { commit?: { oid?: string } } };
       errors?: Array<{ message?: string }>;
@@ -1214,10 +1402,7 @@ async function commitVerifiedGithubChanges(input: {
           input: {
             branch: { repositoryNameWithOwner: input.repo, branchName: input.branch },
             expectedHeadOid,
-            message: {
-              headline: `${input.headline}${multipart}`.slice(0, 120),
-              body: `Delivered by Facility run ${input.runId}.`,
-            },
+            message,
             fileChanges: {
               ...(additions.length > 0 ? { additions } : {}),
               ...(deletions.length > 0 ? { deletions } : {}),
@@ -1483,10 +1668,10 @@ export function composedPrompt(bundle: RunBundle) {
         .join("\n")}`
     : "";
   const deliveryNote = requiresDelivery(bundle.mode)
-    ? `\n\n## Agent-owned delivery\nFacility will create the signed commit, push, and non-draft pull request with the GitHub App after your engine exits. You own all delivery metadata. Before finishing, create \`.agent-sdlc/delivery.json\` with exactly this shape:\n\n\`\`\`json\n{\n  "branch": "feature/task-slug",\n  "commitMessage": "feat: describe the change",\n  "pullRequest": {\n    "title": "feat: describe the change",\n    "body": "## Summary\\n- ...\\n\\n## Context\\n- ...\\n\\n## Verification\\n- ...\\n\\n## Linked issues\\n- Closes #123"\n  }\n}\n\`\`\`\n\nThe branch must be semantic; the commit and PR title must use Conventional Commits; the PR body must be your complete team-lead-ready description. Do not commit this managed file. Do not require \`gh\`, a writable clone token, or a local signing key: Facility transports your exact metadata and fails closed if it is absent or invalid.`
+    ? `\n\n## Agent-owned delivery\nFacility will create the signed commit, push, and non-draft pull request with the GitHub App after your engine exits. You own all delivery metadata. Before finishing, create \`.agent-sdlc/delivery.json\` with exactly this shape:\n\n\`\`\`json\n{\n  "branch": "feature/task-slug",\n  "commitMessage": "feat: describe the change",\n  "pullRequest": {\n    "title": "feat: describe the change",\n    "body": "## Summary\\n- ...\\n\\n## Context\\n- ...\\n\\n## Verification\\n- ...\\n\\n## Linked issues\\n- Closes #123"\n  }\n}\n\`\`\`\n\nThe branch must be semantic; the commit and PR title must use Conventional Commits and have the same release impact. If the commit has a \`BREAKING CHANGE:\` footer, mark the PR title with \`!\` too. The PR body must be your complete team-lead-ready description. Do not commit this managed file. Do not require \`gh\`, a writable clone token, or a local signing key: Facility transports your exact metadata and fails closed if it is absent or invalid.`
     : "";
   const repairDeliveryNote = repairRepositoryMode(normalizedMode(bundle.mode))
-    ? `\n\n## Agent-owned PR update\nIf and only if you make verified repository changes, create \`.agent-sdlc/delivery.json\` before finishing with exactly \`{"branch":"<the existing PR branch>","commitMessage":"fix: describe the correction"}\`. Facility will add a signed commit to that same branch through the GitHub App. The branch must exactly match the checked-out PR branch and the message must use Conventional Commits. Do not run \`git push\`, create another branch or pull request, force-push, or depend on \`gh\`. If no code change is needed, do not create the manifest.`
+    ? `\n\n## Agent-owned PR update\nIf and only if you make verified repository changes, create \`.agent-sdlc/delivery.json\` before finishing with exactly \`{"branch":"<the existing PR branch>","commitMessage":"<matching Conventional Commit type>: describe the correction"}\`. Facility will add a signed commit to that same branch through the GitHub App. The branch must exactly match the checked-out PR branch. Choose a truthful Conventional Commit type whose release impact is no greater than the existing pull request range; do not add \`!\` or a \`BREAKING CHANGE:\` footer unless that range is already breaking. If a truthful message would raise the impact, leave the manifest absent and report that the PR title must be updated first. Do not run \`git push\`, create another branch or pull request, force-push, or depend on \`gh\`. If no code change is needed, do not create the manifest.`
     : "";
   return `${bundle.contract}\n\nScope:\n${JSON.stringify(bundle.scope, null, 2)}${harnessNote}${steeringNote}${conversationNote}${progressNote}${repositoryOutputNote}${githubEventNote}${projectSkillsNote}${deliveryNote}${repairDeliveryNote}`;
 }

@@ -7,6 +7,7 @@ import {
   buildClaudeCodeArgs,
   buildCodexArgs,
   composedPrompt,
+  deliveryReleaseImpact,
   exitCode,
   handleControlMessage,
   parseGitNameStatus,
@@ -43,6 +44,38 @@ function bundle(overrides: Partial<RunBundle> = {}): RunBundle {
 }
 
 describe("workspace preparation", () => {
+  it("keeps runner release classification aligned with the root policy", async () => {
+    const rootPolicy = (await import(
+      new URL("../../scripts/conventional-commit-subjects.mjs", import.meta.url).href
+    )) as { releaseImpact(message: string): string };
+    const messages = [
+      ...[
+        "feat",
+        "fix",
+        "perf",
+        "revert",
+        "docs",
+        "style",
+        "refactor",
+        "test",
+        "build",
+        "ci",
+        "chore",
+      ].map((type) => `${type}: describe the change`),
+      "docs!: replace the contract",
+      "docs: replace the contract\n\nBREAKING CHANGE: migrate the client",
+      "docs: replace the contract\n\nRefs: #42\ncontext for the reference\nBREAKING-CHANGE: migrate the client\nCloses #123",
+      "docs: quote output\n\nThe tool printed:\nBREAKING CHANGE: example text",
+      "docs: show a fence\n\n```text\nBREAKING CHANGE: example text\n```",
+      "docs: missing separator\nBREAKING CHANGE: example text",
+      "docs: malformed trailer\n\nBREAKING CHANGE:\texample text",
+    ];
+
+    for (const message of messages) {
+      expect(deliveryReleaseImpact(message), message).toBe(rootPolicy.releaseImpact(message));
+    }
+  });
+
   it("accepts only a bounded structured security findings artifact", async () => {
     const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
     const path = join(root, "security-findings.json");
@@ -128,6 +161,17 @@ describe("workspace preparation", () => {
     expect(composedPrompt(bundle())).toContain(".agent-sdlc/progress.md");
     expect(composedPrompt(bundle({ mode: "custom" }))).not.toContain(".agent-sdlc/progress.md");
     expect(composedPrompt(bundle())).toContain(".agent-sdlc/delivery.json");
+    expect(composedPrompt(bundle())).toContain("same release impact");
+    expect(composedPrompt(bundle())).toContain("BREAKING CHANGE:");
+    expect(composedPrompt(bundle({ mode: "address_review" }))).toContain(
+      "release impact is no greater than the existing pull request range",
+    );
+    expect(composedPrompt(bundle({ mode: "ci_doctor" }))).toContain(
+      "do not add `!` or a `BREAKING CHANGE:` footer unless that range is already breaking",
+    );
+    expect(composedPrompt(bundle({ mode: "address_review" }))).toContain(
+      "PR title must be updated first",
+    );
     expect(composedPrompt(bundle({ mode: "architect" }))).not.toContain(
       ".agent-sdlc/delivery.json",
     );
@@ -185,6 +229,151 @@ describe("workspace preparation", () => {
     await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("branch_not_semantic");
   });
 
+  it("accepts style and punctuation scopes and rejects malformed conventional subjects", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, "delivery.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage:
+          "style(web+api): normalize formatting\n\nBREAKING CHANGE: generated output changed",
+        pullRequest: {
+          title: "fix(api/auth)!: require scoped credentials",
+          body: "## Summary\n- Normalize formatting and scope credentials.",
+        },
+      }),
+    );
+
+    await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+      commitMessage:
+        "style(web+api): normalize formatting\n\nBREAKING CHANGE: generated output changed",
+      pullRequest: { title: "fix(api/auth)!: require scoped credentials" },
+    });
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage: "feature(web+api): normalize formatting",
+        pullRequest: {
+          title: "fix(api/auth): require scoped credentials",
+          body: "Summary",
+        },
+      }),
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("commit_not_conventional");
+
+    for (const commitMessage of [
+      "  fix: normalize formatting",
+      "fix((): normalize formatting",
+      "fix(api)): normalize formatting",
+      "fix( ): normalize formatting",
+      "fix(api\tauth): normalize formatting",
+      "fix: render \u001b[31mred output",
+      "fix: render \u009b31mred output",
+    ]) {
+      await writeFile(
+        path,
+        JSON.stringify({
+          branch: "feature/format-auth-api",
+          commitMessage,
+          pullRequest: {
+            title: "fix(api/auth): require scoped credentials",
+            body: "Summary",
+          },
+        }),
+      );
+      await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("commit_not_conventional");
+    }
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage: "style(web+api): normalize formatting",
+        pullRequest: {
+          title: "fix(api(auth)): require scoped credentials",
+          body: "Summary",
+        },
+      }),
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("pr_title_not_conventional");
+
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "feature/format-auth-api",
+        commitMessage: "fix: normalize formatting",
+        pullRequest: {
+          title: "  fix: require scoped credentials",
+          body: "Summary",
+        },
+      }),
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow("pr_title_not_conventional");
+  });
+
+  it("requires matching commit and PR-title impact using only an actual breaking footer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-"));
+    const path = join(root, "delivery.json");
+    const writeDelivery = (commitMessage: string, title: string) =>
+      writeFile(
+        path,
+        JSON.stringify({
+          branch: "feature/release-impact",
+          commitMessage,
+          pullRequest: { title, body: "## Summary\n- Preserve release semantics." },
+        }),
+      );
+
+    await writeDelivery(
+      "fix: document the migration phrase\n\nBREAKING CHANGE: appears in an example\n\nThe behavior remains compatible.",
+      "fix: document the migration phrase",
+    );
+    await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+      pullRequest: { title: "fix: document the migration phrase" },
+    });
+
+    await writeDelivery(
+      "fix: document malformed input\nBREAKING CHANGE: missing footer separator",
+      "fix: document malformed input",
+    );
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow(
+      "github_signed_delivery_commit_body_separator_invalid",
+    );
+
+    for (const nonFooter of [
+      "fix: quote output\n\nThe tool printed:\nBREAKING CHANGE: example text",
+      "fix: show a fence\n\n```text\nBREAKING CHANGE: example text\n```",
+      "fix: show indented code\n\n    BREAKING CHANGE: example text",
+      "fix: use a tab separator\n\nBREAKING CHANGE:\tmigrate the client",
+    ]) {
+      await writeDelivery(nonFooter, "fix: preserve compatible behavior");
+      await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+        pullRequest: { title: "fix: preserve compatible behavior" },
+      });
+    }
+
+    const breakingCommit =
+      "fix: replace the public contract\n\nExplain the migration.\n\nBREAKING CHANGE: migrate the client\ncontinue with the second step\nCloses #123";
+    await writeDelivery(breakingCommit, "fix: replace the public contract");
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow(
+      "agent_delivery_release_impact_mismatch",
+    );
+
+    await writeDelivery(breakingCommit, "fix!: replace the public contract");
+    await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
+      commitMessage: breakingCommit,
+      pullRequest: { title: "fix!: replace the public contract" },
+    });
+
+    await writeDelivery("docs: explain the public contract", "fix: explain the public contract");
+    await expect(readAgentDeliveryMetadata(path)).rejects.toThrow(
+      "agent_delivery_release_impact_mismatch",
+    );
+  });
+
   it("publishes agent-owned metadata through GitHub's signed commit mutation", async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl: typeof fetch = async (input, init) => {
@@ -208,14 +397,18 @@ describe("workspace preparation", () => {
         token: "installation-token",
         requestedBranch: "feature/task",
         baseSha: "base_sha",
-        headline: "feat: deliver task",
+        commitMessage:
+          "feat!: deliver task\n\nExplain the migration.\n\nBREAKING CHANGE: use the new task API",
         changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
         runId: "run_12345678",
         fetchImpl,
       }),
     ).resolves.toEqual({ branch: "feature/task", headSha: "signed_sha" });
     const mutation = JSON.parse(String(requests[2]?.init?.body));
-    expect(mutation.variables.input.message.headline).toBe("feat: deliver task");
+    expect(mutation.variables.input.message).toEqual({
+      headline: "feat!: deliver task",
+      body: "Delivered by Facility run run_12345678.\n\nExplain the migration.\n\nBREAKING CHANGE: use the new task API",
+    });
     expect(mutation.variables.input.fileChanges.additions[0]).toEqual({
       path: "src/task.js",
       contents: "Y29udGVudA==",
@@ -223,6 +416,78 @@ describe("workspace preparation", () => {
     expect(requests[1]?.init?.headers).toMatchObject({
       authorization: "Bearer installation-token",
     });
+  });
+
+  it("fails before publishing when a Conventional Commit prefix cannot fit GitHub", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(JSON.stringify({ message: "unexpected request" }), { status: 500 });
+    };
+
+    await expect(
+      publishVerifiedGithubChanges({
+        repo: "acme/widget",
+        token: "installation-token",
+        requestedBranch: "feature/task",
+        baseSha: "base_sha",
+        commitMessage: `feat(${"a".repeat(112)}): x`,
+        changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
+        runId: "run_12345678",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("commit_subject_too_long");
+    expect(requests).toHaveLength(0);
+  });
+
+  it("keeps multipart signed commit headlines conventional at the Unicode limit", async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      requests.push({ url: String(input), init });
+      return new Response(
+        JSON.stringify({
+          data: {
+            createCommitOnBranch: { commit: { oid: `updated_${requests.length}` } },
+          },
+        }),
+        { status: 200 },
+      );
+    };
+    const changes = Array.from({ length: 101 }, (_, index) => ({
+      kind: "addition" as const,
+      path: `src/task-${index}.js`,
+      contents: "Y29udGVudA==",
+    }));
+
+    await expect(
+      publishVerifiedGithubBranchUpdate({
+        repo: "acme/widget",
+        token: "installation-token",
+        branch: "automation/dependency-refresh",
+        expectedHeadSha: "current_sha",
+        commitMessage: `feat(web+api)!: ${"x".repeat(92)}😀tail\n\nBREAKING CHANGE: use the new task API`,
+        changes,
+        runId: "run_12345678",
+        fetchImpl,
+      }),
+    ).resolves.toEqual({
+      branch: "automation/dependency-refresh",
+      headSha: "updated_2",
+    });
+
+    expect(requests).toHaveLength(2);
+    for (const [index, request] of requests.entries()) {
+      const mutation = JSON.parse(String(request.init?.body));
+      const message = mutation.variables.input.message;
+      expect([...message.headline]).toHaveLength(120);
+      expect(message.headline).toMatch(
+        /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: \S.*$/,
+      );
+      expect(message.headline.endsWith(`😀 (part ${index + 1}/2)`)).toBe(true);
+      expect(message.body).toBe(
+        "Delivered by Facility run run_12345678.\n\nBREAKING CHANGE: use the new task API",
+      );
+    }
   });
 
   it("updates the existing PR branch without creating a generic branch", async () => {
@@ -240,7 +505,7 @@ describe("workspace preparation", () => {
         token: "installation-token",
         branch: "automation/dependency-refresh",
         expectedHeadSha: "current_sha",
-        headline: "fix: address review",
+        commitMessage: "fix: address review\n\nKeep the explanation in the commit body.",
         changes: [{ kind: "addition", path: "src/task.js", contents: "Y29udGVudA==" }],
         runId: "run_12345678",
         fetchImpl,
@@ -251,6 +516,10 @@ describe("workspace preparation", () => {
     const mutation = JSON.parse(String(requests[0]?.init?.body));
     expect(mutation.variables.input.branch.branchName).toBe("automation/dependency-refresh");
     expect(mutation.variables.input.expectedHeadOid).toBe("current_sha");
+    expect(mutation.variables.input.message).toEqual({
+      headline: "fix: address review",
+      body: "Delivered by Facility run run_12345678.\n\nKeep the explanation in the commit body.",
+    });
   });
 
   it("parses null-delimited git changes and preserves semantic branches", () => {
@@ -269,13 +538,21 @@ describe("workspace preparation", () => {
       path,
       JSON.stringify({
         branch: "automation/dependency-refresh",
-        commitMessage: "fix: address review",
+        commitMessage: "fix: address review\n\nKeep the explanation in the commit body.",
       }),
     );
     await expect(readAgentUpdateMetadata(path)).resolves.toEqual({
       branch: "automation/dependency-refresh",
-      commitMessage: "fix: address review",
+      commitMessage: "fix: address review\n\nKeep the explanation in the commit body.",
     });
+    await writeFile(
+      path,
+      JSON.stringify({
+        branch: "automation/dependency-refresh",
+        commitMessage: "  fix: address review",
+      }),
+    );
+    await expect(readAgentUpdateMetadata(path)).rejects.toThrow("commit_not_conventional");
     await writeFile(
       path,
       JSON.stringify({ branch: "bad..branch", commitMessage: "fix: address review" }),
