@@ -23,6 +23,8 @@ export const ALLOWED_TYPES = Object.freeze([
 const SUBJECT = new RegExp(
   `^(?<type>${ALLOWED_TYPES.join("|")})(?:\\((?<scope>(?=\\S)[^()\\r\\n]*[^\\s()\\r\\n])\\))?(?<breaking>!)?: (?<summary>\\S.*)$`,
 );
+const PATCH_TYPES = new Set(["feat", "fix", "perf", "revert"]);
+const IMPACT_RANK = Object.freeze({ none: 0, patch: 1, minor: 2 });
 
 function hasForbiddenSubjectCharacters(subject) {
   return [...subject].some((character) => {
@@ -59,7 +61,31 @@ export function assertSubject(subject, { label = "subject" } = {}) {
   );
 }
 
-export function subjectsInRange(
+function subjectOf(message) {
+  return message.split(/\r?\n/, 1)[0] ?? "";
+}
+
+function hasBreakingFooter(message) {
+  const blocks = message.replace(/\r\n/g, "\n").trimEnd().split(/\n[ \t]*\n+/);
+  if (blocks.length < 2) return false;
+  const lines = (blocks.at(-1) ?? "").split("\n");
+  const trailer = /^(?:(?:[A-Za-z0-9-]+|BREAKING CHANGE): +\S|[A-Za-z0-9-]+ #\S)/;
+  const breakingTrailer = /^BREAKING(?: |-)CHANGE: +\S/;
+
+  // A footer is the final, blank-line-separated trailer block. Once that block
+  // begins with a trailer, non-token lines are multiline value continuation;
+  // a later BREAKING CHANGE token starts another footer.
+  if (!trailer.test(lines[0] ?? "")) return false;
+  return lines.some((line) => breakingTrailer.test(line));
+}
+
+export function releaseImpact(message) {
+  const parsed = assertSubject(subjectOf(message));
+  if (parsed.breaking || hasBreakingFooter(message)) return "minor";
+  return PATCH_TYPES.has(parsed.type) ? "patch" : "none";
+}
+
+export function messagesInRange(
   baseSha,
   headSha,
   { repoDir = process.cwd(), exec = execFileSync } = {},
@@ -71,13 +97,17 @@ export function subjectsInRange(
     { cwd: repoDir, encoding: "utf8" },
   );
   if (!output) return [];
-  const subjects = output.split("\0");
-  if (subjects.at(-1) === "") subjects.pop();
-  return subjects.map((message) => message.split(/\r?\n/, 1)[0] ?? "");
+  const messages = output.split("\0");
+  if (messages.at(-1) === "") messages.pop();
+  return messages;
 }
 
-export function assertRange(baseSha, headSha, options) {
-  const subjects = subjectsInRange(baseSha, headSha, options);
+export function subjectsInRange(baseSha, headSha, options) {
+  return messagesInRange(baseSha, headSha, options).map(subjectOf);
+}
+
+function assertMessages(messages) {
+  const subjects = messages.map(subjectOf);
   const invalid = subjects.filter((subject) => !parseSubject(subject));
   if (invalid.length > 0) {
     throw new Error(
@@ -90,6 +120,101 @@ export function assertRange(baseSha, headSha, options) {
     );
   }
   return subjects;
+}
+
+export function assertRange(baseSha, headSha, options) {
+  return assertMessages(messagesInRange(baseSha, headSha, options));
+}
+
+function maximumImpact(messages) {
+  return messages.reduce(
+    (highest, message) => {
+      const impact = releaseImpact(message);
+      return IMPACT_RANK[impact] > IMPACT_RANK[highest] ? impact : highest;
+    },
+    "none",
+  );
+}
+
+function commitHashesInRange(
+  baseSha,
+  headSha,
+  { repoDir = process.cwd(), exec = execFileSync } = {},
+) {
+  const output = exec(
+    "git",
+    ["rev-list", "--no-merges", `${baseSha}..${headSha}`],
+    { cwd: repoDir, encoding: "utf8" },
+  );
+  return output.trim() ? output.trim().split(/\r?\n/) : [];
+}
+
+function gitCommitIsEmpty(
+  hash,
+  { repoDir = process.cwd(), exec = execFileSync, isEmptyCommit } = {},
+) {
+  if (isEmptyCommit) return Boolean(isEmptyCommit(hash));
+  try {
+    exec(
+      "git",
+      ["diff-tree", "--quiet", "--exit-code", "--root", hash],
+      { cwd: repoDir, stdio: "ignore" },
+    );
+    return true;
+  } catch (error) {
+    if (error && typeof error === "object" && error.status === 1) return false;
+    throw error;
+  }
+}
+
+function assertNoReleaseImpactingEmptyCommits(baseSha, headSha, messages, options) {
+  const hashes = commitHashesInRange(baseSha, headSha, options);
+  if (hashes.length !== messages.length) {
+    throw new Error(
+      `could not pair ${messages.length} commit message${messages.length === 1 ? "" : "s"} with ${hashes.length} commit hash${hashes.length === 1 ? "" : "es"}`,
+    );
+  }
+  const empty = hashes.flatMap((hash, index) => {
+    if (releaseImpact(messages[index]) === "none" || !gitCommitIsEmpty(hash, options)) return [];
+    return [{ hash, subject: subjectOf(messages[index]) }];
+  });
+  if (empty.length === 0) return;
+  throw new Error(
+    [
+      `${empty.length} release-impacting empty commit${empty.length === 1 ? " is" : "s are"} not allowed:`,
+      ...empty.map(({ hash, subject }) => `  ${hash} ${JSON.stringify(subject)}`),
+      "Rebase merges can omit empty commits, which would choose a different next version from squash or merge.",
+    ].join("\n"),
+  );
+}
+
+export function rangeImpact(baseSha, headSha, options) {
+  const messages = messagesInRange(baseSha, headSha, options);
+  return { subjects: assertMessages(messages), impact: maximumImpact(messages) };
+}
+
+export function assertPullRequest(title, baseSha, headSha, options) {
+  assertSubject(title, { label: "pull request title" });
+  const messages = messagesInRange(baseSha, headSha, options);
+  const range = { subjects: assertMessages(messages), impact: maximumImpact(messages) };
+  if (range.subjects.length === 0) {
+    throw new Error("pull request has no non-merge commits to classify");
+  }
+  assertNoReleaseImpactingEmptyCommits(baseSha, headSha, messages, options);
+  const titleImpact = releaseImpact(title);
+  const commitImpact = range.impact;
+  if (titleImpact !== commitImpact) {
+    throw new Error(
+      [
+        `pull request title release impact (${titleImpact}) does not match its commit range (${commitImpact})`,
+        `Title: ${JSON.stringify(title)}`,
+        "Commit subjects:",
+        ...range.subjects.map((subject) => `  ${JSON.stringify(subject)}`),
+        "Make them match so PR metadata and every supported merge configuration declare the same next version.",
+      ].join("\n"),
+    );
+  }
+  return range;
 }
 
 function required(name) {
@@ -111,7 +236,18 @@ function main() {
     console.log(`OK: ${subjects.length} non-merge commit subject${subjects.length === 1 ? "" : "s"}`);
     return;
   }
-  throw new Error("Usage: conventional-commit-subjects.mjs title|range");
+  if (command === "pr") {
+    const result = assertPullRequest(
+      required("TITLE"),
+      required("BASE_SHA"),
+      required("HEAD_SHA"),
+    );
+    console.log(
+      `OK: ${result.subjects.length} non-merge commit subject${result.subjects.length === 1 ? "" : "s"}; release impact ${result.impact}`,
+    );
+    return;
+  }
+  throw new Error("Usage: conventional-commit-subjects.mjs title|range|pr");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

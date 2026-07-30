@@ -28,9 +28,9 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
         run: node scripts/conventional-commit-subjects.mjs title
 
-  # Merge commits are synthetic and do not release. A squash commit is an
-  # ordinary commit, while merge/rebase paths retain the PR's own commits, so
-  # --no-merges selects the version inputs for every supported merge method.
+  # Merge commits are synthetic and do not release. A multi-commit squash takes
+  # its subject from the PR title (a lone commit keeps its own), while merge and
+  # rebase retain branch commits. Equal impact keeps all methods equivalent.
   commit-subjects:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -43,8 +43,15 @@ jobs:
         with:
           node-version: 22
 
-      - name: Validate every version-input subject
+      - name: Validate version inputs and PR release impact
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          TITLE: ${{ github.event.pull_request.title || '' }}
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
-        run: node scripts/conventional-commit-subjects.mjs range
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            node scripts/conventional-commit-subjects.mjs pr
+          else
+            node scripts/conventional-commit-subjects.mjs range
+          fi

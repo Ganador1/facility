@@ -38,7 +38,18 @@ Two consequences worth internalising:
 - **A breaking change without `!` ships as a patch.** Mark it, in the subject or
   in a `BREAKING CHANGE:` footer, and say in the body what a user has to change.
 
-The pull request title follows the same rule: it supplies the subject for a
-squash merge, while merge and rebase preserve the branch's commit subjects. CI
-checks the title, every non-merge commit in the pull request, and the actual
-subjects landed on `main`.
+The pull request title follows the same rule: it supplies a multi-commit squash
+subject (a one-commit squash keeps that commit's subject), while merge and
+rebase preserve the branch's commit subjects. CI checks the title, every
+non-merge commit in the pull request, and the actual subjects landed on `main`.
+It also requires the title's release impact to match the commit range, so
+squash, merge, and rebase choose the same version. If any commit has a
+`BREAKING CHANGE:` footer, mark the title with `!` too. This equality rule also
+applies to one-commit pull requests: their title remains a release declaration,
+and the rule stays safe if the repository's squash-title setting changes.
+
+Configure the pull-request checks as required and require an up-to-date branch
+or merge queue before merging. The release workflow must also validate and
+classify the full non-merge messages that actually landed since the last
+successful release in the same gated job that chooses the next version; a
+separate push check is useful feedback, not a release boundary.

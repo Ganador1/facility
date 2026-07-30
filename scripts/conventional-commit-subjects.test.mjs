@@ -7,9 +7,12 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   ALLOWED_TYPES,
+  assertPullRequest,
   assertRange,
   assertSubject,
   parseSubject,
+  rangeImpact,
+  releaseImpact,
   subjectsInRange,
 } from "./conventional-commit-subjects.mjs";
 
@@ -63,10 +66,24 @@ function localRepository(t, name) {
   return repoDir;
 }
 
-function commitChange(repoDir, content, subject) {
+function commitChange(repoDir, content, subject, body) {
   writeFileSync(join(repoDir, "change.txt"), `${content}\n`);
   git(repoDir, ["add", "change.txt"]);
-  git(repoDir, ["commit", "-m", subject]);
+  git(repoDir, ["commit", "-m", subject, ...(body ? ["-m", body] : [])]);
+}
+
+function fakeRange(...messages) {
+  const hashes = messages.map((_, index) => `commit-${index + 1}`);
+  return {
+    exec(_command, args) {
+      if (args[0] === "log") return messages.length > 0 ? `${messages.join("\0")}\0` : "";
+      if (args[0] === "rev-list") return hashes.length > 0 ? `${hashes.join("\n")}\n` : "";
+      throw new Error(`unexpected git command: ${args.join(" ")}`);
+    },
+    isEmptyCommit() {
+      return false;
+    },
+  };
 }
 
 test("the repository's allowed Conventional Commit types are accepted", () => {
@@ -114,6 +131,49 @@ test("breaking markers and established punctuation in scopes are accepted", () =
   assert.equal(assertSubject("perf!: remove the legacy path").breaking, true);
 });
 
+test("release impact follows the repository's 0.x version policy and full commit messages", () => {
+  for (const type of ["feat", "fix", "perf", "revert"]) {
+    assert.equal(releaseImpact(`${type}: describe the change`), "patch", type);
+  }
+  for (const type of ["docs", "style", "refactor", "test", "build", "ci", "chore"]) {
+    assert.equal(releaseImpact(`${type}: describe the change`), "none", type);
+  }
+  assert.equal(releaseImpact("docs!: replace the public contract"), "minor");
+  assert.equal(
+    releaseImpact("fix: preserve the old subject\n\nBREAKING CHANGE: migrate the client"),
+    "minor",
+  );
+  assert.equal(
+    releaseImpact("fix: preserve the old subject\r\n\r\nBREAKING-CHANGE: migrate the client"),
+    "minor",
+  );
+  assert.equal(
+    releaseImpact(
+      "docs: replace the contract\n\nRefs: #42\nBREAKING CHANGE: migrate the client\ncontinue with the second step\nCloses #123",
+    ),
+    "minor",
+  );
+  assert.equal(
+    releaseImpact(
+      "docs: explain the phrase\n\nBREAKING CHANGE: appears in an example\n\nThis is still documentation.",
+    ),
+    "none",
+  );
+  assert.equal(
+    releaseImpact("docs: explain malformed input\nBREAKING CHANGE: missing footer separator"),
+    "none",
+  );
+  for (const example of [
+    "docs: quote output\n\nThe tool printed:\nBREAKING CHANGE: example text",
+    "docs: show a fence\n\n```text\nBREAKING CHANGE: example text\n```",
+    "docs: show indented code\n\n    BREAKING CHANGE: example text",
+    "docs: omit the description\n\nBREAKING CHANGE: ",
+    "docs: use a tab separator\n\nBREAKING CHANGE:\tmigrate the client",
+  ]) {
+    assert.equal(releaseImpact(example), "none", example);
+  }
+});
+
 test("unknown types and malformed subjects are rejected", () => {
   for (const subject of [
     "unknown: describe the change",
@@ -157,12 +217,86 @@ test("commit ranges are read as non-merge subjects from base-exclusive history",
   assert.equal(calls[0].options.encoding, "utf8");
 });
 
-test("commit ranges follow the subjects that survive squash, no-ff, and rebase merges", (t) => {
+test("pull request titles have the same release impact as their full commit range", () => {
+  const patchRange = fakeRange("docs: explain the change\n", "fix: deliver the change\n");
+  assert.deepEqual(rangeImpact("base", "head", patchRange), {
+    subjects: ["docs: explain the change", "fix: deliver the change"],
+    impact: "patch",
+  });
+  assert.deepEqual(assertPullRequest("feat: deliver the change", "base", "head", patchRange), {
+    subjects: ["docs: explain the change", "fix: deliver the change"],
+    impact: "patch",
+  });
+  assert.throws(
+    () => assertPullRequest("ci: validate the change", "base", "head", patchRange),
+    /title release impact \(none\) does not match its commit range \(patch\)/,
+  );
+
+  const breakingRange = fakeRange(
+    "fix: replace the contract\n\nBREAKING CHANGE: migrate the client\n",
+  );
+  assert.deepEqual(
+    assertPullRequest("fix!: replace the contract", "base", "head", breakingRange),
+    { subjects: ["fix: replace the contract"], impact: "minor" },
+  );
+  assert.throws(
+    () => assertPullRequest("fix: replace the contract", "base", "head", breakingRange),
+    /title release impact \(patch\) does not match its commit range \(minor\)/,
+  );
+
+  const noReleaseRange = fakeRange("docs: explain the existing behavior\n");
+  assert.throws(
+    () => assertPullRequest("fix: explain the existing behavior", "base", "head", noReleaseRange),
+    /title release impact \(patch\) does not match its commit range \(none\)/,
+  );
+});
+
+test("pull request classification fails closed for an empty non-merge range", () => {
+  assert.throws(
+    () => assertPullRequest("docs: explain the change", "base", "head", fakeRange()),
+    /no non-merge commits to classify/,
+  );
+});
+
+test("release-impacting commits must not be empty before a possible rebase", (t) => {
+  const repoDir = localRepository(t, "release-impacting-empty");
+  const baseSha = git(repoDir, ["rev-parse", "HEAD"]);
+  git(repoDir, ["commit", "--allow-empty", "-m", "fix: claim a delivered fix"]);
+  const headSha = git(repoDir, ["rev-parse", "HEAD"]);
+
+  assert.throws(
+    () => assertPullRequest("fix: claim a delivered fix", baseSha, headSha, { repoDir }),
+    /release-impacting empty commit is not allowed[\s\S]*fix: claim a delivered fix[\s\S]*Rebase merges can omit empty commits/,
+  );
+});
+
+test("squash, no-ff, and rebase land the same footer-only breaking impact", (t) => {
   const squashRepo = localRepository(t, "squash");
   const squashBase = git(squashRepo, ["rev-parse", "HEAD"]);
   git(squashRepo, ["checkout", "-b", "squash-feature"]);
   commitChange(squashRepo, "squash step one", "fix(web+api): prepare the squash");
-  commitChange(squashRepo, "squash step two", "feat(api/auth): finish the squash");
+  commitChange(
+    squashRepo,
+    "squash step two",
+    "docs(api/auth): describe the breaking squash",
+    "BREAKING CHANGE: migrate the squash client",
+  );
+  const squashFeatureHead = git(squashRepo, ["rev-parse", "HEAD"]);
+  assert.deepEqual(
+    assertPullRequest(
+      "feat(registry,sandbox)!: land one squash subject",
+      squashBase,
+      squashFeatureHead,
+      { repoDir: squashRepo },
+    ),
+    {
+      subjects: [
+        "docs(api/auth): describe the breaking squash",
+        "fix(web+api): prepare the squash",
+      ],
+      impact: "minor",
+    },
+  );
   git(squashRepo, ["checkout", "main"]);
   git(squashRepo, ["merge", "--squash", "squash-feature"]);
   git(squashRepo, ["commit", "-m", "feat(registry,sandbox)!: land one squash subject"]);
@@ -171,25 +305,37 @@ test("commit ranges follow the subjects that survive squash, no-ff, and rebase m
   assert.deepEqual(subjectsInRange(squashBase, squashHead, { repoDir: squashRepo }), [
     "feat(registry,sandbox)!: land one squash subject",
   ]);
+  const squashImpact = rangeImpact(squashBase, squashHead, { repoDir: squashRepo });
 
   const mergeRepo = localRepository(t, "merge");
   const mergeBase = git(mergeRepo, ["rev-parse", "HEAD"]);
   git(mergeRepo, ["checkout", "-b", "merge-feature"]);
   commitChange(mergeRepo, "merge step one", "feat(api/auth): add the first commit");
-  commitChange(mergeRepo, "merge step two", "fix(registry,sandbox): add the second commit");
+  commitChange(
+    mergeRepo,
+    "merge step two",
+    "docs(registry,sandbox): describe the breaking merge",
+    "BREAKING CHANGE: migrate the merge client",
+  );
   git(mergeRepo, ["checkout", "main"]);
   git(mergeRepo, ["merge", "--no-ff", "merge-feature", "-m", "Merge branch 'merge-feature'"]);
   const mergeHead = git(mergeRepo, ["rev-parse", "HEAD"]);
 
   assert.deepEqual(subjectsInRange(mergeBase, mergeHead, { repoDir: mergeRepo }), [
-    "fix(registry,sandbox): add the second commit",
+    "docs(registry,sandbox): describe the breaking merge",
     "feat(api/auth): add the first commit",
   ]);
+  const mergeImpact = rangeImpact(mergeBase, mergeHead, { repoDir: mergeRepo });
 
   const rebaseRepo = localRepository(t, "rebase");
   git(rebaseRepo, ["checkout", "-b", "rebase-feature"]);
   commitChange(rebaseRepo, "rebase step one", "feat(api/auth): add the rebased feature");
-  commitChange(rebaseRepo, "rebase step two", "fix(web+api): finish the rebased feature");
+  commitChange(
+    rebaseRepo,
+    "rebase step two",
+    "docs(web+api): describe the breaking rebase",
+    "BREAKING CHANGE: migrate the rebased client",
+  );
   git(rebaseRepo, ["checkout", "main"]);
   writeFileSync(join(rebaseRepo, "main.txt"), "advance main\n");
   git(rebaseRepo, ["add", "main.txt"]);
@@ -202,9 +348,14 @@ test("commit ranges follow the subjects that survive squash, no-ff, and rebase m
   const rebaseHead = git(rebaseRepo, ["rev-parse", "HEAD"]);
 
   assert.deepEqual(subjectsInRange(rebaseBase, rebaseHead, { repoDir: rebaseRepo }), [
-    "fix(web+api): finish the rebased feature",
+    "docs(web+api): describe the breaking rebase",
     "feat(api/auth): add the rebased feature",
   ]);
+  const rebaseImpact = rangeImpact(rebaseBase, rebaseHead, { repoDir: rebaseRepo });
+
+  assert.equal(squashImpact.impact, "minor");
+  assert.equal(mergeImpact.impact, squashImpact.impact);
+  assert.equal(rebaseImpact.impact, squashImpact.impact);
 });
 
 test("an empty commit subject is retained and rejected", (t) => {
@@ -270,7 +421,46 @@ test("the title CLI accepts valid input and denies invalid input", () => {
   assert.match(denied.stderr, /unknown: hide a release change/);
 });
 
-test("workflows validate edited titles, retargeted ranges, and landed main commits", () => {
+test("the pull request CLI rejects squash impact that differs from the commit range", (t) => {
+  const repoDir = localRepository(t, "pull-request-impact");
+  const baseSha = git(repoDir, ["rev-parse", "HEAD"]);
+  writeFileSync(join(repoDir, "change.txt"), "breaking change\n");
+  git(repoDir, ["add", "change.txt"]);
+  git(repoDir, [
+    "commit",
+    "-m",
+    "fix: replace the public contract",
+    "-m",
+    "BREAKING CHANGE: migrate the client",
+  ]);
+  const headSha = git(repoDir, ["rev-parse", "HEAD"]);
+
+  const accepted = subjectCli(
+    "pr",
+    {
+      TITLE: "fix!: replace the public contract",
+      BASE_SHA: baseSha,
+      HEAD_SHA: headSha,
+    },
+    repoDir,
+  );
+  assert.equal(accepted.status, 0, accepted.stderr);
+  assert.match(accepted.stdout, /release impact minor/);
+
+  const denied = subjectCli(
+    "pr",
+    {
+      TITLE: "fix: replace the public contract",
+      BASE_SHA: baseSha,
+      HEAD_SHA: headSha,
+    },
+    repoDir,
+  );
+  assert.notEqual(denied.status, 0, denied.stdout);
+  assert.match(denied.stderr, /title release impact \(patch\).*commit range \(minor\)/s);
+});
+
+test("workflows validate edited titles, matching PR impact, and landed main commits", () => {
   const subjectWorkflow = readFileSync(
     new URL("../.github/workflows/pull-request-title.yml", import.meta.url),
     "utf8",
@@ -298,6 +488,9 @@ test("workflows validate edited titles, retargeted ranges, and landed main commi
   const rangeJob = rangeJobs[0];
   assert.doesNotMatch(rangeJob.split(/^\s+steps:/m)[0], /^\s+if:/m);
   assert.match(rangeJob, /fetch-depth:\s*0/);
+  assert.match(rangeJob, /EVENT_NAME: \$\{\{ github\.event_name \}\}/);
+  assert.match(rangeJob, /TITLE: \$\{\{ github\.event\.pull_request\.title \|\| '' \}\}/);
+  assert.match(rangeJob, /node scripts\/conventional-commit-subjects\.mjs pr\b/);
   assert.match(
     rangeJob,
     /BASE_SHA: \$\{\{ github\.event_name == 'pull_request' && github\.event\.pull_request\.base\.sha \|\| github\.event\.before \}\}/,
