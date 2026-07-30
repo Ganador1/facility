@@ -38,7 +38,7 @@ test("an accepted release publishes its immutable SHA and matching version tags"
   assert.deepEqual(
     publicationPlan({
       eventName: "push",
-      ref: "refs/tags/v0.3.0",
+      ref: "refs/heads/main",
       visibility: "public",
       sha,
       release: { tag: "v0.3.0", version: "0.3.0" },
@@ -50,7 +50,7 @@ test("an accepted release publishes its immutable SHA and matching version tags"
 test("malformed, private, and unvalidated release inputs fail closed", () => {
   const valid = {
     eventName: "push",
-    ref: "refs/tags/v0.3.0",
+    ref: "refs/heads/main",
     visibility: "public",
     sha,
     release: { tag: "v0.3.0", version: "0.3.0" },
@@ -60,12 +60,11 @@ test("malformed, private, and unvalidated release inputs fail closed", () => {
     [{ eventName: "pull_request" }, /does not accept pull_request/],
     [{ visibility: "private" }, /disabled until the repository is public/],
     [{ release: undefined }, /requires a validated release/],
-    [{ ref: "refs/tags/vlatest" }, /does not match validated tag/],
+    [{ release: { tag: "vlatest", version: "0.3.0" } }, /does not match v0\.3\.0/],
+    [{ ref: "refs/tags/v0.3.0" }, /release images come from main/],
+    [{ ref: "refs/heads/feature" }, /release images come from main/],
     [
-      {
-        release: { tag: "v0.3.0,latest", version: "0.3.0,latest" },
-        ref: "refs/tags/v0.3.0,latest",
-      },
+      { release: { tag: "v0.3.0,latest", version: "0.3.0,latest" } },
       /invalid container tag/,
     ],
   ];
@@ -116,7 +115,8 @@ test("digest manifests require the complete, expected five-image set", (t) => {
 });
 
 test("CI gates release images and the reusable publisher stages digests before promotion", () => {
-  assert.match(imagesWorkflow, /on:\n {2}workflow_call:\n {2}workflow_dispatch:/);
+  assert.match(imagesWorkflow, /on:\n {2}workflow_call:\n {4}inputs:\n {6}version:/);
+  assert.match(imagesWorkflow, /\n {2}workflow_dispatch:\n/);
   assert.doesNotMatch(imagesWorkflow, /tags: \["v\*"\]/);
   assert.match(
     imagesWorkflow,
@@ -126,6 +126,9 @@ test("CI gates release images and the reusable publisher stages digests before p
   assert.match(imagesWorkflow, /push-by-digest=true,name-canonical=true,push=true/);
   assert.match(imagesWorkflow, /promote:\n {4}needs: \[plan, build\]/);
   assert.match(imagesWorkflow, /node scripts\/images\.mjs promote/);
-  assert.match(ciWorkflow, /publish-images:[\s\S]*needs: \[verify, self-host-build, sandbox-e2e\]/);
+  assert.match(
+    ciWorkflow,
+    /publish-images:[\s\S]*needs: \[decide-release, verify, package-release, self-host-build, sandbox-e2e\]/,
+  );
   assert.match(ciWorkflow, /publish-images:[\s\S]*uses: \.\/\.github\/workflows\/images\.yml/);
 });

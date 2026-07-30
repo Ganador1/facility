@@ -32,10 +32,11 @@ export function publicationPlan({ eventName, ref, visibility, sha, release }) {
   if (!release || typeof release.version !== "string" || typeof release.tag !== "string") {
     throw new Error("release image publication requires a validated release");
   }
-  if (release.tag !== `v${release.version}` || ref !== `refs/tags/${release.tag}`) {
-    throw new Error(
-      `release image ref ${ref || "missing"} does not match validated tag ${release.tag}`,
-    );
+  if (release.tag !== `v${release.version}`) {
+    throw new Error(`validated release tag ${release.tag} does not match v${release.version}`);
+  }
+  if (ref !== "refs/heads/main") {
+    throw new Error(`release images come from main, not ${ref || "an unknown ref"}`);
   }
   assertDockerTag(release.version);
   return { mode: "release", tags: [shaTag, release.version] };

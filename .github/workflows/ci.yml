@@ -7,10 +7,31 @@ name: ci
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
 
 jobs:
+  # What the commit subjects since the last release add up to. Runs first so
+  # every publishing job can gate on one answer instead of recomputing it.
+  decide-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      release: ${{ steps.decision.outputs.release }}
+      version: ${{ steps.decision.outputs.version }}
+      tag: ${{ steps.decision.outputs.tag }}
+      notes: ${{ steps.decision.outputs.notes }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - id: decision
+        run: node scripts/version.mjs
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -33,16 +54,36 @@ jobs:
       - name: Release-shaped verification
         run: pnpm verify
 
-      - name: Validate the public release tag
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
+  # Stamp the decided version and build the archive once, in a job with no
+  # credentials. The npm environment later receives this exact, already-tested
+  # archive rather than running package lifecycle code with publication rights.
+  # The stamp is never committed: the tag written at the end is the record.
+  package-release:
+    needs: [decide-release, verify]
+    if: needs.decide-release.outputs.release == 'true' && github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Stamp the decided version
+        run: node scripts/release.mjs stamp "${{ needs.decide-release.outputs.version }}"
+
+      - name: Validate the release
+        env:
+          FACILITY_RELEASE_VERSION: ${{ needs.decide-release.outputs.version }}
         run: node scripts/release.mjs validate
 
-      # Build the package once in the nonprivileged acceptance job. The npm
-      # environment later receives this exact, already-tested archive rather
-      # than running package lifecycle code with publication credentials.
       - name: Pack the release candidate
         id: candidate
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
         shell: bash
         run: |
           set -euo pipefail
@@ -54,7 +95,6 @@ jobs:
           echo "path=$candidate" >> "$GITHUB_OUTPUT"
 
       - name: Install the release candidate and run the binary
-        if: steps.candidate.outcome == 'success'
         shell: bash
         env:
           CANDIDATE: ${{ steps.candidate.outputs.path }}
@@ -68,7 +108,6 @@ jobs:
           ./node_modules/.bin/facility --help
 
       - name: Preserve the tested release candidate
-        if: steps.candidate.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: facility-release-package
@@ -170,19 +209,59 @@ jobs:
   # tag and commit that passed every acceptance job. A downstream workflow_run
   # would instead attest the default branch SHA.
   publish-npm:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
-    needs: [verify, self-host-build, sandbox-e2e]
+    if: needs.decide-release.outputs.release == 'true' && github.event.repository.visibility == 'public'
+    needs: [decide-release, verify, package-release, self-host-build, sandbox-e2e]
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/release.yml
+    with:
+      version: ${{ needs.decide-release.outputs.version }}
 
-  # Publish containers from the same accepted tag run as npm. The reusable
-  # workflow revalidates the release before granting its jobs packages: write.
+  # Publish containers from the same accepted run as npm. The reusable workflow
+  # revalidates the release before granting its jobs packages: write.
   publish-images:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
-    needs: [verify, self-host-build, sandbox-e2e]
+    if: needs.decide-release.outputs.release == 'true' && github.event.repository.visibility == 'public'
+    needs: [decide-release, verify, package-release, self-host-build, sandbox-e2e]
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/images.yml
+    with:
+      version: ${{ needs.decide-release.outputs.version }}
+
+  # The tag is written last, and only after both registries accepted the
+  # release. It records what shipped; it is not the request to ship it. A run
+  # that fails before here leaves no tag, so the next merge retries the same
+  # version instead of skipping it.
+  record-release:
+    needs: [decide-release, publish-npm, publish-images]
+    if: needs.decide-release.outputs.release == 'true' && github.event.repository.visibility == 'public'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Tag the released commit and publish its notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.decide-release.outputs.tag }}
+          VERSION: ${{ needs.decide-release.outputs.version }}
+          NOTES: ${{ needs.decide-release.outputs.notes }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG already exists; the release was recorded by an earlier run."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$VERSION"
+          git push origin "$TAG"
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --title "$VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag

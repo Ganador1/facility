@@ -100,21 +100,40 @@ request so the change can be reviewed and reverted independently.
 
 ## Releasing (maintainers)
 
-Publishing is tag-driven. A `vX.Y.Z` tag starts `.github/workflows/ci.yml`,
-which must pass root verification, the self-host build, and the required
-sandbox E2E before it calls the reusable release workflow. Do not run
-`npm publish` locally or invoke the release workflow as a substitute for those
-gates; its manual entry point is a dry run.
+**Merging to `main` is the release.** There is no version-bump commit, no
+release branch, and no tag to push by hand: `.github/workflows/ci.yml` decides
+from the commit subjects since the last release whether this merge publishes
+and as what version, then verifies, publishes, and writes the tag.
 
-1. Bump the version in `package.json` and `packages/cli/package.json` according
-   to semver (before 1.0, a minor release may contain breaking changes).
-2. Run `pnpm verify` and the build for every publishable artifact, then merge
-   the release change through the normal reviewed pull-request path.
-3. Tag the release commit on `main` as `vX.Y.Z` and push the tag. CI refuses a
-   tag whose version, commit, visibility, or acceptance results do not match the
-   release contract.
-4. After the publish job succeeds, write release notes in terms of behavior,
-   not commit titles.
+The order matters, and it is the whole safety argument:
+
+1. **Decide** — `scripts/version.mjs` reads the subjects since the last `v*`
+   tag. Only `feat`, `fix`, `perf`, and anything marked breaking count. If
+   nothing qualifies, the run ends here and nothing is published.
+2. **Verify** — root verification, the self-host build, and the sandbox E2E, on
+   the merged commit.
+3. **Package** — the decided version is stamped into both `package.json` files
+   *inside the run*, the archive is built, installed the way `npx` would, and
+   its binary is executed. Nothing is committed; the checkout's version number
+   is not the source of truth.
+4. **Publish** — npm and, once the repository is public, the images, from that
+   exact archive and digest set.
+5. **Record** — only now is the annotated tag written and the GitHub release
+   published with the generated notes.
+
+A run that fails anywhere before step 5 leaves no tag, so the next merge
+recomputes the same version and tries again rather than skipping it. A version
+that npm already has is refused outright, whatever the decision said.
+
+Do not run `npm publish` locally or invoke the release workflow as a substitute
+for those gates; its manual entry point is a dry run.
+
+### Commit subjects decide the version
+
+Subjects follow [Conventional Commits](https://www.conventionalcommits.org/),
+and CI checks the pull request title, because a squash merge makes that title
+the subject on `main`. The rules — and the two ways a careless subject hurts a
+user — are in [AGENTS.md](AGENTS.md#commit-subjects-set-the-released-version).
 
 ### First npm publish only
 

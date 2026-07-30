@@ -13,13 +13,13 @@ const ciWorkflow = readFileSync(new URL("../.github/workflows/ci.yml", import.me
 
 const validPolicy = {
   eventName: "push",
-  ref: "refs/tags/v0.3.0",
+  ref: "refs/heads/main",
   visibility: "public",
   rootVersion: "0.3.0",
   packageVersion: "0.3.0",
+  decidedVersion: "0.3.0",
   headSha: "release-sha",
   checkoutSha: "release-sha",
-  tagSha: "release-sha",
   isOnMain: true,
 };
 
@@ -36,30 +36,32 @@ test("manual dispatches are dry-runs even when a real publish is requested", () 
   );
 });
 
-test("only an accepted public tag push enters publish mode", () => {
-  assert.equal(
-    releaseMode({
-      eventName: "push",
-      ref: "refs/tags/v0.3.0",
-      visibility: "public",
-      acceptancePassed: true,
-    }),
-    "publish",
-  );
+test("only an accepted public main push with a decision enters publish mode", () => {
+  const accepted = {
+    eventName: "push",
+    ref: "refs/heads/main",
+    visibility: "public",
+    acceptancePassed: true,
+    releaseDecided: true,
+  };
+  assert.equal(releaseMode(accepted), "publish");
 
   for (const candidate of [
-    { eventName: "push", ref: "refs/heads/main", visibility: "public", acceptancePassed: true },
-    { eventName: "pull_request", ref: "refs/tags/v0.3.0", visibility: "public", acceptancePassed: true },
-    { eventName: "push", ref: "refs/tags/v0.3.0", visibility: "private", acceptancePassed: true },
-    { eventName: "push", ref: "refs/tags/v0.3.0", visibility: "public", acceptancePassed: false },
-    { eventName: "push", ref: "refs/tags/v0.3.0", visibility: "public", acceptancePassed: "false" },
-    { eventName: "push", ref: "refs/tags/v0.3.0", visibility: "public", acceptancePassed: "failure" },
+    { ...accepted, releaseDecided: false },
+    { ...accepted, releaseDecided: "true" },
+    { ...accepted, ref: "refs/heads/feature" },
+    { ...accepted, ref: "refs/tags/v0.3.0" },
+    { ...accepted, eventName: "pull_request" },
+    { ...accepted, visibility: "private" },
+    { ...accepted, acceptancePassed: false },
+    { ...accepted, acceptancePassed: "false" },
+    { ...accepted, acceptancePassed: "failure" },
   ]) {
     assert.equal(releaseMode(candidate), "skip");
   }
 });
 
-test("release policy accepts only the matching package tag and commit", () => {
+test("release policy accepts only a stamped main commit matching the decision", () => {
   assert.deepEqual(validateReleasePolicy(validPolicy), {
     packageName: "@theagilemonkeys/facility",
     version: "0.3.0",
@@ -67,14 +69,18 @@ test("release policy accepts only the matching package tag and commit", () => {
   });
 });
 
-test("release policy fails closed on every tag and provenance mismatch", () => {
+test("release policy fails closed on every version and provenance mismatch", () => {
   const invalid = [
     [{ eventName: "workflow_dispatch" }, /real release must come from a push event/],
     [{ visibility: "private" }, /publishing is disabled until the repository is public/],
+    [{ ref: "refs/tags/v0.3.0" }, /a release must come from main, not refs\/tags\/v0\.3\.0/],
+    [{ decidedVersion: undefined }, /no release version was decided for this commit/],
     [{ rootVersion: "0.2.0" }, /root package version \(0\.2\.0\) does not match CLI package version \(0\.3\.0\)/],
-    [{ ref: "refs/tags/v0.3.1" }, /release ref refs\/tags\/v0\.3\.1 does not match refs\/tags\/v0\.3\.0/],
+    [
+      { decidedVersion: "0.4.0" },
+      /stamped version 0\.3\.0 does not match the decided version 0\.4\.0/,
+    ],
     [{ checkoutSha: "other-sha" }, /checked-out commit other-sha does not match event SHA release-sha/],
-    [{ tagSha: "other-sha" }, /release tag resolves to other-sha, not event SHA release-sha/],
     [{ isOnMain: false }, /release commit is not reachable from origin\/main/],
   ];
 
@@ -95,13 +101,13 @@ test("GitHub publication requires the exact official npm registry", () => {
   );
 });
 
-test("the workflow keeps manual runs credential-free and real publication tag-only", () => {
-  assert.match(releaseWorkflow, /workflow_call:\n  workflow_dispatch:\n/);
+test("the workflow keeps manual runs credential-free and real publication main-only", () => {
+  assert.match(releaseWorkflow, /workflow_call:\n    inputs:\n      version:/);
   assert.doesNotMatch(releaseWorkflow, /workflow_dispatch:\n\s+inputs:/);
   assert.match(releaseWorkflow, /dry-run:\n    if: github\.event_name == 'workflow_dispatch'/);
   assert.match(
     releaseWorkflow,
-    /publish:\n    if: github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/'\) && github\.event\.repository\.visibility == 'public'/,
+    /publish:\n    if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' && github\.event\.repository\.visibility == 'public'/,
   );
   assert.match(releaseWorkflow, /node scripts\/release\.mjs dry-run "\$candidate"/);
   assert.match(releaseWorkflow, /node scripts\/release\.mjs publish "\$CANDIDATE" --auth=oidc/);
@@ -121,6 +127,9 @@ test("the workflow keeps manual runs credential-free and real publication tag-on
 test("CI publishes only the exact artifact produced after all acceptance jobs", () => {
   assert.match(ciWorkflow, /npm pack --ignore-scripts --pack-destination "\$release_dir"/);
   assert.match(ciWorkflow, /name: facility-release-package/);
-  assert.match(ciWorkflow, /publish-npm:[\s\S]*needs: \[verify, self-host-build, sandbox-e2e\]/);
+  assert.match(
+    ciWorkflow,
+    /publish-npm:[\s\S]*needs: \[decide-release, verify, package-release, self-host-build, sandbox-e2e\]/,
+  );
   assert.match(ciWorkflow, /publish-npm:[\s\S]*uses: \.\/\.github\/workflows\/release\.yml/);
 });
