@@ -11,6 +11,35 @@ on:
   pull_request:
 
 jobs:
+  # The version is computed from commit subjects, and a squash merge makes this
+  # title the subject on main — so this is the last place to catch a subject
+  # that would release the wrong number, or nothing at all.
+  pull-request-title:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: The title is a conventional commit
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._-]+\))?!?: .+'
+          if ! printf '%s' "$TITLE" | grep -Eq "$pattern"; then
+            echo "Pull request title: $TITLE" >&2
+            echo "" >&2
+            echo "It must read as a conventional commit, because it becomes the commit" >&2
+            echo "subject on main and the subjects decide the released version:" >&2
+            echo "  <type>[(scope)][!]: <what changed>" >&2
+            echo "  types: feat fix docs style refactor perf test build ci chore revert" >&2
+            echo "  a trailing ! marks a breaking change" >&2
+            echo "" >&2
+            echo "See the commit-subject rules in AGENTS.md." >&2
+            exit 1
+          fi
+          echo "OK: $TITLE"
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 35
