@@ -19,10 +19,31 @@ import { enqueueMetering, reserveHardBudgetsAndRecordPending } from "./metering.
 import type { GatewayConfig, GatewayDeps, Provider, RequestRecord, Usage } from "./types.js";
 import { emptyUsage, UsageTee, usageFromJson } from "./usage.js";
 
+// `meteringSettled` lets a caller wait for usage writes that outlive the
+// response they belong to: the shutdown hook, and tests that clean up rows a
+// still-settling write would re-create.
+declare module "fastify" {
+  interface FastifyInstance {
+    meteringSettled: () => Promise<void>;
+  }
+}
+
 const allowedPaths = {
   anthropic: new Set(["/messages", "/messages/count_tokens"]),
   openai: new Set(["/chat/completions", "/responses"]),
 } satisfies Record<Provider, Set<string>>;
+
+export function createMeteringDrain() {
+  const pending = new Set<Promise<unknown>>();
+  const track = <T>(work: Promise<T>): Promise<T> => {
+    pending.add(work);
+    return work.finally(() => pending.delete(work));
+  };
+  const settled = async () => {
+    while (pending.size > 0) await Promise.allSettled([...pending]);
+  };
+  return { track, settled };
+}
 
 export async function buildApp(
   config: GatewayConfig = readConfig(),
@@ -51,6 +72,12 @@ export async function buildApp(
   }
   const envelopeStore = deps.envelopeStore ?? createEnvelopeStore(config);
   const now = deps.now ?? (() => new Date());
+  // Register the whole provider handler before its raw response can finish.
+  // Registering only enqueueMetering in the handler's finally block is too late:
+  // Fastify may start onClose after the socket finishes but before that block
+  // resumes, observe an empty drain, and close Postgres ahead of the usage write.
+  const meteringDrain = createMeteringDrain();
+  app.decorate("meteringSettled", meteringDrain.settled);
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("x-request-id", request.id);
@@ -81,14 +108,17 @@ export async function buildApp(
   app.get("/readyz", readiness);
 
   app.post("/anthropic/v1/*", (request, reply) =>
-    handleProvider(request, reply, "anthropic", config, db, envelopeStore, now),
+    meteringDrain.track(
+      handleProvider(request, reply, "anthropic", config, db, envelopeStore, now),
+    ),
   );
   app.post("/openai/v1/*", (request, reply) =>
-    handleProvider(request, reply, "openai", config, db, envelopeStore, now),
+    meteringDrain.track(handleProvider(request, reply, "openai", config, db, envelopeStore, now)),
   );
 
   app.addHook("onClose", async () => {
     await revocationListener?.unlisten().catch(() => undefined);
+    await meteringDrain.settled();
     await owned?.client.end();
   });
 
