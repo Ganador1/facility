@@ -882,9 +882,17 @@ export function deliveryFailure(
   return null;
 }
 
-async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown> | undefined> {
+export type ShipGitOptions = {
+  root?: string;
+  githubFetch?: typeof fetch;
+};
+
+export async function shipGitChanges(
+  bundle: RunBundle,
+  options: ShipGitOptions = {},
+): Promise<Record<string, unknown> | undefined> {
   if (!bundle.repo.cloneUrl) return undefined;
-  const cwd = cwdFor(bundle);
+  const cwd = cwdFor(bundle, options.root ?? workRoot);
   const baseBranch = bundle.repo.branch ?? "main";
   try {
     // Stage the final workspace snapshot so this captures both agent commits and
@@ -923,7 +931,13 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
       : semanticDeliveryBranch(delivery.branch, baseBranch);
     const baseSha = (await gitOutput(cwd, ["rev-parse", baseRef])).trim();
     const repo = githubRepositoryName(bundle.repo.cloneUrl);
-    const { token } = await api<{ token: string }>(`/internal/runs/${currentRunId()}/push-token`, {
+    const runId = currentRunId();
+    // Validate every signed-commit headline before asking the platform to mint
+    // a short-lived contents-write token. The publishers repeat this check at
+    // their public boundary, but the runner must fail locally before acquiring
+    // privileged credentials for an undeliverable message.
+    assertGithubCommitMessages(delivery.commitMessage, changes.length, runId);
+    const { token } = await api<{ token: string }>(`/internal/runs/${runId}/push-token`, {
       method: "POST",
     });
     secretsToRedact.add(token);
@@ -935,7 +949,8 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
           expectedHeadSha: baseSha,
           commitMessage: delivery.commitMessage,
           changes,
-          runId: currentRunId(),
+          runId,
+          fetchImpl: options.githubFetch,
         })
       : await publishVerifiedGithubChanges({
           repo,
@@ -944,7 +959,8 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
           baseSha,
           commitMessage: delivery.commitMessage,
           changes,
-          runId: currentRunId(),
+          runId,
+          fetchImpl: options.githubFetch,
         });
     const pullRequest = requiresDelivery(bundle.mode)
       ? (delivery as AgentDeliveryMetadata).pullRequest
@@ -961,7 +977,7 @@ async function shipGitChanges(bundle: RunBundle): Promise<Record<string, unknown
         : {}),
     };
   } catch (error) {
-    const pushError = errorMessage(error);
+    const pushError = redactSecrets(errorMessage(error));
     await emit([{ type: "artifact_error", data: { kind: "git_push_failed", error: pushError } }]);
     return { changed: true, pushError };
   }
