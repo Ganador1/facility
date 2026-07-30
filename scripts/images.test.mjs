@@ -120,7 +120,7 @@ test("CI gates release images and the reusable publisher stages digests before p
   assert.doesNotMatch(imagesWorkflow, /tags: \["v\*"\]/);
   assert.match(
     imagesWorkflow,
-    /group: images-\$\{\{ github\.repository \}\}-\$\{\{ github\.sha \}\}/,
+    /group: images-\$\{\{ github\.repository \}\}\n {2}cancel-in-progress: false/,
   );
   assert.match(imagesWorkflow, /node scripts\/images\.mjs plan/);
   assert.match(imagesWorkflow, /push-by-digest=true,name-canonical=true,push=true/);
