@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   ALLOWED_TYPES,
+  assertRange,
   assertSubject,
   parseSubject,
   subjectsInRange,
@@ -131,7 +132,7 @@ test("commit ranges are read as non-merge subjects from base-exclusive history",
     repoDir: "/fixture/repository",
     exec(command, args, options) {
       calls.push({ command, args, options });
-      return "feat: add the capability\nfix(api/auth)!: close the gap\n";
+      return "feat: add the capability\0fix(api/auth)!: close the gap\0";
     },
   });
 
@@ -140,6 +141,7 @@ test("commit ranges are read as non-merge subjects from base-exclusive history",
   assert.equal(calls[0].command, "git");
   assert.deepEqual(calls[0].args, [
     "log",
+    "-z",
     "--no-merges",
     "--format=%s",
     "base-sha..head-sha",
@@ -148,7 +150,7 @@ test("commit ranges are read as non-merge subjects from base-exclusive history",
   assert.equal(calls[0].options.encoding, "utf8");
 });
 
-test("commit ranges follow the subjects that survive squash and no-ff merges", (t) => {
+test("commit ranges follow the subjects that survive squash, no-ff, and rebase merges", (t) => {
   const squashRepo = localRepository(t, "squash");
   const squashBase = git(squashRepo, ["rev-parse", "HEAD"]);
   git(squashRepo, ["checkout", "-b", "squash-feature"]);
@@ -176,6 +178,39 @@ test("commit ranges follow the subjects that survive squash and no-ff merges", (
     "fix(registry,sandbox): add the second commit",
     "feat(api/auth): add the first commit",
   ]);
+
+  const rebaseRepo = localRepository(t, "rebase");
+  git(rebaseRepo, ["checkout", "-b", "rebase-feature"]);
+  commitChange(rebaseRepo, "rebase step one", "feat(api/auth): add the rebased feature");
+  commitChange(rebaseRepo, "rebase step two", "fix(web+api): finish the rebased feature");
+  git(rebaseRepo, ["checkout", "main"]);
+  writeFileSync(join(rebaseRepo, "main.txt"), "advance main\n");
+  git(rebaseRepo, ["add", "main.txt"]);
+  git(rebaseRepo, ["commit", "-m", "chore: advance the target branch"]);
+  const rebaseBase = git(rebaseRepo, ["rev-parse", "HEAD"]);
+  git(rebaseRepo, ["checkout", "rebase-feature"]);
+  git(rebaseRepo, ["rebase", "main"]);
+  git(rebaseRepo, ["checkout", "main"]);
+  git(rebaseRepo, ["merge", "--ff-only", "rebase-feature"]);
+  const rebaseHead = git(rebaseRepo, ["rev-parse", "HEAD"]);
+
+  assert.deepEqual(subjectsInRange(rebaseBase, rebaseHead, { repoDir: rebaseRepo }), [
+    "fix(web+api): finish the rebased feature",
+    "feat(api/auth): add the rebased feature",
+  ]);
+});
+
+test("an empty commit subject is retained and rejected", (t) => {
+  const repoDir = localRepository(t, "empty-subject");
+  const baseSha = git(repoDir, ["rev-parse", "HEAD"]);
+  git(repoDir, ["commit", "--allow-empty", "--allow-empty-message", "-m", ""]);
+  const headSha = git(repoDir, ["rev-parse", "HEAD"]);
+
+  assert.deepEqual(subjectsInRange(baseSha, headSha, { repoDir }), [""]);
+  assert.throws(
+    () => assertRange(baseSha, headSha, { repoDir }),
+    /commit subject is not allowed:[\s\S]*""/,
+  );
 });
 
 test("the title CLI accepts valid input and denies invalid input", () => {

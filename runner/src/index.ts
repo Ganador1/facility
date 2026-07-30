@@ -977,6 +977,10 @@ const CONVENTIONAL_SUBJECT =
   /^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^()]+\))?!?: \S.*$/;
 const GITHUB_CHANGE_BATCH = 100;
 
+function hasConventionalSubject(message: string) {
+  return CONVENTIONAL_SUBJECT.test(message.split("\n", 1)[0]?.trim() ?? "");
+}
+
 export function semanticDeliveryBranch(current: string, base: string) {
   if (current !== base && SEMANTIC_BRANCH.test(current)) return current;
   throw new Error("agent_delivery_branch_not_semantic");
@@ -1094,7 +1098,7 @@ export async function readAgentDeliveryMetadata(path: string): Promise<AgentDeli
   const title = typeof pullRequest.title === "string" ? pullRequest.title.trim() : "";
   const body = typeof pullRequest.body === "string" ? pullRequest.body.trim() : "";
   if (!SEMANTIC_BRANCH.test(branch)) throw new Error("agent_delivery_branch_not_semantic");
-  if (!CONVENTIONAL_SUBJECT.test(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
+  if (!hasConventionalSubject(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
     throw new Error("agent_delivery_commit_not_conventional");
   }
   if (!CONVENTIONAL_SUBJECT.test(title) || title.length > 256) {
@@ -1117,7 +1121,7 @@ export async function readAgentUpdateMetadata(
   const branch = typeof root.branch === "string" ? root.branch.trim() : "";
   const commitMessage = typeof root.commitMessage === "string" ? root.commitMessage.trim() : "";
   existingGithubBranch(branch);
-  if (!CONVENTIONAL_SUBJECT.test(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
+  if (!hasConventionalSubject(commitMessage) || /(^|\n)Co-authored-by:/i.test(commitMessage)) {
     throw new Error("agent_delivery_commit_not_conventional");
   }
   return { branch, commitMessage };

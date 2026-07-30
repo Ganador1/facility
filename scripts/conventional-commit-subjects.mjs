@@ -52,14 +52,15 @@ export function subjectsInRange(
   { repoDir = process.cwd(), exec = execFileSync } = {},
 ) {
   if (!baseSha || !headSha) throw new Error("both BASE_SHA and HEAD_SHA are required");
-  return exec(
+  const output = exec(
     "git",
-    ["log", "--no-merges", "--format=%s", `${baseSha}..${headSha}`],
+    ["log", "-z", "--no-merges", "--format=%s", `${baseSha}..${headSha}`],
     { cwd: repoDir, encoding: "utf8" },
-  )
-    .split("\n")
-    .map((subject) => subject.trim())
-    .filter(Boolean);
+  );
+  if (!output) return [];
+  const subjects = output.split("\0");
+  if (subjects.at(-1) === "") subjects.pop();
+  return subjects.map((subject) => subject.trim());
 }
 
 export function assertRange(baseSha, headSha, options) {
@@ -69,7 +70,7 @@ export function assertRange(baseSha, headSha, options) {
     throw new Error(
       [
         `${invalid.length} commit subject${invalid.length === 1 ? " is" : "s are"} not allowed:`,
-        ...invalid.map((subject) => `  ${subject}`),
+        ...invalid.map((subject) => `  ${JSON.stringify(subject)}`),
         "Expected: <type>[(scope)][!]: <what changed>",
         `Allowed types: ${ALLOWED_TYPES.join(" ")}`,
       ].join("\n"),

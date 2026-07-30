@@ -192,7 +192,8 @@ describe("workspace preparation", () => {
       path,
       JSON.stringify({
         branch: "feature/format-auth-api",
-        commitMessage: "  style(web+api): normalize formatting  ",
+        commitMessage:
+          "style(web+api): normalize formatting\n\nBREAKING CHANGE: generated output changed",
         pullRequest: {
           title: "fix(api/auth)!: require scoped credentials",
           body: "## Summary\n- Normalize formatting and scope credentials.",
@@ -201,7 +202,8 @@ describe("workspace preparation", () => {
     );
 
     await expect(readAgentDeliveryMetadata(path)).resolves.toMatchObject({
-      commitMessage: "style(web+api): normalize formatting",
+      commitMessage:
+        "style(web+api): normalize formatting\n\nBREAKING CHANGE: generated output changed",
       pullRequest: { title: "fix(api/auth)!: require scoped credentials" },
     });
 
@@ -316,12 +318,12 @@ describe("workspace preparation", () => {
       path,
       JSON.stringify({
         branch: "automation/dependency-refresh",
-        commitMessage: "fix: address review",
+        commitMessage: "fix: address review\n\nKeep the explanation in the commit body.",
       }),
     );
     await expect(readAgentUpdateMetadata(path)).resolves.toEqual({
       branch: "automation/dependency-refresh",
-      commitMessage: "fix: address review",
+      commitMessage: "fix: address review\n\nKeep the explanation in the commit body.",
     });
     await writeFile(
       path,
