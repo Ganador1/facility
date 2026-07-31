@@ -16,6 +16,23 @@ const guides = new Map([
   ],
 ]);
 
+const dockerfile = readFileSync(resolve(repoRoot, "Dockerfile"), "utf8");
+
+function apiStage(image) {
+  const start = image.indexOf("FROM base AS api\n");
+  assert.notEqual(start, -1, "the root Dockerfile must still build an api stage");
+  const end = image.indexOf("\nFROM ", start + 1);
+  return image.slice(start, end === -1 ? undefined : end);
+}
+
+function bootstrapOverrideCommand(markdown) {
+  const override = markdown.match(
+    /"containerOverrides":\[\{"name":"migrate","command":\[([\s\S]*?)\]\}\]\}/,
+  );
+  assert.ok(override, "the runbook must bootstrap the instance through a migrate task override");
+  return [...override[1].matchAll(/"([^"]*)"/g)].map(([, token]) => token);
+}
+
 function imageOverrideBlock(markdown, guideName) {
   const match = markdown.match(/```hcl\n(image_overrides = \{[\s\S]*?\n\})\n```/);
   assert.ok(match, `${guideName} must include the release image_overrides block`);
@@ -58,6 +75,33 @@ test("AWS guides select verified public release images before the first apply", 
       `${guideName} must not assume the packages are already public`,
     );
   }
+});
+
+// The bootstrap step binds the first organization, owner, and installation, so a
+// command the image cannot resolve fails it — and every later sign-in with
+// `not_invited`. Nothing else fails when the two halves drift apart: the runbook is
+// prose to CI, and the image builds happily without the name the runbook spells.
+test("the runbook bootstraps by the name the api image puts on the PATH", () => {
+  const [[, runbook]] = guides;
+  const stage = apiStage(dockerfile);
+
+  assert.deepEqual(
+    bootstrapOverrideCommand(runbook).slice(0, 3),
+    ["facility", "instance", "bootstrap"],
+    "the runbook must invoke the CLI by name, not as a path into the image",
+  );
+  assert.match(
+    stage,
+    /chmod \+x \/usr\/local\/bin\/facility/,
+    "the api stage must install an executable `facility` on the PATH",
+  );
+  // Exec form, so the guard resolves the name without a shell — the way the
+  // container runtime does for an ECS command override, and unlike `RUN cmd`.
+  assert.match(
+    stage,
+    /RUN\s*\[\s*"facility",\s*"instance",\s*"bootstrap"/,
+    "the api stage must fail the build when that name stops resolving without a shell",
+  );
 });
 
 test("AWS guides keep the release override and build-fallback paths synchronized", () => {

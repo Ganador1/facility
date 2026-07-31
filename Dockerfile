@@ -87,10 +87,12 @@ COPY --from=build-api /app/packages/cli /app/cli
 # without a shell to resolve it.
 RUN printf '#!/bin/sh\nexec node /app/cli/bin/facility.mjs "$@"\n' > /usr/local/bin/facility \
   && chmod +x /usr/local/bin/facility
-# Regression guard for the deployed operator path: reaching the bootstrap
-# command through the wrapper proves the PATH entry, and importing it proves
-# that its production `postgres` dependency resolves.
-RUN facility instance bootstrap --help >/dev/null
+# Regression guard for the deployed operator path. Exec form on purpose: it
+# resolves `facility` the way the container runtime does for an ECS command
+# override, with no shell in between, so the guard exercises the same lookup the
+# runbook depends on. Reaching the command proves the PATH entry, and importing
+# it proves that its production `postgres` dependency resolves.
+RUN ["facility", "instance", "bootstrap", "--help"]
 EXPOSE 4400
 CMD ["node", "dist/start.js"]
 
