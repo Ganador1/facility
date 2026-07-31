@@ -307,7 +307,7 @@ FACILITY_TASK="$(aws ecs run-task --region "$FACILITY_AWS_REGION" \
   --task-definition "$FACILITY_MIGRATE_DEF" \
   --network-configuration "$FACILITY_NETWORK" \
   --overrides '{"containerOverrides":[{"name":"migrate","command":[
-    "node","cli/bin/facility.mjs","instance","bootstrap",
+    "facility","instance","bootstrap",
     "--org-name","My Org","--org-slug","my-org",
     "--owner-email","you@example.com","--owner-name","Your Name",
     "--github-user-id","<user id>","--github-login","<login>",

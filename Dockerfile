@@ -81,9 +81,16 @@ COPY --from=build-api /prod/api /app
 # hundred kilobytes of plain ESM whose only dependency, `postgres`, is already
 # here for @facility/db.
 COPY --from=build-api /app/packages/cli /app/cli
-# Regression guard for the deployed operator path: importing the bootstrap
-# command also proves that its production `postgres` dependency resolves.
-RUN node cli/bin/facility.mjs instance bootstrap --help >/dev/null
+# Operator commands read as `facility …` inside the image, the way they read
+# everywhere else, instead of as a path into it. A wrapper rather than a symlink
+# because the checked-in bin is not executable, and an ECS command override runs
+# without a shell to resolve it.
+RUN printf '#!/bin/sh\nexec node /app/cli/bin/facility.mjs "$@"\n' > /usr/local/bin/facility \
+  && chmod +x /usr/local/bin/facility
+# Regression guard for the deployed operator path: reaching the bootstrap
+# command through the wrapper proves the PATH entry, and importing it proves
+# that its production `postgres` dependency resolves.
+RUN facility instance bootstrap --help >/dev/null
 EXPOSE 4400
 CMD ["node", "dist/start.js"]
 
