@@ -101,9 +101,13 @@ jobs:
           name: facility-release-package
           path: ${{ runner.temp }}/facility-release
 
+      # Same reason as ci.yml's validate step: the visibility the policy checks
+      # has to be passed in, or the revalidation refuses a public release.
       - name: Revalidate the release and its artifact
         id: candidate
         shell: bash
+        env:
+          GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
         run: |
           set -euo pipefail
           FACILITY_RELEASE_VERSION="${{ inputs.version }}" node scripts/release.mjs validate

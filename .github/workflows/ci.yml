@@ -84,8 +84,13 @@ jobs:
       - name: Stamp the decided version
         run: node scripts/release.mjs stamp "${{ needs.decide-release.outputs.version }}"
 
+      # The job's `if` is not enough: the runner exposes no
+      # GITHUB_REPOSITORY_VISIBILITY of its own, so the policy in release.mjs
+      # reads it as unset and refuses to publish from what looks like a private
+      # repository. It has to be passed in, the way images.yml passes it.
       - name: Validate the release
         env:
+          GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
           FACILITY_RELEASE_VERSION: ${{ needs.decide-release.outputs.version }}
         run: node scripts/release.mjs validate
 
