@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -187,6 +188,43 @@ async function assertMissing(path) {
   await assert.rejects(access(path), { code: "ENOENT" });
 }
 
+async function releaseCheckout(t) {
+  const repoDir = await mkdtemp(join(tmpdir(), "facility-release-checkout-"));
+  await mkdir(join(repoDir, "packages/cli"), { recursive: true });
+  await writeFile(join(repoDir, "package.json"), '{"name":"facility","version":"0.3.0"}\n');
+  await writeFile(
+    join(repoDir, "packages/cli/package.json"),
+    '{"name":"@theagilemonkeys/facility","version":"0.3.0"}\n',
+  );
+  const git = (args) =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "user.name=Facility Tests",
+        "-c",
+        "user.email=facility-tests@example.invalid",
+        ...args,
+      ],
+      {
+        cwd: repoDir,
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+      },
+    ).trim();
+  git(["init", "--initial-branch=main"]);
+  git(["add", "package.json", "packages/cli/package.json"]);
+  git(["commit", "-m", "chore: establish the release fixture"]);
+  const sha = git(["rev-parse", "HEAD"]);
+  git(["update-ref", "refs/remotes/origin/main", sha]);
+  t.after(() => rm(repoDir, { recursive: true, force: true }));
+  return { repoDir, sha };
+}
+
 async function installNpmRecorder(fixtureState) {
   const bin = join(fixtureState.root, "bin");
   const command = join(bin, "npm");
@@ -210,6 +248,153 @@ writeFileSync(process.env.RELEASE_NPM_INVOCATION, JSON.stringify({
   await chmod(command, 0o755);
   return { bin, invocation };
 }
+
+test("a fresh checkout must be stamped before the decided release validates", async (t) => {
+  const checkout = await releaseCheckout(t);
+  const env = {
+    ...process.env,
+    FACILITY_RELEASE_VERSION: "0.4.0",
+    GITHUB_EVENT_NAME: "push",
+    GITHUB_REF: "refs/heads/main",
+    GITHUB_REPOSITORY_VISIBILITY: "public",
+    GITHUB_SHA: checkout.sha,
+  };
+
+  const unstamped = await releaseCli(["validate", checkout.repoDir], env);
+  assert.equal(unstamped.code, 1);
+  assert.match(unstamped.stderr, /stamped version 0\.3\.0 does not match the decided version 0\.4\.0/);
+
+  const stamp = await releaseCli(["stamp", "0.4.0", checkout.repoDir], env);
+  assert.equal(stamp.code, 0, stamp.stderr);
+  const validated = await releaseCli(["validate", checkout.repoDir], env);
+  assert.equal(validated.code, 0, validated.stderr);
+});
+
+test("release recording retries after tag push and rejects a tag on another commit", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "facility-release-record-"));
+  const repoDir = join(root, "checkout");
+  const remoteDir = join(root, "origin.git");
+  const binDir = join(root, "bin");
+  const releaseMarker = join(root, "release-created");
+  const ghLog = join(root, "gh-invocations.jsonl");
+  const runnerTemp = join(root, "runner-temp");
+  await mkdir(repoDir);
+  await mkdir(binDir);
+  await mkdir(runnerTemp);
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const git = (args, cwd = repoDir) =>
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "commit.gpgSign=false",
+        "-c",
+        "core.hooksPath=/dev/null",
+        "-c",
+        "user.name=Facility Tests",
+        "-c",
+        "user.email=facility-tests@example.invalid",
+        ...args,
+      ],
+      {
+        cwd,
+        encoding: "utf8",
+        env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+      },
+    ).trim();
+  git(["init", "--bare", "--initial-branch=main", remoteDir], root);
+  git(["init", "--initial-branch=main"]);
+  await writeFile(join(repoDir, "change.txt"), "release\n");
+  git(["add", "change.txt"]);
+  git(["commit", "-m", "feat!: release the fixture"]);
+  git(["remote", "add", "origin", remoteDir]);
+  git(["push", "-u", "origin", "main"]);
+  const releasedSha = git(["rev-parse", "HEAD"]);
+
+  const ghCommand = join(binDir, "gh");
+  await writeFile(
+    ghCommand,
+    `#!/usr/bin/env node
+const { appendFileSync, existsSync, writeFileSync } = require("node:fs");
+appendFileSync(process.env.FAKE_GH_LOG, JSON.stringify(process.argv.slice(2)) + "\\n");
+const [resource, action] = process.argv.slice(2);
+if (resource !== "release") process.exit(64);
+if (action === "view") process.exit(existsSync(process.env.FAKE_RELEASE_MARKER) ? 0 : 1);
+if (action !== "create") process.exit(64);
+if (process.env.FAKE_GH_FAIL_CREATE === "1") process.exit(23);
+writeFileSync(process.env.FAKE_RELEASE_MARKER, "created\\n");
+`,
+  );
+  await chmod(ghCommand, 0o755);
+
+  const workflow = await readFile(join(repoRoot, ".github/workflows/ci.yml"), "utf8");
+  const recordStep = workflow.split("      - name: Tag the released commit and publish its notes\n")[1];
+  assert(recordStep, "CI workflow must contain the release-recording step");
+  const indentedScript = recordStep.split("        run: |\n")[1];
+  assert(indentedScript, "release-recording step must contain a shell script");
+  const script = indentedScript
+    .split("\n")
+    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
+    .join("\n");
+  const baseEnv = {
+    ...process.env,
+    FAKE_GH_LOG: ghLog,
+    FAKE_RELEASE_MARKER: releaseMarker,
+    GH_TOKEN: "local-test-token",
+    NOTES: "fixture release notes",
+    PATH: `${binDir}:${process.env.PATH}`,
+    RUNNER_TEMP: runnerTemp,
+    TAG: "v0.4.0",
+    VERSION: "0.4.0",
+  };
+
+  const interrupted = spawnSync("bash", ["-c", script], {
+    cwd: repoDir,
+    encoding: "utf8",
+    env: { ...baseEnv, FAKE_GH_FAIL_CREATE: "1" },
+  });
+  assert.equal(interrupted.status, 23, interrupted.stderr);
+  assert.equal(git(["rev-parse", "refs/tags/v0.4.0^{commit}"]), releasedSha);
+  assert.equal(
+    git(["--git-dir", remoteDir, "rev-parse", "refs/tags/v0.4.0^{commit}"], root),
+    releasedSha,
+  );
+  await assertMissing(releaseMarker);
+
+  const retried = spawnSync("bash", ["-c", script], {
+    cwd: repoDir,
+    encoding: "utf8",
+    env: baseEnv,
+  });
+  assert.equal(retried.status, 0, retried.stderr);
+  assert.equal((await readFile(releaseMarker, "utf8")).trim(), "created");
+
+  await writeFile(join(repoDir, "change.txt"), "later commit\n");
+  git(["add", "change.txt"]);
+  git(["commit", "-m", "fix: advance beyond the released commit"]);
+  const mismatched = spawnSync("bash", ["-c", script], {
+    cwd: repoDir,
+    encoding: "utf8",
+    env: baseEnv,
+  });
+  assert.equal(mismatched.status, 1);
+  assert.match(mismatched.stderr, /v0\.4\.0 points to .* not released commit/);
+
+  const invocations = (await readFile(ghLog, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    invocations.map((args) => args.slice(0, 3)),
+    [
+      ["release", "view", "v0.4.0"],
+      ["release", "create", "v0.4.0"],
+      ["release", "view", "v0.4.0"],
+      ["release", "create", "v0.4.0"],
+    ],
+  );
+});
 
 test("an exact 404 permits bootstrap publication without running package lifecycle scripts", async (t) => {
   const state = await fixture(t);
@@ -246,8 +431,11 @@ test("existing, replayed, unavailable, and malformed registry states fail closed
     {
       name: "replayed version",
       lookupStatus: 200,
-      lookupBody: JSON.stringify({ name: PACKAGE_NAME, versions: { "0.3.0": {} } }),
-      error: /is already published; refusing replay/,
+      lookupBody: JSON.stringify({
+        name: PACKAGE_NAME,
+        versions: { "0.3.0": { dist: { integrity: "sha512-conflicting" } } },
+      }),
+      error: /already published with different contents; refusing conflicting replay/,
     },
     {
       name: "registry 5xx",
@@ -277,6 +465,33 @@ test("existing, replayed, unavailable, and malformed registry states fail closed
       await assertMissing(state.lifecycleMarker);
     });
   }
+});
+
+test("an exact already-published tarball is an idempotent retry with no npm invocation", async (t) => {
+  const state = await fixture(t);
+  const recorder = await installNpmRecorder(state);
+  const integrity = `sha512-${createHash("sha512")
+    .update(await readFile(state.tarball))
+    .digest("base64")}`;
+  const registry = await fakeRegistry(t, {
+    lookupStatus: 200,
+    lookupBody: JSON.stringify({
+      name: PACKAGE_NAME,
+      versions: { "0.3.0": { dist: { integrity } } },
+    }),
+  });
+  const env = await npmEnvironment(state, registry.url, "must-not-be-used");
+  env.PATH = `${recorder.bin}:${env.PATH}`;
+  env.RELEASE_NPM_INVOCATION = recorder.invocation;
+
+  const result = await release(["publish", state.tarball, "--auth=oidc"], env);
+
+  assert.equal(result.code, 0, result.stderr);
+  assert.deepEqual(
+    registry.requests.map(({ method, responseStatus }) => ({ method, responseStatus })),
+    [{ method: "GET", responseStatus: 200 }],
+  );
+  await assertMissing(recorder.invocation);
 });
 
 test("expired, revoked, and cross-scope bootstrap tokens fail closed", async (t) => {

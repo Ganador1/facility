@@ -100,21 +100,45 @@ request so the change can be reviewed and reverted independently.
 
 ## Releasing (maintainers)
 
-Publishing is tag-driven. A `vX.Y.Z` tag starts `.github/workflows/ci.yml`,
-which must pass root verification, the self-host build, and the required
-sandbox E2E before it calls the reusable release workflow. Do not run
-`npm publish` locally or invoke the release workflow as a substitute for those
-gates; its manual entry point is a dry run.
+**Merging to `main` is the release.** There is no version-bump commit, no
+release branch, and no tag to push by hand: `.github/workflows/ci.yml` decides
+from the commit subjects since the last release whether this merge publishes
+and as what version, then verifies, publishes, and writes the tag.
 
-1. Bump the version in `package.json` and `packages/cli/package.json` according
-   to semver (before 1.0, a minor release may contain breaking changes).
-2. Run `pnpm verify` and the build for every publishable artifact, then merge
-   the release change through the normal reviewed pull-request path.
-3. Tag the release commit on `main` as `vX.Y.Z` and push the tag. CI refuses a
-   tag whose version, commit, visibility, or acceptance results do not match the
-   release contract.
-4. After the publish job succeeds, write release notes in terms of behavior,
-   not commit titles.
+The order matters, and it is the whole safety argument:
+
+1. **Decide** — `scripts/version.mjs` reads the full non-merge commit messages
+   since the last `v*` tag. Only `feat`, `fix`, `perf`, `revert`, and anything
+   marked breaking count. If nothing qualifies, the run ends here and nothing
+   is published.
+2. **Verify** — root verification, the self-host build, and the sandbox E2E, on
+   the merged commit.
+3. **Package** — the decided version is stamped into both `package.json` files
+   *inside the run*, the archive is built, installed the way `npx` would, and
+   its binary is executed. Nothing is committed; the checkout's version number
+   is not the source of truth.
+4. **Publish** — npm and, once the repository is public, the images, from that
+   exact archive and digest set.
+5. **Record** — only now is the annotated tag written and the GitHub release
+   published with the generated notes.
+
+A run that fails before both publishers finish leaves no tag. Retry the failed
+jobs in that same workflow run so they reuse the accepted artifacts and retain
+the successful publisher's result. Exact npm artifacts and image digests are
+idempotent on that retry; the publishers refuse the same version with different
+contents. Do not use another merge as the retry. If recording fails after the
+tag was pushed, rerunning that failed job verifies the tag still targets the
+released commit and creates the missing GitHub Release.
+
+Do not run `npm publish` locally or invoke the release workflow as a substitute
+for those gates; its manual entry point is a dry run.
+
+### Commit subjects decide the version
+
+Subjects follow [Conventional Commits](https://www.conventionalcommits.org/),
+and CI checks the pull request title, because a squash merge makes that title
+the subject on `main`. The rules — and the two ways a careless subject hurts a
+user — are in [AGENTS.md](AGENTS.md#commit-subjects-set-the-released-version).
 
 ### First npm publish only
 
@@ -128,8 +152,19 @@ npm cannot attach a trusted publisher until the package exists. Bootstrap
 2. Protect `v*` tag creation with a repository ruleset. Create the GitHub
    environment named `npm`, require maintainer approval for deployment, and
    store the token there as the `NPM_BOOTSTRAP_TOKEN` environment secret.
-3. Push the first release tag through the tag-driven flow above. The release
-   code accepts this credential only while the package is absent from npm.
+3. Before merging the release-on-merge workflow, establish the inert history
+   boundary it will read. For this repository, tag the existing version:
+
+   ```bash
+   git tag -a v0.3.0 -m "0.3.0 — release-on-merge baseline"
+   git push origin v0.3.0
+   ```
+
+   Tag pushes do not publish; this only prevents legacy history from entering
+   the first automated decision.
+4. Merge the first release-impacting pull request to `main`. The main-push
+   workflow accepts this credential only while the package is absent from npm;
+   it writes the release tag after npm and the images have both published.
 
 As soon as the first version exists, configure the package's
 [npm trusted publisher](https://docs.npmjs.com/trusted-publishers/) with these
@@ -145,7 +180,8 @@ Use `ci.yml`, not `release.yml`: npm validates the caller when a reusable
 workflow contains the publish command. Then delete the `NPM_BOOTSTRAP_TOKEN`
 GitHub secret, revoke the granular token on npm, and set the package's
 **Publishing access** to **Require two-factor authentication and disallow
-tokens**. Later tags publish through short-lived OIDC credentials only.
+tokens**. Later release-impacting merges publish through short-lived OIDC
+credentials; their tags are written afterwards as records.
 
 ### One-time GitHub Pages setup
 

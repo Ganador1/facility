@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -8,12 +9,12 @@ import { fileURLToPath } from "node:url";
 export const PACKAGE_NAME = "@theagilemonkeys/facility";
 export const OFFICIAL_REGISTRY = "https://registry.npmjs.org/";
 
-export function releaseMode({ eventName, ref, visibility, acceptancePassed }) {
+export function releaseMode({ eventName, ref, visibility, acceptancePassed, releaseDecided }) {
   if (eventName === "workflow_dispatch") return "dry-run";
   if (
     eventName === "push" &&
-    typeof ref === "string" &&
-    ref.startsWith("refs/tags/v") &&
+    ref === "refs/heads/main" &&
+    releaseDecided === true &&
     visibility === "public" &&
     acceptancePassed === true
   ) {
@@ -22,32 +23,46 @@ export function releaseMode({ eventName, ref, visibility, acceptancePassed }) {
   return "skip";
 }
 
+/**
+ * What proves a release is no longer a tag someone pushed: it is the version
+ * decided from the commit subjects (scripts/version.mjs), stamped into the two
+ * package.json files inside this run. The tag is written afterwards, as the
+ * record of what was published. So the checks here are that the run is a push
+ * of main, that the stamp matches the decision, and that the commit really is
+ * the head of main — plus the guard that outlives all of them, in
+ * `registryState`, which refuses a version npm already has.
+ */
 export function validateReleasePolicy({
   eventName,
   ref,
   visibility,
   rootVersion,
   packageVersion,
+  decidedVersion,
   headSha,
   checkoutSha,
-  tagSha,
   isOnMain,
 }) {
   if (eventName !== "push") throw new Error("a real release must come from a push event");
   if (visibility !== "public") throw new Error("npm publishing is disabled until the repository is public");
+  if (ref !== "refs/heads/main") {
+    throw new Error(`a release must come from main, not ${ref || "an unknown ref"}`);
+  }
+  if (!decidedVersion) {
+    throw new Error("no release version was decided for this commit");
+  }
   if (!rootVersion || rootVersion !== packageVersion) {
     throw new Error(
       `root package version (${rootVersion || "missing"}) does not match CLI package version (${packageVersion || "missing"})`,
     );
   }
-
-  const expectedRef = `refs/tags/v${packageVersion}`;
-  if (ref !== expectedRef) throw new Error(`release ref ${ref} does not match ${expectedRef}`);
+  if (packageVersion !== decidedVersion) {
+    throw new Error(
+      `stamped version ${packageVersion} does not match the decided version ${decidedVersion}`,
+    );
+  }
   if (!headSha || checkoutSha !== headSha) {
     throw new Error(`checked-out commit ${checkoutSha || "missing"} does not match event SHA ${headSha || "missing"}`);
-  }
-  if (tagSha !== headSha) {
-    throw new Error(`release tag resolves to ${tagSha || "missing"}, not event SHA ${headSha}`);
   }
   if (!isOnMain) throw new Error("release commit is not reachable from origin/main");
 
@@ -60,6 +75,7 @@ export function validateReleaseCandidate({
   ref = process.env.GITHUB_REF,
   visibility = process.env.GITHUB_REPOSITORY_VISIBILITY,
   headSha = process.env.GITHUB_SHA,
+  decidedVersion = process.env.FACILITY_RELEASE_VERSION,
 } = {}) {
   const rootVersion = readJson(join(repoDir, "package.json")).version;
   const cliPackage = readJson(join(repoDir, "packages/cli/package.json"));
@@ -68,9 +84,6 @@ export function validateReleaseCandidate({
   }
 
   const checkoutSha = git(repoDir, ["rev-parse", "HEAD"]);
-  const tagSha = ref?.startsWith("refs/tags/")
-    ? git(repoDir, ["rev-parse", `${ref}^{commit}`])
-    : undefined;
   const isOnMain =
     spawnSync("git", ["merge-base", "--is-ancestor", checkoutSha, "origin/main"], {
       cwd: repoDir,
@@ -83,11 +96,32 @@ export function validateReleaseCandidate({
     visibility,
     rootVersion,
     packageVersion: cliPackage.version,
+    decidedVersion,
     headSha,
     checkoutSha,
-    tagSha,
     isOnMain,
   });
+}
+
+/**
+ * Writes the decided version into the two package.json files the release reads.
+ * This happens inside the run and is never committed: the tags are the record of
+ * what shipped, so main carries no version-bump commits and the two files cannot
+ * drift apart between releases.
+ */
+export function stampVersion(version, { repoDir = process.cwd() } = {}) {
+  if (!/^\d+\.\d+\.\d+$/.test(version || "")) {
+    throw new Error(`refusing to stamp a version that is not a semver triple: ${version || "missing"}`);
+  }
+  const stamped = [];
+  for (const relative of ["package.json", "packages/cli/package.json"]) {
+    const path = join(repoDir, relative);
+    const manifest = readJson(path);
+    manifest.version = version;
+    writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+    stamped.push(relative);
+  }
+  return { version, stamped };
 }
 
 export function inspectTarball(tarball, { exec = execFileSync } = {}) {
@@ -168,7 +202,18 @@ export async function registryState({
     throw new Error("npm registry returned malformed package metadata");
   }
   if (Object.hasOwn(metadata.versions, artifact.version)) {
-    throw new Error(`${artifact.name}@${artifact.version} is already published; refusing replay`);
+    const published = metadata.versions[artifact.version];
+    const publishedIntegrity =
+      published && typeof published === "object" && !Array.isArray(published)
+        ? published.dist?.integrity
+        : undefined;
+    const candidateIntegrity = tarballIntegrity(artifact.path);
+    if (publishedIntegrity !== candidateIntegrity) {
+      throw new Error(
+        `${artifact.name}@${artifact.version} is already published with different contents; refusing conflicting replay`,
+      );
+    }
+    return { state: "published", artifact, registry };
   }
   return { state: "existing", artifact, registry };
 }
@@ -262,6 +307,9 @@ export async function publishRelease({
       officialOnly: !allowNonOfficialRegistry,
     });
   const firstState = await probe();
+  if (firstState.state === "published") {
+    return firstState.artifact;
+  }
   if (authMode === "bootstrap" && firstState.state !== "missing") {
     throw new Error("bootstrap credentials are allowed only for the first publication");
   }
@@ -324,6 +372,10 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
 }
 
+function tarballIntegrity(path) {
+  return `sha512-${createHash("sha512").update(readFileSync(path)).digest("base64")}`;
+}
+
 function git(cwd, args) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
@@ -346,6 +398,12 @@ function output(values) {
 }
 
 async function main([command, ...args]) {
+  if (command === "stamp") {
+    const version = args[0];
+    const result = stampVersion(version, { repoDir: resolve(args[1] || ".") });
+    output({ version: result.version, stamped: result.stamped.join(",") });
+    return;
+  }
   if (command === "validate") {
     if (args.length > 1 || args[0]?.startsWith("--")) {
       throw new Error("validate accepts only an optional repository directory");

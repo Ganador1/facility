@@ -2,10 +2,10 @@
 #
 # - A manual run is always a credential-free dry run. There is no input that
 #   can turn it into a release.
-# - ci.yml calls this workflow from a public version-tag run only after every
-#   acceptance job passes. Keeping publication in that original run gives npm
-#   provenance the tested tag and commit rather than a downstream default-branch
-#   identity.
+# - ci.yml calls this workflow from a public push of main, only after every
+#   acceptance job passes and only when the commit subjects decided a version.
+#   Keeping publication in that original run gives npm provenance the tested
+#   commit rather than a downstream identity.
 #
 # The first public release needs a granular npm token in the protected `npm`
 # environment as NPM_BOOTSTRAP_TOKEN. After that one publish, configure npm
@@ -16,6 +16,11 @@ name: release
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: The version decided from the commits, stamped into the archive
+        type: string
+        required: true
   workflow_dispatch:
 
 permissions:
@@ -61,7 +66,7 @@ jobs:
           node scripts/release.mjs dry-run "$candidate"
 
   publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && github.event.repository.visibility == 'public'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -80,6 +85,11 @@ jobs:
         with:
           node-version: 22
 
+      # Job filesystems are isolated. Reapply the version used to build the
+      # accepted tarball before validating it against this fresh checkout.
+      - name: Stamp the decided version
+        run: node scripts/release.mjs stamp "${{ inputs.version }}"
+
       - name: Install the trusted-publishing npm client
         run: |
           npm install --global npm@11.15.0
@@ -91,12 +101,12 @@ jobs:
           name: facility-release-package
           path: ${{ runner.temp }}/facility-release
 
-      - name: Revalidate the tag and release artifact
+      - name: Revalidate the release and its artifact
         id: candidate
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/release.mjs validate
+          FACILITY_RELEASE_VERSION="${{ inputs.version }}" node scripts/release.mjs validate
           shopt -s nullglob
           tarballs=("$RUNNER_TEMP/facility-release/"*.tgz)
           if [ "${#tarballs[@]}" -ne 1 ]; then
