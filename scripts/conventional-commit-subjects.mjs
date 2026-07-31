@@ -61,7 +61,7 @@ export function assertSubject(subject, { label = "subject" } = {}) {
   );
 }
 
-function subjectOf(message) {
+export function subjectOf(message) {
   return message.split(/\r?\n/, 1)[0] ?? "";
 }
 
@@ -85,21 +85,25 @@ export function releaseImpact(message) {
   return PATCH_TYPES.has(parsed.type) ? "patch" : "none";
 }
 
-export function messagesInRange(
-  baseSha,
-  headSha,
+export function messagesForRevision(
+  revision,
   { repoDir = process.cwd(), exec = execFileSync } = {},
 ) {
-  if (!baseSha || !headSha) throw new Error("both BASE_SHA and HEAD_SHA are required");
+  if (!revision) throw new Error("a git revision is required");
   const output = exec(
     "git",
-    ["log", "-z", "--no-merges", "--format=%B", `${baseSha}..${headSha}`],
+    ["log", "-z", "--no-merges", "--format=%B", revision],
     { cwd: repoDir, encoding: "utf8" },
   );
   if (!output) return [];
   const messages = output.split("\0");
   if (messages.at(-1) === "") messages.pop();
   return messages;
+}
+
+export function messagesInRange(baseSha, headSha, options) {
+  if (!baseSha || !headSha) throw new Error("both BASE_SHA and HEAD_SHA are required");
+  return messagesForRevision(`${baseSha}..${headSha}`, options);
 }
 
 export function subjectsInRange(baseSha, headSha, options) {

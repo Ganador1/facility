@@ -1,38 +1,33 @@
 #!/usr/bin/env node
 // Decides whether a merge to main releases, and what version it releases.
 //
-// The commit subjects since the last release are the input; the repository has
+// The full commit messages since the last release are the input; the repository has
 // no version-bump commit and no release pull request. `package.json` is stamped
 // from this decision inside the release run, so the git tag written afterwards
 // is the record of what was published rather than a request to publish it.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
+import {
+  assertSubject,
+  messagesForRevision,
+  parseSubject,
+  releaseImpact,
+  subjectOf,
+} from "./conventional-commit-subjects.mjs";
 
-// Only these reach users. A `docs:` or `chore:` merge releases nothing on its
-// own — it ships with the next real change, which is the behaviour we want:
-// every published version has something to say for itself.
-const RELEASING_TYPES = new Set(["feat", "fix", "perf"]);
-const SUBJECT = /^(?<type>[a-z]+)(?:\((?<scope>[^)]+)\))?(?<breaking>!)?: (?<summary>.+)$/;
-
-export function parseSubject(subject) {
-  const match = SUBJECT.exec(subject.trim());
-  if (!match?.groups) return null;
-  const { type, scope, breaking, summary } = match.groups;
-  return { type, scope: scope ?? null, breaking: breaking === "!", summary };
-}
+export { parseSubject };
 
 /**
  * A commit releases if its subject is a releasing type, or if it breaks
  * something — a breaking `refactor!` still has to reach users.
  */
-export function classify(subjects, { body = () => "" } = {}) {
+export function classify(messages) {
   const commits = [];
-  for (const subject of subjects) {
-    const parsed = parseSubject(subject);
-    if (!parsed) continue;
-    const breaking = parsed.breaking || /^BREAKING[ -]CHANGE:/m.test(body(subject));
-    if (!RELEASING_TYPES.has(parsed.type) && !breaking) continue;
-    commits.push({ ...parsed, breaking });
+  for (const message of messages) {
+    const parsed = assertSubject(subjectOf(message), { label: "commit subject" });
+    const impact = releaseImpact(message);
+    if (impact === "none") continue;
+    commits.push({ ...parsed, breaking: impact === "minor" });
   }
   return commits;
 }
@@ -64,6 +59,7 @@ export function releaseNotes(version, commits) {
     ["Features", commits.filter((commit) => commit.type === "feat" && !commit.breaking)],
     ["Fixes", commits.filter((commit) => commit.type === "fix" && !commit.breaking)],
     ["Performance", commits.filter((commit) => commit.type === "perf" && !commit.breaking)],
+    ["Reverts", commits.filter((commit) => commit.type === "revert" && !commit.breaking)],
   ];
   const lines = [`## ${version}`, ""];
   for (const [heading, entries] of groups) {
@@ -78,29 +74,19 @@ export function releaseNotes(version, commits) {
 }
 
 export function lastReleaseTag(repoDir = process.cwd(), { exec = execFileSync } = {}) {
-  try {
-    const tags = exec("git", ["tag", "--list", "v*", "--sort=-v:refname"], {
-      cwd: repoDir,
-      encoding: "utf8",
-    })
-      .split("\n")
-      .map((tag) => tag.trim())
-      .filter((tag) => /^v\d+\.\d+\.\d+$/.test(tag));
-    return tags[0] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export function subjectsSince(tag, repoDir = process.cwd(), { exec = execFileSync } = {}) {
-  const range = tag ? `${tag}..HEAD` : "HEAD";
-  return exec("git", ["log", range, "--no-merges", "--format=%s"], {
+  const tags = exec("git", ["tag", "--list", "v*", "--sort=-v:refname"], {
     cwd: repoDir,
     encoding: "utf8",
   })
     .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+    .map((tag) => tag.trim())
+    .filter((tag) => /^v\d+\.\d+\.\d+$/.test(tag));
+  return tags[0] ?? null;
+}
+
+export function messagesSince(tag, repoDir = process.cwd(), { exec = execFileSync } = {}) {
+  const revision = tag ? `${tag}..HEAD` : "HEAD";
+  return messagesForRevision(revision, { repoDir, exec });
 }
 
 /**
@@ -112,8 +98,8 @@ export function subjectsSince(tag, repoDir = process.cwd(), { exec = execFileSyn
 export function decide({ repoDir = process.cwd(), exec = execFileSync, fallbackVersion } = {}) {
   const tag = lastReleaseTag(repoDir, { exec });
   const current = tag ? tag.slice(1) : (fallbackVersion ?? "0.0.0");
-  const subjects = subjectsSince(tag, repoDir, { exec });
-  const commits = classify(subjects);
+  const messages = messagesSince(tag, repoDir, { exec });
+  const commits = classify(messages);
   const version = nextVersion(current, commits);
   return {
     release: version !== null,
@@ -121,7 +107,7 @@ export function decide({ repoDir = process.cwd(), exec = execFileSync, fallbackV
     previous: current,
     tag: version ? `v${version}` : null,
     notes: version ? releaseNotes(version, commits) : "",
-    considered: subjects.length,
+    considered: messages.length,
     releasing: commits.length,
   };
 }
