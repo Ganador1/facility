@@ -120,6 +120,17 @@ test("CI gates release images and the reusable publisher stages digests before p
     /group: images-\$\{\{ github\.repository \}\}\n {2}cancel-in-progress: false/,
   );
   assert.match(imagesWorkflow, /node scripts\/images\.mjs plan/);
+  const buildJob = imagesWorkflow.split("\n  promote:")[0].split("\n  build:")[1];
+  assert.ok(buildJob, "images workflow must contain a build job");
+  assert.match(
+    buildJob,
+    /- name: Stamp the decided version\n {8}if: inputs\.version != ''\n {8}run: node scripts\/release\.mjs stamp "\$\{\{ inputs\.version \}\}"/,
+  );
+  assert.ok(
+    buildJob.indexOf("Stamp the decided version") <
+      buildJob.indexOf("Build and push the addressable digest"),
+    "the isolated build checkout must be stamped before Docker consumes it",
+  );
   assert.match(imagesWorkflow, /push-by-digest=true,name-canonical=true,push=true/);
   assert.match(imagesWorkflow, /promote:\n {4}needs: \[plan, build\]/);
   assert.match(imagesWorkflow, /node scripts\/images\.mjs promote/);

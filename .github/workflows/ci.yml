@@ -9,6 +9,13 @@ on:
     branches: [main]
   pull_request:
 
+# A release decision is a read of shared tag state. Serialize main pushes at
+# the workflow boundary so a later merge cannot decide from that state until
+# the prior merge has either recorded its release or failed visibly.
+concurrency:
+  group: ci-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # What the commit subjects since the last release add up to. Runs first so
   # every publishing job can gate on one answer instead of recomputing it.
@@ -205,9 +212,9 @@ jobs:
         if: steps.policy.outputs.required != 'true'
         run: echo "Sandbox E2E skipped by policy — ${{ steps.policy.outputs.reason }}."
 
-  # Keep publication in the original tag run so npm provenance identifies the
-  # tag and commit that passed every acceptance job. A downstream workflow_run
-  # would instead attest the default branch SHA.
+  # Keep publication in the original accepted main-push run so npm provenance
+  # identifies the commit that passed every acceptance job. A downstream
+  # workflow_run would instead attest the default branch SHA.
   publish-npm:
     if: needs.decide-release.outputs.release == 'true' && github.event.repository.visibility == 'public'
     needs: [decide-release, verify, package-release, self-host-build, sandbox-e2e]
@@ -231,9 +238,9 @@ jobs:
       version: ${{ needs.decide-release.outputs.version }}
 
   # The tag is written last, and only after both registries accepted the
-  # release. It records what shipped; it is not the request to ship it. A run
-  # that fails before here leaves no tag, so the next merge retries the same
-  # version instead of skipping it.
+  # release. It records what shipped; it is not the request to ship it. Retry a
+  # failed publisher in this same run so an already-successful peer is not
+  # asked to republish an immutable version.
   record-release:
     needs: [decide-release, publish-npm, publish-images]
     if: needs.decide-release.outputs.release == 'true' && github.event.repository.visibility == 'public'
@@ -255,13 +262,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "$TAG already exists; the release was recorded by an earlier run."
-            exit 0
+          head_sha="$(git rev-parse HEAD)"
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            tag_sha="$(git rev-parse "refs/tags/$TAG^{commit}")"
+            if [ "$tag_sha" != "$head_sha" ]; then
+              echo "$TAG points to $tag_sha, not released commit $head_sha" >&2
+              exit 1
+            fi
+            echo "$TAG already points to the released commit."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "$VERSION"
+            git push origin "$TAG"
           fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "$VERSION"
-          git push origin "$TAG"
           printf '%s\n' "$NOTES" > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" --title "$VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "GitHub Release $TAG already exists."
+          else
+            gh release create "$TAG" --title "$VERSION" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+          fi

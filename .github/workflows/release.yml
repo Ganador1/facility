@@ -85,6 +85,11 @@ jobs:
         with:
           node-version: 22
 
+      # Job filesystems are isolated. Reapply the version used to build the
+      # accepted tarball before validating it against this fresh checkout.
+      - name: Stamp the decided version
+        run: node scripts/release.mjs stamp "${{ inputs.version }}"
+
       - name: Install the trusted-publishing npm client
         run: |
           npm install --global npm@11.15.0
@@ -96,7 +101,7 @@ jobs:
           name: facility-release-package
           path: ${{ runner.temp }}/facility-release
 
-      - name: Revalidate the tag and release artifact
+      - name: Revalidate the release and its artifact
         id: candidate
         shell: bash
         run: |

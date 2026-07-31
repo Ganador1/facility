@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   OFFICIAL_REGISTRY,
   normalizeRegistry,
   releaseMode,
+  stampVersion,
   validateReleasePolicy,
 } from "./release.mjs";
 
@@ -89,6 +92,28 @@ test("release policy fails closed on every version and provenance mismatch", () 
   }
 });
 
+test("stamping updates both manifests together and rejects malformed versions", (t) => {
+  const repoDir = mkdtempSync(join(tmpdir(), "facility-stamp-test-"));
+  t.after(() => rmSync(repoDir, { recursive: true, force: true }));
+  mkdirSync(join(repoDir, "packages/cli"), { recursive: true });
+  writeFileSync(join(repoDir, "package.json"), '{"name":"facility","version":"0.3.0"}\n');
+  writeFileSync(
+    join(repoDir, "packages/cli/package.json"),
+    '{"name":"@theagilemonkeys/facility","version":"0.3.0"}\n',
+  );
+
+  assert.deepEqual(stampVersion("0.4.0", { repoDir }), {
+    version: "0.4.0",
+    stamped: ["package.json", "packages/cli/package.json"],
+  });
+  assert.equal(JSON.parse(readFileSync(join(repoDir, "package.json"), "utf8")).version, "0.4.0");
+  assert.equal(
+    JSON.parse(readFileSync(join(repoDir, "packages/cli/package.json"), "utf8")).version,
+    "0.4.0",
+  );
+  assert.throws(() => stampVersion("0.4", { repoDir }), /not a semver triple/);
+});
+
 test("GitHub publication requires the exact official npm registry", () => {
   assert.equal(normalizeRegistry(OFFICIAL_REGISTRY, { githubActions: true }).href, OFFICIAL_REGISTRY);
   assert.throws(
@@ -118,6 +143,16 @@ test("the workflow keeps manual runs credential-free and real publication main-o
   assert.equal(releaseWorkflow.match(/secrets\.NPM_BOOTSTRAP_TOKEN/g)?.length, 1);
   assert.match(releaseWorkflow, /environment: npm/);
   assert.match(releaseWorkflow, /npm install --global npm@11\.15\.0/);
+  const publishJob = releaseWorkflow.split("\n  publish:")[1];
+  assert.ok(publishJob, "release workflow must contain a publish job");
+  const stampIndex = publishJob.indexOf('node scripts/release.mjs stamp "${{ inputs.version }}"');
+  const validateIndex = publishJob.indexOf("node scripts/release.mjs validate");
+  assert.notEqual(stampIndex, -1, "the publish checkout must be stamped");
+  assert.notEqual(validateIndex, -1, "the publish checkout must be validated");
+  assert.ok(
+    stampIndex < validateIndex,
+    "the publish checkout must be stamped before release validation",
+  );
   assert.match(
     releaseWorkflow,
     /publish:[\s\S]*concurrency:\n      group: npm-theagilemonkeys-facility\n      cancel-in-progress: false/,
@@ -125,6 +160,10 @@ test("the workflow keeps manual runs credential-free and real publication main-o
 });
 
 test("CI publishes only the exact artifact produced after all acceptance jobs", () => {
+  assert.match(
+    ciWorkflow,
+    /concurrency:\n {2}group: ci-\$\{\{ github\.repository \}\}-\$\{\{ github\.ref \}\}\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/,
+  );
   assert.match(ciWorkflow, /npm pack --ignore-scripts --pack-destination "\$release_dir"/);
   assert.match(ciWorkflow, /name: facility-release-package/);
   assert.match(
@@ -132,4 +171,17 @@ test("CI publishes only the exact artifact produced after all acceptance jobs", 
     /publish-npm:[\s\S]*needs: \[decide-release, verify, package-release, self-host-build, sandbox-e2e\]/,
   );
   assert.match(ciWorkflow, /publish-npm:[\s\S]*uses: \.\/\.github\/workflows\/release\.yml/);
+});
+
+test("release recording retries missing notes and rejects a tag on another commit", () => {
+  const recordJob = ciWorkflow.split("\n  record-release:")[1];
+  assert.ok(recordJob, "CI workflow must contain a record-release job");
+  assert.match(recordJob, /tag_sha="\$\(git rev-parse "refs\/tags\/\$TAG\^\{commit\}"\)"/);
+  assert.match(recordJob, /if \[ "\$tag_sha" != "\$head_sha" \]; then/);
+  assert.match(recordJob, /if gh release view "\$TAG" >\/dev\/null 2>&1; then/);
+  assert.match(recordJob, /else\n {12}gh release create "\$TAG"/);
+  assert.doesNotMatch(
+    recordJob,
+    /already exists; the release was recorded by an earlier run\."\n {12}exit 0/,
+  );
 });

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -201,7 +202,18 @@ export async function registryState({
     throw new Error("npm registry returned malformed package metadata");
   }
   if (Object.hasOwn(metadata.versions, artifact.version)) {
-    throw new Error(`${artifact.name}@${artifact.version} is already published; refusing replay`);
+    const published = metadata.versions[artifact.version];
+    const publishedIntegrity =
+      published && typeof published === "object" && !Array.isArray(published)
+        ? published.dist?.integrity
+        : undefined;
+    const candidateIntegrity = tarballIntegrity(artifact.path);
+    if (publishedIntegrity !== candidateIntegrity) {
+      throw new Error(
+        `${artifact.name}@${artifact.version} is already published with different contents; refusing conflicting replay`,
+      );
+    }
+    return { state: "published", artifact, registry };
   }
   return { state: "existing", artifact, registry };
 }
@@ -295,6 +307,9 @@ export async function publishRelease({
       officialOnly: !allowNonOfficialRegistry,
     });
   const firstState = await probe();
+  if (firstState.state === "published") {
+    return firstState.artifact;
+  }
   if (authMode === "bootstrap" && firstState.state !== "missing") {
     throw new Error("bootstrap credentials are allowed only for the first publication");
   }
@@ -355,6 +370,10 @@ function scrubNpmCredentials(env) {
 
 function readJson(path) {
   return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function tarballIntegrity(path) {
+  return `sha512-${createHash("sha512").update(readFileSync(path)).digest("base64")}`;
 }
 
 function git(cwd, args) {
