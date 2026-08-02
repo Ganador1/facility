@@ -76,6 +76,9 @@ test("release policy fails closed on every version and provenance mismatch", () 
   const invalid = [
     [{ eventName: "workflow_dispatch" }, /real release must come from a push event/],
     [{ visibility: "private" }, /publishing is disabled until the repository is public/],
+    // Unset is the mode that actually stopped a release: a workflow step that
+    // never passes the variable looks exactly like a private repository here.
+    [{ visibility: undefined }, /publishing is disabled until the repository is public/],
     [{ ref: "refs/tags/v0.3.0" }, /a release must come from main, not refs\/tags\/v0\.3\.0/],
     [{ decidedVersion: undefined }, /no release version was decided for this commit/],
     [{ rootVersion: "0.2.0" }, /root package version \(0\.2\.0\) does not match CLI package version \(0\.3\.0\)/],
@@ -157,6 +160,32 @@ test("the workflow keeps manual runs credential-free and real publication main-o
     releaseWorkflow,
     /publish:[\s\S]*concurrency:\n      group: npm-theagilemonkeys-facility\n      cancel-in-progress: false/,
   );
+});
+
+// The policy above is only as good as its input. A job-level `if` on
+// github.event.repository.visibility is evaluated by Actions and says nothing
+// about what the step's process can read, so a step that runs `validate`
+// without binding the variable refuses a public release — which is how the
+// v0.3.1 run failed. Assert the binding on every validating step in both
+// workflows, so deleting one fails here instead of at the release.
+test("both release validations receive the visibility their policy checks", () => {
+  for (const [name, workflow] of [
+    ["ci.yml", ciWorkflow],
+    ["release.yml", releaseWorkflow],
+  ]) {
+    const validating = workflow
+      .split(/\n      - name: /)
+      .slice(1)
+      .filter((step) => /node scripts\/release\.mjs validate/.test(step));
+    assert.ok(validating.length, `${name} must validate the release before publishing`);
+    for (const step of validating) {
+      assert.match(
+        step,
+        /GITHUB_REPOSITORY_VISIBILITY: \$\{\{ github\.event\.repository\.visibility \}\}/,
+        `${name}: the step running \`release.mjs validate\` must pass the visibility it reads`,
+      );
+    }
+  }
 });
 
 test("CI publishes only the exact artifact produced after all acceptance jobs", () => {
