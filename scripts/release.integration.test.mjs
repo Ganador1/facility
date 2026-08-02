@@ -420,6 +420,37 @@ test("an exact 404 permits bootstrap publication without running package lifecyc
   await assertMissing(state.lifecycleMarker);
 });
 
+// The mode a missing `secrets: inherit` produces. A called workflow resolves an
+// environment secret it was never passed to the empty string rather than
+// failing, so the bootstrap step runs with NODE_AUTH_TOKEN set and empty — which
+// is how the first 0.3.1 attempt reached npm with no credential. Unset is
+// covered alongside it because the two must not diverge: both are "no token".
+test("bootstrap publication without a token fails closed before any write", async (t) => {
+  for (const [name, mutate] of [
+    ["empty", (env) => Object.assign(env, { NODE_AUTH_TOKEN: "" })],
+    ["unset", (env) => (delete env.NODE_AUTH_TOKEN, env)],
+  ]) {
+    const state = await fixture(t);
+    const registry = await fakeRegistry(t, { tokenStatus: () => 201 });
+    const env = mutate(await npmEnvironment(state, registry.url, "unused-bootstrap-token"));
+
+    const result = await release(["publish", state.tarball, "--auth=bootstrap"], env);
+
+    assert.equal(result.code, 1, `${name} token must not publish: ${result.stdout}`);
+    assert.match(
+      result.stderr,
+      /NPM_BOOTSTRAP_TOKEN is required for the first package publication/,
+      `${name} token must name the missing credential`,
+    );
+    assert.deepEqual(
+      registry.requests.filter(({ method }) => method === "PUT"),
+      [],
+      `${name} token must not reach the registry with a write`,
+    );
+    await assertMissing(state.lifecycleMarker);
+  }
+});
+
 test("existing, replayed, unavailable, and malformed registry states fail closed before PUT", async (t) => {
   const cases = [
     {
