@@ -229,6 +229,14 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       version: ${{ needs.decide-release.outputs.version }}
+    # Required for the publish job to see NPM_BOOTSTRAP_TOKEN. Declaring
+    # `environment: npm` on that job is not enough on its own: without this, a
+    # called workflow resolves every environment-scoped secret to an empty
+    # string rather than failing, which is how the first 0.3.1 attempt reached
+    # the bootstrap step with no token. The environment still gates the secret —
+    # it materializes only in the job that names the environment — and there are
+    # no repository or organization secrets here for `inherit` to widen.
+    secrets: inherit
 
   # Publish containers from the same accepted run as npm. The reusable workflow
   # revalidates the release before granting its jobs packages: write.

@@ -188,6 +188,28 @@ test("both release validations receive the visibility their policy checks", () =
   }
 });
 
+// `environment: npm` on the called job is necessary but not sufficient: without
+// `secrets: inherit` on the caller, a called workflow resolves every
+// environment-scoped secret to an empty string instead of failing, so the
+// bootstrap step runs with no token. That is how the first 0.3.1 attempt
+// published six images and nothing to npm. Both halves are asserted here
+// because either one alone silently reproduces that split.
+test("the npm publisher inherits the secrets its environment gates", () => {
+  const publishNpm = ciWorkflow.split("\n  publish-npm:")[1]?.split("\n\n  ")[0];
+  assert.ok(publishNpm, "CI workflow must contain a publish-npm job");
+  assert.match(publishNpm, /uses: \.\/\.github\/workflows\/release\.yml/);
+  assert.match(
+    publishNpm,
+    /\n    secrets: inherit\b/,
+    "publish-npm must pass secrets to the reusable workflow, or NPM_BOOTSTRAP_TOKEN arrives empty",
+  );
+  assert.match(
+    releaseWorkflow.split("\n  publish:")[1] ?? "",
+    /\n    environment: npm\n/,
+    "the publish job must still name the environment that gates the token",
+  );
+});
+
 test("CI publishes only the exact artifact produced after all acceptance jobs", () => {
   assert.match(
     ciWorkflow,
