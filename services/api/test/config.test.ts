@@ -35,6 +35,35 @@ describe("API configuration", () => {
     );
   });
 
+  it("normalizes an optional GitHub organization restriction", () => {
+    expect(
+      readConfig({ ...validEnv, GITHUB_OAUTH_ALLOWED_ORGANIZATION: "  TheAM  " }),
+    ).toMatchObject({ githubOauthAllowedOrganization: "theam" });
+    expect(
+      readConfig({ ...validEnv, GITHUB_OAUTH_ALLOWED_ORGANIZATION: "" })
+        .githubOauthAllowedOrganization,
+    ).toBeUndefined();
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        GITHUB_OAUTH_ALLOWED_ORGANIZATION: "https://github.com/theam",
+      }),
+    ).toThrow("GitHub organization must be a login, not a URL");
+  });
+
+  it("rejects the direct GitHub organization restriction in broker mode", () => {
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        AUTH_IDENTITY_PROVIDER: "oidc",
+        OIDC_ISSUER: "https://broker.example.com",
+        OIDC_CLIENT_ID: "client",
+        FACILITY_INSTANCE_ID: "instance_1",
+        GITHUB_OAUTH_ALLOWED_ORGANIZATION: "theam",
+      }),
+    ).toThrow("GitHub organization restriction is only supported in github mode");
+  });
+
   it("requires the issuer, client, and instance binding in broker mode", () => {
     expect(() => readConfig({ ...validEnv, AUTH_IDENTITY_PROVIDER: "oidc" })).toThrow(
       "OIDC issuer, client id, and Facility instance id are required in oidc mode",

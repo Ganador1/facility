@@ -12,6 +12,16 @@ const OptionalUrl = z.preprocess(
   z.string().url().optional(),
 );
 
+const OptionalGithubOrganization = z.preprocess(
+  (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+  z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[a-z\d](?:[a-z\d-]{0,37}[a-z\d])?$/, "GitHub organization must be a login, not a URL")
+    .optional(),
+);
+
 const EnvSchema = z
   .object({
     DATABASE_URL: z.string().url(),
@@ -38,6 +48,7 @@ const EnvSchema = z
       .default("https://github.com/login/oauth/authorize"),
     GITHUB_OAUTH_TOKEN_URL: z.string().url().default("https://github.com/login/oauth/access_token"),
     GITHUB_OAUTH_API_URL: z.string().url().default("https://api.github.com"),
+    GITHUB_OAUTH_ALLOWED_ORGANIZATION: OptionalGithubOrganization,
     OIDC_ISSUER: OptionalUrl,
     OIDC_CLIENT_ID: z.string().optional(),
     OIDC_CLIENT_SECRET: z.string().optional(),
@@ -97,6 +108,13 @@ const EnvSchema = z
         message: "OIDC issuer, client id, and Facility instance id are required in oidc mode",
       });
     }
+    if (env.AUTH_IDENTITY_PROVIDER === "oidc" && env.GITHUB_OAUTH_ALLOWED_ORGANIZATION) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["GITHUB_OAUTH_ALLOWED_ORGANIZATION"],
+        message: "GitHub organization restriction is only supported in github mode",
+      });
+    }
   });
 
 function isExactBase64Key(value: string) {
@@ -125,6 +143,7 @@ export function readConfig(env = process.env): AppConfig {
     githubOauthAuthorizeUrl: parsed.GITHUB_OAUTH_AUTHORIZE_URL,
     githubOauthTokenUrl: parsed.GITHUB_OAUTH_TOKEN_URL,
     githubOauthApiUrl: parsed.GITHUB_OAUTH_API_URL,
+    githubOauthAllowedOrganization: parsed.GITHUB_OAUTH_ALLOWED_ORGANIZATION,
     oidcIssuer: parsed.OIDC_ISSUER?.replace(/\/$/, ""),
     oidcClientId: parsed.OIDC_CLIENT_ID,
     oidcClientSecret: parsed.OIDC_CLIENT_SECRET,

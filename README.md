@@ -168,6 +168,8 @@ AUTH_IDENTITY_PROVIDER=github
 AUTH_CALLBACK_URL=http://localhost:3400/api/auth/callback
 GITHUB_OAUTH_CLIENT_ID=<Client ID from step 3>
 GITHUB_OAUTH_CLIENT_SECRET=<client secret from step 3>
+# Optional: require active membership in this GitHub organization
+GITHUB_OAUTH_ALLOWED_ORGANIZATION=<organization login>
 
 # Repository automation (the same App)
 GITHUB_APP_ID=<App ID from step 3>
@@ -181,6 +183,11 @@ DEV_ANTHROPIC_API_KEY=<your key>
 
 Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` together — the
 configuration refuses one without the other.
+
+`GITHUB_OAUTH_ALLOWED_ORGANIZATION` is optional. When set, Facility verifies
+active membership in that organization during every direct GitHub login. When
+blank or unset, the existing explicit invitation and App-installation access
+checks apply without an additional organization restriction.
 
 ### 5. Bind the instance and provision yourself
 

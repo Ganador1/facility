@@ -35,6 +35,9 @@ Edit `playground.tfvars`:
 - Choose the image source below before the first apply.
 - Select direct `github` authentication for self-hosting or `oidc` for a SaaS
   broker. MCP OAuth is always issued by the dedicated Facility instance.
+- Set `github_oauth_allowed_organization` to a GitHub organization login when
+  direct login must require active membership; leave it empty for no additional
+  organization restriction.
 - Tune `envelope_retention_days` for your data-retention policy.
 
 Release tags publish images as `:<version>` (for example, `v0.3.0` publishes

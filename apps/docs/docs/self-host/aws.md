@@ -62,6 +62,11 @@ hostnames, and select `auth_identity_provider = "github"` for self-hosting. A
 tfvars filename does not set Terraform's `environment` variable, so do not
 leave the copied `playground` value behind.
 
+To limit direct GitHub login to active members of one organization, set
+`github_oauth_allowed_organization` to its login. Leave it empty to preserve
+Facility's invitation and App-installation checks without an additional
+organization restriction.
+
 Choose the image source now, before the first apply, so every task definition —
 including the one-shot migrate task — is registered with the image it will
 actually run. Release tags publish images as `:<version>` (for example,

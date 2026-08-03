@@ -18,6 +18,8 @@ enable_cloudfront_api_endpoint = false
 # Self-hosted instances use their own GitHub App. SaaS instances select oidc and
 # point oidc_issuer at the commercial identity broker.
 auth_identity_provider = "github"
+# Optional. When set, only active members of this GitHub organization may sign in.
+github_oauth_allowed_organization = ""
 oidc_issuer             = ""
 facility_instance_id    = ""
 

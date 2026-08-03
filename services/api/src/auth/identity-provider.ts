@@ -107,6 +107,7 @@ export class ExternalIdentityProvider {
         headers,
       }),
       this.githubInstallations(headers),
+      this.verifyGithubOrganizationMembership(headers),
     ]);
     const user = z
       .object({
@@ -143,6 +144,41 @@ export class ExternalIdentityProvider {
         accountId: installation.account.id,
       })),
     };
+  }
+
+  private async verifyGithubOrganizationMembership(headers: Record<string, string>) {
+    const organization = this.config.githubOauthAllowedOrganization;
+    if (!organization) return;
+
+    const response = await this.fetch(
+      `${this.config.githubOauthApiUrl ?? "https://api.github.com"}/user/memberships/orgs/${organization}`,
+      { headers },
+    );
+    const membership = z
+      .object({
+        state: z.string(),
+        organization: z.object({ login: z.string() }),
+      })
+      .safeParse(await json(response));
+
+    if (response.status === 404 || (membership.success && membership.data.state !== "active")) {
+      throw new ApiError(
+        403,
+        "organization_membership_required",
+        `Active membership in the ${organization} GitHub organization is required`,
+      );
+    }
+    if (
+      !response.ok ||
+      !membership.success ||
+      membership.data.organization.login.toLowerCase() !== organization
+    ) {
+      throw new ApiError(
+        401,
+        "auth_failed",
+        "GitHub organization membership could not be verified",
+      );
+    }
   }
 
   private async githubInstallations(headers: Record<string, string>) {
