@@ -138,8 +138,10 @@ terraform -chdir="$FACILITY_TF_DIR" apply -var-file="${FACILITY_ENV}.tfvars"
 ## 3. Build and push images when needed
 
 If you configured and verified public `image_overrides` before the first apply,
-skip this step. Otherwise build the images into the ECR repositories that the
-module created.
+skip this step. The overridden `web` image must have been built with
+`FACILITY_API_URL` set to this deployment's `api_url`; its same-origin proxy
+destination is part of the compiled Next.js build. Otherwise build the images
+into the ECR repositories that the module created.
 
 The build script defaults to a playground prefix, so `ECR_PREFIX` is mandatory:
 
@@ -147,6 +149,7 @@ The build script defaults to a playground prefix, so `ECR_PREFIX` is mandatory:
 AWS_REGION="$FACILITY_AWS_REGION" \
 ECR_PREFIX="$(terraform -chdir="$FACILITY_TF_DIR" output -raw ecs_cluster_name)" \
 IMAGE_TAG="$FACILITY_IMAGE_TAG" \
+FACILITY_API_URL="$(terraform -chdir="$FACILITY_TF_DIR" output -raw api_url)" \
 CPU_ARCHITECTURE=X86_64 \
 ./infra/build-images.sh
 ```
@@ -155,6 +158,10 @@ Never `latest`: the tag in tfvars must match `FACILITY_IMAGE_TAG` exactly, so
 that what is deployed is identifiable from a commit. Deriving `ECR_PREFIX` from
 Terraform keeps the pushed repositories aligned with the selected project and
 environment.
+
+Rebuild and redeploy the `web` image whenever `api_url` changes. Changing only
+the runtime ECS environment variable does not alter the rewrite destination in
+an already-built image.
 
 ## 4. Populate the secret containers
 

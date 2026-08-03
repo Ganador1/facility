@@ -1,11 +1,15 @@
 # Facility web (Next.js standalone). Built from the repo root:
-#   docker build -f apps/web/Dockerfile -t facility/web .
+#   docker build --build-arg FACILITY_API_URL=https://api.example.com \
+#     -f apps/web/Dockerfile -t facility/web .
 FROM node:22-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm PATH=$PNPM_HOME:$PATH
 RUN corepack enable
 WORKDIR /app
 
 FROM base AS build
+ARG FACILITY_API_URL
+RUN test -n "$FACILITY_API_URL"
+ENV FACILITY_API_URL=$FACILITY_API_URL
 COPY . .
 RUN pnpm install --frozen-lockfile --filter '@facility/web...'
 ENV NEXT_TELEMETRY_DISABLED=1
