@@ -232,7 +232,12 @@ services:
       api: { condition: service_healthy }
 
   web:
-    build: { context: ., dockerfile: apps/web/Dockerfile, target: web }
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      target: web
+      args:
+        FACILITY_API_URL: http://api:4400
     restart: unless-stopped
     environment:
       FACILITY_API_URL: http://api:4400
