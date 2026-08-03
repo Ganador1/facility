@@ -39,13 +39,18 @@ build_and_push() {
   local context="${4:-$ROOT_DIR}"
   local image="${ECR_REGISTRY}/${ECR_PREFIX}/${name}:${IMAGE_TAG}"
   local target_arg=()
+  local build_args=()
   [[ -n "$target" ]] && target_arg=(--target "$target")
+  if [[ "$name" == "web" ]]; then
+    : "${FACILITY_API_URL:?FACILITY_API_URL is required to build the web image}"
+    build_args=(--build-arg "FACILITY_API_URL=$FACILITY_API_URL")
+  fi
 
   if [[ ! -f "$ROOT_DIR/$dockerfile" ]]; then
     printf 'Missing Dockerfile for %s: %s\n' "$name" "$dockerfile" >&2
     exit 1
   fi
-  docker build --platform "$PLATFORM" "${target_arg[@]}" \
+  docker build --platform "$PLATFORM" "${target_arg[@]}" "${build_args[@]}" \
     -f "$ROOT_DIR/$dockerfile" -t "$image" "$context"
   docker push "$image"
   printf '%s=%s\n' "$name" "$image"

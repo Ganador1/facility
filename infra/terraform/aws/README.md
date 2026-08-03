@@ -104,14 +104,18 @@ Record these outputs:
 ## 3. Build and push images when needed
 
 If you configured and verified public `image_overrides` before the first apply,
-skip this step. Otherwise, from the module directory used above, build from the
-repository root and return afterward:
+skip this step. The overridden `web` image must have been built with
+`FACILITY_API_URL` set to this deployment's `api_url`; unlike the other images,
+its same-origin proxy destination is compiled into the Next.js build. Otherwise,
+from the module directory used above, build from the repository root and return
+afterward:
 
 ```bash
 cd ../../..
 AWS_REGION=us-east-1 \
 ECR_PREFIX="$(terraform -chdir=infra/terraform/aws output -raw ecs_cluster_name)" \
 IMAGE_TAG=$(git rev-parse --short HEAD) \
+FACILITY_API_URL="$(terraform -chdir=infra/terraform/aws output -raw api_url)" \
 ./infra/build-images.sh
 cd infra/terraform/aws
 ```
@@ -123,6 +127,10 @@ default, matching Terraform's default `task_cpu_architecture = "X86_64"`. To
 deploy on Graviton, set `CPU_ARCHITECTURE=ARM64` while building and set
 `task_cpu_architecture = "ARM64"` in Terraform. The build exits early if an
 explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
+
+Rebuild and redeploy the `web` image whenever `api_url` changes. Supplying only
+the runtime ECS environment variable does not update Next.js rewrite rules that
+were compiled into an existing image.
 
 If you changed `container_image_tags` after the first apply, apply again before
 running the migrate task. Keeping the tag stable avoids that extra apply.
