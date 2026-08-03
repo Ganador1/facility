@@ -55,8 +55,9 @@ For an existing-repository lifecycle, set these **Repository permissions**:
 
 Set **Organization permissions → Members** and **Account permissions → Email
 addresses** to **Read-only**. The latter is required for direct GitHub sign-in;
-without it Facility cannot obtain a verified email and rejects the login. Leave
-all other account and user permissions at **No access**.
+without it Facility cannot obtain a verified email and rejects the login. The
+Members permission lets direct login enforce `GITHUB_OAUTH_ALLOWED_ORGANIZATION`
+when configured. Leave all other account and user permissions at **No access**.
 
 `Administration: Read and write` is optional and high privilege. Enable it only
 when Facility must create repositories in the organization. It is not required

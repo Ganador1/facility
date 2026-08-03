@@ -120,8 +120,10 @@ failures to the api or gateway, one of these two is almost always the cause.
 Self-hosted installations create their own GitHub App and enable user authorization.
 Set its callback to `https://<web-host>/api/auth/callback`, grant read access to
 user email addresses, and configure `AUTH_IDENTITY_PROVIDER=github`,
-`GITHUB_OAUTH_CLIENT_ID`, and `GITHUB_OAUTH_CLIENT_SECRET`. Bootstrap the dedicated
-organization, owner, account, and installation binding with `facility instance bootstrap`.
+`GITHUB_OAUTH_CLIENT_ID`, and `GITHUB_OAUTH_CLIENT_SECRET`. Optionally set
+`GITHUB_OAUTH_ALLOWED_ORGANIZATION` to a GitHub organization login to require
+active membership at sign-in. Bootstrap the dedicated organization, owner,
+account, and installation binding with `facility instance bootstrap`.
 
 SaaS instances instead set `AUTH_IDENTITY_PROVIDER=oidc` and use the commercial
 identity broker. See [Authentication modes](authentication) for the broker claim contract.

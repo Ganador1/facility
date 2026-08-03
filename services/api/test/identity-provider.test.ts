@@ -78,6 +78,57 @@ describe("GitHub external identity integration", () => {
       ],
     });
     expect(calls).toHaveLength(5);
+    expect(calls.some((url) => url.includes("/user/memberships/orgs/"))).toBe(false);
+  });
+
+  it("requires active membership when a GitHub organization is configured", async () => {
+    const calls: string[] = [];
+    const provider = new ExternalIdentityProvider(
+      {
+        ...base,
+        githubOauthClientId: "id",
+        githubOauthClientSecret: "secret",
+        githubOauthAllowedOrganization: "theam",
+        githubOauthTokenUrl: "https://github.test/login/oauth/access_token",
+        githubOauthApiUrl: "https://api.github.test",
+      },
+      validGithubFetch(calls, response({ state: "active", organization: { login: "TheAM" } })),
+    );
+
+    await expect(provider.exchange("code", transaction)).resolves.toMatchObject({
+      githubUserId: "123",
+      login: "octocat",
+    });
+    expect(calls).toContain("https://api.github.test/user/memberships/orgs/theam");
+  });
+
+  it.each([
+    ["a non-member", response({}, 404), 403, "organization_membership_required"],
+    [
+      "a pending member",
+      response({ state: "pending", organization: { login: "theam" } }),
+      403,
+      "organization_membership_required",
+    ],
+    ["a malformed response", response({ state: "active" }), 401, "auth_failed"],
+    ["an upstream failure", response({}, 502), 401, "auth_failed"],
+  ])("fails closed for %s", async (_case, membership, statusCode, code) => {
+    const provider = new ExternalIdentityProvider(
+      {
+        ...base,
+        githubOauthClientId: "id",
+        githubOauthClientSecret: "secret",
+        githubOauthAllowedOrganization: "theam",
+        githubOauthTokenUrl: "https://github.test/login/oauth/access_token",
+        githubOauthApiUrl: "https://api.github.test",
+      },
+      validGithubFetch([], membership),
+    );
+
+    await expect(provider.exchange("code", transaction)).rejects.toMatchObject({
+      statusCode,
+      code,
+    });
   });
 
   it("fails closed when GitHub returns no verified email", async () => {
@@ -169,4 +220,19 @@ function response(body: unknown, status = 200, headers: Record<string, string> =
     status,
     headers: { "content-type": "application/json", ...headers },
   });
+}
+
+function validGithubFetch(calls: string[], membership: Response): typeof fetch {
+  return async (input) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.endsWith("/login/oauth/access_token")) return response({ access_token: "secret" });
+    if (url.endsWith("/user/emails"))
+      return response([{ email: "owner@example.com", verified: true, primary: true }]);
+    if (url.includes("/user/installations"))
+      return response({ installations: [{ id: 456, account: { id: 789 } }] });
+    if (url.includes("/user/memberships/orgs/")) return membership;
+    if (url.endsWith("/user")) return response({ id: 123, login: "octocat" });
+    return response({}, 404);
+  };
 }

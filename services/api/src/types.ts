@@ -37,6 +37,7 @@ export type AppConfig = {
   githubOauthAuthorizeUrl?: string;
   githubOauthTokenUrl?: string;
   githubOauthApiUrl?: string;
+  githubOauthAllowedOrganization?: string;
   oidcIssuer?: string;
   oidcClientId?: string;
   oidcClientSecret?: string;

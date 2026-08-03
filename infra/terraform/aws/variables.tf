@@ -71,6 +71,16 @@ variable "auth_identity_provider" {
   }
 }
 
+variable "github_oauth_allowed_organization" {
+  description = "Optional GitHub organization login whose active members may authenticate in direct GitHub mode. Empty preserves the default invitation and installation checks."
+  type        = string
+  default     = ""
+  validation {
+    condition     = trimspace(var.github_oauth_allowed_organization) == "" || can(regex("^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$", trimspace(var.github_oauth_allowed_organization)))
+    error_message = "github_oauth_allowed_organization must be empty or a GitHub organization login, not a URL."
+  }
+}
+
 variable "oidc_issuer" {
   description = "Commercial identity broker issuer when auth_identity_provider is oidc."
   type        = string

@@ -20,7 +20,15 @@ AUTH_IDENTITY_PROVIDER=github
 AUTH_CALLBACK_URL=https://app.example.com/api/auth/callback
 GITHUB_OAUTH_CLIENT_ID=...
 GITHUB_OAUTH_CLIENT_SECRET=...
+# Optional: require active membership in this GitHub organization
+GITHUB_OAUTH_ALLOWED_ORGANIZATION=example
 ```
+
+The organization setting accepts a GitHub organization login, not a URL. When
+set, Facility verifies that the authenticated user has an active membership
+before resolving their Facility invitation. When blank or unset, any GitHub
+user who satisfies the existing explicit-member and App-installation checks can
+sign in. The setting is available only in direct `github` mode.
 
 After migrations and the non-demo seed, run:
 

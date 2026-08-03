@@ -64,6 +64,7 @@ locals {
     { name = "WEB_URL", value = local.public_urls.web },
     { name = "AUTH_IDENTITY_PROVIDER", value = var.auth_identity_provider },
     { name = "AUTH_CALLBACK_URL", value = "${local.public_urls.web}/api/auth/callback" },
+    { name = "GITHUB_OAUTH_ALLOWED_ORGANIZATION", value = lower(trimspace(var.github_oauth_allowed_organization)) },
     { name = "OIDC_ISSUER", value = var.oidc_issuer },
     { name = "FACILITY_INSTANCE_ID", value = var.facility_instance_id },
     { name = "FACILITY_OAUTH_ISSUER", value = local.public_urls.api },
