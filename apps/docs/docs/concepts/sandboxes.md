@@ -24,8 +24,20 @@ A **platform-lane** run (Claude Code, Codex) needs a sandbox profile whose
   runner. Build it with `docker build -t facility-runner:dev runner/` and set
   `FACILITY_RUNNER_IMAGE` (default `facility-runner:dev`). A bare base image like
   `node:22-bookworm` only supports **BYO-command** runs.
-- **aws** (Fargate) — the runner comes from the AWS runner task definition; set
+- **aws** (CodeBuild) — each run starts a private CodeBuild job using the runner
+  image fixed in the deployed CodeBuild project. Profile image overrides are
+  deliberately ignored: an editable image cannot inherit the project's AWS
+  service role before the sandbox boundary exists. Privileged mode lets
+  provisioning launch nested Docker services such as local Supabase. Nested
+  Docker is rootless and reachable by agent commands only through a restricted
+  API proxy; the runner credential and raw daemon socket use separate UIDs. Set
   `FACILITY_SANDBOX_DRIVER=aws` so the seeded default profile uses that driver.
+
+  An AWS profile's optional `setup.cmd` replaces Facility's lifecycle runner.
+  It runs as the unprivileged sandbox UID and keeps the run-scoped lifecycle
+  token so it can report events and its final result. Treat `sandboxes:*` as a
+  trusted lifecycle-administration permission; repository/model children do not
+  receive that token.
 
 `facility doctor` **fails** its `sandbox_runner` check when no profile matches
 the deployment's driver (a docker profile can't launch on an aws stack, or vice
@@ -41,8 +53,13 @@ exactly as the object-store check is.
 ## Drivers
 
 Execution is driver-based: local Docker for development and self-hosting,
-AWS Fargate for cloud, with the driver interface open for Kubernetes jobs.
+AWS CodeBuild for cloud, with the driver interface open for Kubernetes jobs.
 The control plane sees one contract: launch, status, stop, destroy.
+
+AWS preview environments are the deliberate exception to the execution backend:
+they need a private inbound service endpoint, which CodeBuild does not expose.
+The AWS module therefore registers an immutable, unprivileged ECS Fargate task
+definition for each preview image while agent runs remain on privileged CodeBuild.
 
 ## What's inside (and what isn't)
 

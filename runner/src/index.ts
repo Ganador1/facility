@@ -3,6 +3,8 @@ import { spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import {
   appendFile,
+  chmod,
+  chown,
   lstat,
   mkdir,
   open,
@@ -24,13 +26,20 @@ import {
 import type { RunBundle, RunEvent } from "./types.js";
 
 const workRoot = "/work";
-const steerFile = join(workRoot, "STEERING.md");
-const transcriptFile = join(workRoot, "engine.stream.jsonl");
+const runtimeRoot = join(workRoot, ".facility-runtime");
+const steerFile = join(runtimeRoot, "STEERING.md");
+const transcriptFile = join(runtimeRoot, "engine.stream.jsonl");
 const sessionStateDir = join(workRoot, ".claude");
-const sessionStateArchive = join(workRoot, "claude-session-state.tgz");
+const sessionStateArchive = join(runtimeRoot, "claude-session-state.tgz");
+const engineStderrFile = join(runtimeRoot, "engine.stderr.log");
 const AGENT_PROGRESS_MAX_BYTES = 16 * 1024;
 const SECURITY_REPORT_MAX_BYTES = 256 * 1024;
 const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
+const PRIVATE_REGISTRY_INSTALL_COMMANDS = new Set([
+  "npm ci",
+  "pnpm install --frozen-lockfile",
+  "yarn install --immutable",
+]);
 let engineSessionId: string | null = null;
 let activeEngineChild: ReturnType<typeof spawn> | null = null;
 let clearInterruptEscalation: (() => void) | null = null;
@@ -71,7 +80,28 @@ async function main() {
       projectId: hello.projectId ? String(hello.projectId) : "",
       repoToken: hello.repoToken ? String(hello.repoToken) : null,
     });
+    await grantWorkspaceToUntrusted();
+    await prepareRunnerRuntime();
     steerStop = startSteeringPoll();
+    if (bundle.packageInstallCmd) {
+      const packageToken = hello.packageRegistryToken
+        ? String(hello.packageRegistryToken).trim()
+        : null;
+      if (packageToken) secretsToRedact.add(packageToken);
+      if (packageToken && !privateRegistryInstallCommand(bundle.packageInstallCmd)) {
+        throw new Error("package_install_command_not_allowed_for_private_registry");
+      }
+      const installed = await runPackageInstall(
+        bundle.packageInstallCmd,
+        cwdFor(bundle),
+        bundle.timeoutMin,
+        packageToken,
+      );
+      if (installed !== 0) {
+        await postResult(bundle, "failed", startedAt, { code: "package_install_failed" });
+        return;
+      }
+    }
     if (bundle.provisionCmd) {
       const provision = await runShell(
         bundle.provisionCmd,
@@ -275,11 +305,15 @@ export async function prepareWorkspace(
     await mkdir(root, { recursive: true });
     for (const [fileBase, skill] of skillsByFile) {
       const skillDir = join(root, fileBase);
+      const skillPath = join(skillDir, "SKILL.md");
+      if (await pathExists(skillPath)) {
+        // Existing repositories own their checked-in agent behavior. A
+        // project/org Facility skill may supplement it under another name, but
+        // must never overwrite a repository skill with the same name.
+        continue;
+      }
       await mkdir(skillDir, { recursive: true });
-      await writeFile(
-        join(skillDir, "SKILL.md"),
-        materializedSkillContent(skill.name, skill.content),
-      );
+      await writeFile(skillPath, materializedSkillContent(skill.name, skill.content));
     }
   }
   if (bundle.harness?.files) {
@@ -299,6 +333,16 @@ export async function prepareWorkspace(
   // Register every injected secret for redaction from captured check output.
   for (const secret of [virtualKey, platform.platformKey, platform.repoToken]) {
     if (secret) secretsToRedact.add(secret);
+  }
+}
+
+async function pathExists(path: string) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
   }
 }
 
@@ -380,6 +424,7 @@ async function runJsonProcess(
     cwd,
     env: engineEnv(),
     stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
+    ...untrustedSpawnIdentity(),
   });
   if (stdin !== undefined && child.stdin) {
     // Large learning packets exceed the OS argv limit. Stream the prompt so
@@ -394,7 +439,7 @@ async function runJsonProcess(
     child.kill();
     throw new Error("engine_stdio_unavailable");
   }
-  const stderr = createWriteStream(join(workRoot, "engine.stderr.log"), { flags: "a" });
+  const stderr = createWriteStream(engineStderrFile, { flags: "a" });
   stderrStream.pipe(stderr);
   const clearTimers = armEngineTimeout(child, timeoutMin);
   const rl = createInterface({ input: stdout });
@@ -630,8 +675,8 @@ export function terminateChild(
 
 async function checkoutResumeBranch(cwd: string, branch: string) {
   try {
-    await gitOutput(cwd, ["fetch", "origin", branch]);
-    await gitOutput(cwd, ["checkout", branch]);
+    await gitOutput(cwd, ["fetch", "origin", branch], true);
+    await gitOutput(cwd, ["checkout", branch], true);
   } catch (error) {
     await emit([
       {
@@ -653,11 +698,18 @@ async function directorySize(path: string): Promise<number> {
   return total;
 }
 
-async function runShell(command: string, cwd: string, eventType: string, timeoutMin: number) {
+async function runShell(
+  command: string,
+  cwd: string,
+  eventType: string,
+  timeoutMin: number,
+  envOverrides?: NodeJS.ProcessEnv,
+) {
   const child = spawn("sh", ["-c", command], {
     cwd,
-    env: engineEnv(),
+    env: { ...engineEnv(), ...envOverrides },
     stdio: ["ignore", "pipe", "pipe"],
+    ...untrustedSpawnIdentity(),
   });
   const clearTimers = armEngineTimeout(child, timeoutMin);
   const drains = [child.stdout, child.stderr].map((stream) => {
@@ -674,6 +726,38 @@ async function runShell(command: string, cwd: string, eventType: string, timeout
   await Promise.all(drains);
   clearTimers();
   return code;
+}
+
+export async function runPackageInstall(
+  command: string,
+  cwd: string,
+  timeoutMin: number,
+  packageToken: string | null,
+  userConfigPath = join(workRoot, ".facility-package-npmrc"),
+) {
+  if (!packageToken) return runShell(command, cwd, "shell", timeoutMin);
+  await writeFile(userConfigPath, privateRegistryNpmrc(packageToken), { mode: 0o600 });
+  const identity = untrustedSpawnIdentity();
+  if (identity.uid !== undefined && identity.gid !== undefined) {
+    await chown(userConfigPath, identity.uid, identity.gid);
+  }
+  try {
+    return await runShell(command, cwd, "shell", timeoutMin, {
+      NODE_AUTH_TOKEN: packageToken,
+      NPM_CONFIG_USERCONFIG: userConfigPath,
+    });
+  } finally {
+    await rm(userConfigPath, { force: true });
+  }
+}
+
+export function privateRegistryInstallCommand(command: string) {
+  return PRIVATE_REGISTRY_INSTALL_COMMANDS.has(command.trim());
+}
+
+export function privateRegistryNpmrc(token: string) {
+  if (!token || /[\r\n]/.test(token)) throw new Error("package_registry_token_invalid");
+  return `//npm.pkg.github.com/:_authToken=${token}\n`;
 }
 
 // Cap the self-reported checks file read so a runaway/malicious agent can't OOM
@@ -763,6 +847,7 @@ export async function runCheckCommand(command: string, cwd: string, timeoutMin: 
     env: engineEnv(),
     stdio: ["ignore", "pipe", "pipe"],
     detached: true,
+    ...untrustedSpawnIdentity(),
   });
   const clearTimers = armProcessGroupTimeout(child, timeoutMin);
   let tail = "";
@@ -790,7 +875,7 @@ async function postResult(
   git?: Record<string, unknown>,
   securityReport?: Record<string, unknown>,
 ) {
-  const stderrTail = await readFile(join(workRoot, "engine.stderr.log"), "utf8").catch(() => "");
+  const stderrTail = await readFile(engineStderrFile, "utf8").catch(() => "");
   await api(`/internal/runs/${currentRunId()}/result`, {
     method: "POST",
     body: JSON.stringify({
@@ -1483,8 +1568,13 @@ function chunk<T>(items: T[], size: number) {
   return chunks;
 }
 
-async function gitOutput(cwd: string, args: string[]) {
-  const child = spawn("git", args, { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+async function gitOutput(cwd: string, args: string[], trustedBootstrap = false) {
+  const child = spawn("git", ["-c", `safe.directory=${cwd}`, ...args], {
+    cwd,
+    env: trustedBootstrap ? process.env : engineEnv(),
+    stdio: ["ignore", "pipe", "pipe"],
+    ...(trustedBootstrap ? {} : untrustedSpawnIdentity()),
+  });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => {
@@ -1554,6 +1644,11 @@ async function fetchJson(url: string, init: RequestInit = {}) {
 export function engineEnv() {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: "/work" };
   delete env.ANTHROPIC_AUTH_TOKEN;
+  // Registry credentials are granted only to the dedicated dependency-install
+  // child. They must never reach provisioning scripts, checks, or the model.
+  delete env.NODE_AUTH_TOKEN;
+  delete env.NPM_CONFIG_USERCONFIG;
+  delete env.npm_config_userconfig;
   // Never expose the runner's internal-lifecycle credential to the (untrusted)
   // engine or check commands. With RUNNER_TOKEN a compromised agent could call
   // /internal/runs/:id/{events,result} for its own run to forge platform-provenance
@@ -1564,6 +1659,42 @@ export function engineEnv() {
   // which are separately authorized and cannot touch run lifecycle.)
   delete env.RUNNER_TOKEN;
   return env;
+}
+
+export function untrustedSpawnIdentity(getuid: (() => number) | undefined = process.getuid): {
+  uid?: number;
+  gid?: number;
+} {
+  if (getuid?.() !== 0) return {};
+  return {
+    uid: Number(process.env.FACILITY_UNTRUSTED_UID ?? "1000"),
+    gid: Number(process.env.FACILITY_UNTRUSTED_GID ?? "1000"),
+  };
+}
+
+async function grantWorkspaceToUntrusted() {
+  const identity = untrustedSpawnIdentity();
+  if (identity.uid === undefined || identity.gid === undefined) return;
+  const workspaceGid = identity.gid;
+  await runCommand("chown", ["-R", `${identity.uid}:${workspaceGid}`, workRoot], workRoot);
+  await runCommand("chmod", ["-R", "g+rwX", workRoot], workRoot);
+  await runCommand("find", [workRoot, "-type", "d", "-exec", "chmod", "g+s", "{}", "+"], workRoot);
+  // Keep the sticky workspace root owned by the lifecycle process. The agent
+  // owns its children, but cannot rename or replace the root-owned runtime
+  // directory created next to them.
+  await chown(workRoot, 0, workspaceGid);
+  await chmod(workRoot, 0o3770);
+}
+
+async function prepareRunnerRuntime() {
+  await mkdir(runtimeRoot, { recursive: true });
+  await writeFile(steerFile, "", { mode: 0o644 });
+  if (process.getuid?.() === 0) {
+    await chown(runtimeRoot, 0, 0);
+    await chmod(runtimeRoot, 0o755);
+    await chown(steerFile, 0, 0);
+    await chmod(steerFile, 0o644);
+  }
 }
 
 function cwdFor(bundle: RunBundle, root = workRoot) {
@@ -1642,7 +1773,7 @@ export function composedPrompt(bundle: RunBundle) {
     ? "\n\nProject harness/KB context is in ./harness/SESSION.md - read it first."
     : "";
   const steeringNote =
-    "\n\nHuman steering may arrive in ./STEERING.md while you work (it starts empty). Re-read it after finishing each task or before major decisions; if it contains new instructions, follow them.";
+    "\n\nHuman steering may arrive in /work/.facility-runtime/STEERING.md while you work (it starts empty and is runner-owned). Re-read it after finishing each task or before major decisions; if it contains new instructions, follow them.";
   const conversationNote =
     bundle.scope.type === "conversation" && typeof bundle.scope.message === "string"
       ? `\n\n## Conversation\n${bundle.scope.message}`

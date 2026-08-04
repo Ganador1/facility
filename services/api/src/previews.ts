@@ -2,7 +2,7 @@ import { newId } from "@facility/core";
 import { createDb, insertAuditEvent, previewSandboxes } from "@facility/db";
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { request as upstreamRequest } from "undici";
-import { type SandboxDriver, sandboxDriver } from "./sandbox/driver.js";
+import { previewSandboxDriver, type SandboxDriver, SandboxLaunchError } from "./sandbox/driver.js";
 import type { AppConfig, Principal } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
@@ -100,11 +100,12 @@ export async function provisionPreview(
     )[0];
     if (preview?.status !== "provisioning" || preview.ref) return preview;
     const spec = previewConfig(preview.config);
-    const driver = driverOverride ?? (await sandboxDriver(config.sandboxDriver));
+    const driver = driverOverride ?? (await previewSandboxDriver(config.sandboxDriver));
     await db
       .update(previewSandboxes)
       .set({ driver: driver.name, updatedAt: new Date() })
       .where(eq(previewSandboxes.id, preview.id));
+    let launchedRef: string | undefined;
     try {
       const launched = await driver.launch({
         runId: `preview:${preview.id}`,
@@ -117,8 +118,26 @@ export async function provisionPreview(
         network: { egress: "unrestricted" },
         servicePort: spec.port,
       });
+      launchedRef = launched.ref;
+      await db
+        .update(previewSandboxes)
+        .set({ driver: driver.name, ref: launched.ref, updatedAt: new Date() })
+        .where(eq(previewSandboxes.id, preview.id));
       if (!launched.endpoint || !allowedOrigin(launched.endpoint, driver.name)) {
-        await driver.destroy(launched.ref).catch(() => undefined);
+        try {
+          await driver.destroy(launched.ref);
+          await db
+            .update(previewSandboxes)
+            .set({ ref: null, updatedAt: new Date() })
+            .where(eq(previewSandboxes.id, preview.id));
+          launchedRef = undefined;
+        } catch (cleanupError) {
+          throw new SandboxLaunchError(
+            "preview_driver_did_not_return_a_private_endpoint_and_cleanup_failed",
+            launched.ref,
+            { cause: cleanupError },
+          );
+        }
         throw new Error("preview_driver_did_not_return_a_private_endpoint");
       }
       const state = await driver.status(launched.ref);
@@ -153,9 +172,15 @@ export async function provisionPreview(
       return updated;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const retryRef = error instanceof SandboxLaunchError ? error.ref : launchedRef;
       await db
         .update(previewSandboxes)
-        .set({ status: "failed", error: message, updatedAt: new Date() })
+        .set({
+          status: "failed",
+          error: message,
+          ...(retryRef ? { ref: retryRef } : {}),
+          updatedAt: new Date(),
+        })
         .where(eq(previewSandboxes.id, preview.id));
       await insertAuditEvent(db, {
         orgId: preview.orgId,
@@ -179,7 +204,8 @@ export async function destroyPreview(
   driverOverride?: SandboxDriver,
 ) {
   if (!["destroyed", "expired"].includes(preview.status) && preview.ref) {
-    const driver = driverOverride ?? (await sandboxDriver(preview.driver as "docker" | "aws"));
+    const driver =
+      driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
     try {
       await driver.destroy(preview.ref);
     } catch (error) {
@@ -202,7 +228,7 @@ export async function destroyPreview(
   const updated = (
     await db
       .update(previewSandboxes)
-      .set({ status, originUrl: null, updatedAt: new Date() })
+      .set({ status, ref: null, originUrl: null, updatedAt: new Date() })
       .where(and(eq(previewSandboxes.orgId, preview.orgId), eq(previewSandboxes.id, preview.id)))
       .returning()
   )[0];
@@ -230,7 +256,7 @@ export async function destroyPreviewById(config: AppConfig, previewId: string) {
   }
 }
 
-export async function reconcilePreviews(config: AppConfig) {
+export async function reconcilePreviews(config: AppConfig, driverOverride?: SandboxDriver) {
   const { db, client } = createDb(config.databaseUrl);
   const changed: string[] = [];
   try {
@@ -244,7 +270,7 @@ export async function reconcilePreviews(config: AppConfig) {
         ),
       );
     for (const preview of expired) {
-      await destroyPreview(db, preview, "expired");
+      await destroyPreview(db, preview, "expired", driverOverride);
       changed.push(preview.id);
     }
     const active = await db
@@ -253,7 +279,8 @@ export async function reconcilePreviews(config: AppConfig) {
       .where(inArray(previewSandboxes.status, ["provisioning", "running"]));
     for (const preview of active) {
       if (!preview.ref) continue;
-      const driver = await sandboxDriver(preview.driver as "docker" | "aws");
+      const driver =
+        driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
       const state = await driver.status(preview.ref);
       const spec = previewConfig(preview.config);
       const ready =
@@ -269,11 +296,45 @@ export async function reconcilePreviews(config: AppConfig) {
           .where(eq(previewSandboxes.id, preview.id));
         changed.push(preview.id);
       } else if (state === "exited" || state === "lost") {
+        let cleanupError: string | null = null;
+        try {
+          await driver.destroy(preview.ref);
+        } catch (error) {
+          cleanupError = error instanceof Error ? error.message : String(error);
+        }
         await db
           .update(previewSandboxes)
-          .set({ status: "failed", error: `preview_${state}`, updatedAt: new Date() })
+          .set({
+            status: "failed",
+            error: `preview_${state}${cleanupError ? `;cleanup_failed:${cleanupError}` : ""}`,
+            ...(cleanupError ? {} : { ref: null }),
+            updatedAt: new Date(),
+          })
           .where(eq(previewSandboxes.id, preview.id));
         changed.push(preview.id);
+      }
+    }
+    // A transient ECS/Docker failure must not make a failed preview immortal.
+    // Retain its ref on failure and retry cleanup on each reconciliation pass;
+    // clear it only after the task/container and its per-preview definition are
+    // gone.
+    const failedWithRefs = await db
+      .select()
+      .from(previewSandboxes)
+      .where(eq(previewSandboxes.status, "failed"));
+    for (const preview of failedWithRefs) {
+      if (!preview.ref) continue;
+      const driver =
+        driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
+      try {
+        await driver.destroy(preview.ref);
+        await db
+          .update(previewSandboxes)
+          .set({ ref: null, updatedAt: new Date() })
+          .where(eq(previewSandboxes.id, preview.id));
+        changed.push(preview.id);
+      } catch {
+        // Keep the ref for the next bounded worker reconciliation.
       }
     }
     return { changed };

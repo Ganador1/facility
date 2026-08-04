@@ -20,8 +20,17 @@ resource "aws_security_group" "service" {
 
 resource "aws_security_group" "sandbox" {
   name        = "${local.name_prefix}-sandbox"
-  description = "Facility ephemeral sandbox runner tasks"
+  description = "Facility ephemeral CodeBuild sandbox environments"
   vpc_id      = aws_vpc.facility.id
+
+  # AWS makes security-group descriptions immutable. Existing ECS-based
+  # installations already have this group wired into cross-group rules and
+  # ENIs, so replacing it only to rename the description creates a dependency
+  # cycle during the CodeBuild migration. New stacks still receive the current
+  # description; existing stacks safely retain the cosmetic legacy value.
+  lifecycle {
+    ignore_changes = [description]
+  }
 
   tags = {
     Name = "${local.name_prefix}-sandbox"
@@ -161,6 +170,24 @@ resource "aws_vpc_security_group_egress_rule" "service_to_gateway" {
   from_port                    = local.ports.gateway
   ip_protocol                  = "tcp"
   to_port                      = local.ports.gateway
+}
+
+resource "aws_vpc_security_group_egress_rule" "service_to_previews" {
+  security_group_id            = aws_security_group.service.id
+  referenced_security_group_id = aws_security_group.sandbox.id
+  from_port                    = 1
+  ip_protocol                  = "tcp"
+  to_port                      = 65535
+  description                  = "Facility API proxy to private preview services"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "preview_from_services" {
+  security_group_id            = aws_security_group.sandbox.id
+  referenced_security_group_id = aws_security_group.service.id
+  from_port                    = 1
+  ip_protocol                  = "tcp"
+  to_port                      = 65535
+  description                  = "Private preview traffic from Facility services"
 }
 
 resource "aws_vpc_security_group_egress_rule" "service_https_ipv4" {
