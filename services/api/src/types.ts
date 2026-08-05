@@ -8,6 +8,8 @@ export type Principal = {
   userId?: string;
   email?: string;
   name?: string;
+  githubLogin?: string;
+  avatarUrl?: string;
   projectId?: string | null;
   permissions: string[];
 };

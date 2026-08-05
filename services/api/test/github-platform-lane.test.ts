@@ -2,9 +2,13 @@ import { generateApiKey, hashKey, newId } from "@facility/core";
 import {
   agentDefs,
   apiKeys,
+  auditEvents,
   createDb,
   ghIssues,
+  ghPullRequests,
   githubInstallations,
+  inboundEvents,
+  integrations,
   migrate,
   orgs,
   outcomes,
@@ -16,14 +20,22 @@ import {
   repos,
   runEvents,
   runs,
+  schedulerWatermarks,
   seed,
+  userIdentities,
 } from "@facility/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
-import { upsertGhIssueFromWebhook } from "../src/github/issues-sync.js";
-import { finishRun } from "../src/sandbox/orchestrator.js";
+import { executeApprovedProposal } from "../src/executors.js";
+import { syncRepoIssues, upsertGhIssueFromWebhook } from "../src/github/issues-sync.js";
+import { enqueueGithubIssuesSync, processGithubWebhook } from "../src/github/processor.js";
+import {
+  syncRepoPullRequests,
+  upsertGhPullRequestFromWebhook,
+} from "../src/github/pull-requests-sync.js";
+import { finishRun, pullRequestBodyForIssue } from "../src/sandbox/orchestrator.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -35,6 +47,76 @@ function nextInstallationId() {
   installationSequence += 1;
   return installationSequence;
 }
+
+type IssueBackfillRecord = {
+  number: number;
+  pull_request: Record<string, never>;
+  updated_at: string;
+};
+
+type IssueBackfillCall = { page: number; since: string | undefined; numbers: number[] };
+
+function issueBackfillRecords(count: number): IssueBackfillRecord[] {
+  const start = Date.parse("2026-01-01T00:00:00.000Z");
+  return Array.from({ length: count }, (_, index) => ({
+    number: 1_001 + index,
+    pull_request: {},
+    updated_at: new Date(start + index * 1_000).toISOString(),
+  }));
+}
+
+function issueBackfillFactory(
+  records: IssueBackfillRecord[],
+  calls: IssueBackfillCall[],
+  failure?: () => Error | null,
+) {
+  return async () =>
+    ({
+      rest: {
+        issues: {
+          listForRepo: async (args: Record<string, unknown>) => {
+            const page = Number(args.page ?? 1);
+            const perPage = Number(args.per_page ?? 100);
+            const since = typeof args.since === "string" ? args.since : undefined;
+            const lowerBound = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
+            const eligible = [...records]
+              .filter((record) => Date.parse(record.updated_at) > lowerBound)
+              .sort(
+                (left, right) =>
+                  Date.parse(left.updated_at) - Date.parse(right.updated_at) ||
+                  left.number - right.number,
+              );
+            const data = eligible.slice((page - 1) * perPage, page * perPage);
+            calls.push({ page, since, numbers: data.map((record) => record.number) });
+            const error = failure?.();
+            if (error) throw error;
+            return { data };
+          },
+        },
+      },
+    }) as never;
+}
+
+describe("pull-request closing references", () => {
+  it("injects one authoritative same-repository issue reference", () => {
+    expect(pullRequestBodyForIssue("Implementation details", 17, "octo", "repo")).toBe(
+      "Closes #17\n\nImplementation details",
+    );
+  });
+
+  it.each([
+    "Fixes #17\n\nDetails",
+    "Resolved octo/repo#17",
+    "Closes https://github.com/octo/repo/issues/17",
+  ])("preserves an existing GitHub closing form: %s", (body) => {
+    expect(pullRequestBodyForIssue(body, 17, "octo", "repo")).toBe(body);
+  });
+
+  it("ignores apparent closing references inside code fences and inline code", () => {
+    const fenced = "Example:\n```md\nCloses #17\n```\nAnd `Fixes #17`.";
+    expect(pullRequestBodyForIssue(fenced, 17, "octo", "repo")).toBe(`Closes #17\n\n${fenced}`);
+  });
+});
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
@@ -75,6 +157,7 @@ describe("github platform lane", async () => {
   let cookie = "";
   let orgId = "";
   let projectId = "";
+  let userId = "";
 
   beforeAll(async () => {
     await migrate(databaseUrl);
@@ -87,6 +170,14 @@ describe("github platform lane", async () => {
     });
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
     orgId = login.json().orgId;
+    userId = login.json().userId;
+    await db.insert(userIdentities).values({
+      id: `identity_platform_${Date.now()}`,
+      userId,
+      provider: "github",
+      providerSubject: `platform-${Date.now()}`,
+      login: "platform-owner",
+    });
     const project = (
       await db
         .insert(projects)
@@ -153,6 +244,947 @@ describe("github platform lane", async () => {
     expect(otherRows).toHaveLength(0);
   });
 
+  it("upserts mirrored pull requests from webhooks with cross-org isolation", async () => {
+    const owner = `mirror-pr-${Date.now()}`;
+    const name = "repo";
+    const otherOrgId = newId("org");
+    await db
+      .insert(orgs)
+      .values({ id: otherOrgId, name: "Other PR", slug: `other-pr-${Date.now()}` });
+    const otherProjectId = newId("proj");
+    await db.insert(projects).values({
+      id: otherProjectId,
+      orgId: otherOrgId,
+      name: "Other PR Project",
+      slug: `other-pr-${Date.now()}`,
+      settings: {},
+    });
+    const repo = await insertRepo({ owner, name });
+    const otherRepo = await insertRepo({
+      orgId: otherOrgId,
+      projectId: otherProjectId,
+      owner,
+      name,
+    });
+
+    const mirrored = await upsertGhPullRequestFromWebhook(db, orgId, {
+      action: "opened",
+      repository: { owner: { login: owner }, name },
+      pull_request: {
+        number: 8,
+        title: "Mirror this pull request",
+        state: "open",
+        draft: false,
+        user: { login: "ada" },
+        html_url: `https://github.com/${owner}/${name}/pull/8`,
+        body: "body",
+        base: { ref: "main" },
+        head: { ref: "feature/8", sha: "head-8" },
+        created_at: "2026-01-01T00:00:00Z",
+        updated_at: "2026-01-02T00:00:00Z",
+      },
+    });
+
+    expect(mirrored).toMatchObject({ orgId, projectId, repoId: repo.id, number: 8 });
+    expect(
+      await db.select().from(ghPullRequests).where(eq(ghPullRequests.repoId, repo.id)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(ghPullRequests).where(eq(ghPullRequests.repoId, otherRepo.id)),
+    ).toHaveLength(0);
+  });
+
+  it("rejects malformed and unmapped pull-request webhook payloads without writing", async () => {
+    const owner = `invalid-pr-${Date.now()}`;
+    const repo = await insertRepo({ owner, name: "repo" });
+    const pullRequest = {
+      number: 9,
+      title: "Valid except where overridden",
+      state: "open",
+      draft: false,
+      user: { login: "ada" },
+      html_url: `https://github.com/${owner}/${repo.name}/pull/9`,
+      body: "body",
+      base: { ref: "main" },
+      head: { ref: "feature/9", sha: "head-9" },
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-02T00:00:00Z",
+    };
+
+    await expect(
+      upsertGhPullRequestFromWebhook(db, orgId, {
+        repository: { owner: { login: owner }, name: repo.name },
+        pull_request: { ...pullRequest, head: { ref: "feature/9" } },
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      upsertGhPullRequestFromWebhook(db, orgId, {
+        repository: { owner: { login: `${owner}-missing` }, name: repo.name },
+        pull_request: pullRequest,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      upsertGhPullRequestFromWebhook(db, orgId, {
+        repository: { name: repo.name },
+        pull_request: pullRequest,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      upsertGhPullRequestFromWebhook(db, orgId, {
+        repository: { owner: { login: owner } },
+        pull_request: pullRequest,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      upsertGhPullRequestFromWebhook(db, orgId, {
+        repository: { owner: { login: owner }, name: repo.name },
+      }),
+    ).resolves.toBeNull();
+    expect(
+      await db.select().from(ghPullRequests).where(eq(ghPullRequests.repoId, repo.id)),
+    ).toHaveLength(0);
+  });
+
+  it("uses a backfill-owned GitHub update cursor and exhaustively reconciles every PR state", async () => {
+    const owner = `sync-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    await db.insert(ghIssues).values({
+      id: newId("ghi"),
+      orgId,
+      projectId,
+      repoId: repo.id,
+      number: 70_001,
+      title: "Cursor anchor",
+      state: "closed",
+      labels: [],
+      assignees: [],
+      htmlUrl: `https://github.test/${owner}/repo/issues/70001`,
+      // Webhooks may write rows newer than the completed backfill. They must
+      // not move the cursor owned by the backfill itself.
+      ghUpdatedAt: new Date("2026-08-05T10:00:00Z"),
+      syncedAt: new Date("2026-08-05T10:00:00Z"),
+    });
+    await db.insert(schedulerWatermarks).values({
+      name: `github.issues:${repo.id}`,
+      lastTick: new Date("2026-01-10T10:00:00Z"),
+    });
+    let issueListArgs: Record<string, unknown> | undefined;
+    await syncRepoIssues(
+      db,
+      async () =>
+        ({
+          rest: {
+            issues: {
+              listForRepo: async (args: Record<string, unknown>) => {
+                issueListArgs = args;
+                return { data: [] };
+              },
+            },
+          },
+        }) as never,
+      repo,
+    );
+    expect(issueListArgs).toMatchObject({
+      since: "2026-01-10T09:58:00.000Z",
+      sort: "updated",
+      direction: "asc",
+    });
+
+    const calls: Array<{ cursor: unknown; states: unknown }> = [];
+    const node = (number: number, state: "OPEN" | "CLOSED" | "MERGED", updatedAt: string) => ({
+      number,
+      title: `PR ${number}`,
+      state,
+      isDraft: false,
+      author: { login: "octocat" },
+      headRefName: `feature/${number}`,
+      headRefOid: `sha-${number}`,
+      baseRefName: "main",
+      url: `https://github.test/${owner}/repo/pull/${number}`,
+      createdAt: updatedAt,
+      updatedAt,
+      closedAt: state === "OPEN" ? null : updatedAt,
+      mergedAt: state === "MERGED" ? updatedAt : null,
+      closingIssuesReferences: { nodes: [] },
+      commits: { nodes: [{ commit: { oid: `sha-${number}`, statusCheckRollup: null } }] },
+    });
+    const result = await syncRepoPullRequests(
+      db,
+      async () =>
+        ({
+          graphql: async (_query: string, variables: Record<string, unknown>) => {
+            calls.push({ cursor: variables.cursor, states: variables.states });
+            const states = variables.states as string[];
+            if (states.includes("OPEN")) {
+              return {
+                repository: {
+                  pullRequests: {
+                    nodes: [node(70_010, "OPEN", "2026-08-05T00:00:00Z")],
+                    pageInfo: { endCursor: null, hasNextPage: false },
+                  },
+                },
+              };
+            }
+            if (variables.cursor === null) {
+              return {
+                repository: {
+                  pullRequests: {
+                    nodes: [node(70_011, "CLOSED", "2026-08-04T00:00:00Z")],
+                    pageInfo: { endCursor: "terminal-2", hasNextPage: true },
+                  },
+                },
+              };
+            }
+            return {
+              repository: {
+                pullRequests: {
+                  nodes: [node(70_012, "MERGED", "2020-01-01T00:00:00Z")],
+                  pageInfo: { endCursor: null, hasNextPage: false },
+                },
+              },
+            };
+          },
+          rest: {},
+        }) as never,
+      repo,
+    );
+    expect(result.synced).toBe(3);
+    expect(calls).toEqual([
+      { cursor: null, states: ["OPEN"] },
+      { cursor: null, states: ["CLOSED", "MERGED"] },
+      { cursor: "terminal-2", states: ["CLOSED", "MERGED"] },
+    ]);
+    const mirrored = await db
+      .select({ number: ghPullRequests.number, state: ghPullRequests.state })
+      .from(ghPullRequests)
+      .where(eq(ghPullRequests.repoId, repo.id));
+    expect(mirrored).toEqual(
+      expect.arrayContaining([
+        { number: 70_010, state: "open" },
+        { number: 70_011, state: "closed" },
+        { number: 70_012, state: "merged" },
+      ]),
+    );
+  });
+
+  it("persists the issue high-water boundary across a failed request", async () => {
+    const owner = `resume-issues-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const records = issueBackfillRecords(500);
+    const calls: IssueBackfillCall[] = [];
+    let failThirdCall = true;
+    const factory = issueBackfillFactory(records, calls, () => {
+      if (calls.length === 3 && failThirdCall) {
+        failThirdCall = false;
+        return new Error("GitHub rate limited");
+      }
+      return null;
+    });
+
+    await expect(syncRepoIssues(db, factory, repo)).rejects.toThrow("GitHub rate limited");
+    const [progress] = await db
+      .select()
+      .from(schedulerWatermarks)
+      .where(eq(schedulerWatermarks.name, `github.issues:${repo.id}`));
+    expect(JSON.parse(progress?.cursor ?? "{}")).toMatchObject({
+      page: 1,
+      highWater: records[198]?.updated_at,
+    });
+
+    await expect(syncRepoIssues(db, factory, repo)).resolves.toMatchObject({
+      incomplete: false,
+    });
+    expect(calls.every((call) => call.page === 1)).toBe(true);
+    expect(calls[3]?.since).toBe(
+      new Date(Date.parse(records[198]?.updated_at ?? "") - 1).toISOString(),
+    );
+    const [completed] = await db
+      .select()
+      .from(schedulerWatermarks)
+      .where(eq(schedulerWatermarks.name, `github.issues:${repo.id}`));
+    expect(completed?.cursor).toBeNull();
+    expect(completed?.scanStartedAt).toBeNull();
+  });
+
+  it("resumes a capped issue scan from its high-water boundary without sliding-window gaps", async () => {
+    const owner = `sliding-issues-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const records = issueBackfillRecords(1_050);
+    const calls: IssueBackfillCall[] = [];
+    const factory = issueBackfillFactory(records, calls);
+
+    await expect(syncRepoIssues(db, factory, repo)).resolves.toMatchObject({ incomplete: true });
+    const [progress] = await db
+      .select()
+      .from(schedulerWatermarks)
+      .where(eq(schedulerWatermarks.name, `github.issues:${repo.id}`));
+    expect(JSON.parse(progress?.cursor ?? "{}")).toMatchObject({
+      page: 1,
+      highWater: records[990]?.updated_at,
+    });
+
+    // An already-scanned issue moves to the tail between jobs. A frozen
+    // page-11 offset would shift issue 2002 behind the boundary and skip it.
+    if (records[5]) records[5].updated_at = "2027-01-01T00:00:00.000Z";
+    const resumeCallStart = calls.length;
+    await expect(syncRepoIssues(db, factory, repo)).resolves.toMatchObject({ incomplete: false });
+    const resumedNumbers = calls.slice(resumeCallStart).flatMap((call) => call.numbers);
+    expect(resumedNumbers).toContain(2_002);
+    expect(resumedNumbers).toContain(1_006);
+    expect(calls.slice(resumeCallStart).every((call) => call.page === 1)).toBe(true);
+  });
+
+  it("resumes a capped PR backfill instead of restarting at the first page", async () => {
+    const owner = `resume-pr-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const cursors: unknown[] = [];
+    let terminalCalls = 0;
+    const node = (number: number) => ({
+      number,
+      title: `PR ${number}`,
+      state: "CLOSED",
+      isDraft: false,
+      author: { login: "octocat" },
+      headRefName: `feature/${number}`,
+      headRefOid: `sha-${number}`,
+      baseRefName: "main",
+      url: `https://github.test/${owner}/repo/pull/${number}`,
+      createdAt: "2026-08-01T00:00:00Z",
+      updatedAt: "2026-08-01T00:00:00Z",
+      closedAt: "2026-08-01T00:00:00Z",
+      mergedAt: null,
+      closingIssuesReferences: { nodes: [] },
+      commits: { nodes: [{ commit: { oid: `sha-${number}`, statusCheckRollup: null } }] },
+    });
+    const factory = async () =>
+      ({
+        graphql: async (_query: string, variables: Record<string, unknown>) => {
+          const states = variables.states as string[];
+          if (states.includes("OPEN")) {
+            return {
+              repository: {
+                pullRequests: { nodes: [], pageInfo: { endCursor: null, hasNextPage: false } },
+              },
+            };
+          }
+          cursors.push(variables.cursor);
+          terminalCalls += 1;
+          const finalPage = terminalCalls === 11;
+          return {
+            repository: {
+              pullRequests: {
+                nodes: [node(71_100 + terminalCalls)],
+                pageInfo: {
+                  endCursor: finalPage ? null : `terminal-${terminalCalls}`,
+                  hasNextPage: !finalPage,
+                },
+              },
+            },
+          };
+        },
+        rest: {},
+      }) as never;
+
+    const first = await syncRepoPullRequests(db, factory, repo);
+    expect(first).toMatchObject({ synced: 10, incomplete: true });
+    const [progress] = await db
+      .select()
+      .from(schedulerWatermarks)
+      .where(eq(schedulerWatermarks.name, `github.pull_requests.terminal:${repo.id}`));
+    expect(progress).toMatchObject({ cursor: "terminal-10" });
+    expect(progress?.lastTick.getTime()).toBe(0);
+
+    const second = await syncRepoPullRequests(db, factory, repo);
+    expect(second).toMatchObject({ synced: 1, incomplete: false });
+    expect(cursors).toEqual([
+      null,
+      "terminal-1",
+      "terminal-2",
+      "terminal-3",
+      "terminal-4",
+      "terminal-5",
+      "terminal-6",
+      "terminal-7",
+      "terminal-8",
+      "terminal-9",
+      "terminal-10",
+    ]);
+    const [completed] = await db
+      .select()
+      .from(schedulerWatermarks)
+      .where(eq(schedulerWatermarks.name, `github.pull_requests.terminal:${repo.id}`));
+    expect(completed?.cursor).toBeNull();
+    expect(completed?.scanStartedAt).toBeNull();
+    expect(completed?.lastTick.getTime()).toBeGreaterThan(0);
+  });
+
+  it("completes a resumed PR scan when the overlap reaches its prior high-water boundary", async () => {
+    const owner = `resume-pr-watermark-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const previousCompletedAt = new Date("2026-08-01T12:00:00Z");
+    const watermarkName = `github.pull_requests.terminal:${repo.id}`;
+    await db.insert(schedulerWatermarks).values({
+      name: watermarkName,
+      lastTick: previousCompletedAt,
+    });
+    const terminalCursors: unknown[] = [];
+    const node = (number: number, updatedAt: string) => ({
+      number,
+      title: `PR ${number}`,
+      state: "MERGED",
+      isDraft: false,
+      author: { login: "octocat" },
+      headRefName: `feature/${number}`,
+      headRefOid: `sha-${number}`,
+      baseRefName: "main",
+      url: `https://github.test/${owner}/repo/pull/${number}`,
+      createdAt: updatedAt,
+      updatedAt,
+      closedAt: null,
+      mergedAt: null,
+      closingIssuesReferences: { nodes: [] },
+      commits: { nodes: [{ commit: { oid: `sha-${number}`, statusCheckRollup: null } }] },
+    });
+    const result = await syncRepoPullRequests(
+      db,
+      async () =>
+        ({
+          graphql: async (_query: string, variables: Record<string, unknown>) => {
+            const states = variables.states as string[];
+            if (states.includes("OPEN")) {
+              return {
+                repository: {
+                  pullRequests: { nodes: [], pageInfo: { endCursor: null, hasNextPage: false } },
+                },
+              };
+            }
+            terminalCursors.push(variables.cursor);
+            if (terminalCursors.length > 1) {
+              throw new Error("scan continued past prior high-water");
+            }
+            return {
+              repository: {
+                pullRequests: {
+                  nodes: [
+                    node(71_200, "2026-08-01T12:01:00Z"),
+                    node(71_199, "2026-08-01T11:58:00Z"),
+                  ],
+                  pageInfo: { endCursor: "must-not-follow", hasNextPage: true },
+                },
+              },
+            };
+          },
+          rest: {},
+        }) as never,
+      repo,
+    );
+
+    expect(result).toMatchObject({ synced: 2, incomplete: false });
+    expect(terminalCursors).toEqual([null]);
+    const [completed] = await db
+      .select()
+      .from(schedulerWatermarks)
+      .where(eq(schedulerWatermarks.name, watermarkName));
+    expect(completed?.cursor).toBeNull();
+    expect(completed?.scanStartedAt).toBeNull();
+    expect(completed?.lastTick.getTime()).toBeGreaterThan(previousCompletedAt.getTime());
+  });
+
+  it("walks past an open PR high-water boundary to reconcile missed CI webhooks", async () => {
+    const owner = `open-pr-watermark-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    await db.insert(schedulerWatermarks).values({
+      name: `github.pull_requests.open:${repo.id}`,
+      lastTick: new Date("2026-08-01T12:00:00Z"),
+    });
+    const openCursors: unknown[] = [];
+    const node = (number: number) => ({
+      number,
+      title: `PR ${number}`,
+      state: "OPEN",
+      isDraft: false,
+      author: { login: "octocat" },
+      headRefName: `feature/${number}`,
+      headRefOid: `sha-${number}`,
+      baseRefName: "main",
+      url: `https://github.test/${owner}/repo/pull/${number}`,
+      createdAt: "2026-08-01T11:57:00Z",
+      updatedAt: "2026-08-01T11:58:00Z",
+      closedAt: null,
+      mergedAt: null,
+      closingIssuesReferences: { nodes: [] },
+      commits: { nodes: [{ commit: { oid: `sha-${number}`, statusCheckRollup: null } }] },
+    });
+    const result = await syncRepoPullRequests(
+      db,
+      async () =>
+        ({
+          graphql: async (_query: string, variables: Record<string, unknown>) => {
+            const states = variables.states as string[];
+            if (!states.includes("OPEN")) {
+              return {
+                repository: {
+                  pullRequests: { nodes: [], pageInfo: { endCursor: null, hasNextPage: false } },
+                },
+              };
+            }
+            openCursors.push(variables.cursor);
+            if (variables.cursor === null) {
+              return {
+                repository: {
+                  pullRequests: {
+                    nodes: [node(71_300)],
+                    pageInfo: { endCursor: "open-next", hasNextPage: true },
+                  },
+                },
+              };
+            }
+            return {
+              repository: {
+                pullRequests: {
+                  nodes: [node(71_299)],
+                  pageInfo: { endCursor: null, hasNextPage: false },
+                },
+              },
+            };
+          },
+          rest: {},
+        }) as never,
+      repo,
+    );
+
+    expect(result).toMatchObject({ synced: 2, incomplete: false });
+    expect(openCursors).toEqual([null, "open-next"]);
+  });
+
+  it("fans scheduled mirror reconciliation out to every installed repository", async () => {
+    await insertRepoWithInstallation(`scheduled-a-${Date.now()}`);
+    await insertRepoWithInstallation(`scheduled-b-${Date.now()}`);
+    const installedRepos = (await db.select().from(repos)).filter((repo) => repo.installationId);
+    const enqueued: Array<{ queue: string; data: Record<string, unknown> }> = [];
+
+    const result = await enqueueGithubIssuesSync(db, config, {}, undefined, async (queue, data) => {
+      enqueued.push({ queue, data });
+      return null;
+    });
+
+    expect(result).toEqual({ reposScheduled: installedRepos.length });
+    expect(
+      enqueued
+        .map(({ queue, data }) => `${queue}:${String(data.orgId)}:${String(data.repoId)}`)
+        .sort(),
+    ).toEqual(installedRepos.map((repo) => `github.issues-sync:${repo.orgId}:${repo.id}`).sort());
+  });
+
+  it("idempotently mirrors PR webhooks while preserving CI only for an unchanged head", async () => {
+    const owner = `webhook-pr-${Date.now()}`;
+    const repo = await insertRepo({ owner, name: "repo" });
+    const number = 71_001;
+    await insertPullRequest(repo.id, number, {
+      closingIssues: [7],
+      ciState: "success",
+      ciHeadSha: "old-sha",
+      headSha: "old-sha",
+    });
+    const payload = {
+      action: "synchronize",
+      repository: { owner: { login: owner }, name: repo.name },
+      pull_request: {
+        number,
+        title: "Updated PR",
+        state: "open",
+        draft: false,
+        user: { login: "octocat" },
+        html_url: `https://github.test/${owner}/${repo.name}/pull/${number}`,
+        body: "Updated body",
+        base: { ref: "main" },
+        head: { ref: "feature/new", sha: "new-sha" },
+        created_at: "2026-08-01T00:00:00Z",
+        updated_at: "2026-08-02T00:00:00Z",
+      },
+    };
+    await upsertGhPullRequestFromWebhook(db, orgId, payload);
+    await upsertGhPullRequestFromWebhook(db, orgId, payload);
+    const rows = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, number)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      title: "Updated PR",
+      headSha: "new-sha",
+      closingIssues: [7],
+      ciState: null,
+      ciHeadSha: null,
+    });
+
+    const ciUpdatedAt = new Date("2026-08-02T01:00:00Z");
+    await db
+      .update(ghPullRequests)
+      .set({ ciState: "success", ciHeadSha: "new-sha", ciUpdatedAt })
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, number)));
+    await upsertGhPullRequestFromWebhook(db, orgId, {
+      ...payload,
+      action: "edited",
+      pull_request: { ...payload.pull_request, title: "Metadata-only update" },
+    });
+    const [unchangedHead] = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, number)));
+    expect(unchangedHead).toMatchObject({
+      title: "Metadata-only update",
+      headSha: "new-sha",
+      ciState: "success",
+      ciHeadSha: "new-sha",
+      ciUpdatedAt,
+    });
+  });
+
+  it("refreshes aggregate PR CI while isolating default-branch operational signals", async () => {
+    const owner = `checks-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const prNumber = 72_001;
+    await insertPullRequest(repo.id, prNumber, {
+      headRef: "feature/checks",
+      headSha: "feature-sha",
+      ciState: "pending",
+      ciHeadSha: "feature-sha",
+    });
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({ id: newId("int"), orgId, kind: "github", name: `checks-${Date.now()}` })
+        .returning()
+    )[0];
+    if (!integration) throw new Error("integration fixture missing");
+
+    let rollupState: "PENDING" | "SUCCESS" | "FAILURE" = "FAILURE";
+    let refreshCalls = 0;
+    const factory = async () =>
+      ({
+        graphql: async (_query: string, variables: Record<string, unknown>) => {
+          refreshCalls += 1;
+          return {
+            repository: {
+              pullRequest: {
+                number: variables.number,
+                title: "PR CI",
+                state: "OPEN",
+                isDraft: false,
+                author: { login: "octocat" },
+                headRefName: "feature/checks",
+                headRefOid: "feature-sha",
+                baseRefName: "main",
+                url: `https://github.test/${owner}/repo/pull/${prNumber}`,
+                createdAt: "2026-08-01T00:00:00Z",
+                updatedAt: "2026-08-01T00:00:00Z",
+                closingIssuesReferences: { nodes: [] },
+                commits: {
+                  nodes: [
+                    {
+                      commit: {
+                        oid: "feature-sha",
+                        statusCheckRollup: { state: rollupState },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          };
+        },
+        rest: {},
+      }) as never;
+    const deliver = async (eventType: string, payload: Record<string, unknown>) => {
+      const eventId = newId("evt");
+      await db.insert(inboundEvents).values({
+        id: eventId,
+        orgId,
+        integrationId: integration.id,
+        eventType,
+        payload: {
+          repository: { owner: { login: owner }, name: repo.name },
+          ...payload,
+        },
+        verified: true,
+      });
+      await processGithubWebhook(db, config, { inboundEventId: eventId }, factory);
+    };
+
+    await deliver("check_run", {
+      action: "created",
+      check_run: {
+        name: "build",
+        status: "in_progress",
+        head_sha: "feature-sha",
+        pull_requests: [{ number: prNumber }],
+        check_suite: { head_branch: "feature/checks", head_sha: "feature-sha" },
+      },
+    });
+    await deliver("check_suite", {
+      action: "requested",
+      check_suite: {
+        status: "in_progress",
+        head_sha: "feature-sha",
+        pull_requests: [{ number: prNumber }],
+      },
+    });
+    await deliver("status", { state: "pending", sha: "feature-sha" });
+    expect(refreshCalls).toBe(0);
+
+    // A green individual event still re-reads GitHub's red aggregate. The
+    // empty PR array exercises fork delivery resolution by head SHA.
+    await deliver("check_run", {
+      check_run: {
+        name: "build",
+        status: "completed",
+        conclusion: "success",
+        head_sha: "feature-sha",
+        pull_requests: [],
+        check_suite: { head_branch: "feature/checks", head_sha: "feature-sha" },
+      },
+    });
+    expect(refreshCalls).toBe(1);
+    let [mirrored] = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, prNumber)));
+    expect(mirrored?.ciState).toBe("failure");
+    rollupState = "SUCCESS";
+    await deliver("check_suite", {
+      action: "completed",
+      check_suite: {
+        status: "completed",
+        head_sha: "feature-sha",
+        pull_requests: [{ number: prNumber }],
+      },
+    });
+    expect(refreshCalls).toBe(2);
+    [mirrored] = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, prNumber)));
+    expect(mirrored?.ciState).toBe("success");
+
+    rollupState = "FAILURE";
+    await deliver("status", { state: "failure", sha: "feature-sha" });
+    expect(refreshCalls).toBe(3);
+    [mirrored] = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, prNumber)));
+    expect(mirrored?.ciState).toBe("failure");
+    expect(
+      await db
+        .select()
+        .from(platformIssues)
+        .where(eq(platformIssues.fingerprint, `check:${repo.id}:feature/checks:build`)),
+    ).toHaveLength(0);
+
+    const legacyFingerprint = `check:${repo.id}:build`;
+    await db.insert(platformIssues).values({
+      id: newId("iss"),
+      orgId,
+      projectId,
+      kind: "check",
+      severity: "error",
+      fingerprint: legacyFingerprint,
+      title: "Legacy branchless check",
+      bodyMd: "Opened before branch-scoped check fingerprints.",
+    });
+    await deliver("check_run", {
+      check_run: {
+        name: "build",
+        status: "completed",
+        conclusion: "success",
+        head_sha: "feature-sha",
+        pull_requests: [{ number: prNumber }],
+        check_suite: { head_branch: "feature/checks", head_sha: "feature-sha" },
+      },
+    });
+    const [legacyAfterFeatureSuccess] = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, legacyFingerprint));
+    expect(legacyAfterFeatureSuccess?.state).toBe("open");
+
+    await deliver("check_run", {
+      check_run: {
+        name: "build",
+        status: "completed",
+        conclusion: "failure",
+        head_sha: "main-sha",
+        // GitHub may associate a default-branch commit with the PR it merged;
+        // branch identity, not this hint array, decides incident routing.
+        pull_requests: [{ number: prNumber }],
+        check_suite: { head_branch: "main", head_sha: "main-sha" },
+      },
+    });
+    const mainFingerprint = `check:${repo.id}:main:build`;
+    let [mainIssue] = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, mainFingerprint));
+    expect(mainIssue?.state).toBe("open");
+    const [legacyIssue] = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, legacyFingerprint));
+    expect(legacyIssue?.state).toBe("open");
+
+    rollupState = "SUCCESS";
+    await deliver("check_run", {
+      check_run: {
+        name: "build",
+        status: "completed",
+        conclusion: "success",
+        head_sha: "feature-sha",
+        pull_requests: [{ number: prNumber }],
+        check_suite: { head_branch: "feature/checks", head_sha: "feature-sha" },
+      },
+    });
+    [mainIssue] = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, mainFingerprint));
+    expect(mainIssue?.state).toBe("open");
+
+    await deliver("check_run", {
+      check_run: {
+        name: "build",
+        status: "completed",
+        conclusion: "success",
+        head_sha: "main-sha",
+        pull_requests: [],
+        check_suite: { head_branch: "main", head_sha: "main-sha" },
+      },
+    });
+    [mainIssue] = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, mainFingerprint));
+    expect(mainIssue?.state).toBe("resolved");
+    const [recoveredLegacyIssue] = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, legacyFingerprint));
+    expect(recoveredLegacyIssue?.state).toBe("resolved");
+
+    rollupState = "PENDING";
+    await deliver("workflow_run", {
+      action: "completed",
+      workflow_run: {
+        name: "ordinary-repository-ci",
+        conclusion: "success",
+        head_sha: "feature-sha",
+        pull_requests: [],
+      },
+    });
+    [mirrored] = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, prNumber)));
+    expect(mirrored?.ciState).toBe("pending");
+  });
+
+  it("dispatches CI-doctor before a best-effort PR snapshot refresh", async () => {
+    const owner = `workflow-refresh-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    await db
+      .update(repos)
+      .set({ renderAnswers: { execution_lane: { "ci-doctor": "platform" } } })
+      .where(eq(repos.id, repo.id));
+    await insertAgent("ci-doctor", [
+      { type: "github", event: "workflow_run", action: "completed" },
+    ]);
+    await insertPullRequest(repo.id, 72_100, {
+      headRef: "feature/ci-doctor",
+      headSha: "ci-doctor-sha",
+    });
+    const installation = (
+      await db
+        .select()
+        .from(githubInstallations)
+        .where(eq(githubInstallations.id, repo.installationId ?? ""))
+        .limit(1)
+    )[0];
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({ id: newId("int"), orgId, kind: "github", name: `workflow-${Date.now()}` })
+        .returning()
+    )[0];
+    if (!installation || !integration) throw new Error("workflow fixtures missing");
+    const eventId = newId("evt");
+    await db.insert(inboundEvents).values({
+      id: eventId,
+      orgId,
+      integrationId: integration.id,
+      eventType: "workflow_run",
+      verified: true,
+      payload: {
+        action: "completed",
+        installation: { id: installation.installationId },
+        repository: { owner: { login: owner }, name: repo.name },
+        sender: { login: "maintainer" },
+        workflow_run: {
+          name: "facility-guards",
+          conclusion: "failure",
+          head_branch: "feature/ci-doctor",
+          head_sha: "ci-doctor-sha",
+          html_url: "https://github.test/workflow/1",
+          pull_requests: [],
+        },
+      },
+    });
+    const enqueued: Array<{ queue: string; data: Record<string, unknown> }> = [];
+    const warnings: Array<{ context: Record<string, unknown>; message: string }> = [];
+    await processGithubWebhook(
+      db,
+      config,
+      { inboundEventId: eventId },
+      async () =>
+        ({
+          graphql: async () => {
+            throw new Error("GraphQL rate limited");
+          },
+          rest: {},
+        }) as never,
+      async (queue, data) => {
+        enqueued.push({ queue, data });
+        return null;
+      },
+      {
+        warn: (context, message) => warnings.push({ context, message }),
+      },
+    );
+
+    const [run] = await db
+      .select()
+      .from(runs)
+      .where(and(eq(runs.projectId, projectId), sql`${runs.trigger}->>'delivery' = ${eventId}`));
+    expect(run?.mode).toBe("ci_doctor");
+    expect(enqueued).toContainEqual({ queue: "runs.dispatch", data: { runId: run?.id, orgId } });
+    const [processed] = await db.select().from(inboundEvents).where(eq(inboundEvents.id, eventId));
+    expect(processed?.processedAt).not.toBeNull();
+    expect(processed?.error).toBeNull();
+    expect(warnings).toEqual([
+      {
+        context: expect.objectContaining({
+          inboundEventId: eventId,
+          orgId,
+          eventType: "workflow_run",
+          owner,
+          repo: repo.name,
+          headSha: "ci-doctor-sha",
+          error: "GraphQL rate limited",
+        }),
+        message: "GitHub pull-request snapshot refresh failed; scheduled reconciliation will retry",
+      },
+    ]);
+  });
+
   it("lists mirrored issues with pagination, state filtering, and linked runs", async () => {
     const repo = await insertRepo({ owner: `list-${Date.now()}`, name: "repo" });
     await insertIssue(repo.id, 1, "open", "2026-02-01T00:00:00Z");
@@ -186,17 +1218,458 @@ describe("github platform lane", async () => {
     expect(closed.json().items.map((item: { number: number }) => item.number)).toContain(3);
   });
 
+  it("serves repository-qualified issue and orphan-PR stories from one pipeline contract", async () => {
+    const number = 80_000;
+    const repoA = await insertRepo({ owner: `stories-a-${Date.now()}`, name: "repo" });
+    const repoB = await insertRepo({ owner: `stories-b-${Date.now()}`, name: "repo" });
+    await insertIssue(repoA.id, number, "open", "2026-08-01T00:00:00Z");
+    await insertIssue(repoB.id, number, "open", "2026-08-01T00:00:00Z");
+    const run = await insertRun({
+      status: "running",
+      gh: { owner: repoA.owner.toUpperCase(), repo: repoA.name.toUpperCase(), issueNumber: number },
+    });
+    await insertPullRequest(repoA.id, number + 1, {
+      closingIssues: [number],
+      ciState: "pending",
+      ciHeadSha: `head-${number + 1}`,
+    });
+    await insertPullRequest(repoB.id, number + 2, {
+      title: "Human-created orphan PR",
+      bodyMd: "No issue closes this PR.",
+    });
+    await insertIssue(repoB.id, number + 3, "closed", "2026-06-01T00:00:00Z");
+    await insertPullRequest(repoB.id, number + 4, {
+      title: "PR linked only to an old closed issue",
+      closingIssues: [number + 3],
+    });
+    const pendingIssueNumber = number + 5;
+    const pendingPullNumber = number + 6;
+    await insertIssue(repoA.id, pendingIssueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repoA.id, pendingPullNumber, {
+      title: "Run-linked PR still validating",
+      ciState: "pending",
+      ciHeadSha: `head-${pendingPullNumber}`,
+    });
+    await insertRun({
+      status: "succeeded",
+      gh: {
+        owner: repoA.owner,
+        repo: repoA.name,
+        issueNumber: pendingIssueNumber,
+        pr: {
+          number: pendingPullNumber,
+          url: `https://github.com/o/r/pull/${pendingPullNumber}`,
+        },
+      },
+    });
+    const draftIssueNumber = number + 7;
+    const draftPullNumber = number + 8;
+    await insertIssue(repoA.id, draftIssueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repoA.id, draftPullNumber, {
+      title: "Run-linked draft PR",
+      draft: true,
+    });
+    await insertRun({
+      status: "succeeded",
+      gh: {
+        owner: repoA.owner,
+        repo: repoA.name,
+        issueNumber: draftIssueNumber,
+        pr: { number: draftPullNumber, url: `https://github.com/o/r/pull/${draftPullNumber}` },
+      },
+    });
+    const provenanceIssueNumber = number + 9;
+    const provenancePullNumber = number + 10;
+    await insertIssue(repoA.id, provenanceIssueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertRun({
+      status: "succeeded",
+      gh: {
+        owner: repoA.owner,
+        repo: repoA.name,
+        issueNumber: provenanceIssueNumber,
+        pr: {
+          number: provenancePullNumber,
+          url: `https://github.com/${repoA.owner}/${repoA.name}/pull/${provenancePullNumber}`,
+        },
+      },
+    });
+    const legacyProposal = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: { cookie },
+      payload: {
+        projectId,
+        actionType: "plan_acceptance",
+        payload: { issueNumber: number },
+        contextMd: "Legacy proposal without a repository id",
+      },
+    });
+    expect(legacyProposal.statusCode, legacyProposal.body).toBe(200);
+
+    const pipeline = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/pipeline`,
+      headers: { cookie },
+    });
+    expect(pipeline.statusCode, pipeline.body).toBe(200);
+    const stages = pipeline.json().stages as Array<{
+      key: string;
+      stories: Array<{
+        key: string;
+        storyType: string;
+        currentRun: { id: string } | null;
+        ciState: string | null;
+        prs: Array<{ number: number; draft: boolean; ciState: string | null }>;
+      }>;
+    }>;
+    const stories = stages.flatMap((stage) =>
+      stage.stories.map((story) => ({ ...story, stage: stage.key })),
+    );
+    expect(stories.find((story) => story.key === `${repoA.id}:issue:${number}`)).toMatchObject({
+      stage: "building",
+      currentRun: { id: run.id },
+    });
+    const repoBBoardStory = stories.find((story) => story.key === `${repoB.id}:issue:${number}`);
+    expect(repoBBoardStory).toMatchObject({ stage: "backlog" });
+    const issueQuery = new URLSearchParams({ repoId: repoA.id, storyType: "issue" });
+    const issueDetail = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number}?${issueQuery}`,
+      headers: { cookie },
+    });
+    expect(issueDetail.statusCode, issueDetail.body).toBe(200);
+    expect(issueDetail.json().runs).toEqual([expect.objectContaining({ id: run.id })]);
+    const repoBIssueQuery = new URLSearchParams({ repoId: repoB.id, storyType: "issue" });
+    const repoBIssueDetail = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number}?${repoBIssueQuery}`,
+      headers: { cookie },
+    });
+    expect(repoBIssueDetail.statusCode, repoBIssueDetail.body).toBe(200);
+    expect(repoBIssueDetail.json()).toMatchObject({
+      stage: { key: repoBBoardStory?.stage },
+      allowLegacyProposalNumber: false,
+    });
+    const pendingBoardStory = stories.find(
+      (story) => story.key === `${repoA.id}:issue:${pendingIssueNumber}`,
+    );
+    expect(pendingBoardStory).toMatchObject({
+      stage: "validating",
+      ciState: "pending",
+      prs: [
+        expect.objectContaining({ number: pendingPullNumber, draft: false, ciState: "pending" }),
+      ],
+    });
+    const pendingDetail = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${pendingIssueNumber}?${issueQuery}`,
+      headers: { cookie },
+    });
+    expect(pendingDetail.statusCode, pendingDetail.body).toBe(200);
+    expect(pendingDetail.json()).toMatchObject({
+      stage: { key: pendingBoardStory?.stage },
+      prs: pendingBoardStory?.prs,
+    });
+    const draftBoardStory = stories.find(
+      (story) => story.key === `${repoA.id}:issue:${draftIssueNumber}`,
+    );
+    expect(draftBoardStory).toMatchObject({
+      stage: "building",
+      prs: [expect.objectContaining({ number: draftPullNumber, draft: true })],
+    });
+    const draftDetail = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${draftIssueNumber}?${issueQuery}`,
+      headers: { cookie },
+    });
+    expect(draftDetail.statusCode, draftDetail.body).toBe(200);
+    expect(draftDetail.json()).toMatchObject({
+      stage: { key: draftBoardStory?.stage },
+      prs: draftBoardStory?.prs,
+    });
+    const provenanceActivity = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${provenanceIssueNumber}/github-activity?${issueQuery}`,
+      headers: { cookie },
+    });
+    expect(provenanceActivity.statusCode, provenanceActivity.body).toBe(200);
+    expect(provenanceActivity.json().prs).toEqual([
+      expect.objectContaining({
+        number: provenancePullNumber,
+        title: `PR #${provenancePullNumber}`,
+      }),
+    ]);
+    const runLinkedOrphan = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${pendingPullNumber}?${new URLSearchParams({ repoId: repoA.id, storyType: "pull_request" })}`,
+      headers: { cookie },
+    });
+    expect(runLinkedOrphan.statusCode).toBe(404);
+    expect(
+      stories.find((story) => story.key === `${repoB.id}:pull_request:${number + 2}`),
+    ).toMatchObject({ stage: "review", storyType: "pull_request", currentRun: null });
+    expect(
+      stories.find((story) => story.key === `${repoB.id}:pull_request:${number + 4}`),
+    ).toMatchObject({ stage: "review", storyType: "pull_request", currentRun: null });
+
+    const ambiguous = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/issues/${number}`,
+      headers: { cookie },
+    });
+    expect(ambiguous.statusCode).toBe(409);
+
+    const ambiguousTrigger = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/issues/${number}/trigger`,
+      headers: { cookie },
+      payload: { agent: "builder" },
+    });
+    expect(ambiguousTrigger.statusCode).toBe(409);
+
+    const ambiguousStory = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number}`,
+      headers: { cookie },
+    });
+    expect(ambiguousStory.statusCode).toBe(409);
+    expect(ambiguousStory.json().error.code).toBe("ambiguous_story_number");
+
+    const ambiguousActivity = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number}/github-activity`,
+      headers: { cookie },
+    });
+    expect(ambiguousActivity.statusCode).toBe(409);
+    expect(ambiguousActivity.json().error.code).toBe("ambiguous_story_number");
+
+    const oversizedIssue = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/issues/2147483648?repoId=${repoA.id}`,
+      headers: { cookie },
+    });
+    expect(oversizedIssue.statusCode).toBe(400);
+    const oversizedStory = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/2147483648?${issueQuery}`,
+      headers: { cookie },
+    });
+    expect(oversizedStory.statusCode).toBe(400);
+    const oversizedTrigger = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/issues/2147483648/trigger?repoId=${repoA.id}`,
+      headers: { cookie },
+      payload: { agent: "builder" },
+    });
+    expect(oversizedTrigger.statusCode).toBe(400);
+    const oversizedActivity = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/2147483648/github-activity?${issueQuery}`,
+      headers: { cookie },
+    });
+    expect(oversizedActivity.statusCode).toBe(400);
+
+    const orphanQuery = new URLSearchParams({ repoId: repoB.id, storyType: "pull_request" });
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number + 2}?${orphanQuery}`,
+      headers: { cookie },
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toMatchObject({
+      key: `${repoB.id}:pull_request:${number + 2}`,
+      bodyMd: "No issue closes this PR.",
+      storyType: "pull_request",
+    });
+
+    const activity = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number + 2}/github-activity?${orphanQuery}`,
+      headers: { cookie },
+    });
+    expect(activity.statusCode, activity.body).toBe(200);
+    expect(activity.json().prs).toEqual([
+      expect.objectContaining({ number: number + 2, title: "Human-created orphan PR" }),
+    ]);
+
+    const oldIssueQuery = new URLSearchParams({ repoId: repoB.id, storyType: "pull_request" });
+    const oldIssueDetail = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number + 4}?${oldIssueQuery}`,
+      headers: { cookie },
+    });
+    expect(oldIssueDetail.statusCode, oldIssueDetail.body).toBe(200);
+    expect(oldIssueDetail.json()).toMatchObject({
+      key: `${repoB.id}:pull_request:${number + 4}`,
+      storyType: "pull_request",
+    });
+    const oldIssueActivity = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/${number + 4}/github-activity?${oldIssueQuery}`,
+      headers: { cookie },
+    });
+    expect(oldIssueActivity.statusCode, oldIssueActivity.body).toBe(200);
+  });
+
+  it("keeps fulfilled story comments when one linked PR comment fetch fails", async () => {
+    const repo = await insertRepoWithInstallation(`activity-${Date.now()}`);
+    const issueNumber = 95_000;
+    const pullNumber = issueNumber + 1;
+    await insertIssue(repo.id, issueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repo.id, pullNumber, { closingIssues: [issueNumber] });
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = async () =>
+      ({
+        rest: {
+          issues: {
+            listComments: async (input: { issue_number: number }) => {
+              if (input.issue_number === pullNumber) throw new Error("linked PR is inaccessible");
+              return {
+                data: [
+                  {
+                    id: issueNumber,
+                    user: { login: "maintainer", type: "User" },
+                    body: "Keep the issue conversation",
+                    created_at: "2026-08-01T01:00:00Z",
+                    html_url: `https://github.test/comment/${issueNumber}`,
+                  },
+                ],
+              };
+            },
+          },
+          repos: {},
+          git: {},
+          pulls: {},
+        },
+      }) as never;
+    try {
+      const query = new URLSearchParams({ repoId: repo.id, storyType: "issue" });
+      const activity = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/stories/${issueNumber}/github-activity?${query}`,
+        headers: { cookie },
+      });
+
+      expect(activity.statusCode, activity.body).toBe(200);
+      expect(activity.json().comments).toEqual([
+        expect.objectContaining({
+          id: issueNumber,
+          author: "maintainer",
+          bodyMd: "Keep the issue conversation",
+        }),
+      ]);
+      expect(activity.json().prs).toEqual([expect.objectContaining({ number: pullNumber })]);
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
+  });
+
+  it("routes approved issue updates to the requested repository and rejects ambiguity", async () => {
+    const number = 90_000;
+    const repoA = await insertRepo({ owner: `updates-a-${Date.now()}`, name: "repo" });
+    const repoB = await insertRepo({ owner: `updates-b-${Date.now()}`, name: "repo" });
+    await insertIssue(repoA.id, number, "open", "2026-08-01T00:00:00Z");
+    await insertIssue(repoB.id, number, "open", "2026-08-01T00:00:00Z");
+    const proposed = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: { cookie },
+      payload: {
+        projectId,
+        actionType: "issue_update",
+        payload: { issueNumber: number, repoId: repoB.id, title: "Repo B title", bodyMd: "Body" },
+        contextMd: "Repository-qualified issue update",
+      },
+    });
+    expect(proposed.statusCode, proposed.body).toBe(200);
+    await db
+      .update(proposals)
+      .set({ state: "approved" })
+      .where(eq(proposals.id, proposed.json().id));
+    const [candidate] = await db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.id, proposed.json().id));
+    if (!candidate) throw new Error("proposal fixture missing");
+    const updates: Array<{ number: number; title: string; body: string }> = [];
+    await executeApprovedProposal(
+      db,
+      candidate,
+      { type: "user", id: userId },
+      {
+        github: {
+          createIssue: async () => ({ number: 1, url: "https://github.test/issues/1" }),
+          updateIssue: async (input) => {
+            updates.push(input);
+          },
+        },
+      },
+    );
+    expect(updates).toEqual([{ number, title: "Repo B title", body: "Body" }]);
+    const [issueA] = await db
+      .select()
+      .from(ghIssues)
+      .where(and(eq(ghIssues.repoId, repoA.id), eq(ghIssues.number, number)));
+    const [issueB] = await db
+      .select()
+      .from(ghIssues)
+      .where(and(eq(ghIssues.repoId, repoB.id), eq(ghIssues.number, number)));
+    expect(issueA?.title).toBe(`Issue ${number}`);
+    expect(issueB?.title).toBe("Repo B title");
+
+    const ambiguous = await app.inject({
+      method: "POST",
+      url: "/v1/proposals",
+      headers: { cookie },
+      payload: {
+        projectId,
+        actionType: "issue_update",
+        payload: { issueNumber: number, title: "Wrong repo", bodyMd: "Body" },
+        contextMd: "Missing repository identity",
+      },
+    });
+    await db
+      .update(proposals)
+      .set({ state: "approved" })
+      .where(eq(proposals.id, ambiguous.json().id));
+    const [ambiguousCandidate] = await db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.id, ambiguous.json().id));
+    if (!ambiguousCandidate) throw new Error("ambiguous proposal fixture missing");
+    await executeApprovedProposal(
+      db,
+      ambiguousCandidate,
+      { type: "user", id: userId },
+      {
+        github: {
+          createIssue: async () => ({ number: 1, url: "https://github.test/issues/1" }),
+          updateIssue: async () => {
+            throw new Error("ambiguous update reached GitHub");
+          },
+        },
+      },
+    );
+    const [failed] = await db.select().from(proposals).where(eq(proposals.id, ambiguous.json().id));
+    expect(failed?.state).toBe("execution_failed");
+  });
+
   it("directly triggers an agent run for a mirrored issue", async () => {
     const enqueued: { queue: string; data: Record<string, unknown> }[] = [];
     app.enqueue = async (queue, data) => {
       enqueued.push({ queue, data });
       return null;
     };
+    const assigned: Array<{ number: number; logins: string[] }> = [];
     app.githubClientFactory = async () =>
       ({
         rest: {
           issues: {
             createComment: async () => ({ data: { id: 1, html_url: "https://example.test/c" } }),
+            addAssignees: async (input: { issue_number: number; assignees: string[] }) => {
+              assigned.push({ number: input.issue_number, logins: input.assignees });
+              return { data: { assignees: [{ login: "platform-owner" }] } };
+            },
           },
           repos: {},
           git: {},
@@ -206,6 +1679,50 @@ describe("github platform lane", async () => {
     const repo = await insertRepoWithInstallation(`trigger-${Date.now()}`);
     await insertIssue(repo.id, 44, "open", "2026-03-01T00:00:00Z");
     await insertAgent("builder");
+
+    const forged = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/runs`,
+      headers: { cookie },
+      payload: {
+        agent: "builder",
+        trigger: {
+          source: "manual",
+          message: "Verify authenticated GitHub assignment",
+          githubLogin: "forged-user",
+        },
+      },
+    });
+    expect(forged.statusCode, forged.body).toBe(200);
+    expect(forged.json().trigger.githubLogin).toBe("platform-owner");
+
+    const serviceKey = await generateApiKey("fak");
+    await db.insert(apiKeys).values({
+      id: serviceKey.id,
+      orgId,
+      name: "github-login-forgery",
+      prefix: serviceKey.lookup,
+      last4: serviceKey.last4,
+      hash: serviceKey.hash,
+      scopeType: "project",
+      projectId,
+      roleId: "role_bundled_maintainer",
+    });
+    const forgedByKey = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/runs`,
+      headers: { authorization: `Bearer ${serviceKey.secret}` },
+      payload: {
+        agent: "builder",
+        trigger: {
+          source: "manual",
+          message: "Verify authenticated GitHub assignment",
+          githubLogin: "forged-user",
+        },
+      },
+    });
+    expect(forgedByKey.statusCode, forgedByKey.body).toBe(200);
+    expect(forgedByKey.json().trigger).not.toHaveProperty("githubLogin");
 
     const response = await app.inject({
       method: "POST",
@@ -223,6 +1740,104 @@ describe("github platform lane", async () => {
     expect(enqueued).toContainEqual({
       queue: "runs.dispatch",
       data: { runId: response.json().id, orgId },
+    });
+    expect(assigned).toContainEqual({ number: 44, logins: ["platform-owner"] });
+
+    await insertIssue(repo.id, 45, "open", "2026-03-01T00:00:01Z");
+    app.githubClientFactory = async () =>
+      ({
+        rest: {
+          issues: {
+            addAssignees: async () => ({ data: { assignees: [] } }),
+            createComment: async () => ({ data: { id: 2 } }),
+          },
+          repos: {},
+          git: {},
+          pulls: {},
+        },
+      }) as never;
+    const dropped = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/issues/45/trigger?repoId=${repo.id}`,
+      headers: { cookie },
+      payload: { agent: "builder" },
+    });
+    expect(dropped.statusCode, dropped.body).toBe(200);
+    const [assignmentAudit] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "github.assignment.skipped"),
+          sql`${auditEvents.payload}->>'runId' = ${dropped.json().id}`,
+        ),
+      );
+    expect(assignmentAudit?.payload).toMatchObject({
+      login: "platform-owner",
+      reason: "github_rejected",
+    });
+
+    await insertIssue(repo.id, 46, "open", "2026-03-01T00:00:02Z");
+    app.githubClientFactory = async () =>
+      ({
+        rest: {
+          issues: {
+            addAssignees: async () => {
+              throw new Error("assignment permission denied");
+            },
+            createComment: async () => ({ data: { id: 3 } }),
+          },
+          repos: {},
+          git: {},
+          pulls: {},
+        },
+      }) as never;
+    const assignmentFailure = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/issues/46/trigger?repoId=${repo.id}`,
+      headers: { cookie },
+      payload: { agent: "builder" },
+    });
+    expect(assignmentFailure.statusCode, assignmentFailure.body).toBe(200);
+    const [failureAudit] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "github.assignment.skipped"),
+          sql`${auditEvents.payload}->>'runId' = ${assignmentFailure.json().id}`,
+        ),
+      );
+    expect(failureAudit?.payload).toMatchObject({
+      login: "platform-owner",
+      reason: "assignment permission denied",
+    });
+
+    await insertIssue(repo.id, 47, "open", "2026-03-01T00:00:03Z");
+    await db.update(userIdentities).set({ login: null }).where(eq(userIdentities.userId, userId));
+    const missingLogin = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/issues/47/trigger?repoId=${repo.id}`,
+      headers: { cookie },
+      payload: { agent: "builder" },
+    });
+    await db
+      .update(userIdentities)
+      .set({ login: "platform-owner" })
+      .where(eq(userIdentities.userId, userId));
+    expect(missingLogin.statusCode, missingLogin.body).toBe(200);
+    const [missingLoginAudit] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "github.assignment.skipped"),
+          sql`${auditEvents.payload}->>'runId' = ${missingLogin.json().id}`,
+        ),
+      );
+    expect(missingLoginAudit?.payload).toMatchObject({
+      login: null,
+      reason: "missing_github_login",
     });
 
     const missing = await app.inject({
@@ -318,6 +1933,25 @@ describe("github platform lane", async () => {
       headers: auth,
     });
     expect(sync.statusCode).toBe(404);
+    const pipeline = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/pipeline`,
+      headers: auth,
+    });
+    expect(pipeline.statusCode).toBe(404);
+    const storyQuery = new URLSearchParams({ repoId: "repo_scoped", storyType: "issue" });
+    const story = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/44?${storyQuery}`,
+      headers: auth,
+    });
+    expect(story.statusCode).toBe(404);
+    const activity = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${projectId}/stories/44/github-activity?${storyQuery}`,
+      headers: auth,
+    });
+    expect(activity.statusCode).toBe(404);
   });
 
   it("lists installations and installation repositories with org isolation", async () => {
@@ -504,6 +2138,223 @@ describe("github platform lane", async () => {
     expect(outcome?.prNumber).toBe(12);
   });
 
+  it("finishRun creates GitHub's closing link and assigns the persisted trigger login", async () => {
+    const repo = await insertRepoWithInstallation(`finish-linked-${Date.now()}`);
+    await insertIssue(repo.id, 57, "open", "2026-08-01T00:00:00Z");
+    const run = await insertRun({
+      status: "running",
+      trigger: { type: "web_issue", githubLogin: "platform-owner" },
+      gh: { owner: repo.owner, repo: repo.name, issueNumber: 57 },
+    });
+    const createdPulls: Array<Record<string, unknown>> = [];
+    const assignments: Array<Record<string, unknown>> = [];
+    await finishRun(
+      db,
+      run,
+      {
+        status: "succeeded",
+        git: {
+          changed: true,
+          branch: "feature/57-linked",
+          headSha: "linked57",
+          pullRequestTitle: "feat: link and assign",
+          pullRequestBody: "Implementation details",
+        },
+      },
+      {
+        config,
+        githubClientFactory: async () =>
+          ({
+            rest: {
+              pulls: {
+                create: async (input: Record<string, unknown>) => {
+                  createdPulls.push(input);
+                  return { data: { number: 58, html_url: "https://github.test/o/r/pull/58" } };
+                },
+              },
+              issues: {
+                addAssignees: async (input: Record<string, unknown>) => {
+                  assignments.push(input);
+                  return { data: { assignees: [{ login: "platform-owner" }] } };
+                },
+                createComment: async () => ({ data: { id: 1 } }),
+              },
+              repos: {},
+              git: {},
+            },
+          }) as never,
+      },
+    );
+
+    expect(createdPulls[0]).toMatchObject({ body: "Closes #57\n\nImplementation details" });
+    expect(assignments[0]).toMatchObject({
+      issue_number: 58,
+      assignees: ["platform-owner"],
+    });
+    const skipped = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "github.assignment.skipped"),
+          sql`${auditEvents.target}->>'id' = ${"58"}`,
+        ),
+      );
+    expect(skipped).toHaveLength(0);
+  });
+
+  it("finishRun treats PR assignment API errors as audited non-events", async () => {
+    const repo = await insertRepoWithInstallation(`finish-assignment-error-${Date.now()}`);
+    await insertIssue(repo.id, 59, "open", "2026-08-01T00:00:00Z");
+    const run = await insertRun({
+      status: "running",
+      trigger: { type: "web_issue", githubLogin: "platform-owner" },
+      gh: { owner: repo.owner, repo: repo.name, issueNumber: 59 },
+    });
+    const finished = await finishRun(
+      db,
+      run,
+      {
+        status: "succeeded",
+        git: {
+          changed: true,
+          branch: "feature/59-assignment-error",
+          headSha: "assignment59",
+          pullRequestTitle: "feat: survive assignment errors",
+          pullRequestBody: "Implementation details",
+        },
+      },
+      {
+        config,
+        githubClientFactory: async () =>
+          ({
+            rest: {
+              pulls: {
+                create: async () => ({
+                  data: { number: 60, html_url: "https://github.test/o/r/pull/60" },
+                }),
+              },
+              issues: {
+                addAssignees: async () => {
+                  throw new Error("assignment permission denied");
+                },
+                createComment: async () => ({ data: { id: 1 } }),
+              },
+              repos: {},
+              git: {},
+            },
+          }) as never,
+      },
+    );
+
+    expect(finished.status).toBe("succeeded");
+    const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
+    expect(stored).toMatchObject({ status: "succeeded" });
+    expect((stored?.gh as { pr?: { number?: number } }).pr?.number).toBe(60);
+    const [outcome] = await db.select().from(outcomes).where(eq(outcomes.runId, run.id));
+    expect(outcome?.prNumber).toBe(60);
+    const [assignmentAudit] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "github.assignment.skipped"),
+          sql`${auditEvents.payload}->>'runId' = ${run.id}`,
+        ),
+      );
+    expect(assignmentAudit?.payload).toMatchObject({
+      pullNumber: 60,
+      login: "platform-owner",
+      reason: "assignment permission denied",
+    });
+  });
+
+  it.each([
+    {
+      label: "GitHub silently rejects the assignee",
+      issueNumber: 61,
+      login: "platform-owner",
+      reason: "github_rejected",
+      assignmentCalls: 1,
+    },
+    {
+      label: "the triggering user has no linked GitHub login",
+      issueNumber: 63,
+      login: null,
+      reason: "missing_github_login",
+      assignmentCalls: 0,
+    },
+  ])("finishRun succeeds and audits when $label", async (fixture) => {
+    const repo = await insertRepoWithInstallation(`finish-assignment-skip-${fixture.issueNumber}`);
+    await insertIssue(repo.id, fixture.issueNumber, "open", "2026-08-01T00:00:00Z");
+    const run = await insertRun({
+      status: "running",
+      trigger: {
+        type: "web_issue",
+        ...(fixture.login ? { githubLogin: fixture.login } : {}),
+      },
+      gh: { owner: repo.owner, repo: repo.name, issueNumber: fixture.issueNumber },
+    });
+    let assignmentCalls = 0;
+    const pullNumber = fixture.issueNumber + 1;
+    const finished = await finishRun(
+      db,
+      run,
+      {
+        status: "succeeded",
+        git: {
+          changed: true,
+          branch: `feature/${fixture.issueNumber}-assignment-skip`,
+          headSha: `assignment${fixture.issueNumber}`,
+          pullRequestTitle: "feat: survive skipped assignment",
+          pullRequestBody: "Implementation details",
+        },
+      },
+      {
+        config,
+        githubClientFactory: async () =>
+          ({
+            rest: {
+              pulls: {
+                create: async () => ({
+                  data: {
+                    number: pullNumber,
+                    html_url: `https://github.test/o/r/pull/${pullNumber}`,
+                  },
+                }),
+              },
+              issues: {
+                addAssignees: async () => {
+                  assignmentCalls += 1;
+                  return { data: { assignees: [] } };
+                },
+                createComment: async () => ({ data: { id: 1 } }),
+              },
+              repos: {},
+              git: {},
+            },
+          }) as never,
+      },
+    );
+
+    expect(finished.status).toBe("succeeded");
+    expect(assignmentCalls).toBe(fixture.assignmentCalls);
+    const [assignmentAudit] = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "github.assignment.skipped"),
+          sql`${auditEvents.payload}->>'runId' = ${run.id}`,
+        ),
+      );
+    expect(assignmentAudit?.payload).toMatchObject({
+      pullNumber,
+      login: fixture.login,
+      reason: fixture.reason,
+    });
+  });
+
   it("finishRun attaches an SSO-only Facility preview to a delivered PR", async () => {
     const repo = await insertRepoWithInstallation(`preview-${Date.now()}`);
     await db
@@ -634,6 +2485,7 @@ describe("github platform lane", async () => {
     expect(comments[0]).toContain("Prove it with the mirror test");
     const [proposal] = await db.select().from(proposals).where(eq(proposals.runId, run.id));
     expect(proposal?.state).toBe("open");
+    expect(proposal?.payload).toMatchObject({ issueNumber: 71, repoId: repo.id });
   });
 
   it("finishRun PR failures fail delivery and raise an artifact issue", async () => {
@@ -747,7 +2599,32 @@ describe("github platform lane", async () => {
     });
   }
 
-  async function insertAgent(name: string) {
+  async function insertPullRequest(
+    repoId: string,
+    number: number,
+    overrides: Partial<typeof ghPullRequests.$inferInsert> = {},
+  ) {
+    await db.insert(ghPullRequests).values({
+      id: newId("ghp"),
+      orgId,
+      projectId,
+      repoId,
+      number,
+      title: `PR ${number}`,
+      state: "open",
+      draft: false,
+      headRef: `feature/${number}`,
+      headSha: `head-${number}`,
+      baseRef: "main",
+      htmlUrl: `https://github.com/o/r/pull/${number}`,
+      closingIssues: [],
+      ghCreatedAt: new Date("2026-08-01T00:00:00Z"),
+      ghUpdatedAt: new Date("2026-08-01T00:00:00Z"),
+      ...overrides,
+    });
+  }
+
+  async function insertAgent(name: string, triggers: unknown[] = [{ command: name }]) {
     const item = (
       await db
         .insert(registryItems)
@@ -774,7 +2651,7 @@ describe("github platform lane", async () => {
           engine: "codex",
           model: { primary: "gpt-5.5" },
           contractItemId: item.id,
-          triggers: [{ command: name }],
+          triggers,
         })
         .returning()
     )[0];
@@ -786,6 +2663,7 @@ describe("github platform lane", async () => {
     input: {
       mode?: string;
       status?: string;
+      trigger?: Record<string, unknown>;
       gh?: Record<string, unknown>;
       sandbox?: Record<string, unknown>;
     } = {},
@@ -800,7 +2678,7 @@ describe("github platform lane", async () => {
           mode: input.mode ?? "builder",
           engine: "codex",
           status: input.status ?? "queued",
-          trigger: {},
+          trigger: input.trigger ?? {},
           sandbox: input.sandbox ?? {},
           gh: input.gh ?? {},
           createdBy: { type: "user", id: "test" },

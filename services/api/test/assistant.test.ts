@@ -16,6 +16,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import type { AssistantModelDriver, AssistantModelTurn } from "../src/assistant/loop.js";
+import { ASSISTANT_TOOLS } from "../src/assistant/tools.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -92,6 +93,28 @@ describe("assistant ask endpoint", async () => {
   afterAll(async () => {
     await app.close();
     await client.end();
+  });
+
+  it("forwards repository identity through issue read and update tools", () => {
+    const getIssue = ASSISTANT_TOOLS.find((tool) => tool.name === "get_issue");
+    const proposeUpdate = ASSISTANT_TOOLS.find((tool) => tool.name === "propose_issue_update");
+    expect(getIssue?.inputSchema).toMatchObject({
+      properties: { number: { type: "integer" }, repoId: { type: "string" } },
+      required: ["number"],
+      additionalProperties: false,
+    });
+    expect(
+      getIssue?.toRequest({ number: 7, repoId: "repo_two" }, { projectId: "project" }),
+    ).toMatchObject({
+      path: "/v1/projects/project/issues/7",
+      query: { repoId: "repo_two" },
+    });
+    expect(
+      proposeUpdate?.toRequest(
+        { issueNumber: 7, repoId: "repo_two", title: "Title", bodyMd: "Body", reason: "S001" },
+        { projectId: "project" },
+      ).body,
+    ).toMatchObject({ payload: { issueNumber: 7, repoId: "repo_two" } });
   });
 
   it("rejects unauthenticated asks", async () => {

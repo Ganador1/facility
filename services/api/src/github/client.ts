@@ -3,6 +3,7 @@ import { Octokit as RestOctokit } from "@octokit/rest";
 import type { AppConfig } from "../types.js";
 
 export type Octokit = {
+  graphql?: <T>(query: string, variables?: Record<string, unknown>) => Promise<T>;
   request?: (
     route: string,
     args?: Record<string, unknown>,
@@ -57,6 +58,9 @@ export type Octokit = {
           title: string;
           body?: string | null;
           state: string;
+          draft?: boolean;
+          created_at?: string | null;
+          closed_at?: string | null;
           merged_at?: string | null;
           html_url: string;
           user?: { login?: string } | null;
@@ -77,6 +81,9 @@ export type Octokit = {
       updateComment: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { id: number; html_url?: string } }>;
+      addAssignees?: (args: Record<string, unknown>) => Promise<{
+        data: { assignees?: Array<{ login?: string | null }> };
+      }>;
       listForRepo: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
       listComments?: (args: Record<string, unknown>) => Promise<{
         data: Array<{
@@ -154,6 +161,32 @@ export type RepoRef = {
   defaultBranch: string;
 };
 
+export type GithubPullRequestSnapshot = {
+  number: number;
+  title: string;
+  state: "open" | "closed" | "merged";
+  draft: boolean;
+  author: string | null;
+  headRef: string;
+  headSha: string;
+  baseRef: string;
+  url: string;
+  body: string | null;
+  closingIssues: number[];
+  ciState: "pending" | "success" | "failure" | null;
+  ciHeadSha: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+  closedAt: string | null;
+  mergedAt: string | null;
+};
+
+export type GithubPullRequestPage = {
+  pullRequests: GithubPullRequestSnapshot[];
+  endCursor: string | null;
+  hasNextPage: boolean;
+};
+
 export type TreeItem = {
   path: string;
   mode: "100644" | "100755" | "120000";
@@ -167,6 +200,10 @@ export class FacilityGithubClient {
     private readonly octokit: Octokit,
     private readonly repo: RepoRef,
   ) {}
+
+  supportsPullRequestSnapshots() {
+    return Boolean(this.octokit.graphql || this.octokit.request);
+  }
 
   async getDefaultBranchSha(): Promise<string> {
     const response = await this.octokit.rest.repos.getBranch({
@@ -285,6 +322,43 @@ export class FacilityGithubClient {
       base: args.base ?? this.repo.defaultBranch,
     });
     return { number: response.data.number, url: response.data.html_url };
+  }
+
+  async listPullRequestSnapshots(params: {
+    cursor?: string;
+    perPage?: number;
+    states?: Array<"OPEN" | "CLOSED" | "MERGED">;
+  }): Promise<GithubPullRequestPage> {
+    const data = await this.graphql<GithubPullRequestListQuery>(PULL_REQUEST_LIST_QUERY, {
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      cursor: params.cursor ?? null,
+      first: params.perPage ?? 100,
+      states: params.states ?? null,
+    });
+    const connection = data.repository?.pullRequests;
+    const snapshots = await Promise.all(
+      (connection?.nodes ?? []).map(async (node) =>
+        pullRequestSnapshot(await this.completeClosingIssuePages(node), this.repo),
+      ),
+    );
+    return {
+      pullRequests: snapshots.filter((value): value is GithubPullRequestSnapshot => value !== null),
+      endCursor: connection?.pageInfo.endCursor ?? null,
+      hasNextPage: connection?.pageInfo.hasNextPage ?? false,
+    };
+  }
+
+  async getPullRequestSnapshot(number: number): Promise<GithubPullRequestSnapshot | null> {
+    const data = await this.graphql<GithubPullRequestQuery>(PULL_REQUEST_QUERY, {
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      number,
+    });
+    return pullRequestSnapshot(
+      await this.completeClosingIssuePages(data.repository?.pullRequest ?? null),
+      this.repo,
+    );
   }
 
   async createIssue(input: {
@@ -418,6 +492,22 @@ export class FacilityGithubClient {
     });
   }
 
+  /** GitHub can return 201 while silently dropping an ineligible assignee. */
+  async assignIssue(number: number, login: string): Promise<boolean> {
+    if (!this.octokit.rest.issues.addAssignees) {
+      throw new Error("GitHub issue assignment is unavailable");
+    }
+    const response = await this.octokit.rest.issues.addAssignees({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      issue_number: number,
+      assignees: [login],
+    });
+    return (response.data.assignees ?? []).some(
+      (assignee) => assignee.login?.toLowerCase() === login.toLowerCase(),
+    );
+  }
+
   async listIssues(params: {
     state: "all" | "open" | "closed";
     since?: string;
@@ -429,6 +519,8 @@ export class FacilityGithubClient {
       repo: this.repo.repo,
       state: params.state,
       since: params.since,
+      sort: "updated",
+      direction: "asc",
       page: params.page,
       per_page: params.perPage,
     });
@@ -468,7 +560,11 @@ export class FacilityGithubClient {
     body: string;
     author: string;
     url: string;
-    state: string;
+    state: "open" | "closed" | "merged";
+    draft: boolean;
+    createdAt: string | null;
+    closedAt: string | null;
+    mergedAt: string | null;
   }> {
     if (!this.octokit.rest.pulls.get) throw new Error("GitHub PR reads are unavailable");
     const response = await this.octokit.rest.pulls.get({
@@ -482,7 +578,15 @@ export class FacilityGithubClient {
       body: response.data.body ?? "",
       author: response.data.user?.login ?? "unknown",
       url: response.data.html_url,
-      state: response.data.merged_at ? "merged" : response.data.state,
+      state: response.data.merged_at
+        ? "merged"
+        : response.data.state === "closed"
+          ? "closed"
+          : "open",
+      draft: response.data.draft ?? false,
+      createdAt: response.data.created_at ?? null,
+      closedAt: response.data.closed_at ?? null,
+      mergedAt: response.data.merged_at ?? null,
     };
   }
 
@@ -501,6 +605,251 @@ export class FacilityGithubClient {
       throw new Error(`Refusing to write to default branch ${this.repo.defaultBranch}`);
     }
   }
+
+  private async graphql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
+    if (this.octokit.graphql) return this.octokit.graphql<T>(query, variables);
+    if (this.octokit.request) {
+      const response = await this.octokit.request("POST /graphql", { query, variables });
+      const envelope = response.data;
+      const errors = Array.isArray(envelope.errors) ? envelope.errors : [];
+      if (errors.length > 0) {
+        const messages = errors
+          .map((error) =>
+            error && typeof error === "object" && "message" in error
+              ? String(error.message)
+              : "unknown GraphQL error",
+          )
+          .join("; ");
+        throw new Error(`GitHub GraphQL request failed: ${messages}`);
+      }
+      const data = envelope.data;
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        throw new Error("GitHub GraphQL response did not contain a data object");
+      }
+      return data as T;
+    }
+    throw new Error("GitHub GraphQL is unavailable");
+  }
+
+  private async completeClosingIssuePages(node: PullRequestNode | null) {
+    const first = node?.closingIssuesReferences;
+    if (!node || !first?.pageInfo?.hasNextPage) return node;
+    const nodes = [...(first.nodes ?? [])];
+    let cursor = first.pageInfo.endCursor;
+    if (!cursor) throw new Error("GitHub closing-issue pagination returned no end cursor");
+    while (cursor) {
+      const data: GithubPullRequestClosingIssuesQuery =
+        await this.graphql<GithubPullRequestClosingIssuesQuery>(PULL_REQUEST_CLOSING_ISSUES_QUERY, {
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          number: node.number,
+          cursor,
+        });
+      const page: ClosingIssuesConnection | null | undefined =
+        data.repository?.pullRequest?.closingIssuesReferences;
+      nodes.push(...(page?.nodes ?? []));
+      if (!page?.pageInfo.hasNextPage) break;
+      if (!page.pageInfo.endCursor) {
+        throw new Error("GitHub closing-issue pagination returned no end cursor");
+      }
+      cursor = page.pageInfo.endCursor;
+    }
+    return { ...node, closingIssuesReferences: { nodes } };
+  }
+}
+
+type ClosingIssueNode = {
+  number?: number;
+  repository?: { nameWithOwner?: string | null } | null;
+} | null;
+
+type ClosingIssuesConnection = {
+  nodes?: ClosingIssueNode[];
+  pageInfo: { endCursor?: string | null; hasNextPage?: boolean };
+};
+
+type PullRequestNode = {
+  number?: number;
+  title?: string;
+  state?: string;
+  isDraft?: boolean;
+  author?: { login?: string | null } | null;
+  headRefName?: string | null;
+  headRefOid?: string | null;
+  baseRefName?: string | null;
+  url?: string;
+  body?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  closedAt?: string | null;
+  mergedAt?: string | null;
+  closingIssuesReferences?: {
+    nodes?: ClosingIssueNode[];
+    pageInfo?: { endCursor?: string | null; hasNextPage?: boolean };
+  } | null;
+  commits?: {
+    nodes?: Array<{
+      commit?: {
+        oid?: string | null;
+        statusCheckRollup?: { state?: string | null } | null;
+      } | null;
+    } | null>;
+  } | null;
+};
+
+type GithubPullRequestListQuery = {
+  repository?: {
+    pullRequests?: {
+      nodes?: Array<PullRequestNode | null>;
+      pageInfo: { endCursor?: string | null; hasNextPage?: boolean };
+    } | null;
+  } | null;
+};
+
+type GithubPullRequestQuery = {
+  repository?: { pullRequest?: PullRequestNode | null } | null;
+};
+
+type GithubPullRequestClosingIssuesQuery = {
+  repository?: {
+    pullRequest?: {
+      closingIssuesReferences?: {
+        nodes?: ClosingIssueNode[];
+        pageInfo: { endCursor?: string | null; hasNextPage?: boolean };
+      } | null;
+    } | null;
+  } | null;
+};
+
+const PULL_REQUEST_FIELDS = `
+  number
+  title
+  state
+  isDraft
+  author { login }
+  headRefName
+  headRefOid
+  baseRefName
+  url
+  body
+  createdAt
+  updatedAt
+  closedAt
+  mergedAt
+  closingIssuesReferences(first: 100) {
+    nodes { number repository { nameWithOwner } }
+    pageInfo { endCursor hasNextPage }
+  }
+  commits(last: 1) {
+    nodes { commit { oid statusCheckRollup { state } } }
+  }
+`;
+
+const PULL_REQUEST_LIST_QUERY = `
+  query FacilityPullRequests(
+    $owner: String!
+    $repo: String!
+    $cursor: String
+    $first: Int!
+    $states: [PullRequestState!]
+  ) {
+    repository(owner: $owner, name: $repo) {
+      pullRequests(
+        first: $first
+        after: $cursor
+        states: $states
+        orderBy: { field: UPDATED_AT, direction: DESC }
+      ) {
+        nodes { ${PULL_REQUEST_FIELDS} }
+        pageInfo { endCursor hasNextPage }
+      }
+    }
+  }
+`;
+
+const PULL_REQUEST_QUERY = `
+  query FacilityPullRequest($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) { ${PULL_REQUEST_FIELDS} }
+    }
+  }
+`;
+
+const PULL_REQUEST_CLOSING_ISSUES_QUERY = `
+  query FacilityPullRequestClosingIssues(
+    $owner: String!
+    $repo: String!
+    $number: Int!
+    $cursor: String!
+  ) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $number) {
+        closingIssuesReferences(first: 100, after: $cursor) {
+          nodes { number repository { nameWithOwner } }
+          pageInfo { endCursor hasNextPage }
+        }
+      }
+    }
+  }
+`;
+
+function pullRequestSnapshot(
+  node: PullRequestNode | null,
+  repo: RepoRef,
+): GithubPullRequestSnapshot | null {
+  if (
+    !node?.number ||
+    !node.title ||
+    !node.headRefName ||
+    !node.headRefOid ||
+    !node.baseRefName ||
+    !node.url
+  ) {
+    return null;
+  }
+  const latestCommit = node.commits?.nodes?.at(-1)?.commit;
+  const sameRepo = `${repo.owner}/${repo.repo}`.toLowerCase();
+  const closingIssues = [
+    ...new Set(
+      (node.closingIssuesReferences?.nodes ?? [])
+        .filter((issue) => issue?.repository?.nameWithOwner?.toLowerCase() === sameRepo)
+        .map((issue) => issue?.number)
+        .filter((number): number is number => typeof number === "number"),
+    ),
+  ].sort((a, b) => a - b);
+  return {
+    number: node.number,
+    title: node.title,
+    state: githubPullRequestState(node.state),
+    draft: node.isDraft ?? false,
+    author: node.author?.login ?? null,
+    headRef: node.headRefName,
+    headSha: node.headRefOid,
+    baseRef: node.baseRefName,
+    url: node.url,
+    body: node.body ?? null,
+    closingIssues,
+    ciState: githubCiState(latestCommit?.statusCheckRollup?.state),
+    ciHeadSha: latestCommit?.oid ?? node.headRefOid,
+    createdAt: node.createdAt ?? null,
+    updatedAt: node.updatedAt ?? null,
+    closedAt: node.closedAt ?? null,
+    mergedAt: node.mergedAt ?? null,
+  };
+}
+
+function githubPullRequestState(value: string | undefined): "open" | "closed" | "merged" {
+  if (value?.toUpperCase() === "MERGED") return "merged";
+  if (value?.toUpperCase() === "CLOSED") return "closed";
+  return "open";
+}
+
+function githubCiState(value: string | null | undefined): "pending" | "success" | "failure" | null {
+  const state = value?.toUpperCase();
+  if (state === "SUCCESS") return "success";
+  if (state === "FAILURE" || state === "ERROR") return "failure";
+  if (state === "PENDING" || state === "EXPECTED") return "pending";
+  return null;
 }
 
 function objectRecord(value: unknown): Record<string, unknown> {

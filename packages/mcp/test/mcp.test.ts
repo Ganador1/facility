@@ -257,6 +257,10 @@ describe("@facility/mcp", () => {
       name: "facility_list_github_issues",
       arguments: { projectId: "proj_1", state: "open" },
     });
+    await client.callTool({
+      name: "facility_get_github_issue",
+      arguments: { projectId: "proj_1", repoId: "repo_1", number: 42 },
+    });
     const transcript = await client.callTool({
       name: "facility_run_transcript",
       arguments: { runId: "run_1" },
@@ -273,6 +277,7 @@ describe("@facility/mcp", () => {
           query: { state: "open", q: undefined, cursor: undefined, limit: 50 },
         },
       ],
+      ["GET", "/v1/projects/proj_1/issues/42", { body: undefined, query: { repoId: "repo_1" } }],
       [
         "GET",
         "/v1/runs/run_1/transcript",
@@ -306,7 +311,7 @@ describe("@facility/mcp", () => {
       },
       {
         name: "facility_trigger_github_issue",
-        arguments: { projectId: "proj_1", number: 42, agentName: "builder" },
+        arguments: { projectId: "proj_1", repoId: "repo_1", number: 42, agentName: "builder" },
       },
       { name: "facility_interrupt_run", arguments: { runId: "run_1" } },
       { name: "facility_resume_run", arguments: { runId: "run_1", message: "Continue" } },
@@ -316,6 +321,15 @@ describe("@facility/mcp", () => {
       expect(JSON.parse(textPayload(result)).pending_human_approval).toBe(true);
     }
     expect(calls).toHaveLength(cases.length);
+    expect(calls[3]).toEqual([
+      "POST",
+      "/v1/mcp/tool-proposals",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          args: expect.objectContaining({ repoId: "repo_1" }),
+        }),
+      }),
+    ]);
     expect(
       calls.every(
         (call) =>

@@ -1,51 +1,37 @@
-import type { GithubIssueDetail, Outcome, Proposal } from "./api";
-import { PIPELINE_STAGES, type PipelineIssue, type PipelineStage, prsOf } from "./pipeline";
+import type { Outcome, PipelineStageKey, Proposal, StoryDetail, StoryGithubActivity } from "./api";
 
-/**
- * The issue-detail payload IS a pipeline issue at runtime (same mirror row +
- * linkedRuns); only the generated `pr: unknown` typing is looser. One cast,
- * here, so every consumer stays typed.
- */
-export function asPipelineIssue(detail: GithubIssueDetail): PipelineIssue {
-  return detail as unknown as PipelineIssue;
-}
+/** A story is its mirrored GitHub life, Facility runs, and human gates in one chronology. */
+export type StoryRun = StoryDetail["runs"][number];
+export type StoryComment = StoryGithubActivity["comments"][number];
+export type StoryPr = StoryGithubActivity["prs"][number];
 
-/**
- * A story is the whole life of a unit of work — issue, agent runs, human
- * gates, PRs, the GitHub conversation — folded into one chronological
- * timeline. M1 derives it at read time from the existing stores; the M2
- * `story_events` log will make this a projection without changing the shape.
- */
-
-export type StoryRun = GithubIssueDetail["runs"][number];
-
-export type StoryComment = {
-  id: number;
-  author: string;
-  bodyMd: string;
-  createdAt: string;
-  url: string;
-};
-
-export type StoryPr = {
-  number: number;
-  title: string;
-  bodyMd: string;
-  author: string;
-  url: string;
-  state: string;
+// Timeline replay is intentionally not the current-state classifier, but it
+// must acknowledge every server-published stage when the generated union grows.
+const TIMELINE_STAGES: Record<PipelineStageKey, PipelineStageKey> = {
+  backlog: "backlog",
+  planning: "planning",
+  ready: "ready",
+  building: "building",
+  validating: "validating",
+  review: "review",
+  shipped: "shipped",
 };
 
 export type StoryItem =
-  | { kind: "issue_opened"; ts: string; author: string | null }
+  | {
+      kind: "story_opened";
+      ts: string;
+      author: string | null;
+      storyType: StoryDetail["storyType"];
+    }
   | { kind: "run"; ts: string | null; run: StoryRun }
   | { kind: "proposal"; ts: string; proposal: Proposal }
   | { kind: "proposal_decided"; ts: string; proposal: Proposal }
   | { kind: "comment"; ts: string; comment: StoryComment }
-  | { kind: "pr_opened"; ts: string; outcome: Outcome; pr: StoryPr | null }
-  | { kind: "pr_closed"; ts: string; outcome: Outcome }
+  | { kind: "pr_opened"; ts: string; outcome: Outcome | null; pr: StoryPr }
+  | { kind: "pr_closed"; ts: string; outcome: Outcome | null; pr: StoryPr }
   | { kind: "issue_closed"; ts: string }
-  | { kind: "stage"; ts: string; stage: PipelineStage };
+  | { kind: "stage"; ts: string; stage: PipelineStageKey; label: string };
 
 function stamp(value: unknown): string | null {
   if (typeof value === "string") return value;
@@ -53,67 +39,90 @@ function stamp(value: unknown): string | null {
   return null;
 }
 
-/** Proposals that belong to this story: their payload names the issue. */
-export function proposalsForIssue(proposals: Proposal[], issueNumber: number): Proposal[] {
-  return proposals.filter(
-    (proposal) =>
-      (proposal.payload as { issueNumber?: number } | null)?.issueNumber === issueNumber,
-  );
-}
-
-export function stageLabel(stage: PipelineStage): string {
-  return PIPELINE_STAGES.find((candidate) => candidate.key === stage)?.label ?? stage;
+/**
+ * Old proposals only carry an issue number. Associate those only when that
+ * number is unique in the project; new proposal payloads may carry repoId.
+ */
+export function proposalsForStory(
+  proposals: Proposal[],
+  detail: StoryDetail,
+  allowLegacyNumber: boolean,
+): Proposal[] {
+  const runIds = new Set(detail.runs.map((run) => run.id));
+  return proposals.filter((proposal) => {
+    if (proposal.runId && runIds.has(proposal.runId)) return true;
+    // Number-only and repo-qualified payloads describe issue mutations. A PR
+    // story can still own a human gate through the run that opened it.
+    if (detail.storyType !== "issue") return false;
+    const payload = proposal.payload as { issueNumber?: number; repoId?: string } | null;
+    if (payload?.issueNumber !== detail.number) return false;
+    return payload.repoId ? payload.repoId === detail.repoId : allowLegacyNumber;
+  });
 }
 
 function isMode(mode: string, name: string) {
   return mode === name || mode === `codex-${name}`;
 }
 
-/**
- * The pipeline stage a timeline event moves the story INTO — the replayed
- * approximation of `classifyPipeline` (stages are derived, not stored, so
- * history is reconstructed from the events themselves).
- */
-function stageEntered(item: StoryItem): PipelineStage | null {
+function stageEntered(item: StoryItem): PipelineStageKey | null {
   switch (item.kind) {
-    case "issue_opened":
-      return "backlog";
+    case "story_opened":
+      return TIMELINE_STAGES.backlog;
     case "run": {
-      if (isMode(item.run.mode, "builder")) return "building";
-      if (isMode(item.run.mode, "architect")) return "planning";
+      if (isMode(item.run.mode, "builder")) return TIMELINE_STAGES.building;
+      if (
+        isMode(item.run.mode, "review") ||
+        item.run.mode === "address-review" ||
+        item.run.mode === "address_review"
+      ) {
+        return TIMELINE_STAGES.review;
+      }
+      if (isMode(item.run.mode, "architect")) return TIMELINE_STAGES.planning;
       return null;
     }
     case "proposal":
-      return item.proposal.actionType === "plan_acceptance" ? "ready" : null;
+      return item.proposal.actionType === "plan_acceptance" ? TIMELINE_STAGES.ready : null;
     case "pr_opened":
-      return "review";
+      if (item.pr.draft) return TIMELINE_STAGES.building;
+      return item.pr.ciState === "pending" ? TIMELINE_STAGES.validating : TIMELINE_STAGES.review;
     case "pr_closed":
-      return item.outcome.fate === "merged" ? "shipped" : null;
+      return item.pr.state === "merged" ? TIMELINE_STAGES.shipped : null;
     case "issue_closed":
-      return "shipped";
+      return TIMELINE_STAGES.shipped;
     default:
       return null;
   }
 }
 
 export function deriveStoryTimeline(input: {
-  detail: GithubIssueDetail;
+  detail: StoryDetail;
   proposals: Proposal[];
   outcomes: Outcome[];
   comments?: StoryComment[];
   prs?: StoryPr[];
+  allowLegacyProposalNumber: boolean;
+  stageLabels: ReadonlyMap<PipelineStageKey, string>;
 }): StoryItem[] {
   const { detail } = input;
   const items: StoryItem[] = [];
 
   const opened = stamp(detail.ghCreatedAt);
-  if (opened) items.push({ kind: "issue_opened", ts: opened, author: detail.author });
-
-  for (const run of detail.runs) {
-    items.push({ kind: "run", ts: stamp(run.startedAt), run });
+  if (opened) {
+    items.push({
+      kind: "story_opened",
+      ts: opened,
+      author: detail.author,
+      storyType: detail.storyType,
+    });
   }
 
-  for (const proposal of proposalsForIssue(input.proposals, detail.number)) {
+  for (const run of detail.runs) items.push({ kind: "run", ts: stamp(run.startedAt), run });
+
+  for (const proposal of proposalsForStory(
+    input.proposals,
+    detail,
+    input.allowLegacyProposalNumber,
+  )) {
     const created = stamp(proposal.createdAt);
     if (created) items.push({ kind: "proposal", ts: created, proposal });
     const decided = stamp(proposal.decidedAt);
@@ -124,45 +133,70 @@ export function deriveStoryTimeline(input: {
     items.push({ kind: "comment", ts: comment.createdAt, comment });
   }
 
-  // PRs join primarily through the runs that produced them (runs.gh.pr); the
-  // outcome.issue_number backfill is nightly, too late for live timelines.
-  const prByNumber = new Map((input.prs ?? []).map((pr) => [pr.number, pr]));
-  const prNumbers = new Set(prsOf(asPipelineIssue(detail)).map((pr) => pr.number));
-  for (const outcome of input.outcomes) {
-    const secondary = (outcome as { issueNumber?: number | null }).issueNumber;
-    if (!prNumbers.has(outcome.prNumber) && secondary !== detail.number) continue;
-    const openedAt = stamp(outcome.openedAt);
-    if (openedAt) {
-      items.push({
-        kind: "pr_opened",
-        ts: openedAt,
-        outcome,
-        pr: prByNumber.get(outcome.prNumber) ?? null,
-      });
+  const outcomesByPull = new Map(
+    input.outcomes
+      .filter(
+        (outcome) =>
+          outcome.repo.toLowerCase() === `${detail.repoOwner}/${detail.repoName}`.toLowerCase(),
+      )
+      .map((outcome) => [outcome.prNumber, outcome]),
+  );
+  const detailPulls = new Map(detail.prs.map((pull) => [pull.number, pull]));
+  const timelinePulls =
+    input.prs ??
+    detail.prs.map((pull) => ({
+      number: pull.number,
+      title: pull.title,
+      bodyMd: "",
+      author: "unknown",
+      url: pull.url,
+      state: pull.state,
+      draft: pull.draft,
+      createdAt: stamp(pull.createdAt),
+      closedAt: stamp(pull.closedAt),
+      mergedAt: stamp(pull.mergedAt),
+      ciState: pull.ciState,
+    }));
+  for (const pr of timelinePulls) {
+    const outcome = outcomesByPull.get(pr.number) ?? null;
+    const detailPull = detailPulls.get(pr.number);
+    const currentCiState = detailPull
+      ? detailPull.headSha && detailPull.ciHeadSha && detailPull.headSha === detailPull.ciHeadSha
+        ? detailPull.ciState
+        : null
+      : pr.ciState;
+    const timelinePr = { ...pr, ciState: currentCiState };
+    if (pr.createdAt) {
+      items.push({ kind: "pr_opened", ts: pr.createdAt, outcome, pr: timelinePr });
     }
-    const terminalAt = stamp(outcome.terminalAt);
-    if (terminalAt) items.push({ kind: "pr_closed", ts: terminalAt, outcome });
+    const terminalAt = pr.mergedAt ?? pr.closedAt;
+    if (terminalAt) items.push({ kind: "pr_closed", ts: terminalAt, outcome, pr: timelinePr });
   }
 
   const closed = stamp(detail.closedAt);
-  if (detail.state === "closed" && closed) items.push({ kind: "issue_closed", ts: closed });
+  if (detail.storyType === "issue" && detail.state === "closed" && closed) {
+    items.push({ kind: "issue_closed", ts: closed });
+  }
 
-  // Ascending by time; not-yet-started (queued) runs trail at the end —
-  // they are the story's next beat, not its past.
   items.sort((a, b) => {
     if (a.ts === null) return 1;
     if (b.ts === null) return -1;
     return Date.parse(a.ts) - Date.parse(b.ts);
   });
 
-  // Weave in the pipeline transitions the events imply. `backlog` at the
-  // start is the birth state, not a transition — skip it.
   const withStages: StoryItem[] = [];
-  let stage: PipelineStage | null = null;
+  let stage: PipelineStageKey | null = null;
   for (const item of items) {
     const entered = item.ts === null ? null : stageEntered(item);
     if (entered && entered !== stage) {
-      if (stage !== null) withStages.push({ kind: "stage", ts: item.ts as string, stage: entered });
+      if (stage !== null) {
+        withStages.push({
+          kind: "stage",
+          ts: item.ts as string,
+          stage: entered,
+          label: input.stageLabels.get(entered) ?? entered,
+        });
+      }
       stage = entered;
     }
     withStages.push(item);

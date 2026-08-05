@@ -181,6 +181,10 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
       }
       const agent = await resolveRunAgentDef(p.orgId, projectId, body);
       const trigger = validatedRunTrigger(agent.name, body.trigger);
+      if ("githubLogin" in trigger) {
+        delete trigger.githubLogin;
+        if (p.githubLogin) trigger.githubLogin = p.githubLogin;
+      }
       // Preserve issue provenance across generic dispatch (retries pass the
       // source run's trigger): without this, a retried issue-run loses its
       // gh linkage and disappears from the issue's history and the pipeline.

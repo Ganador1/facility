@@ -8,9 +8,11 @@ import { useState } from "react";
 export function StoryTriggerButtons({
   projectId,
   issueNumber,
+  repoId,
 }: {
   projectId: string;
   issueNumber: number;
+  repoId: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -20,11 +22,15 @@ export function StoryTriggerButtons({
     setBusy(agent);
     setError(null);
     try {
-      const res = await fetch(`/api/v1/projects/${projectId}/issues/${issueNumber}/trigger`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agent }),
-      });
+      const query = new URLSearchParams({ repoId });
+      const res = await fetch(
+        `/api/v1/projects/${projectId}/issues/${issueNumber}/trigger?${query}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ agent }),
+        },
+      );
       const body = (await res.json().catch(() => null)) as {
         id?: string;
         error?: { message?: string };

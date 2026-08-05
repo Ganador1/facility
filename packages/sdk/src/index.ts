@@ -67,6 +67,7 @@ import type {
   Org,
   Outcome,
   PageQuery,
+  Pipeline,
   Project,
   ProjectRepo,
   Proposal,
@@ -85,6 +86,8 @@ import type {
   SandboxProfile,
   SpendRow,
   SteerRunRequest,
+  StoryDetail,
+  StoryGithubActivity,
   Task,
   TriggerRunRequest,
   UpdateAgentRequest,
@@ -117,6 +120,9 @@ type RouteOptions<Method extends FacilityRouteMethod, Path extends FacilityRoute
 };
 
 export type FacilityWriteOptions = { idempotencyKey?: string; signal?: AbortSignal };
+export type FacilityTriggerGithubIssueOptions = FacilityWriteOptions & {
+  query?: FacilityGeneratedQuery<"POST", "/v1/projects/{projectId}/issues/{number}/trigger">;
+};
 
 export type FacilityClientOptions = {
   baseUrl: string;
@@ -613,8 +619,35 @@ export class FacilityClient {
     return this.get(`/v1/projects/${projectId}/issues`, query);
   }
 
-  githubIssue(projectId: string, number: number): Promise<GithubIssueDetail> {
-    return this.get(`/v1/projects/${projectId}/issues/${number}`);
+  githubIssue(
+    projectId: string,
+    number: number,
+    query?: FacilityGeneratedQuery<"GET", "/v1/projects/{projectId}/issues/{number}">,
+  ): Promise<GithubIssueDetail> {
+    return this.get(`/v1/projects/${projectId}/issues/${number}`, query);
+  }
+
+  pipeline(projectId: string): Promise<Pipeline> {
+    return this.get(`/v1/projects/${projectId}/pipeline`);
+  }
+
+  story(
+    projectId: string,
+    number: number,
+    query?: FacilityGeneratedQuery<"GET", "/v1/projects/{projectId}/stories/{number}">,
+  ): Promise<StoryDetail> {
+    return this.get(`/v1/projects/${projectId}/stories/${number}`, query);
+  }
+
+  storyGithubActivity(
+    projectId: string,
+    number: number,
+    query?: FacilityGeneratedQuery<
+      "GET",
+      "/v1/projects/{projectId}/stories/{number}/github-activity"
+    >,
+  ): Promise<StoryGithubActivity> {
+    return this.get(`/v1/projects/${projectId}/stories/${number}/github-activity`, query);
   }
 
   syncGithubIssues(
@@ -628,11 +661,16 @@ export class FacilityClient {
     projectId: string,
     number: number,
     body: FacilityRouteBody<"POST", `/v1/projects/${string}/issues/${string}/trigger`>,
-    options?: FacilityWriteOptions,
+    options: FacilityTriggerGithubIssueOptions = {},
   ): Promise<
     FacilityGeneratedResponse<"POST", "/v1/projects/{projectId}/issues/{number}/trigger">
   > {
-    return this.post(`/v1/projects/${projectId}/issues/${number}/trigger`, body, options);
+    const { query, ...writeOptions } = options;
+    return this.request("POST", `/v1/projects/${projectId}/issues/${number}/trigger`, {
+      body,
+      query,
+      ...writeOptions,
+    });
   }
 
   outcomes(query?: FacilityGeneratedQuery<"GET", "/v1/outcomes">): Promise<Outcome[]> {

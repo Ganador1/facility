@@ -17,6 +17,7 @@ import {
   conversationMessages,
   conversations,
   createDb,
+  ghIssues,
   githubInstallations,
   insertAuditEvent,
   kbSpaces,
@@ -601,6 +602,8 @@ async function openArchitectPlanAcceptance(
   const gh = objectOrEmpty(run.gh);
   const issueNumber = numberOrUndefined(gh.issueNumber);
   if (!issueNumber) return;
+  const repo = await repoForGithubRun(db, run);
+  if (!repo) throw new Error("run_repo_missing");
   const plan = await lastAssistantText(db, run);
   if (!plan) throw new Error("architect_plan_missing");
   const actionType = (
@@ -639,6 +642,7 @@ async function openArchitectPlanAcceptance(
           payload: {
             architectRunId: run.id,
             issueNumber,
+            repoId: repo.id,
             receiptSha256: receipt.integrity?.payload_sha256,
           },
           contextMd: plan,
@@ -657,8 +661,6 @@ async function openArchitectPlanAcceptance(
       data: { source: "architect_run" },
     });
   }
-
-  const repo = await repoForGithubRun(db, run);
   if (!repo?.installationId) throw new Error("run_repo_missing_installation");
   const installation = (
     await db
@@ -856,14 +858,49 @@ async function openRunPullRequest(
     defaultBranch: repo.defaultBranch,
   });
   const issueNumber = numberOrUndefined(gh.issueNumber);
+  const mirroredIssue = issueNumber
+    ? (
+        await db
+          .select({ number: ghIssues.number })
+          .from(ghIssues)
+          .where(and(eq(ghIssues.repoId, repo.id), eq(ghIssues.number, issueNumber)))
+          .limit(1)
+      )[0]
+    : null;
+  const pullRequestBody = mirroredIssue
+    ? pullRequestBodyForIssue(
+        git.pullRequestBody as string,
+        issueNumber as number,
+        repo.owner,
+        repo.name,
+      )
+    : (git.pullRequestBody as string);
   const pr = await client.createPullRequest({
     head: git.branch,
     base: repo.defaultBranch,
     title: git.pullRequestTitle as string,
-    body: git.pullRequestBody as string,
+    body: pullRequestBody,
   });
   const nextGh = { ...gh, branch: git.branch, pr: { number: pr.number, url: pr.url } };
   await db.update(runs).set({ gh: nextGh, updatedAt: new Date() }).where(eq(runs.id, run.id));
+  const githubLogin = githubLoginForRun(run);
+  let assignmentSkipReason: string | null = null;
+  if (githubLogin) {
+    try {
+      const assigned = await client.assignIssue(pr.number, githubLogin);
+      if (!assigned) assignmentSkipReason = "github_rejected";
+    } catch (error) {
+      assignmentSkipReason = errorMessage(error);
+    }
+  } else {
+    const createdBy = objectOrEmpty(run.createdBy);
+    if (createdBy.type === "user" || createdBy.type === "github") {
+      assignmentSkipReason = "missing_github_login";
+    }
+  }
+  if (assignmentSkipReason) {
+    await recordGithubAssignmentSkipped(db, run, pr.number, githubLogin, assignmentSkipReason);
+  }
   await db
     .insert(outcomes)
     .values({
@@ -911,6 +948,56 @@ async function openRunPullRequest(
       });
     },
   );
+}
+
+export function pullRequestBodyForIssue(
+  body: string,
+  issueNumber: number,
+  owner: string,
+  repo: string,
+) {
+  const escapedOwner = escapeRegExp(owner);
+  const escapedRepo = escapeRegExp(repo);
+  const reference = new RegExp(
+    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+(?:#${issueNumber}\\b|${escapedOwner}/${escapedRepo}#${issueNumber}\\b|https://github\\.com/${escapedOwner}/${escapedRepo}/issues/${issueNumber}\\b)`,
+    "i",
+  );
+  const prose = body
+    .replace(/```[^\n]*\n[\s\S]*?```/g, "")
+    .replace(/~~~[^\n]*\n[\s\S]*?~~~/g, "")
+    .replace(/`[^`\n]*`/g, "");
+  if (reference.test(prose)) return body;
+  return body.trim() ? `Closes #${issueNumber}\n\n${body}` : `Closes #${issueNumber}`;
+}
+
+function githubLoginForRun(run: RunRow) {
+  const trigger = objectOrEmpty(run.trigger);
+  if (typeof trigger.githubLogin === "string" && trigger.githubLogin) return trigger.githubLogin;
+  const createdBy = objectOrEmpty(run.createdBy);
+  if (createdBy.type !== "github") return null;
+  if (typeof createdBy.id === "string" && createdBy.id) return createdBy.id;
+  return typeof createdBy.login === "string" && createdBy.login ? createdBy.login : null;
+}
+
+async function recordGithubAssignmentSkipped(
+  db: ReturnType<typeof createDb>["db"],
+  run: RunRow,
+  pullNumber: number,
+  login: string | null,
+  reason: string,
+) {
+  await insertAuditEvent(db, {
+    orgId: run.orgId,
+    projectId: run.projectId,
+    actor: { type: "agent", id: run.id },
+    action: "github.assignment.skipped",
+    target: { type: "pull_request", id: String(pullNumber) },
+    payload: { runId: run.id, pullNumber, login, reason },
+  });
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function recordRunPullRequestUpdate(

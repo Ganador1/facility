@@ -1110,6 +1110,12 @@
                         "name": {
                           "type": "string"
                         },
+                        "githubLogin": {
+                          "type": "string"
+                        },
+                        "avatarUrl": {
+                          "type": "string"
+                        },
                         "projectId": {
                           "nullable": true,
                           "type": "string"
@@ -11019,6 +11025,9 @@
                           "id": {
                             "type": "string"
                           },
+                          "repoId": {
+                            "type": "string"
+                          },
                           "number": {
                             "type": "number"
                           },
@@ -11081,6 +11090,7 @@
                         },
                         "required": [
                           "id",
+                          "repoId",
                           "number",
                           "title",
                           "state",
@@ -11233,7 +11243,16 @@
                         "type": "object",
                         "properties": {
                           "key": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "backlog",
+                              "planning",
+                              "ready",
+                              "building",
+                              "validating",
+                              "review",
+                              "shipped"
+                            ]
                           },
                           "label": {
                             "type": "string"
@@ -11242,18 +11261,46 @@
                             "type": "string"
                           },
                           "kind": {
-                            "type": "string"
+                            "type": "string",
+                            "enum": [
+                              "human",
+                              "agent",
+                              "machine",
+                              "done"
+                            ]
                           },
                           "count": {
                             "type": "integer",
                             "minimum": -9007199254740991,
                             "maximum": 9007199254740991
                           },
-                          "issues": {
+                          "stories": {
                             "type": "array",
                             "items": {
                               "type": "object",
                               "properties": {
+                                "key": {
+                                  "type": "string"
+                                },
+                                "id": {
+                                  "type": "string"
+                                },
+                                "storyType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "issue",
+                                    "pull_request"
+                                  ]
+                                },
+                                "repoId": {
+                                  "type": "string"
+                                },
+                                "repoOwner": {
+                                  "type": "string"
+                                },
+                                "repoName": {
+                                  "type": "string"
+                                },
                                 "number": {
                                   "type": "integer",
                                   "minimum": -9007199254740991,
@@ -11263,11 +11310,51 @@
                                   "type": "string"
                                 },
                                 "state": {
+                                  "type": "string",
+                                  "enum": [
+                                    "open",
+                                    "closed",
+                                    "merged"
+                                  ]
+                                },
+                                "labels": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "assignees": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "author": {
+                                  "nullable": true,
                                   "type": "string"
                                 },
                                 "htmlUrl": {
-                                  "nullable": true,
                                   "type": "string"
+                                },
+                                "commentsCount": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
+                                },
+                                "ghCreatedAt": {
+                                  "nullable": true,
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "ghUpdatedAt": {
+                                  "nullable": true,
+                                  "type": "string",
+                                  "format": "date-time"
+                                },
+                                "closedAt": {
+                                  "nullable": true,
+                                  "type": "string",
+                                  "format": "date-time"
                                 },
                                 "runState": {
                                   "nullable": true,
@@ -11289,14 +11376,23 @@
                                     },
                                     "status": {
                                       "type": "string"
+                                    },
+                                    "engine": {
+                                      "type": "string"
                                     }
                                   },
                                   "required": [
                                     "id",
                                     "mode",
-                                    "status"
+                                    "status",
+                                    "engine"
                                   ],
                                   "additionalProperties": false
+                                },
+                                "attemptCount": {
+                                  "type": "integer",
+                                  "minimum": -9007199254740991,
+                                  "maximum": 9007199254740991
                                 },
                                 "prs": {
                                   "type": "array",
@@ -11308,26 +11404,109 @@
                                         "minimum": -9007199254740991,
                                         "maximum": 9007199254740991
                                       },
+                                      "title": {
+                                        "type": "string"
+                                      },
                                       "url": {
                                         "type": "string"
+                                      },
+                                      "state": {
+                                        "type": "string",
+                                        "enum": [
+                                          "open",
+                                          "closed",
+                                          "merged"
+                                        ]
+                                      },
+                                      "draft": {
+                                        "type": "boolean"
+                                      },
+                                      "headSha": {
+                                        "nullable": true,
+                                        "type": "string"
+                                      },
+                                      "ciState": {
+                                        "nullable": true,
+                                        "type": "string",
+                                        "enum": [
+                                          "pending",
+                                          "success",
+                                          "failure"
+                                        ]
+                                      },
+                                      "ciHeadSha": {
+                                        "nullable": true,
+                                        "type": "string"
+                                      },
+                                      "createdAt": {
+                                        "nullable": true,
+                                        "type": "string",
+                                        "format": "date-time"
+                                      },
+                                      "closedAt": {
+                                        "nullable": true,
+                                        "type": "string",
+                                        "format": "date-time"
+                                      },
+                                      "mergedAt": {
+                                        "nullable": true,
+                                        "type": "string",
+                                        "format": "date-time"
                                       }
                                     },
                                     "required": [
                                       "number",
-                                      "url"
+                                      "title",
+                                      "url",
+                                      "state",
+                                      "draft",
+                                      "headSha",
+                                      "ciState",
+                                      "ciHeadSha",
+                                      "createdAt",
+                                      "closedAt",
+                                      "mergedAt"
                                     ],
                                     "additionalProperties": false
                                   }
+                                },
+                                "ciState": {
+                                  "nullable": true,
+                                  "type": "string",
+                                  "enum": [
+                                    "pending",
+                                    "failure"
+                                  ]
+                                },
+                                "ciUrl": {
+                                  "nullable": true,
+                                  "type": "string"
                                 }
                               },
                               "required": [
+                                "key",
+                                "id",
+                                "storyType",
+                                "repoId",
+                                "repoOwner",
+                                "repoName",
                                 "number",
                                 "title",
                                 "state",
+                                "labels",
+                                "assignees",
+                                "author",
                                 "htmlUrl",
+                                "commentsCount",
+                                "ghCreatedAt",
+                                "ghUpdatedAt",
+                                "closedAt",
                                 "runState",
                                 "currentRun",
-                                "prs"
+                                "attemptCount",
+                                "prs",
+                                "ciState",
+                                "ciUrl"
                               ],
                               "additionalProperties": false
                             }
@@ -11339,7 +11518,7 @@
                           "sub",
                           "kind",
                           "count",
-                          "issues"
+                          "stories"
                         ],
                         "additionalProperties": false
                       }
@@ -11457,6 +11636,14 @@
             "schema": {
               "type": "string"
             },
+            "in": "query",
+            "name": "repoId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
             "in": "path",
             "name": "projectId",
             "required": true
@@ -11464,8 +11651,9 @@
           {
             "schema": {
               "type": "integer",
-              "minimum": -9007199254740991,
-              "maximum": 9007199254740991
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 2147483647
             },
             "in": "path",
             "name": "number",
@@ -11481,6 +11669,9 @@
                   "type": "object",
                   "properties": {
                     "id": {
+                      "type": "string"
+                    },
+                    "repoId": {
                       "type": "string"
                     },
                     "number": {
@@ -11603,6 +11794,7 @@
                   },
                   "required": [
                     "id",
+                    "repoId",
                     "number",
                     "title",
                     "state",
@@ -11720,9 +11912,29 @@
         "x-facility-permission": "runs:read"
       }
     },
-    "/v1/projects/{projectId}/stories/{number}/github-activity": {
+    "/v1/projects/{projectId}/stories/{number}": {
       "get": {
         "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "repoId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "issue",
+                "pull_request"
+              ]
+            },
+            "in": "query",
+            "name": "storyType",
+            "required": false
+          },
           {
             "schema": {
               "type": "string"
@@ -11734,8 +11946,451 @@
           {
             "schema": {
               "type": "integer",
-              "minimum": -9007199254740991,
-              "maximum": 9007199254740991
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 2147483647
+            },
+            "in": "path",
+            "name": "number",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "key": {
+                      "type": "string"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "storyType": {
+                      "type": "string",
+                      "enum": [
+                        "issue",
+                        "pull_request"
+                      ]
+                    },
+                    "repoId": {
+                      "type": "string"
+                    },
+                    "repoOwner": {
+                      "type": "string"
+                    },
+                    "repoName": {
+                      "type": "string"
+                    },
+                    "number": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string",
+                      "enum": [
+                        "open",
+                        "closed",
+                        "merged"
+                      ]
+                    },
+                    "labels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "assignees": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "author": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "htmlUrl": {
+                      "type": "string"
+                    },
+                    "bodyMd": {
+                      "nullable": true,
+                      "type": "string"
+                    },
+                    "commentsCount": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "ghCreatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "ghUpdatedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "closedAt": {
+                      "nullable": true,
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "prs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "number": {
+                            "type": "integer",
+                            "minimum": -9007199254740991,
+                            "maximum": 9007199254740991
+                          },
+                          "title": {
+                            "type": "string"
+                          },
+                          "url": {
+                            "type": "string"
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "open",
+                              "closed",
+                              "merged"
+                            ]
+                          },
+                          "draft": {
+                            "type": "boolean"
+                          },
+                          "headSha": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "ciState": {
+                            "nullable": true,
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "success",
+                              "failure"
+                            ]
+                          },
+                          "ciHeadSha": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "nullable": true,
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "closedAt": {
+                            "nullable": true,
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "mergedAt": {
+                            "nullable": true,
+                            "type": "string",
+                            "format": "date-time"
+                          }
+                        },
+                        "required": [
+                          "number",
+                          "title",
+                          "url",
+                          "state",
+                          "draft",
+                          "headSha",
+                          "ciState",
+                          "ciHeadSha",
+                          "createdAt",
+                          "closedAt",
+                          "mergedAt"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "stage": {
+                      "nullable": true,
+                      "type": "object",
+                      "properties": {
+                        "key": {
+                          "type": "string",
+                          "enum": [
+                            "backlog",
+                            "planning",
+                            "ready",
+                            "building",
+                            "validating",
+                            "review",
+                            "shipped"
+                          ]
+                        },
+                        "label": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "key",
+                        "label"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "pipelineStages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string",
+                            "enum": [
+                              "backlog",
+                              "planning",
+                              "ready",
+                              "building",
+                              "validating",
+                              "review",
+                              "shipped"
+                            ]
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "label"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "allowLegacyProposalNumber": {
+                      "type": "boolean"
+                    },
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "mode": {
+                            "type": "string"
+                          },
+                          "engine": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string"
+                          },
+                          "startedAt": {
+                            "nullable": true,
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "endedAt": {
+                            "nullable": true,
+                            "type": "string",
+                            "format": "date-time"
+                          },
+                          "receipt": {
+                            "nullable": true
+                          },
+                          "pr": {},
+                          "triggeredBy": {
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "mode",
+                          "engine",
+                          "status",
+                          "startedAt",
+                          "endedAt",
+                          "receipt",
+                          "triggeredBy"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "key",
+                    "id",
+                    "storyType",
+                    "repoId",
+                    "repoOwner",
+                    "repoName",
+                    "number",
+                    "title",
+                    "state",
+                    "labels",
+                    "assignees",
+                    "author",
+                    "htmlUrl",
+                    "bodyMd",
+                    "commentsCount",
+                    "ghCreatedAt",
+                    "ghUpdatedAt",
+                    "closedAt",
+                    "prs",
+                    "stage",
+                    "pipelineStages",
+                    "allowLegacyProposalNumber",
+                    "runs"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required or invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The authenticated principal lacks the required permission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource was not found or is outside the principal scope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with current resource state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The request rate limit was exceeded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An unexpected server error occurred.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A required service is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getProjectsByProjectIdStoriesByNumber",
+        "summary": "Get story",
+        "tags": [
+          "Projects"
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "x-facility-permission": "runs:read"
+      }
+    },
+    "/v1/projects/{projectId}/stories/{number}/github-activity": {
+      "get": {
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "repoId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "issue",
+                "pull_request"
+              ]
+            },
+            "in": "query",
+            "name": "storyType",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "path",
+            "name": "projectId",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 2147483647
             },
             "in": "path",
             "name": "number",
@@ -11802,7 +12457,36 @@
                             "type": "string"
                           },
                           "state": {
+                            "type": "string",
+                            "enum": [
+                              "open",
+                              "closed",
+                              "merged"
+                            ]
+                          },
+                          "draft": {
+                            "type": "boolean"
+                          },
+                          "createdAt": {
+                            "nullable": true,
                             "type": "string"
+                          },
+                          "closedAt": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "mergedAt": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "ciState": {
+                            "nullable": true,
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "success",
+                              "failure"
+                            ]
                           }
                         },
                         "required": [
@@ -11811,7 +12495,12 @@
                           "bodyMd",
                           "author",
                           "url",
-                          "state"
+                          "state",
+                          "draft",
+                          "createdAt",
+                          "closedAt",
+                          "mergedAt",
+                          "ciState"
                         ],
                         "additionalProperties": false
                       }
@@ -12091,6 +12780,14 @@
             "schema": {
               "type": "string"
             },
+            "in": "query",
+            "name": "repoId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string"
+            },
             "in": "path",
             "name": "projectId",
             "required": true
@@ -12098,8 +12795,9 @@
           {
             "schema": {
               "type": "integer",
-              "minimum": -9007199254740991,
-              "maximum": 9007199254740991
+              "minimum": 0,
+              "exclusiveMinimum": true,
+              "maximum": 2147483647
             },
             "in": "path",
             "name": "number",

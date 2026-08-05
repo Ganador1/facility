@@ -61,7 +61,12 @@ describe("direct GitHub browser login", async () => {
         : json({}, 404);
     }
     if (url.endsWith("/user"))
-      return json({ id: githubUserId, login: "facility-owner", name: "Facility Owner" });
+      return json({
+        id: githubUserId,
+        login: "facility-owner",
+        name: "Facility Owner",
+        avatar_url: "https://avatars.example/facility-owner.png",
+      });
     return json({}, 404);
   };
   const config: AppConfig = {
@@ -162,6 +167,8 @@ describe("direct GitHub browser login", async () => {
     });
     expect(me.statusCode).toBe(200);
     expect(me.json().principal.email).toBe(ownerEmail);
+    expect(me.json().principal.githubLogin).toBe("facility-owner");
+    expect(me.json().principal.avatarUrl).toBe("https://avatars.example/facility-owner.png");
     const persistedUser = await db.select().from(users).where(eq(users.email, ownerEmail));
     expect(persistedUser).toHaveLength(1);
     const persistedIdentity = await db

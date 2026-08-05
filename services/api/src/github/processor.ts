@@ -12,9 +12,10 @@ import {
   runEvents,
   runs,
 } from "@facility/db";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { applyFacilitySignal } from "../integrations/signals.js";
 import type { AppConfig } from "../types.js";
+import { resolvePlatformIssue } from "../watchtower/issues.js";
 import {
   createGithubClientFactory,
   FacilityGithubClient,
@@ -26,6 +27,12 @@ import {
   upsertGhIssueFromWebhook,
 } from "./issues-sync.js";
 import { syncRepoFacilityConfig, verifyFingerprints } from "./kickstart.js";
+import {
+  refreshGhPullRequest,
+  refreshPullRequestsForSignal,
+  syncRepoPullRequests,
+  upsertGhPullRequestFromWebhook,
+} from "./pull-requests-sync.js";
 import { laneFor, routeTrigger, type TriggerPayload } from "./router.js";
 import { renderGithubRunProgress } from "./run-progress.js";
 
@@ -48,12 +55,16 @@ type WebhookPayload = TriggerPayload & {
     title?: string;
     body?: string | null;
     draft?: boolean;
+    state?: string;
+    user?: { login?: string | null } | null;
     html_url?: string;
     merged?: boolean;
     base?: { ref?: string };
     head?: { ref?: string; sha?: string };
     created_at?: string;
+    updated_at?: string;
     closed_at?: string;
+    merged_at?: string;
   };
   review?: { id?: number; body?: string | null; state?: string; user?: { login?: string } };
   workflow_run?: {
@@ -78,7 +89,31 @@ type WebhookPayload = TriggerPayload & {
     status?: string;
     conclusion?: string | null;
     html_url?: string;
+    head_sha?: string;
+    pull_requests?: Array<{ number?: number }>;
+    check_suite?: {
+      head_branch?: string;
+      head_sha?: string;
+      pull_requests?: Array<{ number?: number }>;
+    };
   };
+  check_suite?: {
+    status?: string;
+    conclusion?: string | null;
+    head_branch?: string;
+    head_sha?: string;
+    pull_requests?: Array<{ number?: number }>;
+  };
+  sha?: string;
+  state?: string;
+};
+
+type GithubWebhookLogger = {
+  warn: (context: Record<string, unknown>, message: string) => void;
+};
+
+const fallbackGithubWebhookLogger: GithubWebhookLogger = {
+  warn: (context, message) => console.warn(message, context),
 };
 
 export async function processGithubWebhook(
@@ -87,6 +122,7 @@ export async function processGithubWebhook(
   data: { inboundEventId?: string },
   factory?: GithubClientFactory,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+  logger: GithubWebhookLogger = fallbackGithubWebhookLogger,
 ) {
   if (!data.inboundEventId) return;
   const event = (
@@ -118,6 +154,7 @@ export async function processGithubWebhook(
         enqueue,
       );
     } else if (event.eventType === "pull_request") {
+      await upsertGhPullRequestFromWebhook(db, event.orgId, payload);
       await processPullRequest(
         db,
         event.orgId,
@@ -125,6 +162,17 @@ export async function processGithubWebhook(
         payload,
         factory ?? createGithubClientFactory(config),
         enqueue,
+      );
+      await refreshPullRequestsBestEffort(
+        () =>
+          refreshPullRequestFromWebhook(
+            db,
+            event.orgId,
+            payload,
+            factory ?? createGithubClientFactory(config),
+          ),
+        logger,
+        pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
       );
     } else if (event.eventType === "pull_request_review") {
       await processGithubAgentEvent(
@@ -145,8 +193,52 @@ export async function processGithubWebhook(
         factory ?? createGithubClientFactory(config),
         enqueue,
       );
-    } else if (event.eventType === "deployment_status" || event.eventType === "check_run") {
-      await processOperationalSignal(db, event.orgId, event.eventType, payload);
+      if (isTerminalPullRequestSignal(event.eventType, payload)) {
+        await refreshPullRequestsBestEffort(
+          () =>
+            refreshPullRequestsFromSignal(
+              db,
+              event.orgId,
+              payload,
+              factory ?? createGithubClientFactory(config),
+            ),
+          logger,
+          pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
+        );
+      }
+    } else if (event.eventType === "check_run" || event.eventType === "check_suite") {
+      if (event.eventType === "check_run") {
+        await processOperationalSignal(db, event.orgId, "check_run", payload);
+      }
+      if (isTerminalPullRequestSignal(event.eventType, payload)) {
+        await refreshPullRequestsBestEffort(
+          () =>
+            refreshPullRequestsFromSignal(
+              db,
+              event.orgId,
+              payload,
+              factory ?? createGithubClientFactory(config),
+            ),
+          logger,
+          pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
+        );
+      }
+    } else if (event.eventType === "status") {
+      if (isTerminalPullRequestSignal(event.eventType, payload)) {
+        await refreshPullRequestsBestEffort(
+          () =>
+            refreshPullRequestsFromSignal(
+              db,
+              event.orgId,
+              payload,
+              factory ?? createGithubClientFactory(config),
+            ),
+          logger,
+          pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
+        );
+      }
+    } else if (event.eventType === "deployment_status") {
+      await processOperationalSignal(db, event.orgId, "deployment_status", payload);
     }
     await db
       .update(inboundEvents)
@@ -159,6 +251,70 @@ export async function processGithubWebhook(
       .where(eq(inboundEvents.id, event.id));
     throw error;
   }
+}
+
+async function refreshPullRequestsBestEffort(
+  refresh: () => Promise<unknown>,
+  logger: GithubWebhookLogger,
+  context: Record<string, unknown>,
+) {
+  try {
+    await refresh();
+  } catch (error) {
+    logger.warn(
+      { ...context, error: error instanceof Error ? error.message : String(error) },
+      "GitHub pull-request snapshot refresh failed; scheduled reconciliation will retry",
+    );
+  }
+}
+
+function isTerminalPullRequestSignal(eventType: string, payload: WebhookPayload) {
+  if (eventType === "workflow_run") return payload.action === "completed";
+  if (eventType === "check_run") {
+    return payload.action === "completed" || payload.check_run?.status === "completed";
+  }
+  if (eventType === "check_suite") {
+    return payload.action === "completed" || payload.check_suite?.status === "completed";
+  }
+  if (eventType === "status") {
+    return ["success", "failure", "error"].includes(payload.state?.toLowerCase() ?? "");
+  }
+  return false;
+}
+
+function pullRequestRefreshContext(
+  inboundEventId: string,
+  orgId: string,
+  eventType: string,
+  payload: WebhookPayload,
+) {
+  const check = payload.check_run;
+  const pullRequestNumbers = [
+    payload.pull_request,
+    ...(check?.pull_requests ?? []),
+    ...(check?.check_suite?.pull_requests ?? []),
+    ...(payload.check_suite?.pull_requests ?? []),
+    ...(payload.workflow_run?.pull_requests ?? []),
+  ]
+    .map((pull) => pull?.number)
+    .filter((number): number is number => typeof number === "number");
+  return {
+    inboundEventId,
+    orgId,
+    eventType,
+    action: payload.action ?? null,
+    owner: payload.repository?.owner?.login ?? null,
+    repo: payload.repository?.name ?? null,
+    pullRequestNumbers: [...new Set(pullRequestNumbers)],
+    headSha:
+      payload.pull_request?.head?.sha ??
+      check?.head_sha ??
+      check?.check_suite?.head_sha ??
+      payload.check_suite?.head_sha ??
+      payload.workflow_run?.head_sha ??
+      payload.sha ??
+      null,
+  };
 }
 
 async function processInstallation(
@@ -790,18 +946,35 @@ async function processOperationalSignal(
 
   const check = payload.check_run;
   const checkName = check?.name ?? "unnamed";
+  const status = githubSignalStatus(check?.conclusion ?? check?.status);
+  const branch = check?.check_suite?.head_branch;
+  // Resolve branchless incidents created before scoped fingerprints shipped
+  // only when the default branch is demonstrably healthy. A PR-branch result
+  // cannot prove which legacy lifecycle raised the incident.
+  if (branch === repo.defaultBranch && (status === "succeeded" || status === "recovered")) {
+    await resolvePlatformIssue(
+      db,
+      orgId,
+      `check:${repo.id}:${checkName}`,
+      branch ? `check signal now tracked on ${branch}` : "check signal now branch-scoped",
+      { projectId: repo.projectId },
+    );
+  }
+  // PR checks are story state, and non-default branch checks are neither a
+  // production incident nor a default-branch lifecycle condition.
+  if (!branch || branch !== repo.defaultBranch) return;
   await applyFacilitySignal(db, {
     orgId,
     projectId: repo.projectId,
-    fallbackFingerprint: `${repo.id}:${checkName}`,
+    fallbackFingerprint: `${repo.id}:${branch}:${checkName}`,
     signal: {
       schema: "facility.signal.v1",
       type: "check",
-      status: githubSignalStatus(check?.conclusion ?? check?.status),
+      status,
       source: "github.check_run",
-      fingerprint: `check:${repo.id}:${checkName}`,
-      title: `Check ${checkName} ${check?.conclusion ?? check?.status ?? "unknown"}`,
-      bodyMd: `GitHub check signal for ${owner}/${name}.`,
+      fingerprint: `check:${repo.id}:${branch}:${checkName}`,
+      title: `Check ${checkName} on ${branch} ${check?.conclusion ?? check?.status ?? "unknown"}`,
+      bodyMd: `GitHub check signal for ${owner}/${name} on ${branch}.`,
       url: check?.html_url,
     },
   });
@@ -837,8 +1010,19 @@ export async function enqueueGithubIssuesSync(
   db: FacilityDb,
   config: AppConfig,
   data: { repoId?: string; orgId?: string },
-  factory: GithubClientFactory = createGithubClientFactory(config),
+  factory?: GithubClientFactory,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
+  if (!data.repoId && !data.orgId) {
+    const installedRepos = await db
+      .select({ id: repos.id, orgId: repos.orgId })
+      .from(repos)
+      .where(isNotNull(repos.installationId));
+    for (const repo of installedRepos) {
+      await enqueue?.("github.issues-sync", { repoId: repo.id, orgId: repo.orgId });
+    }
+    return { reposScheduled: enqueue ? installedRepos.length : 0 };
+  }
   if (!data.repoId || !data.orgId) return;
   const repo = (
     await db
@@ -848,7 +1032,71 @@ export async function enqueueGithubIssuesSync(
       .limit(1)
   )[0];
   if (!repo) return;
-  await syncRepoIssues(db, factory, repo);
+  const resolvedFactory = factory ?? createGithubClientFactory(config);
+  const issues = await syncRepoIssues(db, resolvedFactory, repo);
+  const pullRequests = await syncRepoPullRequests(db, resolvedFactory, repo);
+  if (issues.incomplete || pullRequests.incomplete) {
+    await enqueue?.("github.issues-sync", { repoId: repo.id, orgId: repo.orgId });
+  }
+  return { issues, pullRequests };
+}
+
+async function refreshPullRequestFromWebhook(
+  db: FacilityDb,
+  orgId: string,
+  payload: WebhookPayload,
+  factory: GithubClientFactory,
+) {
+  const owner = payload.repository?.owner?.login;
+  const name = payload.repository?.name;
+  const number = payload.pull_request?.number;
+  if (!owner || !name || !number) return;
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
+      .limit(1)
+  )[0];
+  if (!repo) return;
+  // The basic row is written first; callers keep this richer snapshot
+  // best-effort so GraphQL availability cannot block webhook lifecycle work.
+  await refreshGhPullRequest(db, factory, repo, number);
+}
+
+async function refreshPullRequestsFromSignal(
+  db: FacilityDb,
+  orgId: string,
+  payload: WebhookPayload,
+  factory: GithubClientFactory,
+) {
+  const owner = payload.repository?.owner?.login;
+  const name = payload.repository?.name;
+  if (!owner || !name) return 0;
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
+      .limit(1)
+  )[0];
+  if (!repo) return 0;
+  const check = payload.check_run;
+  const numbers = [
+    ...(check?.pull_requests ?? []),
+    ...(check?.check_suite?.pull_requests ?? []),
+    ...(payload.check_suite?.pull_requests ?? []),
+    ...(payload.workflow_run?.pull_requests ?? []),
+  ]
+    .map((pull) => pull.number)
+    .filter((number): number is number => typeof number === "number");
+  const headSha =
+    check?.head_sha ??
+    check?.check_suite?.head_sha ??
+    payload.check_suite?.head_sha ??
+    payload.workflow_run?.head_sha ??
+    payload.sha;
+  return refreshPullRequestsForSignal(db, factory, repo, { numbers, headSha });
 }
 
 /**

@@ -4,26 +4,8 @@ import { Button, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { currentRunOf, prsOf } from "@/lib/pipeline";
-
-export type GhIssue = {
-  id: string;
-  number: number;
-  title: string;
-  state: "open" | "closed";
-  labels: string[];
-  author: string | null;
-  htmlUrl: string;
-  commentsCount: number;
-  ghUpdatedAt: string | null;
-  linkedRuns: Array<{
-    id: string;
-    mode: string;
-    status: string;
-    engine: string;
-    pr?: { number?: number; url?: string } | null;
-  }>;
-};
+import type { PipelineStory } from "@/lib/pipeline";
+import { storyHref } from "@/lib/pipeline";
 
 function fmtAgo(iso: string | null) {
   if (!iso) return "—";
@@ -33,18 +15,14 @@ function fmtAgo(iso: string | null) {
   return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
-/**
- * One mirrored GitHub issue with its Facility verbs. The issue itself is
- * GitHub's (read-mirror by decision #2) — authoring stays there; dispatching
- * agents happens here.
- */
+/** One server-assembled story with its current run, PRs, and Facility verbs. */
 export function IssueRow({
   projectId,
-  issue,
+  story,
   canTrigger,
 }: {
   projectId: string;
-  issue: GhIssue;
+  story: PipelineStory;
   canTrigger: boolean;
 }) {
   const router = useRouter();
@@ -55,11 +33,15 @@ export function IssueRow({
     setBusy(agent);
     setError(null);
     try {
-      const res = await fetch(`/api/v1/projects/${projectId}/issues/${issue.number}/trigger`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agent }),
-      });
+      const query = new URLSearchParams({ repoId: story.repoId });
+      const res = await fetch(
+        `/api/v1/projects/${projectId}/issues/${story.number}/trigger?${query}`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ agent }),
+        },
+      );
       const body = (await res.json().catch(() => null)) as {
         id?: string;
         error?: { message?: string };
@@ -77,18 +59,21 @@ export function IssueRow({
     }
   }
 
+  const current = story.currentRun;
   return (
     <div className="flex flex-col gap-2 border-b border-(--line) px-5 py-4 last:border-b-0">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <span className="font-mono text-[11px] text-(--dim)">#{issue.number}</span>
+        <span className="font-mono text-[11px] text-(--dim)">
+          {story.repoOwner}/{story.repoName}#{story.number}
+        </span>
         <Link
-          href={`/projects/${projectId}/stories/${issue.number}`}
+          href={storyHref(projectId, story)}
           className="min-w-0 flex-1 truncate text-[13.5px] text-(--ink) underline-offset-4 hover:underline"
         >
-          {issue.title}
+          {story.title}
         </Link>
         <a
-          href={issue.htmlUrl}
+          href={story.htmlUrl}
           target="_blank"
           rel="noreferrer"
           title="open on GitHub"
@@ -96,7 +81,7 @@ export function IssueRow({
         >
           ↗
         </a>
-        {issue.labels.slice(0, 3).map((label) => (
+        {story.labels.slice(0, 3).map((label) => (
           <span
             key={label}
             className="border border-(--line) px-1.5 py-0.5 font-mono text-[10px] text-(--dim)"
@@ -104,8 +89,8 @@ export function IssueRow({
             {label}
           </span>
         ))}
-        <span className="font-mono text-[10.5px] text-(--dim)">{fmtAgo(issue.ghUpdatedAt)}</span>
-        {canTrigger && issue.state === "open" ? (
+        <span className="font-mono text-[10.5px] text-(--dim)">{fmtAgo(story.ghUpdatedAt)}</span>
+        {canTrigger && story.storyType === "issue" && story.state === "open" ? (
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -126,45 +111,58 @@ export function IssueRow({
           </div>
         ) : null}
       </div>
-      {(() => {
-        // One run explains the issue's position — history lives in the session
-        // pages, not here. Show the current run + every PR the issue produced.
-        const current = currentRunOf(issue);
-        const prs = prsOf(issue);
-        if (!current && prs.length === 0) return null;
-        const attempts = issue.linkedRuns.length;
-        return (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-0 sm:pl-10">
-            {current ? (
-              <span className="flex items-center gap-2">
-                <StatusDot tone={toneFor(current.status)} pulse={current.status === "running"} />
-                <Link
-                  href={`/projects/${projectId}/sessions/${current.id}`}
-                  className="font-mono text-[11px] text-(--mut) hover:text-(--ink)"
-                >
-                  {current.mode} · {current.status}
-                </Link>
-                {attempts > 1 ? (
-                  <span className="font-mono text-[10px] text-(--dim)" title="previous attempts">
-                    ({attempts - 1} earlier)
-                  </span>
-                ) : null}
-              </span>
-            ) : null}
-            {prs.map((pr) => (
-              <a
-                key={pr.number}
-                href={pr.url}
-                target="_blank"
-                rel="noreferrer"
-                className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
+      {current || story.prs.length > 0 || story.ciState ? (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-0 sm:pl-10">
+          {current ? (
+            <span className="flex items-center gap-2">
+              <StatusDot tone={toneFor(current.status)} pulse={story.runState === "live"} />
+              <Link
+                href={`/projects/${projectId}/sessions/${current.id}`}
+                className="font-mono text-[11px] text-(--mut) hover:text-(--ink)"
               >
-                PR #{pr.number} ↗
-              </a>
-            ))}
-          </div>
-        );
-      })()}
+                {current.mode} · {current.status}
+              </Link>
+              {story.attemptCount > 1 ? (
+                <span className="font-mono text-[10px] text-(--dim)" title="previous attempts">
+                  ({story.attemptCount - 1} earlier)
+                </span>
+              ) : null}
+            </span>
+          ) : null}
+          {story.prs.map((pr) => (
+            <a
+              key={pr.number}
+              href={pr.url}
+              target="_blank"
+              rel="noreferrer"
+              className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
+            >
+              PR #{pr.number} ↗
+            </a>
+          ))}
+          {story.ciState === "failure" && story.ciUrl ? (
+            <a
+              href={story.ciUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 font-mono text-[11px] text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
+            >
+              <StatusDot tone="bad" />
+              checks · failed
+            </a>
+          ) : story.ciState === "pending" && story.ciUrl ? (
+            <a
+              href={story.ciUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center gap-2 font-mono text-[11px] text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
+            >
+              <StatusDot tone="info" />
+              checks · pending
+            </a>
+          ) : null}
+        </div>
+      ) : null}
       {error ? <p className="font-mono text-[11px] text-(--bad)">{error}</p> : null}
     </div>
   );

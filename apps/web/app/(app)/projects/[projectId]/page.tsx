@@ -4,8 +4,7 @@ import { ErrorNotice, Offline } from "@/components/offline";
 import { PipelineBoard } from "@/components/project/pipeline";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api, summarizeSpend } from "@/lib/api";
-import { classifyPipeline } from "@/lib/pipeline";
-import { fetchAllProjectIssues } from "@/lib/project-issues";
+import { pipelineStories, reviewablePullRequests, storyHref } from "@/lib/pipeline";
 import { fmtAgo, fmtCost, fmtDuration, fmtStatus } from "@/lib/runs";
 
 export const metadata = { title: "overview" };
@@ -51,29 +50,18 @@ export default async function ProjectOverviewPage({
   params: Promise<{ projectId: string }>;
 }) {
   const { projectId } = await params;
-  const [
-    project,
-    runs,
-    spend,
-    health,
-    inbox,
-    agentsStatus,
-    outcomes,
-    allOutcomes,
-    ghIssues,
-    repos,
-  ] = await Promise.all([
-    api.project(projectId),
-    api.runs(projectId),
-    api.spend(`?projectId=${projectId}&groupBy=agent`),
-    api.projectHealth(projectId),
-    api.inboxFull(),
-    api.agentsStatus(projectId),
-    api.outcomes(`?state=open&projectId=${projectId}&limit=10`),
-    api.outcomes(`?state=all&projectId=${projectId}&limit=6`),
-    fetchAllProjectIssues(projectId),
-    api.projectRepos(projectId),
-  ]);
+  const [project, runs, spend, health, inbox, agentsStatus, allOutcomes, pipelineResult, repos] =
+    await Promise.all([
+      api.project(projectId),
+      api.runs(projectId),
+      api.spend(`?projectId=${projectId}&groupBy=agent`),
+      api.projectHealth(projectId),
+      api.inboxFull(),
+      api.agentsStatus(projectId),
+      api.outcomes(`?state=all&projectId=${projectId}&limit=6`),
+      api.pipeline(projectId),
+      api.projectRepos(projectId),
+    ]);
 
   if (!project.ok) {
     return project.offline ? (
@@ -98,8 +86,12 @@ export default async function ProjectOverviewPage({
   const watchtower = inbox.ok
     ? inbox.data.issues.filter((x) => !x.projectId || x.projectId === projectId)
     : [];
-  const openPrs = outcomes.ok ? outcomes.data : [];
-  const needsYou = blocked.length + proposals.length + openPrs.length;
+  const pipeline = pipelineResult.ok ? pipelineResult.data : null;
+  const pipelineError = pipelineResult.ok ? null : pipelineResult.message;
+  const stories = pipeline ? pipelineStories(pipeline) : [];
+  const reviewStories = pipeline?.stages.find((stage) => stage.key === "review")?.stories ?? [];
+  const reviewPrs = reviewablePullRequests(reviewStories);
+  const needsYou = blocked.length + proposals.length + reviewPrs.length;
 
   const healthData = health.ok ? health.data : null;
   const signals = (healthData?.signals ?? []).filter(isHealthSignal);
@@ -113,20 +105,16 @@ export default async function ProjectOverviewPage({
   const lastOwnerRun = ownerRuns[0];
 
   const recent = items.slice(0, 8);
-  const pipeline = classifyPipeline(ghIssues.ok ? ghIssues.items : [], proposals);
-  const issueTitleByNumber = new Map(
-    (ghIssues.ok ? ghIssues.items : []).map((issue) => [issue.number, issue.title]),
-  );
-  // PR → issue provenance comes from Facility's own runs (a builder run carries
-  // both its issue and the PR it shipped) — GitHub only knows via closing
-  // keywords, but this is our source of truth for pipeline linkage.
-  const issueByPr = new Map<number, number>();
-  for (const run of items) {
-    const gh = run.gh as { issueNumber?: number; pr?: { number?: number } } | null;
-    if (gh?.pr?.number != null && gh.issueNumber != null) {
-      issueByPr.set(gh.pr.number, gh.issueNumber);
-    }
-  }
+  const storyForProposal = (proposal: (typeof proposals)[number]) => {
+    const payload = proposal.payload as { issueNumber?: number; repoId?: string } | null;
+    const matches = stories.filter(
+      (story) =>
+        story.storyType === "issue" &&
+        story.number === payload?.issueNumber &&
+        (!payload?.repoId || story.repoId === payload.repoId),
+    );
+    return matches.length === 1 ? matches[0] : null;
+  };
   const repoList = repos.ok ? repos.data : [];
   const spendSummary = spend.ok ? summarizeSpend(spend.data) : null;
   const shipped = allOutcomes.ok
@@ -188,10 +176,10 @@ export default async function ProjectOverviewPage({
             open stories →
           </Link>
         </div>
-        {ghIssues.ok ? (
-          <PipelineBoard stages={pipeline} projectId={projectId} />
+        {pipeline ? (
+          <PipelineBoard stages={pipeline.stages} projectId={projectId} />
         ) : (
-          <ErrorNotice message={`Couldn't load the issue mirror — ${ghIssues.message}`} />
+          <ErrorNotice message={`Couldn't load the story pipeline — ${pipelineError}`} />
         )}
       </section>
 
@@ -213,58 +201,54 @@ export default async function ProjectOverviewPage({
                 </span>
               </Link>
             ))}
-            {openPrs.slice(0, 5).map((outcome) => {
-              const issueNumber = issueByPr.get(outcome.prNumber);
-              const issueTitle = issueNumber != null ? issueTitleByNumber.get(issueNumber) : null;
-              return (
-                <a
-                  key={outcome.id}
-                  href={`https://github.com/${outcome.repo}/pull/${outcome.prNumber}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
-                >
-                  <StatusDot tone="human" />
-                  <span className="font-mono text-[13px] text-(--ink)">
-                    {outcome.repo}#{outcome.prNumber}
-                  </span>
-                  <span className="truncate text-[12.5px] text-(--mut)">
-                    {issueNumber != null
-                      ? `implements #${issueNumber}${issueTitle ? ` ${issueTitle}` : ""} — PR awaiting your review ↗`
-                      : "PR awaiting your review ↗"}
-                  </span>
-                </a>
-              );
-            })}
-            {proposals.slice(0, 5).map((proposal) => (
-              <Link
-                key={proposal.id}
-                href={
-                  (proposal.payload as { issueNumber?: number } | null)?.issueNumber != null
-                    ? `/projects/${projectId}/stories/${(proposal.payload as { issueNumber?: number }).issueNumber}`
-                    : `/projects/${projectId}/approvals?focus=${proposal.id}`
-                }
+            {reviewPrs.slice(0, 5).map(({ story, pull }) => (
+              <a
+                key={`${story.repoId}:${pull.number}`}
+                href={pull.url}
+                target="_blank"
+                rel="noreferrer"
                 className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
               >
                 <StatusDot tone="human" />
-                <span className="text-[12px] font-medium text-(--human)">
-                  {proposal.actionType === "plan_acceptance"
-                    ? "plan approval"
-                    : proposal.actionType.replaceAll("_", " ")}
+                <span className="font-mono text-[13px] text-(--ink)">
+                  {story.repoOwner}/{story.repoName}#{pull.number}
                 </span>
                 <span className="truncate text-[12.5px] text-(--mut)">
-                  {(() => {
-                    const n = (proposal.payload as { issueNumber?: number } | null)?.issueNumber;
-                    const title = n != null ? issueTitleByNumber.get(n) : undefined;
-                    if (n != null && title) return `#${n} ${title} — waiting for your decision`;
-                    return "waiting for your decision";
-                  })()}
+                  {story.storyType === "issue"
+                    ? `implements #${story.number} ${story.title} — PR awaiting your review ↗`
+                    : `${story.title} — PR awaiting your review ↗`}
                 </span>
-                <span className="ml-auto font-mono text-[11px] text-(--dim)">
-                  {fmtAgo(proposal.createdAt)}
-                </span>
-              </Link>
+              </a>
             ))}
+            {proposals.slice(0, 5).map((proposal) => {
+              const story = storyForProposal(proposal);
+              return (
+                <Link
+                  key={proposal.id}
+                  href={
+                    story
+                      ? storyHref(projectId, story)
+                      : `/projects/${projectId}/approvals?focus=${proposal.id}`
+                  }
+                  className="flex items-center gap-4 border-b border-(--line) px-5 py-3.5 transition-colors last:border-b-0 hover:bg-(--card)"
+                >
+                  <StatusDot tone="human" />
+                  <span className="text-[12px] font-medium text-(--human)">
+                    {proposal.actionType === "plan_acceptance"
+                      ? "plan approval"
+                      : proposal.actionType.replaceAll("_", " ")}
+                  </span>
+                  <span className="truncate text-[12.5px] text-(--mut)">
+                    {story
+                      ? `#${story.number} ${story.title} — waiting for your decision`
+                      : "waiting for your decision"}
+                  </span>
+                  <span className="ml-auto font-mono text-[11px] text-(--dim)">
+                    {fmtAgo(proposal.createdAt)}
+                  </span>
+                </Link>
+              );
+            })}
             {watchtower.slice(0, 5).map((issue) => (
               <Link
                 key={issue.id}

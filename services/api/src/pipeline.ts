@@ -1,150 +1,444 @@
-/**
- * The SDLC pipeline as a classification of mirrored GitHub issues — the
- * server-side source of truth for pipeline state, consumed by agents (the
- * Product Owner reads it as a tool) and by the web. GitHub owns issues and
- * PRs; Facility owns runs, gates, and provenance.
- *
- * Placement is current-run-wins: the newest linked run explains an issue's
- * position. Live runs sit in their agent stage, failed runs sit there marked
- * failed (a failed attempt never rests in a human gate); otherwise delivery
- * evidence (builder success / PRs) → review, a published plan → ready.
- */
+/** Server-owned story assembly and pipeline classification. */
 
-export type PipelineStage = "backlog" | "planning" | "ready" | "building" | "review" | "shipped";
+export type PipelineStage =
+  | "backlog"
+  | "planning"
+  | "ready"
+  | "building"
+  | "validating"
+  | "review"
+  | "shipped";
 
-export type StageKind = "human" | "agent" | "done";
+export type StageKind = "human" | "agent" | "machine" | "done";
 
-export const PIPELINE_STAGES: {
-  key: PipelineStage;
-  label: string;
-  sub: string;
-  kind: StageKind;
-}[] = [
+export const PIPELINE_STAGES = [
   { key: "backlog", label: "Backlog", sub: "yours — pick up & launch", kind: "human" },
   { key: "planning", label: "Planning", sub: "architect drafts the plan", kind: "agent" },
   { key: "ready", label: "Ready", sub: "yours — review the plan", kind: "human" },
   { key: "building", label: "Building", sub: "builder implements the plan", kind: "agent" },
+  { key: "validating", label: "Validating", sub: "machines check the PR", kind: "machine" },
   { key: "review", label: "In review", sub: "yours — review the PR & iterate", kind: "human" },
   { key: "shipped", label: "Shipped", sub: "merged · last 7 days", kind: "done" },
-];
+] as const satisfies ReadonlyArray<{
+  key: PipelineStage;
+  label: string;
+  sub: string;
+  kind: StageKind;
+}>;
 
 export type PipelineRun = {
   id: string;
   mode: string;
   status: string;
+  engine: string;
   pr?: unknown;
 };
 
-export type PipelineIssueInput = {
+export type PipelinePullRequest = {
   number: number;
   title: string;
-  state: string;
-  htmlUrl: string | null;
+  url: string;
+  state: "open" | "closed" | "merged";
+  draft: boolean;
+  headSha: string | null;
+  ciState: "pending" | "success" | "failure" | null;
+  ciHeadSha: string | null;
+  createdAt: Date | null;
+  closedAt: Date | null;
+  mergedAt: Date | null;
+};
+
+export type PipelineStoryInput = {
+  key: string;
+  id: string;
+  storyType: "issue" | "pull_request";
+  repoId: string;
+  repoOwner: string;
+  repoName: string;
+  number: number;
+  title: string;
+  state: "open" | "closed" | "merged";
+  labels: string[];
+  assignees: string[];
+  author: string | null;
+  htmlUrl: string;
+  commentsCount: number;
+  ghCreatedAt: Date | null;
   ghUpdatedAt: Date | null;
   closedAt: Date | null;
   linkedRuns: PipelineRun[];
+  prs: PipelinePullRequest[];
 };
 
-export type PlacedPipelineIssue = {
+export type PlacedPipelineStory = Omit<PipelineStoryInput, "linkedRuns"> & {
+  runState: "live" | "failed" | null;
+  currentRun: { id: string; mode: string; status: string; engine: string } | null;
+  attemptCount: number;
+  ciState: "pending" | "failure" | null;
+  ciUrl: string | null;
+};
+
+export type PipelineIssueRecord = {
+  id: string;
+  repoId: string;
   number: number;
   title: string;
   state: string;
-  htmlUrl: string | null;
-  runState: "live" | "failed" | null;
-  currentRun: { id: string; mode: string; status: string } | null;
-  prs: { number: number; url: string }[];
+  labels: unknown;
+  assignees: unknown;
+  author: string | null;
+  htmlUrl: string;
+  commentsCount: number;
+  ghCreatedAt: Date | null;
+  ghUpdatedAt: Date | null;
+  closedAt: Date | null;
+};
+
+export type PipelinePullRequestRecord = {
+  id: string;
+  repoId: string;
+  number: number;
+  title: string;
+  state: string;
+  draft: boolean;
+  author: string | null;
+  htmlUrl: string;
+  headSha: string;
+  ciState: string | null;
+  ciHeadSha: string | null;
+  closingIssues: number[];
+  ghCreatedAt: Date | null;
+  ghUpdatedAt: Date | null;
+  closedAt: Date | null;
+  mergedAt: Date | null;
+};
+
+export type PipelineRepoRecord = { id: string; owner: string; name: string };
+
+export type PipelineRunRecord = PipelineRun & { gh: unknown };
+
+export type PipelineAssembly = {
+  stories: PipelineStoryInput[];
+  storyKeysByRunId: Map<string, Set<string>>;
 };
 
 const LIVE = new Set(["queued", "provisioning", "running"]);
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
-function isMode(run: { mode: string }, name: string) {
-  return run.mode === name || run.mode === `codex-${name}`;
-}
+export function assemblePipelineStories(input: {
+  issues: PipelineIssueRecord[];
+  pullRequests: PipelinePullRequestRecord[];
+  repos: PipelineRepoRecord[];
+  runs: PipelineRunRecord[];
+}): PipelineAssembly {
+  const reposById = new Map(input.repos.map((repo) => [repo.id, repo]));
+  const repoIdByName = new Map(
+    input.repos.map((repo) => [`${repo.owner}/${repo.name}`.toLowerCase(), repo.id]),
+  );
+  const stories = new Map<string, PipelineStoryInput>();
+  const issueKeyByRepoNumber = new Map<string, string>();
+  const storyKeysByPull = new Map<string, Set<string>>();
+  const storyKeysByRunId = new Map<string, Set<string>>();
+  const runIssueNumbersByPull = new Map<string, Set<number>>();
 
-function stageForMode(run: PipelineRun): PipelineStage {
-  if (isMode(run, "builder")) return "building";
-  if (isMode(run, "review") || run.mode === "address-review") return "review";
-  return "planning";
-}
-
-function prOf(run: PipelineRun): { number: number; url: string } | null {
-  const pr = run.pr && typeof run.pr === "object" ? (run.pr as Record<string, unknown>) : null;
-  if (pr && typeof pr.number === "number" && typeof pr.url === "string") {
-    return { number: pr.number, url: pr.url };
+  // Facility already knows which issue produced a PR before GitHub has
+  // necessarily indexed a closing reference. Preserve that provenance as a
+  // fallback so a mirrored PR cannot temporarily split into an orphan story.
+  for (const run of input.runs) {
+    const gh = objectValue(run.gh);
+    const owner = stringValue(gh.owner);
+    const repoName = stringValue(gh.repo);
+    const repoId =
+      owner && repoName ? repoIdByName.get(`${owner}/${repoName}`.toLowerCase()) : null;
+    const issueNumber = numberValue(gh.issueNumber);
+    const pullNumber = numberValue(objectValue(gh.pr).number);
+    if (!repoId || !issueNumber || !pullNumber) continue;
+    const key = repoNumberKey(repoId, pullNumber);
+    const issueNumbers = runIssueNumbersByPull.get(key) ?? new Set<number>();
+    issueNumbers.add(issueNumber);
+    runIssueNumbersByPull.set(key, issueNumbers);
   }
-  return null;
+
+  for (const issue of input.issues) {
+    const repo = reposById.get(issue.repoId);
+    if (!repo) continue;
+    const key = storyKey(issue.repoId, "issue", issue.number);
+    issueKeyByRepoNumber.set(repoNumberKey(issue.repoId, issue.number), key);
+    stories.set(key, {
+      key,
+      id: issue.id,
+      storyType: "issue",
+      repoId: issue.repoId,
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      number: issue.number,
+      title: issue.title,
+      state: issue.state === "closed" ? "closed" : "open",
+      labels: stringArray(issue.labels),
+      assignees: stringArray(issue.assignees),
+      author: issue.author,
+      htmlUrl: issue.htmlUrl,
+      commentsCount: issue.commentsCount,
+      ghCreatedAt: issue.ghCreatedAt,
+      ghUpdatedAt: issue.ghUpdatedAt,
+      closedAt: issue.closedAt,
+      linkedRuns: [],
+      prs: [],
+    });
+  }
+
+  for (const pull of input.pullRequests) {
+    const repo = reposById.get(pull.repoId);
+    if (!repo) continue;
+    const pullKey = repoNumberKey(pull.repoId, pull.number);
+    const linkedStoryKeys = new Set<string>();
+    const linkToIssue = (issueNumber: number) => {
+      const issueKey = issueKeyByRepoNumber.get(repoNumberKey(pull.repoId, issueNumber));
+      const issueStory = issueKey ? stories.get(issueKey) : null;
+      if (!issueKey || !issueStory || linkedStoryKeys.has(issueKey)) return;
+      issueStory.prs.push(pullRequestOf(pull));
+      linkedStoryKeys.add(issueKey);
+    };
+    for (const issueNumber of pull.closingIssues) linkToIssue(issueNumber);
+    if (linkedStoryKeys.size === 0) {
+      for (const issueNumber of runIssueNumbersByPull.get(pullKey) ?? []) {
+        linkToIssue(issueNumber);
+      }
+    }
+    if (linkedStoryKeys.size === 0) {
+      const key = storyKey(pull.repoId, "pull_request", pull.number);
+      stories.set(key, {
+        key,
+        id: pull.id,
+        storyType: "pull_request",
+        repoId: pull.repoId,
+        repoOwner: repo.owner,
+        repoName: repo.name,
+        number: pull.number,
+        title: pull.title,
+        state: pullRequestState(pull.state),
+        labels: [],
+        assignees: [],
+        author: pull.author,
+        htmlUrl: pull.htmlUrl,
+        commentsCount: 0,
+        ghCreatedAt: pull.ghCreatedAt,
+        ghUpdatedAt: pull.ghUpdatedAt,
+        closedAt: pull.mergedAt ?? pull.closedAt,
+        linkedRuns: [],
+        prs: [pullRequestOf(pull)],
+      });
+      linkedStoryKeys.add(key);
+    }
+    storyKeysByPull.set(pullKey, linkedStoryKeys);
+  }
+
+  for (const run of input.runs) {
+    const gh = objectValue(run.gh);
+    const owner = stringValue(gh.owner);
+    const repoName = stringValue(gh.repo);
+    const repoId =
+      owner && repoName ? repoIdByName.get(`${owner}/${repoName}`.toLowerCase()) : null;
+    if (!repoId) continue;
+    const keys = new Set<string>();
+    const issueNumber = numberValue(gh.issueNumber);
+    if (issueNumber) {
+      const directIssue = issueKeyByRepoNumber.get(repoNumberKey(repoId, issueNumber));
+      if (directIssue) keys.add(directIssue);
+      for (const key of storyKeysByPull.get(repoNumberKey(repoId, issueNumber)) ?? [])
+        keys.add(key);
+    }
+    const runPr = objectValue(gh.pr);
+    const runPrNumber = numberValue(runPr.number);
+    if (runPrNumber) {
+      const mirroredKeys = storyKeysByPull.get(repoNumberKey(repoId, runPrNumber));
+      if (mirroredKeys) {
+        for (const key of mirroredKeys) keys.add(key);
+      } else {
+        const directIssue = issueNumber
+          ? issueKeyByRepoNumber.get(repoNumberKey(repoId, issueNumber))
+          : null;
+        const issueStory = directIssue ? stories.get(directIssue) : null;
+        const url = stringValue(runPr.url);
+        if (issueStory && url && !issueStory.prs.some((pull) => pull.number === runPrNumber)) {
+          issueStory.prs.push({
+            number: runPrNumber,
+            title: `PR #${runPrNumber}`,
+            url,
+            state: "open",
+            draft: false,
+            headSha: null,
+            ciState: null,
+            ciHeadSha: null,
+            createdAt: null,
+            closedAt: null,
+            mergedAt: null,
+          });
+        }
+      }
+    }
+    for (const key of keys) {
+      const story = stories.get(key);
+      if (story && !story.linkedRuns.some((candidate) => candidate.id === run.id)) {
+        story.linkedRuns.push(run);
+      }
+    }
+    if (keys.size > 0) storyKeysByRunId.set(run.id, keys);
+  }
+
+  for (const story of stories.values()) {
+    story.prs.sort((a, b) => a.number - b.number);
+  }
+  return { stories: [...stories.values()], storyKeysByRunId };
 }
 
-function prsOf(runs: PipelineRun[]): { number: number; url: string }[] {
-  const seen = new Map<number, { number: number; url: string }>();
-  for (const run of runs) {
-    const pr = prOf(run);
-    if (pr) seen.set(pr.number, pr);
+export function classifyPipeline(
+  stories: PipelineStoryInput[],
+  proposalStoryKeys: ReadonlySet<string>,
+  now = Date.now(),
+): Map<PipelineStage, PlacedPipelineStory[]> {
+  const stages = new Map<PipelineStage, PlacedPipelineStory[]>(
+    PIPELINE_STAGES.map((stage) => [stage.key, []]),
+  );
+  for (const story of stories) {
+    if (story.state === "open") {
+      const { stage, placed } = placeOpen(story, proposalStoryKeys.has(story.key));
+      stages.get(stage)?.push(placed);
+      continue;
+    }
+    const shipped =
+      story.storyType === "issue" ? story.state === "closed" : story.state === "merged";
+    const closedStamp = story.closedAt ?? story.ghUpdatedAt;
+    if (shipped && closedStamp && now - closedStamp.getTime() < WEEK_MS) {
+      stages.get("shipped")?.push(placeBase(story));
+    }
   }
-  return [...seen.values()].sort((a, b) => a.number - b.number);
+  for (const placed of stages.values()) {
+    placed.sort(
+      (left, right) =>
+        (right.ghUpdatedAt?.getTime() ?? 0) - (left.ghUpdatedAt?.getTime() ?? 0) ||
+        right.number - left.number ||
+        right.repoId.localeCompare(left.repoId),
+    );
+  }
+  return stages;
 }
 
 function placeOpen(
-  issue: PipelineIssueInput,
+  story: PipelineStoryInput,
   hasOpenProposal: boolean,
-): { stage: PipelineStage; placed: PlacedPipelineIssue } {
-  // Run ids are ULID-suffixed — lexicographic order is time order.
-  const runs = [...issue.linkedRuns].sort((a, b) => a.id.localeCompare(b.id));
+): { stage: PipelineStage; placed: PlacedPipelineStory } {
+  const runs = [...story.linkedRuns].sort((a, b) => a.id.localeCompare(b.id));
   const current = runs.at(-1) ?? null;
-  const prs = prsOf(runs);
-  const placed: PlacedPipelineIssue = {
-    number: issue.number,
-    title: issue.title,
-    state: issue.state,
-    htmlUrl: issue.htmlUrl,
-    runState: null,
-    currentRun: current ? { id: current.id, mode: current.mode, status: current.status } : null,
-    prs,
-  };
+  const placed = placeBase(story);
   if (current && LIVE.has(current.status)) {
     return { stage: stageForMode(current), placed: { ...placed, runState: "live" } };
   }
-  if (current && current.status === "failed") {
+  if (current?.status === "failed") {
     return { stage: stageForMode(current), placed: { ...placed, runState: "failed" } };
   }
-  const builderDelivered = runs.some((r) => isMode(r, "builder") && r.status === "succeeded");
-  if (builderDelivered || prs.length > 0) return { stage: "review", placed };
-  const planPublished = runs.some((r) => isMode(r, "architect") && r.status === "succeeded");
+  const openPulls = story.prs.filter((pull) => pull.state === "open");
+  const reviewablePulls = openPulls.filter((pull) => !pull.draft);
+  const pending = reviewablePulls.some(hasCurrentCiState("pending"));
+  if (pending) return { stage: "validating", placed };
+  const builderDelivered = runs.some((run) => isMode(run, "builder") && run.status === "succeeded");
+  if (reviewablePulls.length > 0) return { stage: "review", placed };
+  if (openPulls.some((pull) => pull.draft)) return { stage: "building", placed };
+  if (builderDelivered) return { stage: "review", placed };
+  const planPublished = runs.some((run) => isMode(run, "architect") && run.status === "succeeded");
   if (hasOpenProposal || planPublished) return { stage: "ready", placed };
   return { stage: "backlog", placed };
 }
 
-export function classifyPipeline(
-  issues: PipelineIssueInput[],
-  proposalIssueNumbers: ReadonlySet<number>,
-  now = Date.now(),
-): Map<PipelineStage, PlacedPipelineIssue[]> {
-  const stages = new Map<PipelineStage, PlacedPipelineIssue[]>(
-    PIPELINE_STAGES.map((s) => [s.key, []]),
-  );
-  for (const issue of issues) {
-    if (issue.state === "open") {
-      const { stage, placed } = placeOpen(issue, proposalIssueNumbers.has(issue.number));
-      stages.get(stage)?.push(placed);
-      continue;
-    }
-    // Shipped = closed this week, by close time. (The mirror doesn't
-    // distinguish merged from closed; good enough until outcomes land.)
-    const closedStamp = issue.closedAt ?? issue.ghUpdatedAt;
-    if (closedStamp && now - closedStamp.getTime() < WEEK_MS) {
-      const runs = [...issue.linkedRuns].sort((a, b) => a.id.localeCompare(b.id));
-      const current = runs.at(-1) ?? null;
-      stages.get("shipped")?.push({
-        number: issue.number,
-        title: issue.title,
-        state: issue.state,
-        htmlUrl: issue.htmlUrl,
-        runState: null,
-        currentRun: current ? { id: current.id, mode: current.mode, status: current.status } : null,
-        prs: prsOf(runs),
-      });
-    }
+function placeBase(story: PipelineStoryInput): PlacedPipelineStory {
+  const runs = [...story.linkedRuns].sort((a, b) => a.id.localeCompare(b.id));
+  const current = runs.at(-1) ?? null;
+  const reviewablePulls = story.prs.filter((pull) => pull.state === "open" && !pull.draft);
+  const failedPull = reviewablePulls.find(hasCurrentCiState("failure"));
+  const pendingPull = reviewablePulls.find(hasCurrentCiState("pending"));
+  const ciPull = failedPull ?? pendingPull;
+  const { linkedRuns: _linkedRuns, ...fields } = story;
+  return {
+    ...fields,
+    runState: null,
+    currentRun: current
+      ? { id: current.id, mode: current.mode, status: current.status, engine: current.engine }
+      : null,
+    attemptCount: runs.length,
+    ciState: failedPull ? "failure" : pendingPull ? "pending" : null,
+    ciUrl: ciPull ? `${ciPull.url}/checks` : null,
+  };
+}
+
+function hasCurrentCiState(state: "pending" | "failure") {
+  return (pull: PipelinePullRequest) =>
+    pull.ciState === state &&
+    Boolean(pull.headSha) &&
+    Boolean(pull.ciHeadSha) &&
+    pull.headSha === pull.ciHeadSha;
+}
+
+function stageForMode(run: PipelineRun): PipelineStage {
+  if (isMode(run, "builder")) return "building";
+  if (isMode(run, "review") || ["address-review", "address_review"].includes(run.mode)) {
+    return "review";
   }
-  return stages;
+  return "planning";
+}
+
+function isMode(run: { mode: string }, name: string) {
+  return run.mode === name || run.mode === `codex-${name}`;
+}
+
+function pullRequestOf(pull: PipelinePullRequestRecord): PipelinePullRequest {
+  return {
+    number: pull.number,
+    title: pull.title,
+    url: pull.htmlUrl,
+    state: pullRequestState(pull.state),
+    draft: pull.draft,
+    headSha: pull.headSha,
+    ciState:
+      pull.ciState === "pending" || pull.ciState === "success" || pull.ciState === "failure"
+        ? pull.ciState
+        : null,
+    ciHeadSha: pull.ciHeadSha,
+    createdAt: pull.ghCreatedAt,
+    closedAt: pull.closedAt,
+    mergedAt: pull.mergedAt,
+  };
+}
+
+function pullRequestState(value: string): "open" | "closed" | "merged" {
+  if (value === "merged") return "merged";
+  if (value === "closed") return "closed";
+  return "open";
+}
+
+function storyKey(repoId: string, type: "issue" | "pull_request", number: number) {
+  return `${repoId}:${type}:${number}`;
+}
+
+function repoNumberKey(repoId: string, number: number) {
+  return `${repoId}:${number}`;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isInteger(value) ? value : null;
 }

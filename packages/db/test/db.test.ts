@@ -332,7 +332,11 @@ describe("db", async () => {
           'runs_plan_acceptance_architect_run_uidx',
           'webhook_deliveries_pending_idx',
           'webhook_deliveries_org_created_idx',
-          'idempotency_records_expiry_idx'
+          'idempotency_records_expiry_idx',
+          'gh_pull_requests_repo_number_uidx',
+          'gh_pull_requests_org_project_state_idx',
+          'gh_pull_requests_repo_head_sha_idx',
+          'gh_pull_requests_closing_issues_idx'
         )
       `,
     )) as Iterable<{ indexname: string }>;
@@ -366,6 +370,30 @@ describe("db", async () => {
         "webhook_deliveries_pending_idx",
         "webhook_deliveries_org_created_idx",
         "idempotency_records_expiry_idx",
+        // First-class GitHub PR mirror (migration 0029).
+        "gh_pull_requests_repo_number_uidx",
+        "gh_pull_requests_org_project_state_idx",
+        "gh_pull_requests_repo_head_sha_idx",
+        "gh_pull_requests_closing_issues_idx",
+      ]),
+    );
+    const pullRequestChecks = (await db.execute(
+      sql`
+        SELECT conname
+        FROM pg_constraint
+        WHERE conrelid = 'gh_pull_requests'::regclass
+          AND conname IN (
+            'gh_pull_requests_state_check',
+            'gh_pull_requests_ci_state_check',
+            'gh_pull_requests_repo_number_uidx'
+          )
+      `,
+    )) as Iterable<{ conname: string }>;
+    expect(new Set(Array.from(pullRequestChecks).map((row) => row.conname))).toEqual(
+      new Set([
+        "gh_pull_requests_state_check",
+        "gh_pull_requests_ci_state_check",
+        "gh_pull_requests_repo_number_uidx",
       ]),
     );
     const applied = (await db.execute(
@@ -378,9 +406,7 @@ describe("db", async () => {
     // A developer database can include later migrations from another worktree;
     // assert this checkout's latest migration was applied without assuming it
     // is the newest row in that shared database.
-    expect(Array.from(applied).map((row) => row.name)).toContain(
-      "0028_github_identity_and_oauth.sql",
-    );
+    expect(Array.from(applied).map((row) => row.name)).toContain("0030_github_sync_watermarks.sql");
     const invalidOutcomeRollups = (await db.execute(
       sql`
         SELECT count(*)::int AS count
@@ -395,6 +421,18 @@ describe("db", async () => {
       sql`SELECT to_regclass('scheduler_watermarks') AS name`,
     )) as Iterable<{ name: string | null }>;
     expect(Array.from(schedulerTable)[0]?.name).toBe("scheduler_watermarks");
+    const schedulerColumns = (await db.execute(
+      sql`
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND table_name = 'scheduler_watermarks'
+          AND column_name IN ('cursor', 'scan_started_at')
+      `,
+    )) as Iterable<{ column_name: string }>;
+    expect(new Set(Array.from(schedulerColumns).map((row) => row.column_name))).toEqual(
+      new Set(["cursor", "scan_started_at"]),
+    );
 
     // Budget enum/limit + scope-coherence CHECK constraints backstop every write
     // path (migrations 0013 + 0014).

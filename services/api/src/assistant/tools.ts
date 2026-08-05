@@ -29,7 +29,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "get_pipeline",
     description:
-      "The project's delivery pipeline: issues grouped by stage (Backlog → Planning → Ready → Building → In review → Shipped) with current runs, PRs and human gates. Use this for 'what is in flight / where is X'.",
+      "The project's delivery pipeline: repository-qualified stories grouped by stage (Backlog → Planning → Ready → Building → Validating → In review → Shipped) with current runs, mirrored PRs, aggregate CI and human gates. Use this for 'what is in flight / where is X'.",
     inputSchema: NO_ARGS,
     toRequest: (_a, ctx) => ({ method: "GET", path: `/v1/projects/${ctx.projectId}/pipeline` }),
   },
@@ -111,16 +111,23 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
   },
   {
     name: "get_issue",
-    description: "One mirrored GitHub issue with body and linked runs, by issue number.",
+    description:
+      "One mirrored GitHub issue with body and linked runs. Pass repoId from get_pipeline/list_issues when the project has more than one repository.",
     inputSchema: {
       type: "object",
-      properties: { number: { type: "integer", description: "GitHub issue number" } },
+      properties: {
+        number: { type: "integer", description: "GitHub issue number" },
+        repoId: str(
+          "repository id from get_pipeline/list_issues; required when the number is ambiguous",
+        ),
+      },
       required: ["number"],
       additionalProperties: false,
     },
     toRequest: (a, ctx) => ({
       method: "GET",
       path: `/v1/projects/${ctx.projectId}/issues/${Number(a.number ?? 0)}`,
+      ...(typeof a.repoId === "string" && a.repoId ? { query: { repoId: a.repoId } } : {}),
     }),
   },
   {
@@ -177,6 +184,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
       type: "object",
       properties: {
         issueNumber: { type: "integer", description: "GitHub issue number to update" },
+        repoId: str("repository id from get_issue/get_pipeline; required for multi-repo projects"),
         title: str("the full new title"),
         bodyMd: str("the full new body, markdown — a complete replacement"),
         reason: str("why this update — cited signals/decisions (e.g. S004, D002)"),
@@ -192,6 +200,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
         actionType: "issue_update",
         payload: {
           issueNumber: Number(a.issueNumber ?? 0),
+          ...(typeof a.repoId === "string" && a.repoId ? { repoId: a.repoId } : {}),
           title: String(a.title ?? ""),
           bodyMd: String(a.bodyMd ?? ""),
         },
