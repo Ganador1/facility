@@ -38,6 +38,11 @@ const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
 const RATE_LIMIT_RETRY_LIMIT = 8;
 const DEFAULT_RETRY_AFTER_MS = 1_000;
 const MAX_RETRY_AFTER_MS = 60_000;
+const EVENT_BATCH_MAX = 50;
+// Fastify's JSON body limit is 1 MiB. Leave room for envelope overhead and
+// future schema fields while retaining the old ability to send one large line.
+const EVENT_BATCH_MAX_BYTES = 900 * 1024;
+const EVENT_BATCH_FLUSH_MS = 100;
 const PRIVATE_REGISTRY_INSTALL_COMMANDS = new Set([
   "npm ci",
   "pnpm install --frozen-lockfile",
@@ -721,12 +726,7 @@ async function runShell(
     ...untrustedSpawnIdentity(),
   });
   const clearTimers = armEngineTimeout(child, timeoutMin);
-  const drains = [child.stdout, child.stderr].map((stream) => {
-    const rl = createInterface({ input: stream });
-    return (async () => {
-      for await (const line of rl) await emit([{ type: eventType, data: { text: line } }]);
-    })();
-  });
+  const drains = [child.stdout, child.stderr].map((stream) => drainLineEvents(stream, eventType));
   const code = await exitCode(child);
   // Wait for both stream readers to finish draining before returning, so no
   // output line is emitted AFTER the caller records the run's result (a late
@@ -735,6 +735,114 @@ async function runShell(
   await Promise.all(drains);
   clearTimers();
   return code;
+}
+
+export async function drainLineEvents(
+  stream: NodeJS.ReadableStream,
+  eventType: string,
+  send: (events: RunEvent[]) => Promise<unknown> = emit,
+  options: { batchSize?: number; maxBatchBytes?: number; flushMs?: number } = {},
+) {
+  const batchSize = options.batchSize ?? EVENT_BATCH_MAX;
+  const maxBatchBytes = options.maxBatchBytes ?? EVENT_BATCH_MAX_BYTES;
+  const flushMs = options.flushMs ?? EVENT_BATCH_FLUSH_MS;
+  if (!Number.isInteger(batchSize) || batchSize < 1) throw new Error("invalid_event_batch_size");
+  if (!Number.isInteger(maxBatchBytes) || maxBatchBytes < 1)
+    throw new Error("invalid_event_batch_max_bytes");
+  if (!Number.isFinite(flushMs) || flushMs < 0) throw new Error("invalid_event_batch_flush_ms");
+
+  const lines = createInterface({ input: stream });
+  let buffered: RunEvent[] = [];
+  // Opening and closing brackets are always present in the serialized array.
+  let bufferedBytes = 2;
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  let activeDelivery: Promise<void> | undefined;
+  let deliveryError: unknown;
+
+  const clearFlushTimer = () => {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = undefined;
+  };
+  const scheduleFlush = () => {
+    if (flushTimer || activeDelivery || buffered.length === 0 || deliveryError) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      startDelivery();
+    }, flushMs);
+  };
+  const startDelivery = () => {
+    if (activeDelivery || buffered.length === 0 || deliveryError) return;
+    clearFlushTimer();
+    const batch = buffered;
+    buffered = [];
+    bufferedBytes = 2;
+    const current = Promise.resolve().then(async () => {
+      await send(batch);
+    });
+    activeDelivery = current;
+    // Keep at most one active delivery and one bounded pending batch. A timer
+    // must never snapshot another partial batch while the API is throttling.
+    void current.then(
+      () => {
+        if (activeDelivery !== current) return;
+        activeDelivery = undefined;
+        if (buffered.length >= batchSize) startDelivery();
+        else scheduleFlush();
+      },
+      (error: unknown) => {
+        if (activeDelivery !== current) return;
+        activeDelivery = undefined;
+        deliveryError = error;
+        clearFlushTimer();
+        // Wake a reader waiting on more process output so the delivery failure
+        // is surfaced even when the underlying stream remains open.
+        lines.close();
+      },
+    );
+  };
+  const dispatchPending = async () => {
+    clearFlushTimer();
+    if (!activeDelivery) startDelivery();
+    else {
+      await activeDelivery;
+      if (deliveryError) throw deliveryError;
+      if (!activeDelivery && buffered.length > 0) startDelivery();
+    }
+  };
+
+  try {
+    for await (const line of lines) {
+      const event: RunEvent = { type: eventType, data: { text: line } };
+      const eventBytes = Buffer.byteLength(JSON.stringify(redactRunEvent(event)));
+      const separatorBytes = buffered.length === 0 ? 0 : 1;
+      if (buffered.length > 0 && bufferedBytes + separatorBytes + eventBytes > maxBatchBytes) {
+        // Flush the existing batch before adding a line that would exceed the
+        // request budget. A single large line is still sent on its own, as it
+        // was before batching, because splitting one event would change it.
+        await dispatchPending();
+      }
+
+      bufferedBytes += (buffered.length === 0 ? 0 : 1) + eventBytes;
+      buffered.push(event);
+      if (buffered.length >= batchSize || bufferedBytes >= maxBatchBytes) {
+        // Preserve stream backpressure at one pending batch while the API is
+        // throttling instead of chaining unbounded timer-created requests.
+        await dispatchPending();
+      } else {
+        scheduleFlush();
+      }
+    }
+    clearFlushTimer();
+    while (activeDelivery || buffered.length > 0) {
+      if (deliveryError) throw deliveryError;
+      if (!activeDelivery) startDelivery();
+      if (activeDelivery) await activeDelivery;
+    }
+    if (deliveryError) throw deliveryError;
+  } finally {
+    clearFlushTimer();
+    lines.close();
+  }
 }
 
 export async function runPackageInstall(
@@ -1619,13 +1727,17 @@ export function redactEventData(
   return value;
 }
 
+function redactRunEvent(event: RunEvent): RunEvent {
+  return event.data
+    ? { ...event, data: redactEventData(event.data) as Record<string, unknown> }
+    : event;
+}
+
 async function emit(events: RunEvent[]) {
   if (events.length === 0) return;
   // Central redaction: every event that reaches run_events (readable by any
   // runs:read principal) is scrubbed here, regardless of which producer emitted it.
-  const safe = events.map((event) =>
-    event.data ? { ...event, data: redactEventData(event.data) as Record<string, unknown> } : event,
-  );
+  const safe = events.map(redactRunEvent);
   await api(`/internal/runs/${currentRunId()}/events`, {
     method: "POST",
     body: JSON.stringify(safe),
