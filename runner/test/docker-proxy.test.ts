@@ -275,7 +275,7 @@ describe("restricted Docker API", () => {
     const upstreamSocket = join(dir, "upstream.sock");
     const publicSocket = join(dir, "public.sock");
     const upstreamBodies: Array<Record<string, unknown>> = [];
-    const pinnedSources: string[] = [];
+    const pinnedSources: Array<{ source: string; createIfMissing: boolean }> = [];
     const upstream = http.createServer(async (request, response) => {
       let body = "";
       for await (const chunk of request) body += chunk.toString();
@@ -317,7 +317,10 @@ describe("restricted Docker API", () => {
       },
     ]);
     const resolvedSource = await realpath(source);
-    expect(pinnedSources).toEqual([resolvedSource, resolvedSource]);
+    expect(pinnedSources).toEqual([
+      { source: resolvedSource, createIfMissing: false },
+      { source: resolvedSource, createIfMissing: false },
+    ]);
 
     const denied = await request(publicSocket, "/v1.47/containers/create", {
       Image: "facility-security-smoke:local",
@@ -325,6 +328,67 @@ describe("restricted Docker API", () => {
     });
     expect(denied.status).toBe(403);
     expect(denied.body).toContain("host_bind_source_escape_denied");
+    expect(upstreamBodies).toHaveLength(1);
+  });
+
+  test("creates and pins a missing terminal workspace directory for Docker -v semantics", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facility-docker-missing-bind-"));
+    const workspaceRoot = join(dir, "work");
+    const sourceParent = join(workspaceRoot, "repo", "supabase");
+    const source = join(sourceParent, "snippets");
+    const workspaceView = join(dir, "trusted-work");
+    await mkdir(sourceParent, { recursive: true });
+    await mkdir(workspaceView);
+    const upstreamSocket = join(dir, "upstream.sock");
+    const publicSocket = join(dir, "public.sock");
+    const upstreamBodies: Array<Record<string, unknown>> = [];
+    const upstream = http.createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk.toString();
+      upstreamBodies.push(JSON.parse(body));
+      response.writeHead(201, { "content-type": "application/json" });
+      response.end("{}");
+    });
+    await listen(upstream, upstreamSocket);
+    const proxy = await startDockerProxy({
+      publicSocket,
+      upstreamSocket,
+      workspaceRoot,
+      pinBindSources: async (sources) => {
+        const resolvedSource = join(await realpath(sourceParent), "snippets");
+        expect(sources).toEqual([{ source: resolvedSource, createIfMissing: true }]);
+        await mkdir(source);
+        return [join(workspaceView, "pin-1", "source")];
+      },
+    });
+    cleanup.push(async () => {
+      await close(proxy);
+      await close(upstream);
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    const accepted = await request(publicSocket, "/v1.47/containers/create", {
+      Image: "supabase/studio:local",
+      HostConfig: { Binds: [`${source}:/workspaces/default/snippets:rw`] },
+    });
+    expect(accepted.status).toBe(201);
+    expect(upstreamBodies).toEqual([
+      {
+        Image: "supabase/studio:local",
+        HostConfig: {
+          Binds: [`${workspaceView}/pin-1/source:/workspaces/default/snippets:rw`],
+        },
+      },
+    ]);
+
+    const unresolved = await request(publicSocket, "/v1.47/containers/create", {
+      Image: "supabase/studio:local",
+      HostConfig: {
+        Binds: [`${workspaceRoot}/missing-parent/snippets:/workspaces/default/snippets:rw`],
+      },
+    });
+    expect(unresolved.status).toBe(403);
+    expect(unresolved.body).toContain("host_bind_source_unresolved");
     expect(upstreamBodies).toHaveLength(1);
   });
 
@@ -345,7 +409,10 @@ describe("restricted Docker API", () => {
 
     await expect(
       secureDockerBindSources(body, workspaceRoot, async (sources) => {
-        expect(sources).toEqual([await realpath(first), await realpath(second)]);
+        expect(sources).toEqual([
+          { source: await realpath(first), createIfMissing: false },
+          { source: await realpath(second), createIfMissing: false },
+        ]);
         throw new Error("workspace_bind_source_denied");
       }),
     ).resolves.toBe("workspace_bind_source_denied");

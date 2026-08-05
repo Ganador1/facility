@@ -2,7 +2,7 @@
 import { chmod, chown, realpath, rm } from "node:fs/promises";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
-import { isAbsolute, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import type { Duplex } from "node:stream";
 
 const DEFAULT_PUBLIC_SOCKET = "/run/facility-proxy/docker.sock";
@@ -13,9 +13,10 @@ const MAX_POLICY_BODY_BYTES = 1024 * 1024;
 const MAX_BATCH_BINDS = 128;
 const MAX_BROKER_RESPONSE_BYTES = 1024 * 1024;
 
-type PinBindSources = (sources: string[], workspaceRoot: string) => Promise<string[]>;
+type BindSourceRequest = { source: string; createIfMissing: boolean };
+type PinBindSources = (sources: BindSourceRequest[], workspaceRoot: string) => Promise<string[]>;
 type SecuredBindSource =
-  | { allowed: true; source: string; pin: boolean }
+  | { allowed: true; source: string; pin: boolean; createIfMissing: boolean }
   | { allowed: false; reason: string };
 
 type PolicyDecision =
@@ -193,7 +194,7 @@ export async function secureDockerBindSources(
   } catch {
     return "workspace_root_unresolved";
   }
-  const pending: Array<{ source: string; apply: (secured: string) => void }> = [];
+  const pending: Array<BindSourceRequest & { apply: (secured: string) => void }> = [];
   const binds = host.Binds;
   if (Array.isArray(binds)) {
     for (let index = 0; index < binds.length; index += 1) {
@@ -204,6 +205,7 @@ export async function secureDockerBindSources(
       if (secured.pin) {
         pending.push({
           source: secured.source,
+          createIfMissing: secured.createIfMissing,
           apply: (pinned) => {
             binds[index] = `${pinned}${bind.slice(source.length)}`;
           },
@@ -222,6 +224,7 @@ export async function secureDockerBindSources(
       if (secured.pin) {
         pending.push({
           source: secured.source,
+          createIfMissing: secured.createIfMissing,
           apply: (pinned) => {
             mount.Source = pinned;
           },
@@ -235,7 +238,7 @@ export async function secureDockerBindSources(
   if (pending.length > MAX_BATCH_BINDS) return "workspace_bind_batch_too_large";
   try {
     const pinned = await pinBindSources(
-      pending.map(({ source }) => source),
+      pending.map(({ source, createIfMissing }) => ({ source, createIfMissing })),
       resolvedWorkspaceRoot,
     );
     if (pinned.length !== pending.length) return "workspace_bind_source_pin_failed";
@@ -267,7 +270,7 @@ export async function startDockerProxy(
   const bindMounterSocket = options.bindMounterSocket ?? DEFAULT_BIND_MOUNTER_SOCKET;
   const pinBindSources =
     options.pinBindSources ??
-    ((sources: string[], resolvedWorkspaceRoot: string) =>
+    ((sources: BindSourceRequest[], resolvedWorkspaceRoot: string) =>
       requestPinnedSources(bindMounterSocket, sources, resolvedWorkspaceRoot));
   await rm(publicSocket, { force: true });
   const server = http.createServer((request, response) => {
@@ -408,27 +411,64 @@ function safeBindSource(source: string, workspaceRoot = DEFAULT_WORKSPACE_ROOT) 
 }
 
 async function secureBindSource(source: string, workspaceRoot: string): Promise<SecuredBindSource> {
-  if (!source.startsWith("/")) return { allowed: true, source, pin: false };
+  if (!source.startsWith("/")) {
+    return { allowed: true, source, pin: false, createIfMissing: false };
+  }
   let resolved: string;
   try {
     resolved = await realpath(source);
-  } catch {
-    return { allowed: false, reason: "host_bind_source_unresolved" };
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") {
+      return { allowed: false, reason: "host_bind_source_unresolved" };
+    }
+    const leaf = basename(source);
+    if (!leaf || leaf === "." || leaf === "..") {
+      return { allowed: false, reason: "host_bind_source_unresolved" };
+    }
+    let resolvedParent: string;
+    try {
+      resolvedParent = await realpath(dirname(source));
+    } catch {
+      return { allowed: false, reason: "host_bind_source_unresolved" };
+    }
+    resolved = join(resolvedParent, leaf);
+    if (!workspacePath(resolved, workspaceRoot)) {
+      return { allowed: false, reason: "host_bind_source_escape_denied" };
+    }
+    // Docker's `-v` semantics create a missing terminal directory. Delegate
+    // that operation to the descriptor-walking broker so a concurrent symlink
+    // replacement cannot move creation or the eventual bind outside /work.
+    return { allowed: true, source: resolved, pin: true, createIfMissing: true };
   }
   if (!safeBindSource(resolved, workspaceRoot)) {
     return { allowed: false, reason: "host_bind_source_escape_denied" };
   }
   if (resolved === workspaceRoot || resolved.startsWith(`${workspaceRoot}/`)) {
-    return { allowed: true, source: resolved, pin: true };
+    return { allowed: true, source: resolved, pin: true, createIfMissing: false };
   }
-  return { allowed: true, source: resolved, pin: false };
+  return { allowed: true, source: resolved, pin: false, createIfMissing: false };
 }
 
-async function requestPinnedSources(socketPath: string, sources: string[], workspaceRoot: string) {
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
+}
+
+function workspacePath(source: string, workspaceRoot: string) {
+  const relativeSource = relative(workspaceRoot, source);
+  return (
+    relativeSource !== ".." && !relativeSource.startsWith(`..${sep}`) && !isAbsolute(relativeSource)
+  );
+}
+
+async function requestPinnedSources(
+  socketPath: string,
+  sources: BindSourceRequest[],
+  workspaceRoot: string,
+) {
   if (sources.length === 0 || sources.length > MAX_BATCH_BINDS) {
     throw new Error("workspace_bind_batch_too_large");
   }
-  const relativeSources = sources.map((source) => {
+  const relativeSources = sources.map(({ source, createIfMissing }) => {
     const relativeSource = relative(workspaceRoot, source);
     if (
       relativeSource === ".." ||
@@ -441,7 +481,7 @@ async function requestPinnedSources(socketPath: string, sources: string[], works
     if (normalized.includes("\n") || normalized.includes("\r")) {
       throw new Error("workspace_bind_source_denied");
     }
-    return normalized;
+    return `${createIfMissing ? "MKDIR" : "OPEN"} ${normalized}`;
   });
   const requestBody = `BATCH ${relativeSources.length}\n${relativeSources.join("\n")}\n`;
   return await new Promise<string[]>((resolvePinned, reject) => {
