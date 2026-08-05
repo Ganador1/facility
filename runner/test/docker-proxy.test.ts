@@ -335,6 +335,14 @@ test("custom CodeBuild lifecycle commands drop root", async () => {
   );
 });
 
+test("CodeBuild keeps pinned bind aliases outside the recursively managed workspace", async () => {
+  const script = await readFile(new URL("../codebuild-runner.sh", import.meta.url), "utf8");
+  expect(script).toContain('readonly workspace_view="/run/facility-workspace"');
+  expect(script).not.toContain('readonly workspace_view="/work/');
+  expect(script).toContain("if ! find /work -type d -print >/dev/null; then");
+  expect(script).toContain('--mount "type=bind,src=/work,dst=/workspace,readonly"');
+});
+
 test("CodeBuild metadata egress is scoped to untrusted identities", async () => {
   const script = await readFile(new URL("../codebuild-runner.sh", import.meta.url), "utf8");
   expect(script).toContain(
