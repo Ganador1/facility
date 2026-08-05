@@ -70,6 +70,36 @@ describe("restricted Docker API", () => {
         { HostConfig: { SecurityOpt: ["label:disable", "apparmor=unconfined"] } },
         "host_config_securityopt_denied",
       ],
+      [{ hostconfig: { Privileged: true } }, "docker_json_key_casing_denied"],
+      [{ HostConfig: { securityopt: ["seccomp=unconfined"] } }, "docker_json_key_casing_denied"],
+      [{ HostConfig: { ſecurityOpt: ["seccomp=unconfined"] } }, "docker_json_key_casing_denied"],
+      [
+        {
+          HostConfig: {
+            SecurityOpt: ["label:disable"],
+            securityopt: ["seccomp=unconfined"],
+          },
+        },
+        "docker_json_key_casing_denied",
+      ],
+      [{ HostConfig: { binds: ["/proc:/host-proc:ro"] } }, "docker_json_key_casing_denied"],
+      [
+        { HostConfig: { Mounts: [{ type: "bind", source: "/", Target: "/host" }] } },
+        "docker_json_key_casing_denied",
+      ],
+      [
+        {
+          HostConfig: {
+            Mounts: [
+              {
+                Type: "volume",
+                VolumeOptions: { driverconfig: { Name: "local", Options: {} } },
+              },
+            ],
+          },
+        },
+        "docker_json_key_casing_denied",
+      ],
       [{ HostConfig: { MaskedPaths: [] } }, "host_config_maskedpaths_denied"],
       [
         {
@@ -95,12 +125,19 @@ describe("restricted Docker API", () => {
       expect(validateDockerBody("container", body)).toBe(reason);
     }
     expect(validateDockerBody("exec", { Privileged: true })).toBe("privileged_exec_denied");
+    expect(validateDockerBody("exec", { privileged: true })).toBe("docker_json_key_casing_denied");
     expect(
       validateDockerBody("volume", {
         Driver: "local",
         DriverOpts: { type: "none", o: "bind", device: "/run/facility-docker/docker.sock" },
       }),
     ).toBe("volume_driver_options_denied");
+    expect(
+      validateDockerBody("volume", {
+        Driver: "local",
+        driveropts: { type: "none", o: "bind", device: "/run/facility-docker/docker.sock" },
+      }),
+    ).toBe("docker_json_key_casing_denied");
   });
 
   test("blocks a proc credential-recovery bind before it reaches dockerd", async () => {
@@ -178,6 +215,40 @@ describe("restricted Docker API", () => {
     });
     expect(deniedUnconfined.status).toBe(403);
     expect(deniedUnconfined.body).toContain("host_config_securityopt_denied");
+    expect(upstreamRequests).toBe(2);
+
+    const deniedCasingAlias = await request(publicSocket, "/v1.47/containers/create", {
+      Image: "facility-security-smoke:local",
+      HostConfig: {
+        SecurityOpt: ["label:disable"],
+        securityopt: ["seccomp=unconfined"],
+      },
+    });
+    expect(deniedCasingAlias.status).toBe(403);
+    expect(deniedCasingAlias.body).toContain("docker_json_key_casing_denied");
+    expect(upstreamRequests).toBe(2);
+
+    const deniedHostConfigAlias = await request(publicSocket, "/v1.47/containers/create", {
+      Image: "facility-security-smoke:local",
+      hostconfig: { privileged: true },
+    });
+    expect(deniedHostConfigAlias.status).toBe(403);
+    expect(deniedHostConfigAlias.body).toContain("docker_json_key_casing_denied");
+    expect(upstreamRequests).toBe(2);
+
+    const deniedExecAlias = await request(publicSocket, "/v1.47/containers/abc/exec", {
+      privileged: true,
+    });
+    expect(deniedExecAlias.status).toBe(403);
+    expect(deniedExecAlias.body).toContain("docker_json_key_casing_denied");
+    expect(upstreamRequests).toBe(2);
+
+    const deniedVolumeAlias = await request(publicSocket, "/v1.47/volumes/create", {
+      Driver: "local",
+      driveropts: { type: "none", o: "bind", device: "/run/facility-docker/docker.sock" },
+    });
+    expect(deniedVolumeAlias.status).toBe(403);
+    expect(deniedVolumeAlias.body).toContain("docker_json_key_casing_denied");
     expect(upstreamRequests).toBe(2);
   });
 

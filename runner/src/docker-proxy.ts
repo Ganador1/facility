@@ -72,15 +72,47 @@ export function validateDockerBody(
 ): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "invalid_json_object";
   const body = value as Record<string, unknown>;
-  if (kind === "exec") return body.Privileged === true ? "privileged_exec_denied" : null;
+  if (kind === "exec") {
+    if (hasNonCanonicalKey(body, ["Privileged"])) return "docker_json_key_casing_denied";
+    return body.Privileged === true ? "privileged_exec_denied" : null;
+  }
   if (kind === "volume") {
+    if (hasNonCanonicalKey(body, ["Driver", "DriverOpts"])) {
+      return "docker_json_key_casing_denied";
+    }
     const driver = String(body.Driver ?? "");
     if (driver !== "" && driver !== "local") return "volume_driver_denied";
     if (objectKeys(body.DriverOpts).length > 0) return "volume_driver_options_denied";
     return null;
   }
 
+  if (hasNonCanonicalKey(body, ["HostConfig"])) return "docker_json_key_casing_denied";
   const host = object(body.HostConfig);
+  const protectedHostFields = [
+    "Privileged",
+    "Devices",
+    "DeviceRequests",
+    "CapAdd",
+    "VolumesFrom",
+    "DeviceCgroupRules",
+    "SecurityOpt",
+    "MaskedPaths",
+    "ReadonlyPaths",
+    "Sysctls",
+    "CgroupParent",
+    "Runtime",
+    "PidMode",
+    "IpcMode",
+    "UTSMode",
+    "UsernsMode",
+    "CgroupnsMode",
+    "NetworkMode",
+    "Binds",
+    "Mounts",
+  ];
+  // encoding/json matches Go struct fields case-insensitively. Reject aliases
+  // instead of validating one spelling and forwarding a dangerous equivalent.
+  if (hasNonCanonicalKey(host, protectedHostFields)) return "docker_json_key_casing_denied";
   if (host.Privileged === true) return "privileged_container_denied";
   const deniedNonEmpty = [
     "Devices",
@@ -123,13 +155,20 @@ export function validateDockerBody(
   }
   if (Array.isArray(host.Mounts)) {
     for (const mount of host.Mounts) {
-      const type = String(object(mount).Type ?? "").toLowerCase();
+      const mountObject = object(mount);
+      if (hasNonCanonicalKey(mountObject, ["Type", "Source", "VolumeOptions"])) {
+        return "docker_json_key_casing_denied";
+      }
+      const type = String(mountObject.Type ?? "").toLowerCase();
       if (type === "bind") {
-        if (!safeBindSource(String(object(mount).Source ?? ""), workspaceRoot)) {
+        if (!safeBindSource(String(mountObject.Source ?? ""), workspaceRoot)) {
           return "host_bind_source_denied";
         }
       } else if (type === "volume") {
-        const volumeOptions = object(object(mount).VolumeOptions);
+        const volumeOptions = object(mountObject.VolumeOptions);
+        if (hasNonCanonicalKey(volumeOptions, ["DriverConfig"])) {
+          return "docker_json_key_casing_denied";
+        }
         if ("DriverConfig" in volumeOptions) return "host_mount_volume_driver_denied";
       } else if (type !== "tmpfs") return "host_mount_denied";
     }
@@ -342,6 +381,18 @@ function nonEmpty(value: unknown) {
 
 function objectKeys(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value) : [];
+}
+
+function hasNonCanonicalKey(record: Record<string, unknown>, canonicalKeys: string[]) {
+  const canonicalByLowercase = new Map(canonicalKeys.map((key) => [key.toLowerCase(), key]));
+  return Object.keys(record).some((key) => {
+    // Go's encoding/json uses Unicode simple-fold matching (for example, a
+    // long-s can match an ASCII s). Docker schema keys are ASCII, so reject
+    // non-ASCII spellings at the schema levels this policy validates.
+    if ([...key].some((character) => (character.codePointAt(0) ?? 0) > 0x7f)) return true;
+    const canonical = canonicalByLowercase.get(key.toLowerCase());
+    return canonical !== undefined && key !== canonical;
+  });
 }
 
 function dockerBindSources(host: Record<string, unknown>) {
