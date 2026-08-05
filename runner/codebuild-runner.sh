@@ -8,7 +8,7 @@ readonly untrusted_gid="${FACILITY_UNTRUSTED_GID:-1000}"
 readonly docker_runtime="/run/facility-docker"
 readonly proxy_runtime="/run/facility-proxy"
 readonly bind_runtime="/run/facility-binds"
-readonly workspace_view="/work/.facility-mounts"
+readonly workspace_view="/run/facility-workspace"
 readonly raw_socket="${docker_runtime}/docker.sock"
 readonly public_socket="${proxy_runtime}/docker.sock"
 readonly bind_socket="${bind_runtime}/mounter.sock"
@@ -250,8 +250,11 @@ security_smoke() {
 
   echo "Facility smoke: checking permitted workspace and socket binds"
   local bind_dir="/work/.facility-security-bind"
+  local workspace_probe="/work/.facility-security-workspace-root-probe"
   run_untrusted mkdir "$bind_dir"
   run_untrusted sh -c 'printf facility-workspace-bind-ready > "$1/probe"' facility-bind "$bind_dir"
+  run_untrusted sh -c 'printf facility-workspace-root-ready > "$1"' \
+    facility-workspace-root "$workspace_probe"
   if [[ "${FACILITY_CODEBUILD_SMOKE_CREATE_ONLY:-}" == "1" ]]; then
     # Docker Desktop cannot execute an amd64 binary in rootless Docker nested
     # inside its already-emulated amd64 runner. Still validate the proxy policy
@@ -264,6 +267,15 @@ security_smoke() {
     if [[ "$(runuser --user "$docker_user" -- cat "${bind_dir}/probe")" != \
       "facility-workspace-bind-ready" ]]; then
       echo "Security smoke failed: the rootless daemon identity cannot read the workspace" >&2
+      return 1
+    fi
+    container_id="$(docker create \
+      --mount "type=bind,src=/work,dst=/workspace,readonly" \
+      facility-security-smoke:local cat /workspace/.facility-security-workspace-root-probe)"
+    docker rm "$container_id" >/dev/null
+    if [[ "$(runuser --user "$docker_user" -- cat "$workspace_probe")" != \
+      "facility-workspace-root-ready" ]]; then
+      echo "Security smoke failed: the rootless daemon identity cannot read the workspace root" >&2
       return 1
     fi
     container_id="$(docker create \
@@ -281,6 +293,13 @@ security_smoke() {
       facility-security-smoke:local cat /probe)"
     if [[ "$bind_value" != "facility-workspace-bind-ready" ]]; then
       echo "Security smoke failed: rootless Docker cannot read a workspace bind" >&2
+      return 1
+    fi
+    bind_value="$(docker run --rm \
+      --mount "type=bind,src=/work,dst=/workspace,readonly" \
+      facility-security-smoke:local cat /workspace/.facility-security-workspace-root-probe)"
+    if [[ "$bind_value" != "facility-workspace-root-ready" ]]; then
+      echo "Security smoke failed: rootless Docker cannot read the workspace root bind" >&2
       return 1
     fi
     if ! docker run --rm \
@@ -311,6 +330,11 @@ security_smoke() {
     run_untrusted rm "$race_original/docker.sock"
     run_untrusted rmdir "$race_original"
   fi
+  if ! find /work -type d -print >/dev/null; then
+    echo "Security smoke failed: pinned aliases made the workspace recursively cyclic" >&2
+    return 1
+  fi
+  run_untrusted rm "$workspace_probe"
 
   echo "Facility smoke: checking denied Docker capabilities and host paths"
   if docker create --privileged facility-security-smoke:local true >/dev/null 2>&1; then
