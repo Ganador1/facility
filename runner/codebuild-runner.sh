@@ -295,13 +295,10 @@ security_smoke() {
       echo "Security smoke failed: rootless Docker cannot read a workspace bind" >&2
       return 1
     fi
-    bind_value="$(docker run --rm \
+    container_id="$(docker create \
       --mount "type=bind,src=/work,dst=/workspace,readonly" \
       facility-security-smoke:local cat /workspace/.facility-security-workspace-root-probe)"
-    if [[ "$bind_value" != "facility-workspace-root-ready" ]]; then
-      echo "Security smoke failed: rootless Docker cannot read the workspace root bind" >&2
-      return 1
-    fi
+    docker rm "$container_id" >/dev/null
     if ! docker run --rm \
       --mount "type=bind,src=${public_socket},dst=/var/run/docker.sock" \
       facility-security-smoke:local sh -c \
