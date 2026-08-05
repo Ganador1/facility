@@ -66,6 +66,8 @@ describe("restricted Docker API", () => {
       ],
       [{ HostConfig: { CapAdd: ["SYS_ADMIN"] } }, "host_config_capadd_denied"],
       [{ HostConfig: { SecurityOpt: ["seccomp=unconfined"] } }, "host_config_securityopt_denied"],
+      [{ HostConfig: { SecurityOpt: "label:disable" } }, "host_config_securityopt_denied"],
+      [{ HostConfig: { SecurityOpt: [1] } }, "host_config_securityopt_denied"],
       [
         { HostConfig: { SecurityOpt: ["label:disable", "apparmor=unconfined"] } },
         "host_config_securityopt_denied",
@@ -215,6 +217,14 @@ describe("restricted Docker API", () => {
     });
     expect(deniedUnconfined.status).toBe(403);
     expect(deniedUnconfined.body).toContain("host_config_securityopt_denied");
+    expect(upstreamRequests).toBe(2);
+
+    const deniedMalformedSecurityOpt = await request(publicSocket, "/v1.47/containers/create", {
+      Image: "facility-security-smoke:local",
+      HostConfig: { SecurityOpt: "label:disable" },
+    });
+    expect(deniedMalformedSecurityOpt.status).toBe(403);
+    expect(deniedMalformedSecurityOpt.body).toContain("host_config_securityopt_denied");
     expect(upstreamRequests).toBe(2);
 
     const deniedCasingAlias = await request(publicSocket, "/v1.47/containers/create", {
