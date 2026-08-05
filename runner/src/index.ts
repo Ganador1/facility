@@ -35,6 +35,9 @@ const engineStderrFile = join(runtimeRoot, "engine.stderr.log");
 const AGENT_PROGRESS_MAX_BYTES = 16 * 1024;
 const SECURITY_REPORT_MAX_BYTES = 256 * 1024;
 const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
+const RATE_LIMIT_RETRY_LIMIT = 8;
+const DEFAULT_RETRY_AFTER_MS = 1_000;
+const MAX_RETRY_AFTER_MS = 60_000;
 const PRIVATE_REGISTRY_INSTALL_COMMANDS = new Set([
   "npm ci",
   "pnpm install --frozen-lockfile",
@@ -550,12 +553,15 @@ async function uploadTranscript() {
     .catch(() => 0);
   if (size === 0) return;
   try {
-    await api(`/internal/runs/${currentRunId()}/transcript`, {
-      method: "POST",
-      headers: { "content-type": "application/x-ndjson" },
-      body: createReadStream(transcriptFile) as unknown as RequestInit["body"],
-      duplex: "half",
-    } as RequestInit & { duplex: "half" });
+    await api(
+      `/internal/runs/${currentRunId()}/transcript`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/x-ndjson" },
+        duplex: "half",
+      } as RequestInit & { duplex: "half" },
+      () => createReadStream(transcriptFile) as unknown as RequestInit["body"],
+    );
   } catch {
     await emit([{ type: "artifact_error", data: { kind: "transcript_upload_failed" } }]).catch(
       () => undefined,
@@ -611,12 +617,15 @@ async function uploadSessionState(bundle: RunBundle) {
       ]).catch(() => undefined);
       return;
     }
-    await api(`/internal/runs/${currentRunId()}/session-state`, {
-      method: "POST",
-      headers: { "content-type": "application/gzip" },
-      body: createReadStream(sessionStateArchive) as unknown as RequestInit["body"],
-      duplex: "half",
-    } as RequestInit & { duplex: "half" });
+    await api(
+      `/internal/runs/${currentRunId()}/session-state`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/gzip" },
+        duplex: "half",
+      } as RequestInit & { duplex: "half" },
+      () => createReadStream(sessionStateArchive) as unknown as RequestInit["body"],
+    );
   } catch (error) {
     await emit([
       {
@@ -1623,22 +1632,63 @@ async function emit(events: RunEvent[]) {
   });
 }
 
-async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function api<T>(
+  path: string,
+  init: RequestInit = {},
+  bodyFactory?: () => RequestInit["body"],
+): Promise<T> {
   const headers: Record<string, string> = { authorization: `Bearer ${runnerToken()}` };
   if (init.body) headers["content-type"] = "application/json";
-  return fetchJson(`${apiUrl()}${path}`, {
-    ...init,
-    headers: {
-      ...headers,
-      ...(init.headers ?? {}),
+  return fetchJson(
+    `${apiUrl()}${path}`,
+    {
+      ...init,
+      headers: {
+        ...headers,
+        ...(init.headers ?? {}),
+      },
     },
-  }) as Promise<T>;
+    bodyFactory,
+  ) as Promise<T>;
 }
 
-async function fetchJson(url: string, init: RequestInit = {}) {
-  const response = await fetch(url, init);
-  if (!response.ok) throw new Error(`${url} failed ${response.status}: ${await response.text()}`);
-  return response.json();
+export function retryAfterMs(value: string | null, now = Date.now()) {
+  if (value) {
+    const trimmed = value.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const seconds = Number(trimmed);
+      return Math.min(seconds * 1_000, MAX_RETRY_AFTER_MS);
+    }
+    if (/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s/.test(trimmed)) {
+      const date = Date.parse(trimmed);
+      if (Number.isFinite(date)) {
+        return Math.min(Math.max(0, date - now), MAX_RETRY_AFTER_MS);
+      }
+    }
+  }
+  return DEFAULT_RETRY_AFTER_MS;
+}
+
+export async function fetchJson(
+  url: string,
+  init: RequestInit = {},
+  bodyFactory?: () => RequestInit["body"],
+) {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(url, bodyFactory ? { ...init, body: bodyFactory() } : init);
+    if (response.ok) return response.json();
+    const body = await response.text();
+    if (response.status !== 429 || attempt >= RATE_LIMIT_RETRY_LIMIT) {
+      throw new Error(`${url} failed ${response.status}: ${body}`);
+    }
+    // The global API limiter rejects the request before a route handler runs,
+    // so replaying the runner's JSON request after Retry-After cannot duplicate
+    // an accepted event or terminal result. Awaiting here applies backpressure
+    // to noisy child processes instead of turning a temporary 429 into a crash.
+    await new Promise((resolve) =>
+      setTimeout(resolve, retryAfterMs(response.headers.get("retry-after"))),
+    );
+  }
 }
 
 export function engineEnv() {
