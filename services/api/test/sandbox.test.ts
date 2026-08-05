@@ -173,6 +173,30 @@ describe("sandbox api", async () => {
     expect((stored?.data as { text?: string })?.text).toBe(text);
   });
 
+  it("rejects rate-limited runner events before persisting them", async () => {
+    const token = "frt_rate_limit";
+    const run = await insertRunnerRun(token, "running");
+    const limited = await buildApp(config, { rateLimitMax: 1 });
+    await limited.ready();
+    try {
+      const request = {
+        method: "POST" as const,
+        url: `/internal/runs/${run.id}/events`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: [{ type: "shell", data: { text: "installed" } }],
+      };
+      expect((await limited.inject(request)).statusCode).toBe(200);
+      expect((await limited.inject(request)).statusCode).toBe(429);
+      const persisted = await db
+        .select({ seq: runEvents.seq })
+        .from(runEvents)
+        .where(eq(runEvents.runId, run.id));
+      expect(persisted).toHaveLength(1);
+    } finally {
+      await limited.close();
+    }
+  });
+
   it("aws driver fails loudly as not_configured when env is missing", async () => {
     await expect(
       new AwsSandboxDriver().launch({
