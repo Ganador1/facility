@@ -29,6 +29,12 @@ describe("restricted Docker API", () => {
     expect(dockerRequestPolicy("POST", "/v1.47/containers/abc/start")).toEqual({
       allowed: true,
     });
+    expect(
+      dockerRequestPolicy(
+        "POST",
+        "/v1.47/containers/prune?filters=%7B%22label%22%3A%7B%22com.supabase.cli.project%3Dtam-os%22%3Atrue%7D%7D",
+      ),
+    ).toEqual({ allowed: true });
     expect(dockerRequestPolicy("GET", "/v1.47/containers/abc/archive?path=/tmp/out")).toEqual({
       allowed: true,
     });
@@ -40,6 +46,9 @@ describe("restricted Docker API", () => {
       validateBody: "volume",
     });
     expect(validateDockerBody("container", { HostConfig: {} })).toBeNull();
+    expect(
+      validateDockerBody("container", { HostConfig: { SecurityOpt: ["label:disable"] } }),
+    ).toBeNull();
   });
 
   test("denies daemon administration and runtime privilege escalation", () => {
@@ -56,6 +65,11 @@ describe("restricted Docker API", () => {
         "host_bind_source_denied",
       ],
       [{ HostConfig: { CapAdd: ["SYS_ADMIN"] } }, "host_config_capadd_denied"],
+      [{ HostConfig: { SecurityOpt: ["seccomp=unconfined"] } }, "host_config_securityopt_denied"],
+      [
+        { HostConfig: { SecurityOpt: ["label:disable", "apparmor=unconfined"] } },
+        "host_config_securityopt_denied",
+      ],
       [{ HostConfig: { MaskedPaths: [] } }, "host_config_maskedpaths_denied"],
       [
         {
@@ -145,10 +159,26 @@ describe("restricted Docker API", () => {
 
     const accepted = await request(publicSocket, "/v1.47/containers/create", {
       Image: "facility-security-smoke:local",
-      HostConfig: {},
+      HostConfig: { SecurityOpt: ["label:disable"] },
     });
     expect(accepted.status).toBe(201);
     expect(upstreamRequests).toBe(1);
+
+    const pruned = await request(
+      publicSocket,
+      "/v1.47/containers/prune?filters=%7B%22label%22%3A%7B%22com.supabase.cli.project%3Dtam-os%22%3Atrue%7D%7D",
+      {},
+    );
+    expect(pruned.status).toBe(201);
+    expect(upstreamRequests).toBe(2);
+
+    const deniedUnconfined = await request(publicSocket, "/v1.47/containers/create", {
+      Image: "facility-security-smoke:local",
+      HostConfig: { SecurityOpt: ["seccomp=unconfined"] },
+    });
+    expect(deniedUnconfined.status).toBe(403);
+    expect(deniedUnconfined.body).toContain("host_config_securityopt_denied");
+    expect(upstreamRequests).toBe(2);
   });
 
   test("rewrites validated workspace binds to root-pinned aliases", async () => {

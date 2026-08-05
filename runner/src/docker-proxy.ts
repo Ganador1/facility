@@ -50,7 +50,7 @@ export function dockerRequestPolicy(method: string, rawUrl: string): PolicyDecis
   }
   if (
     method === "POST" &&
-    /^(?:\/auth|\/build|\/build\/prune|\/commit|\/images\/(?:create|load|prune)|\/images\/.+\/(?:push|tag)|\/containers\/[^/]+\/(?:start|stop|restart|kill|wait|pause|unpause|rename)|\/exec\/[^/]+\/(?:start|resize)|\/networks\/(?:create|prune)|\/networks\/[^/]+\/(?:connect|disconnect)|\/volumes\/prune)$/.test(
+    /^(?:\/auth|\/build|\/build\/prune|\/commit|\/images\/(?:create|load|prune)|\/images\/.+\/(?:push|tag)|\/containers\/prune|\/containers\/[^/]+\/(?:start|stop|restart|kill|wait|pause|unpause|rename)|\/exec\/[^/]+\/(?:start|resize)|\/networks\/(?:create|prune)|\/networks\/[^/]+\/(?:connect|disconnect)|\/volumes\/prune)$/.test(
       pathname,
     )
   ) {
@@ -86,12 +86,20 @@ export function validateDockerBody(
     "Devices",
     "DeviceRequests",
     "CapAdd",
-    "SecurityOpt",
     "VolumesFrom",
     "DeviceCgroupRules",
   ];
   for (const field of deniedNonEmpty) {
     if (nonEmpty(host[field])) return `host_config_${field.toLowerCase()}_denied`;
+  }
+  // Supabase's Vector container mounts the restricted proxy socket and disables
+  // SELinux relabeling for that bind. Keep every unconfined profile denied.
+  if (
+    nonEmpty(host.SecurityOpt) &&
+    (!Array.isArray(host.SecurityOpt) ||
+      host.SecurityOpt.some((option) => option !== "label:disable"))
+  ) {
+    return "host_config_securityopt_denied";
   }
   for (const field of ["MaskedPaths", "ReadonlyPaths"]) {
     if (Array.isArray(host[field])) return `host_config_${field.toLowerCase()}_denied`;
