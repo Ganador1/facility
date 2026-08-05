@@ -53,7 +53,10 @@ static void respond_error(int client, const char *reason) {
   }
 }
 
-static int open_workspace_source(const char *relative_path, struct stat *source_stat) {
+static int open_workspace_source(
+    const char *relative_path,
+    bool create_directory,
+    struct stat *source_stat) {
   int current = dup(workspace_fd);
   if (current < 0) return -1;
   if (strcmp(relative_path, ".") == 0) {
@@ -86,6 +89,37 @@ static int open_workspace_source(const char *relative_path, struct stat *source_
     component[length] = '\0';
     bool intermediate = separator != NULL;
     int next = openat(current, component, O_PATH | O_NOFOLLOW | O_CLOEXEC);
+    if (next < 0 && !intermediate && create_directory && errno == ENOENT) {
+      struct stat parent_stat;
+      if (fstat(current, &parent_stat) != 0) {
+        close(current);
+        return -1;
+      }
+      bool created = false;
+      if (mkdirat(current, component, 0770) == 0) {
+        created = true;
+      } else if (errno != EEXIST) {
+        close(current);
+        return -1;
+      }
+      next = openat(
+          current,
+          component,
+          (created ? O_RDONLY | O_DIRECTORY : O_PATH) | O_NOFOLLOW | O_CLOEXEC);
+      if (next < 0) {
+        if (created) (void)unlinkat(current, component, AT_REMOVEDIR);
+        close(current);
+        return -1;
+      }
+      if (created &&
+          (fchown(next, parent_stat.st_uid, parent_stat.st_gid) != 0 ||
+           fchmod(next, 0770) != 0)) {
+        close(next);
+        (void)unlinkat(current, component, AT_REMOVEDIR);
+        close(current);
+        return -1;
+      }
+    }
     if (next < 0) {
       close(current);
       return -1;
@@ -114,6 +148,7 @@ static int open_workspace_source(const char *relative_path, struct stat *source_
 
 static bool pin_source(
     const char *relative_path,
+    bool create_directory,
     char *target,
     size_t target_size,
     bool *directory_target) {
@@ -122,7 +157,7 @@ static bool pin_source(
     return false;
   }
   struct stat source_stat;
-  int source_fd = open_workspace_source(relative_path, &source_stat);
+  int source_fd = open_workspace_source(relative_path, create_directory, &source_stat);
   if (source_fd < 0) return false;
 
   char alias_directory[PATH_MAX];
@@ -210,6 +245,8 @@ static bool rollback_source(const char *target, bool directory) {
 }
 
 static bool rollback_batch(char (*targets)[PATH_MAX], const bool *directories, size_t count) {
+  // MKDIR sources intentionally persist like Docker's `-v` host-directory
+  // creation. This transaction covers only the privileged mount aliases.
   bool complete = true;
   while (count > 0) {
     count -= 1;
@@ -278,11 +315,14 @@ static void handle_client(int client) {
   }
 
   char **relative_paths = calloc(requested, sizeof(*relative_paths));
+  bool *create_directories = calloc(requested, sizeof(*create_directories));
   char (*targets)[PATH_MAX] = calloc(requested, sizeof(*targets));
   bool *directories = calloc(requested, sizeof(*directories));
-  if (relative_paths == NULL || targets == NULL || directories == NULL) {
+  if (relative_paths == NULL || create_directories == NULL || targets == NULL ||
+      directories == NULL) {
     respond_error(client, "workspace_bind_request_failed");
     free(relative_paths);
+    free(create_directories);
     free(targets);
     free(directories);
     free(request);
@@ -298,12 +338,21 @@ static void handle_client(int client) {
       break;
     }
     *line_end = '\0';
-    relative_paths[index] = cursor;
+    if (strncmp(cursor, "OPEN ", 5) == 0 && cursor[5] != '\0') {
+      relative_paths[index] = cursor + 5;
+    } else if (strncmp(cursor, "MKDIR ", 6) == 0 && cursor[6] != '\0') {
+      relative_paths[index] = cursor + 6;
+      create_directories[index] = true;
+    } else {
+      valid = false;
+      break;
+    }
     cursor = line_end + 1;
   }
   if (!valid || *cursor != '\0') {
     respond_error(client, "workspace_bind_request_invalid");
     free(relative_paths);
+    free(create_directories);
     free(targets);
     free(directories);
     free(request);
@@ -313,8 +362,8 @@ static void handle_client(int client) {
   size_t pinned = 0;
   for (; pinned < requested; pinned += 1) {
     if (!pin_source(
-            relative_paths[pinned], targets[pinned], sizeof(targets[pinned]),
-            &directories[pinned])) {
+            relative_paths[pinned], create_directories[pinned], targets[pinned],
+            sizeof(targets[pinned]), &directories[pinned])) {
       break;
     }
   }
@@ -326,6 +375,7 @@ static void handle_client(int client) {
         client,
         pin_error == ENOSPC ? "workspace_bind_alias_limit" : "workspace_bind_source_denied");
     free(relative_paths);
+    free(create_directories);
     free(targets);
     free(directories);
     free(request);
@@ -342,6 +392,7 @@ static void handle_client(int client) {
   }
   (void)response_ok;
   free(relative_paths);
+  free(create_directories);
   free(targets);
   free(directories);
   free(request);

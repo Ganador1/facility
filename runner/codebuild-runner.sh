@@ -144,7 +144,7 @@ start_mounter() {
       "$(id -u "$proxy_user")" "$(id -g "$proxy_user")" \
     >>/var/log/facility-bind-mounter.log 2>&1 &
   mounter_pid="$!"
-  local readiness_probe='const net=require("node:net"); const socket=net.createConnection(process.argv[1]); let response=""; const timer=setTimeout(()=>socket.destroy(new Error("timeout")),1000); socket.setEncoding("utf8"); socket.on("connect",()=>socket.end("BATCH 1\n.\n")); socket.on("data",chunk=>response+=chunk); socket.on("end",()=>{clearTimeout(timer); const lines=response.trimEnd().split("\n"); if(lines[0]!=="OK 1"||lines.length!==2)process.exit(1); console.log(lines[1])}); socket.on("error",()=>{clearTimeout(timer); process.exit(1)});'
+  local readiness_probe='const net=require("node:net"); const socket=net.createConnection(process.argv[1]); let response=""; const timer=setTimeout(()=>socket.destroy(new Error("timeout")),1000); socket.setEncoding("utf8"); socket.on("connect",()=>socket.end("BATCH 1\nOPEN .\n")); socket.on("data",chunk=>response+=chunk); socket.on("end",()=>{clearTimeout(timer); const lines=response.trimEnd().split("\n"); if(lines[0]!=="OK 1"||lines.length!==2)process.exit(1); console.log(lines[1])}); socket.on("error",()=>{clearTimeout(timer); process.exit(1)});'
   for _ in $(seq 1 30); do
     if [[ -S "$bind_socket" ]]; then
       # The broker also verifies SO_PEERCRED; filesystem ownership is the first
@@ -372,7 +372,7 @@ security_smoke() {
   run_untrusted mkdir /work/.facility-security-partial
   run_untrusted sh -c \
     'printf safe-partial-bind > "$1/probe"' facility-partial /work/.facility-security-partial
-  local rollback_probe='const net=require("node:net"); const socket=net.createConnection(process.argv[1]); let response=""; const timer=setTimeout(()=>socket.destroy(new Error("timeout")),1000); socket.setEncoding("utf8"); socket.on("connect",()=>socket.end("BATCH 2\n.facility-security-partial/probe\n.facility-security-partial/missing\n")); socket.on("data",chunk=>response+=chunk); socket.on("end",()=>{clearTimeout(timer); process.exit(response==="ERR workspace_bind_source_denied\n"?0:1)}); socket.on("error",()=>{clearTimeout(timer); process.exit(1)});'
+  local rollback_probe='const net=require("node:net"); const socket=net.createConnection(process.argv[1]); let response=""; const timer=setTimeout(()=>socket.destroy(new Error("timeout")),1000); socket.setEncoding("utf8"); socket.on("connect",()=>socket.end("BATCH 2\nOPEN .facility-security-partial/probe\nOPEN .facility-security-partial/missing\n")); socket.on("data",chunk=>response+=chunk); socket.on("end",()=>{clearTimeout(timer); process.exit(response==="ERR workspace_bind_source_denied\n"?0:1)}); socket.on("error",()=>{clearTimeout(timer); process.exit(1)});'
   echo "Facility smoke: checking transactional bind rollback"
   local aliases_before aliases_after
   aliases_before="$(findmnt -rn -o TARGET | grep -c "^${workspace_view}/" || true)"
@@ -386,6 +386,12 @@ security_smoke() {
     echo "Security smoke failed: a rejected broker batch leaked a pinned alias" >&2
     return 1
   fi
+  local malformed_broker_probe='const net=require("node:net"); const socket=net.createConnection(process.argv[1]); let response=""; const timer=setTimeout(()=>socket.destroy(new Error("timeout")),1000); socket.setEncoding("utf8"); socket.on("connect",()=>socket.end("BATCH 1\nMKDIR \n")); socket.on("data",chunk=>response+=chunk); socket.on("end",()=>{clearTimeout(timer); process.exit(response==="ERR workspace_bind_request_invalid\n"?0:1)}); socket.on("error",()=>{clearTimeout(timer); process.exit(1)});'
+  if ! runuser --user "$proxy_user" -- env -i \
+    /usr/local/bin/node -e "$malformed_broker_probe" "$bind_socket"; then
+    echo "Security smoke failed: the bind broker accepted a malformed creation request" >&2
+    return 1
+  fi
   if docker create \
     --mount type=bind,src=/work/.facility-security-partial/probe,dst=/safe \
     --mount type=bind,src=/work/.facility-security-runtime-escape,dst=/escape \
@@ -396,6 +402,37 @@ security_smoke() {
   run_untrusted rm /work/.facility-security-partial/probe
   run_untrusted rmdir /work/.facility-security-partial
   run_untrusted rm /work/.facility-security-runtime-escape
+  echo "Facility smoke: checking Docker-compatible missing bind directories"
+  run_untrusted mkdir /work/.facility-security-create
+  local created_bind_container
+  if ! created_bind_container="$(docker create \
+    --mount type=bind,src=/work/.facility-security-create/created,dst=/created \
+    facility-security-smoke:local true)"; then
+    echo "Security smoke failed: a missing terminal bind directory was not created safely" >&2
+    return 1
+  fi
+  if [[ ! -d /work/.facility-security-create/created || \
+    -L /work/.facility-security-create/created ]]; then
+    echo "Security smoke failed: the bind broker did not create a real workspace directory" >&2
+    return 1
+  fi
+  docker rm "$created_bind_container" >/dev/null
+  run_untrusted ln -s /work/.facility-security-create/absent \
+    /work/.facility-security-create/dangling
+  if docker create \
+    --mount type=bind,src=/work/.facility-security-create/dangling,dst=/escape \
+    facility-security-smoke:local true >/dev/null 2>&1; then
+    echo "Security smoke failed: a dangling terminal symlink reached Docker" >&2
+    return 1
+  fi
+  if docker create \
+    --mount type=bind,src=/work/.facility-security-create/missing/child,dst=/escape \
+    facility-security-smoke:local true >/dev/null 2>&1; then
+    echo "Security smoke failed: a missing intermediate bind path reached Docker" >&2
+    return 1
+  fi
+  run_untrusted rm /work/.facility-security-create/dangling
+  rmdir /work/.facility-security-create/created /work/.facility-security-create
   if ! findmnt -rn -o TARGET | grep -q "^${workspace_view}/"; then
     echo "Security smoke failed: workspace binds did not use pinned mount aliases" >&2
     return 1
