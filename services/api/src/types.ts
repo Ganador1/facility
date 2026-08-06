@@ -58,6 +58,7 @@ export type AppConfig = {
   s3Bucket?: string;
   awsRegion?: string;
   awsCodeBuildProject?: string;
+  awsCodeBuildCacheBaseLocation?: string;
   packageRegistryToken?: string;
   githubAppId?: string;
   githubAppPrivateKey?: string;

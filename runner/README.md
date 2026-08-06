@@ -5,6 +5,8 @@ It calls `/internal/runs/:id/hello`, fetches the signed bundle URL, writes `/wor
 
 On AWS, a sandbox profile may set `setup.nested_docker` to `false` to skip the rootless Docker daemon, restricted proxy, and bind broker. Missing or invalid persisted values retain the legacy Docker-capable boundary; API writes reject non-booleans. Docker-capable runs try `overlay2`, then `fuse-overlayfs`, and use `vfs` only as a degraded fallback. The runner persists the allowlisted choice as a best-effort `sandbox_runtime` event without copying arbitrary environment values.
 
+The AWS driver restores only pnpm's content-addressed store and npm's `_cacache` from a control-plane-selected, per-project S3 prefix. The partition is not exposed as a sandbox environment variable. The wrapper gives restored directories to the untrusted UID before provisioning; it never caches the workspace, configuration, credentials, browser executables, Supabase state, or Docker data.
+
 A run **succeeds only if the engine exits 0 AND every platform check passes** — a green agent report cannot make a red gate pass. Platform checks emit `check` events with `self_reported: false`, a pass/fail `status`, an `exit_code`, and (on failure) a capped, secret-redacted output tail; the agent's self-reports are flagged `self_reported: true` (the runner forces the flag, so provenance can't be spoofed). Check commands come from the sandbox profile's `setup.check_cmds`, falling back to the project's `settings.check_cmds`.
 
 ## Steering

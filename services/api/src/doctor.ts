@@ -101,6 +101,7 @@ export async function checkAwsSandbox(
 ): Promise<DoctorCheck> {
   const project = config.awsCodeBuildProject;
   const region = config.awsRegion;
+  const cacheBaseLocation = config.awsCodeBuildCacheBaseLocation;
   if (!project) {
     return fail(
       "aws_sandbox",
@@ -115,6 +116,14 @@ export async function checkAwsSandbox(
       "AWS CodeBuild sandbox reachability",
       "The AWS region is not configured; CodeBuild reachability cannot be verified.",
       "Set AWS_REGION to the region containing the Facility runner project.",
+    );
+  }
+  if (!cacheBaseLocation) {
+    return fail(
+      "aws_sandbox",
+      "AWS CodeBuild sandbox reachability",
+      "The per-project CodeBuild cache location is not configured; cached runs cannot be tenant-isolated.",
+      "Set FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION to the cache prefix created for this deployment.",
     );
   }
 
@@ -139,10 +148,18 @@ export async function checkAwsSandbox(
         "Rebuild and deploy the CodeBuild runner project with a runner image.",
       );
     }
+    if (found.cache?.type !== "NO_CACHE") {
+      return fail(
+        "aws_sandbox",
+        "AWS CodeBuild sandbox reachability",
+        `CodeBuild project "${project}" has a shared default cache instead of the fail-closed NO_CACHE default.`,
+        "Apply the current AWS Terraform module; Facility enables an isolated S3 prefix separately for every run.",
+      );
+    }
     return pass(
       "aws_sandbox",
       "AWS CodeBuild sandbox reachability",
-      `CodeBuild project "${project}" is reachable in ${region} and runs "${image}".`,
+      `CodeBuild project "${project}" is reachable in ${region}, runs "${image}", and defaults to no shared cache.`,
     );
   } catch (error) {
     const errorCode = awsErrorCode(error);

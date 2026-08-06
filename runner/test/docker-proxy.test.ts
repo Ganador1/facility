@@ -546,6 +546,16 @@ test("CodeBuild metadata egress is scoped to untrusted identities", async () => 
   expect(script).not.toContain("iptables -I OUTPUT 1 -d 169.254.0.0/16 -j REJECT");
 });
 
+test("CodeBuild gives restored package caches to the untrusted identity", async () => {
+  const script = await readFile(new URL("../codebuild-runner.sh", import.meta.url), "utf8");
+  expect(script).toContain('readonly npm_cache="/work/.npm"');
+  expect(script).toContain(
+    'mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$npm_cache"',
+  );
+  expect(script).toContain('"$npm_cache" "$TMPDIR"');
+  expect(script).not.toContain("chown -R root:root /work/.npm");
+});
+
 function listen(server: http.Server | net.Server, socket: string) {
   return new Promise<void>((resolve, reject) => {
     server.once("error", reject);

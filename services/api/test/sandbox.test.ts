@@ -25,6 +25,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { verifyStoredReceipts } from "../src/receipt-integrity.js";
 import { AwsSandboxDriver } from "../src/sandbox/aws.js";
+import { sandboxCachePartition } from "../src/sandbox/cache.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
 import type { SandboxDriver } from "../src/sandbox/driver.js";
 import {
@@ -431,6 +432,10 @@ describe("sandbox api", async () => {
       await dispatchRun(config, { runId: run.id, orgId }, { sandboxDriver: async () => driver });
 
       expect(launched.at(-1)?.env.FACILITY_SANDBOX_NESTED_DOCKER).toBe(fixture.expected);
+      expect(launched.at(-1)?.cachePartition).toBe(
+        sandboxCachePartition(config.secretMasterKey, orgId, projectId),
+      );
+      expect(launched.at(-1)?.env).not.toHaveProperty("FACILITY_CACHE_PARTITION");
       const persistedRun = (
         await db.select({ sandbox: runs.sandbox }).from(runs).where(eq(runs.id, run.id)).limit(1)
       )[0];
@@ -479,6 +484,7 @@ describe("sandbox api", async () => {
     );
 
     expect(launched.at(-1)?.env).not.toHaveProperty("FACILITY_SANDBOX_NESTED_DOCKER");
+    expect(launched.at(-1)?.cachePartition).toBeUndefined();
     const dockerSandboxEvent = (
       await db
         .select({ data: runEvents.data })

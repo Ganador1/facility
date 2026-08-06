@@ -9,6 +9,7 @@ readonly docker_runtime="/run/facility-docker"
 readonly proxy_runtime="/run/facility-proxy"
 readonly bind_runtime="/run/facility-binds"
 readonly workspace_view="/run/facility-workspace"
+readonly npm_cache="/work/.npm"
 readonly raw_socket="${docker_runtime}/docker.sock"
 readonly public_socket="${proxy_runtime}/docker.sock"
 readonly bind_socket="${bind_runtime}/mounter.sock"
@@ -630,10 +631,10 @@ export XDG_CACHE_HOME=/work/.cache
 export XDG_CONFIG_HOME=/work/.config
 export XDG_DATA_HOME=/work/.local/share
 export TMPDIR=/work/.tmp
-mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$TMPDIR"
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$npm_cache" "$TMPDIR"
 chown -R "$untrusted_uid:$untrusted_gid" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" /work/.local \
-  "$TMPDIR"
-chmod -R g+rwX "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" /work/.local "$TMPDIR"
+  "$npm_cache" "$TMPDIR"
+chmod -R g+rwX "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" /work/.local "$npm_cache" "$TMPDIR"
 umask 0002
 
 if [[ "${FACILITY_CODEBUILD_SMOKE:-}" == "1" ]]; then

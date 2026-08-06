@@ -17,6 +17,13 @@ const guides = new Map([
 ]);
 
 const dockerfile = readFileSync(resolve(repoRoot, "Dockerfile"), "utf8");
+const codeBuildTerraform = readFileSync(
+  resolve(repoRoot, "infra/terraform/aws/codebuild.tf"),
+  "utf8",
+);
+const iamTerraform = readFileSync(resolve(repoRoot, "infra/terraform/aws/iam.tf"), "utf8");
+const localsTerraform = readFileSync(resolve(repoRoot, "infra/terraform/aws/locals.tf"), "utf8");
+const storageTerraform = readFileSync(resolve(repoRoot, "infra/terraform/aws/storage.tf"), "utf8");
 
 function apiStage(image) {
   const start = image.indexOf("FROM base AS api\n");
@@ -126,4 +133,51 @@ test("AWS guides keep the release override and build-fallback paths synchronized
       `${guideName} must keep self-built images as a conditional fallback`,
     );
   }
+});
+
+test("AWS agent caches fail closed and contain only isolated package stores", () => {
+  const buildspec = codeBuildTerraform.match(/buildspec = <<-YAML\n([\s\S]*?)\n\s+YAML/)?.[1];
+  assert.ok(buildspec, "the runner project must have an inline buildspec");
+  assert.match(codeBuildTerraform, /cache \{\s+type = "NO_CACHE"\s+\}/);
+  assert.match(
+    codeBuildTerraform,
+    /encryption_key = aws_kms_key\.facility\.arn/,
+    "cache objects must use the deployment CMK",
+  );
+  assert.match(buildspec, /- "\/work\/\.local\/share\/pnpm\/store\/\*\*\/\*"/);
+  assert.match(buildspec, /- "\/work\/\.npm\/_cacache\/\*\*\/\*"/);
+  assert.doesNotMatch(buildspec, /(?:^|\s)key:/, "a buildspec key would make the cache immutable");
+  for (const forbidden of ["/work/**/*", "ms-playwright", "supabase", "docker"]) {
+    assert.doesNotMatch(
+      buildspec,
+      new RegExp(forbidden.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+      `the cache must exclude ${forbidden}`,
+    );
+  }
+  assert.match(localsTerraform, /FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION[^\n]+codebuild-cache/);
+});
+
+test("the CodeBuild role and lifecycle cannot escape the cache prefix", () => {
+  const policyStart = iamTerraform.indexOf('resource "aws_iam_role_policy" "codebuild_runner"');
+  const policy = policyStart === -1 ? undefined : iamTerraform.slice(policyStart);
+  assert.ok(policy, "the CodeBuild role policy must exist");
+  assert.match(policy, /s3:GetObject/);
+  assert.match(policy, /s3:GetObjectVersion/);
+  assert.match(policy, /s3:PutObject/);
+  assert.match(policy, /codebuild-cache\/\*/);
+  assert.doesNotMatch(policy, /s3:ListBucket/);
+  assert.match(policy, /kms:GenerateDataKey/);
+  assert.match(policy, /kms:Decrypt/);
+  assert.match(policy, /kms:ViaService/);
+
+  const lifecycleStart = storageTerraform.indexOf('id     = "expire-codebuild-caches"');
+  const lifecycleEnd = storageTerraform.indexOf('resource "aws_ecr_repository"', lifecycleStart);
+  const lifecycle =
+    lifecycleStart === -1
+      ? undefined
+      : storageTerraform.slice(lifecycleStart, lifecycleEnd === -1 ? undefined : lifecycleEnd);
+  assert.ok(lifecycle, "cache retention must be bounded");
+  assert.match(lifecycle, /prefix = "codebuild-cache\/"/);
+  assert.match(lifecycle, /days = 30/);
+  assert.match(lifecycle, /noncurrent_days = 7/);
 });

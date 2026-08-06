@@ -61,6 +61,7 @@ import {
 } from "../previews.js";
 import type { AppConfig } from "../types.js";
 import { raisePlatformIssue, resolvePlatformIssue } from "../watchtower/issues.js";
+import { sandboxCachePartition } from "./cache.js";
 import { nestedDockerEnabled, provisioningDepth } from "./capabilities.js";
 import { DockerSandboxDriver } from "./docker.js";
 import type { LaunchSpec, SandboxDriver, SandboxDriverName } from "./driver.js";
@@ -166,6 +167,11 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
           ? { FACILITY_SANDBOX_NESTED_DOCKER: nestedDocker ? "1" : "0" }
           : {}),
       },
+      ...(driverName === "aws"
+        ? {
+            cachePartition: sandboxCachePartition(config.secretMasterKey, run.orgId, run.projectId),
+          }
+        : {}),
       cpu: resourceNumber(profile.resources, "cpu", 2),
       memoryMb: resourceNumber(profile.resources, "memory_mb", 4096),
       timeoutMin: bundle.timeoutMin,

@@ -21,7 +21,10 @@ Topology:
 - CodeBuild sandboxes run in private subnets and can reach the internal gateway.
   Their least-privilege service role has no Secrets Manager access. Runs always
   use the runner image fixed on the CodeBuild project; database-backed sandbox
-  profiles cannot override that AWS-trusted image.
+  profiles cannot override that AWS-trusted image. Each Facility project gets
+  an unguessable S3 prefix for its pnpm/npm dependency cache; the CodeBuild
+  project's default is `NO_CACHE`, so a missing run override cannot share cache
+  content across tenants.
 - Private preview services use per-image Fargate task definitions, a no-permission
   task role, and a dedicated execution role. Only Facility services can reach
   their private ports through the sandbox security group.

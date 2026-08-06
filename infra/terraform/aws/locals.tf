@@ -53,6 +53,7 @@ locals {
 
   aws_sandbox_environment = [
     { name = "FACILITY_AWS_CODEBUILD_PROJECT", value = aws_codebuild_project.runner.name },
+    { name = "FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION", value = "${aws_s3_bucket.objects.bucket}/codebuild-cache" },
     # Agent runs use CodeBuild; preview services still need an inbound endpoint,
     # so they run as unprivileged, dynamically registered Fargate tasks.
     { name = "FACILITY_AWS_ECS_CLUSTER", value = aws_ecs_cluster.facility.name },

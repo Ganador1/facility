@@ -10,7 +10,10 @@ import { AwsSandboxDriver } from "../src/sandbox/aws.js";
 const env = {
   AWS_REGION: "us-east-1",
   FACILITY_AWS_CODEBUILD_PROJECT: "facility-test-runner",
+  FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION: "facility-test-objects/codebuild-cache",
 };
+
+const cachePartition = "a".repeat(64);
 
 describe("AwsSandboxDriver", () => {
   it("starts an isolated CodeBuild sandbox with deterministic overrides", async () => {
@@ -20,6 +23,7 @@ describe("AwsSandboxDriver", () => {
       runId: "run_test",
       image: "attacker.example/runner:latest",
       env: { RUNNER_TOKEN: "secret", RUN_ID: "run_test" },
+      cachePartition,
       cpu: 8,
       memoryMb: 15_360,
       timeoutMin: 30,
@@ -38,10 +42,45 @@ describe("AwsSandboxDriver", () => {
         { name: "RUN_ID", value: "run_test", type: "PLAINTEXT" },
         { name: "RUNNER_TOKEN", value: "secret", type: "PLAINTEXT" },
       ],
+      cacheOverride: {
+        type: "S3",
+        location: `facility-test-objects/codebuild-cache/${cachePartition}`,
+      },
     });
     expect((command as StartBuildCommand | undefined)?.input).not.toHaveProperty("imageOverride");
     expect((command as StartBuildCommand | undefined)?.input.buildspecOverride).toBe(
-      "version: 0.2\nrun-as: root\nphases:\n  build:\n    commands:\n      - \"'/app/codebuild-runner.sh' 'node' 'runner'\\\"'\\\"'s script.js'\"\n",
+      "version: 0.2\nrun-as: root\nphases:\n  build:\n    commands:\n      - \"'/app/codebuild-runner.sh' 'node' 'runner'\\\"'\\\"'s script.js'\"\ncache:\n  paths:\n    - \"/work/.local/share/pnpm/store/**/*\"\n    - \"/work/.npm/_cacache/**/*\"\n",
+    );
+    expect((command as StartBuildCommand | undefined)?.input.buildspecOverride).not.toContain(
+      "key:",
+    );
+  });
+
+  it("anchors different cache partitions in different S3 locations", async () => {
+    const codebuild = new FakeCodeBuildClient();
+    const driver = new AwsSandboxDriver(codebuild, new FakeLogsClient(), env);
+    const partitions = ["b".repeat(64), "c".repeat(64)];
+
+    for (const [index, partition] of partitions.entries()) {
+      await driver.launch({
+        runId: `run_${index}`,
+        image: "runner",
+        env: {},
+        cachePartition: partition,
+        cpu: 1,
+        memoryMb: 1024,
+        timeoutMin: 5,
+      });
+    }
+
+    expect(
+      codebuild.commands.map(
+        (command) => (command as StartBuildCommand).input.cacheOverride?.location,
+      ),
+    ).toEqual(
+      partitions.map(
+        (partition) => `${env.FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION}/${partition}`,
+      ),
     );
   });
 
@@ -111,11 +150,28 @@ describe("AwsSandboxDriver", () => {
         runId: "run_test",
         image: "runner",
         env: {},
+        cachePartition,
         cpu: 1,
         memoryMb: 1024,
         timeoutMin: 1,
       }),
     ).rejects.toMatchObject({ code: "not_configured" });
+
+    const cacheUnconfigured = new AwsSandboxDriver(codebuild, new FakeLogsClient(), {
+      AWS_REGION: "us-east-1",
+      FACILITY_AWS_CODEBUILD_PROJECT: "facility-test-runner",
+    });
+    await expect(
+      cacheUnconfigured.launch({
+        runId: "run_test",
+        image: "runner",
+        env: {},
+        cachePartition,
+        cpu: 1,
+        memoryMb: 1024,
+        timeoutMin: 1,
+      }),
+    ).rejects.toThrow("FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION");
 
     codebuild.returnBuildId = false;
     const configured = new AwsSandboxDriver(codebuild, new FakeLogsClient(), env);
@@ -124,6 +180,7 @@ describe("AwsSandboxDriver", () => {
         runId: "run_test",
         image: "runner",
         env: {},
+        cachePartition,
         cpu: 1,
         memoryMb: 1024,
         timeoutMin: 1,
@@ -132,6 +189,41 @@ describe("AwsSandboxDriver", () => {
     expect(
       (codebuild.commands[0] as StartBuildCommand | undefined)?.input.timeoutInMinutesOverride,
     ).toBe(5);
+  });
+
+  it("can inspect and stop existing builds when only launch cache config is missing", async () => {
+    const codebuild = new FakeCodeBuildClient();
+    codebuild.builds.push({ buildStatus: "SUCCEEDED" });
+    const driver = new AwsSandboxDriver(codebuild, new FakeLogsClient(), {
+      AWS_REGION: "us-east-1",
+      FACILITY_AWS_CODEBUILD_PROJECT: "facility-test-runner",
+    });
+
+    await expect(driver.status("existing-build")).resolves.toBe("exited");
+    await expect(driver.stop("existing-build")).resolves.toBeUndefined();
+    expect(codebuild.commands[0]).toBeInstanceOf(BatchGetBuildsCommand);
+    expect(codebuild.commands[1]).toBeInstanceOf(StopBuildCommand);
+  });
+
+  it("fails closed when the cache partition is absent or malformed", async () => {
+    const codebuild = new FakeCodeBuildClient();
+    const driver = new AwsSandboxDriver(codebuild, new FakeLogsClient(), env);
+    const launch = (partition?: string) =>
+      driver.launch({
+        runId: "run_cache",
+        image: "runner",
+        env: {},
+        cachePartition: partition,
+        cpu: 1,
+        memoryMb: 1024,
+        timeoutMin: 5,
+      });
+
+    await expect(launch()).rejects.toMatchObject({ code: "not_configured" });
+    await expect(launch("../another-project")).rejects.toMatchObject({
+      code: "not_configured",
+    });
+    expect(codebuild.commands).toHaveLength(0);
   });
 });
 

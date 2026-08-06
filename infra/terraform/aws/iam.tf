@@ -324,6 +324,39 @@ resource "aws_iam_role_policy" "codebuild_runner" {
         Resource = aws_ecr_repository.service["runner"].arn
       },
       {
+        Sid    = "ReadWriteProjectCaches"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject"
+        ]
+        Resource = "${aws_s3_bucket.objects.arn}/codebuild-cache/*"
+      },
+      {
+        Sid    = "VerifyCacheBucket"
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketAcl",
+          "s3:GetBucketLocation"
+        ]
+        Resource = aws_s3_bucket.objects.arn
+      },
+      {
+        Sid    = "EncryptProjectCaches"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = aws_kms_key.facility.arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "s3.${var.aws_region}.amazonaws.com"
+          }
+        }
+      },
+      {
         Sid    = "ManageVpcNetworkInterfaces"
         Effect = "Allow"
         Action = [

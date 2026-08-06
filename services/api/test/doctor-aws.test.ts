@@ -20,11 +20,12 @@ const baseConfig: AppConfig = {
   facilityInsecureDev: false,
   awsRegion: "us-east-1",
   awsCodeBuildProject: "facility-prod-runner",
+  awsCodeBuildCacheBaseLocation: "facility-prod-objects/codebuild-cache",
   logLevel: "silent",
 };
 
 describe("AWS production doctor", () => {
-  it("fails closed before AWS calls when project or region is missing", async () => {
+  it("fails closed before AWS calls when project, region, or cache location is missing", async () => {
     const client = new FakeCodeBuildClient({ projects: [] });
 
     await expect(
@@ -32,6 +33,9 @@ describe("AWS production doctor", () => {
     ).resolves.toMatchObject({ id: "aws_sandbox", status: "fail", ok: false });
     await expect(
       checkAwsSandbox({ ...baseConfig, awsRegion: undefined }, client),
+    ).resolves.toMatchObject({ id: "aws_sandbox", status: "fail", ok: false });
+    await expect(
+      checkAwsSandbox({ ...baseConfig, awsCodeBuildCacheBaseLocation: undefined }, client),
     ).resolves.toMatchObject({ id: "aws_sandbox", status: "fail", ok: false });
     expect(client.commands).toHaveLength(0);
   });
@@ -48,6 +52,7 @@ describe("AWS production doctor", () => {
           },
           source: { type: "NO_SOURCE" },
           artifacts: { type: "NO_ARTIFACTS" },
+          cache: { type: "NO_CACHE" },
           serviceRole: "test-role",
         },
       ],
@@ -59,6 +64,7 @@ describe("AWS production doctor", () => {
     expect(check).toMatchObject({ id: "aws_sandbox", status: "pass", ok: true });
     expect(check.message).toContain("facility-prod-runner");
     expect(check.message).toContain("facility-runner:sha-abc");
+    expect(check.message).toContain("no shared cache");
     expect(client.commands).toHaveLength(1);
     expect(client.commands[0]).toBeInstanceOf(BatchGetProjectsCommand);
     expect(client.commands[0]?.input).toEqual({ names: ["facility-prod-runner"] });
@@ -82,6 +88,7 @@ describe("AWS production doctor", () => {
             },
             source: { type: "NO_SOURCE" },
             artifacts: { type: "NO_ARTIFACTS" },
+            cache: { type: "NO_CACHE" },
             serviceRole: "test-role",
           },
         ],
@@ -90,6 +97,34 @@ describe("AWS production doctor", () => {
 
     expect(missing.status).toBe("fail");
     expect(imageMissing.status).toBe("fail");
+  });
+
+  it("rejects a project-level S3 cache that would be shared when an override is omitted", async () => {
+    const check = await checkAwsSandbox(
+      baseConfig,
+      new FakeCodeBuildClient({
+        projects: [
+          {
+            name: "facility-prod-runner",
+            environment: {
+              type: "LINUX_CONTAINER",
+              computeType: "BUILD_GENERAL1_SMALL",
+              image: "facility-runner:latest",
+            },
+            source: { type: "NO_SOURCE" },
+            artifacts: { type: "NO_ARTIFACTS" },
+            cache: {
+              type: "S3",
+              location: "facility-prod-objects/codebuild-cache",
+            },
+            serviceRole: "test-role",
+          },
+        ],
+      }),
+    );
+
+    expect(check).toMatchObject({ id: "aws_sandbox", status: "fail", ok: false });
+    expect(check.message).toContain("shared default cache");
   });
 
   it.each([

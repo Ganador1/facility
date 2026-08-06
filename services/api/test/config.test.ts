@@ -107,8 +107,15 @@ describe("API configuration", () => {
 
   it("surfaces the AWS CodeBuild runner project to the production doctor", () => {
     expect(
-      readConfig({ ...validEnv, FACILITY_AWS_CODEBUILD_PROJECT: "  facility-prod-runner  " }),
-    ).toMatchObject({ awsCodeBuildProject: "facility-prod-runner" });
+      readConfig({
+        ...validEnv,
+        FACILITY_AWS_CODEBUILD_PROJECT: "  facility-prod-runner  ",
+        FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION: "  facility-prod-objects/codebuild-cache  ",
+      }),
+    ).toMatchObject({
+      awsCodeBuildProject: "facility-prod-runner",
+      awsCodeBuildCacheBaseLocation: "facility-prod-objects/codebuild-cache",
+    });
   });
 
   it("rejects the direct GitHub organization restriction in broker mode", () => {

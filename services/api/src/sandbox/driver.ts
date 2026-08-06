@@ -4,6 +4,9 @@ export type LaunchSpec = {
   runId: string;
   image: string;
   env: Record<string, string>;
+  // Trusted control-plane partition for provider-managed dependency caches.
+  // It must never be copied into the untrusted sandbox environment.
+  cachePartition?: string;
   cpu: number;
   memoryMb: number;
   timeoutMin: number;

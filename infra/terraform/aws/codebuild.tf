@@ -2,11 +2,18 @@ resource "aws_codebuild_project" "runner" {
   name           = "${local.name_prefix}-runner"
   description    = "Ephemeral privileged Facility sandboxes"
   service_role   = aws_iam_role.codebuild_runner.arn
+  encryption_key = aws_kms_key.facility.arn
   build_timeout  = 180
   queued_timeout = 60
 
   artifacts {
     type = "NO_ARTIFACTS"
+  }
+
+  # Fail closed when a caller omits the per-run cache override. Facility gives
+  # each project a separate, unguessable S3 prefix at StartBuild time.
+  cache {
+    type = "NO_CACHE"
   }
 
   source {
@@ -18,6 +25,10 @@ resource "aws_codebuild_project" "runner" {
         build:
           commands:
             - /app/codebuild-runner.sh
+      cache:
+        paths:
+          - "/work/.local/share/pnpm/store/**/*"
+          - "/work/.npm/_cacache/**/*"
     YAML
   }
 

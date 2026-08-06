@@ -27,6 +27,14 @@ containers, devices, added capabilities, daemon administration, and host binds
 outside `/work` (plus its own restricted socket). The lifecycle runner keeps its
 run token under a different UID, and link-local metadata egress is blocked.
 
+Agent dependency downloads use CodeBuild's S3 cache because AWS local caches
+are unavailable for VPC builds. Facility derives an unguessable partition from
+the organization and project, then supplies a separate S3 prefix for that run.
+The CodeBuild project itself defaults to `NO_CACHE`, so an omitted override
+cannot fall back to a cache shared across tenants. Only the pnpm
+content-addressed store and npm `_cacache` are retained; workspaces, credentials,
+browser executables, Supabase state, and Docker data are excluded.
+
 Preview services stay on Fargate because the authenticated Facility proxy needs
 to reach their private port. They use a dedicated task role with no permissions
 and a narrowly scoped execution role for image pull and CloudWatch logs. The API
@@ -416,9 +424,10 @@ Do not send traffic until it reports no `FAIL`. It verifies migrations, object
 storage, seed essentials, the `sandbox_runner` profile, the production
 `auth_config`, the GitHub App private key, and the audit hash chain. On AWS it
 also makes one read-only CodeBuild call to verify that the configured project is
-reachable through the task role and has a runner image. Transient AWS service
-errors are warnings; missing configuration, credentials, permission, project,
-or image fail readiness.
+reachable through the task role, has a runner image, and keeps its shared cache
+disabled. Transient AWS service errors are warnings; missing configuration,
+credentials, permission, project, image, isolated cache location, or fail-closed
+cache setting fail readiness.
 
 Add provider credentials under **Settings → Providers** rather than enabling
 the gateway's development fallback or placing a provider secret in command-line
