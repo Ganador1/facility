@@ -194,6 +194,13 @@ that what is deployed is identifiable from a commit. Deriving `ECR_PREFIX` from
 Terraform keeps the pushed repositories aligned with the selected project and
 environment.
 
+The script requires the Docker Buildx plugin and builds all five artifacts in one
+parallel Bake graph. API and worker receive separate ECR tags for the same build
+result; the ECS services still keep separate commands, roles, scaling, and
+deployment lifecycles. Repeated runs reuse the local BuildKit cache and do not
+create an extra registry-cache artifact. Terraform provider and state files from
+the preceding apply are excluded from the Docker context.
+
 Rebuild and redeploy the `web` image whenever `api_url` changes. Changing only
 the runtime ECS environment variable does not alter the rewrite destination in
 an already-built image.

@@ -139,13 +139,20 @@ FACILITY_API_URL="$(terraform -chdir=infra/terraform/aws output -raw api_url)" \
 cd infra/terraform/aws
 ```
 
-The script expects Dockerfiles for `api`, `worker`, `gateway`, `web`, `mcp`, and
-`runner`. Override paths or image URIs with environment variables documented in
-the script when a service image is built elsewhere. It builds `linux/amd64` by
-default, matching Terraform's default `task_cpu_architecture = "X86_64"`. To
-deploy on Graviton, set `CPU_ARCHITECTURE=ARM64` while building and set
-`task_cpu_architecture = "ARM64"` in Terraform. The build exits early if an
-explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
+The script requires the Docker Buildx plugin and runs one Bake graph. The five
+artifacts build concurrently; the API result is tagged into both the `api` and
+`worker` repositories because those services run the same bytes with different
+commands. API, gateway, and MCP also share the root Dockerfile dependency graph.
+No registry-cache artifact is created: repeated builds reuse the operator's local
+BuildKit cache, while ECR continues to scan only deployable image pushes. The
+repository Docker context excludes Terraform providers and state created by the
+preceding apply.
+
+The graph builds `linux/amd64` by default, matching Terraform's default
+`task_cpu_architecture = "X86_64"`. To deploy on Graviton, set
+`CPU_ARCHITECTURE=ARM64` while building and set `task_cpu_architecture = "ARM64"`
+in Terraform. The build exits before registry login if Buildx is unavailable or
+an explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
 
 Rebuild and redeploy the `web` image whenever `api_url` changes. Supplying only
 the runtime ECS environment variable does not update Next.js rewrite rules that

@@ -2,7 +2,7 @@
 #   docker build --build-arg FACILITY_API_URL=https://api.example.com \
 #     -f apps/web/Dockerfile -t facility/web .
 FROM node:22-bookworm-slim AS base
-ENV PNPM_HOME=/pnpm PATH=$PNPM_HOME:$PATH
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN corepack enable
 WORKDIR /app
 
