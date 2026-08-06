@@ -22,7 +22,12 @@ import { buildApp } from "../src/app.js";
 import { FacilityGithubClient } from "../src/github/client.js";
 import { parseFacilityRepoManifest, syncRepoFacilityConfig } from "../src/github/kickstart.js";
 import { githubEventMatches, processGithubWebhook } from "../src/github/processor.js";
-import { githubRequestContext, resolveSlashCommand, routeTrigger } from "../src/github/router.js";
+import {
+  assertGithubRequestContextSize,
+  githubRequestContext,
+  resolveSlashCommand,
+  routeTrigger,
+} from "../src/github/router.js";
 import { createPreviewRecord } from "../src/previews.js";
 import type { AppConfig } from "../src/types.js";
 
@@ -90,6 +95,124 @@ describe("FacilityGithubClient", () => {
     );
     await client.updateIssueComment(77, "completed");
     expect(args).toEqual({ owner: "octo", repo: "repo", comment_id: 77, body: "completed" });
+  });
+
+  it("creates draft pull requests explicitly", async () => {
+    let args: Record<string, unknown> | undefined;
+    const client = new FacilityGithubClient(
+      {
+        rest: {
+          pulls: {
+            create: async (input: Record<string, unknown>) => {
+              args = input;
+              return { data: { number: 8, html_url: "https://github.test/octo/repo/pull/8" } };
+            },
+          },
+        },
+      } as never,
+      { owner: "octo", repo: "repo", defaultBranch: "main" },
+    );
+    await client.createPullRequest({
+      title: "feat: retain delivery",
+      body: "Body",
+      head: "feature/retain-delivery",
+      draft: true,
+    });
+    expect(args).toMatchObject({ head: "feature/retain-delivery", base: "main", draft: true });
+  });
+
+  it("marks only the expected draft head ready for review", async () => {
+    const mutations: Record<string, unknown>[] = [];
+    const client = new FacilityGithubClient(
+      {
+        graphql: async (_query: string, variables: Record<string, unknown>) => {
+          mutations.push(variables);
+          return {};
+        },
+        rest: {
+          pulls: {
+            get: async () => ({
+              data: {
+                number: 8,
+                title: "feat: retain delivery",
+                state: "open",
+                draft: true,
+                html_url: "https://github.test/octo/repo/pull/8",
+                node_id: "PR_node",
+                head: { sha: "current-sha" },
+              },
+            }),
+          },
+        },
+      } as never,
+      { owner: "octo", repo: "repo", defaultBranch: "main" },
+    );
+    await expect(client.markPullRequestReadyForReview(8, "stale-sha")).resolves.toBe(false);
+    await expect(client.markPullRequestReadyForReview(8, "current-sha")).resolves.toBe(true);
+    expect(mutations).toEqual([{ pullRequestId: "PR_node" }]);
+  });
+
+  it("collects bounded failed workflow details and paginates issue comments", async () => {
+    const pages: number[] = [];
+    const client = new FacilityGithubClient(
+      {
+        rest: {
+          actions: {
+            listJobsForWorkflowRun: async () => ({
+              data: {
+                jobs: [
+                  {
+                    id: 9,
+                    name: "build",
+                    conclusion: "failure",
+                    html_url: "https://github.test/actions/jobs/9",
+                    steps: [
+                      { number: 1, name: "checkout", conclusion: "success" },
+                      { number: 2, name: "test", conclusion: "failure" },
+                    ],
+                  },
+                ],
+              },
+            }),
+            downloadJobLogsForWorkflowRunJob: async () => ({ data: Buffer.from("test failed") }),
+          },
+          issues: {
+            listComments: async (input: Record<string, unknown>) => {
+              const page = Number(input.page);
+              pages.push(page);
+              const count = page === 1 ? 100 : 1;
+              return {
+                data: Array.from({ length: count }, (_, index) => ({
+                  id: (page - 1) * 100 + index + 1,
+                  user: { login: "octocat", type: "User" },
+                  body: `comment ${index + 1}`,
+                  created_at: "2026-08-01T00:00:00Z",
+                  html_url: `https://github.test/comments/${index + 1}`,
+                })),
+              };
+            },
+          },
+        },
+      } as never,
+      { owner: "octo", repo: "repo", defaultBranch: "main" },
+    );
+    await expect(client.getWorkflowFailureContext(99)).resolves.toEqual({
+      jobs: [
+        {
+          id: 9,
+          name: "build",
+          conclusion: "failure",
+          url: "https://github.test/actions/jobs/9",
+          failedSteps: [{ number: 2, name: "test", conclusion: "failure" }],
+          logTail: "test failed",
+        },
+      ],
+    });
+    await expect(client.listIssueComments(42)).resolves.toHaveLength(101);
+    expect(pages).toEqual([1, 2]);
+    await expect(client.listIssueComments(42, 100)).rejects.toThrow(
+      "GitHub issue comments exceed the governed context limit",
+    );
   });
 });
 
@@ -773,15 +896,50 @@ describe("github integration", async () => {
 
   it("preserves the end-user GitHub request for the platform agent", () => {
     expect(
-      githubRequestContext({
-        issue: { number: 42, title: "Add subtraction", body: "Support negative results." },
-        comment: { id: 7, body: "/codex-architect\nKeep the public API stable." },
-      }),
+      githubRequestContext(
+        {
+          issue: {
+            number: 42,
+            title: "Add subtraction",
+            body: "Support negative results.",
+            user: { login: "ada" },
+            labels: [{ name: "delivery" }, "platform"],
+            html_url: "https://github.test/octo/repo/issues/42",
+          },
+          comment: { id: 7, body: "/codex-architect\nKeep the public API stable." },
+        },
+        [
+          {
+            id: 6,
+            author: "grace",
+            authorType: "User",
+            body: "Preserve compatibility.",
+            createdAt: "2026-08-01T00:00:00Z",
+            url: "https://github.test/comments/6",
+          },
+        ],
+      ),
     ).toEqual({
       title: "Add subtraction",
       body: "Support negative results.",
       comment: "/codex-architect\nKeep the public API stable.",
+      author: "ada",
+      url: "https://github.test/octo/repo/issues/42",
+      labels: ["delivery", "platform"],
+      comments: [
+        {
+          id: 6,
+          author: "grace",
+          authorType: "User",
+          body: "Preserve compatibility.",
+          createdAt: "2026-08-01T00:00:00Z",
+          url: "https://github.test/comments/6",
+        },
+      ],
     });
+    expect(() => assertGithubRequestContextSize({ body: "x".repeat(512 * 1024) })).toThrow(
+      "complete GitHub issue context is too large",
+    );
   });
 
   it("treats an opened non-draft PR as ready for review but leaves drafts alone", () => {

@@ -17,7 +17,12 @@ import { z } from "zod";
 import { ApiError, notFound } from "../../errors.js";
 import { createGithubClientFactory, type GithubClientFactory } from "../../github/client.js";
 import { createGithubClientForRepo } from "../../github/kickstart.js";
-import { findAgentDef } from "../../github/router.js";
+import {
+  assertGithubRequestContextSize,
+  findAgentDef,
+  githubRequestContext,
+  loadGithubIssueComments,
+} from "../../github/router.js";
 import {
   assemblePipelineStories,
   classifyPipeline,
@@ -866,11 +871,44 @@ export async function registerGithubV1Routes(app: FastifyInstance, context: V1Ro
           .limit(1)
       )[0];
       if (!repo) throw notFound("Repository not found");
+      // Resolve the local contract before spending a GitHub API request on
+      // context that cannot be dispatched.
+      const agent = await findAgentDef(db, p.orgId, projectId, body.agent);
+      if (!agent) throw new ApiError(400, "agent_not_found", "Agent definition not found");
+      const githubFactory =
+        app.githubClientFactory ??
+        (config.githubAppId && config.githubAppPrivateKey
+          ? createGithubClientFactory(config)
+          : undefined);
+      if (!githubFactory) {
+        throw new ApiError(
+          503,
+          "github_app_unconfigured",
+          "GitHub App credentials are required to load the complete issue context",
+        );
+      }
+      const githubClient = await createGithubClientForRepo(db, githubFactory, repo);
+      const [githubIssue, issueComments] = await Promise.all([
+        githubClient.getIssue(number),
+        loadGithubIssueComments(githubClient, number),
+      ]);
+      const issueRequest = githubRequestContext(
+        {
+          issue: {
+            number: githubIssue.number,
+            title: githubIssue.title,
+            body: githubIssue.body,
+            user: { login: githubIssue.user?.login },
+            labels: githubIssue.labels ?? [],
+            html_url: githubIssue.html_url,
+          },
+        },
+        issueComments,
+      );
+      assertGithubRequestContextSize(issueRequest);
       // No GitHub userCanWrite check: platform RBAC `runs:trigger` is the authority
       // for control-plane-originated dispatch.
       // No execution_lane gate: an explicit control-plane trigger is platform-lane intent.
-      const agent = await findAgentDef(db, p.orgId, projectId, body.agent);
-      if (!agent) throw new ApiError(400, "agent_not_found", "Agent definition not found");
       const run = (
         await db
           .insert(runs)
@@ -886,6 +924,7 @@ export async function registerGithubV1Routes(app: FastifyInstance, context: V1Ro
               ...(p.githubLogin ? { githubLogin: p.githubLogin } : {}),
               repo: { id: repo.id, owner: repo.owner, name: repo.name },
               issue: { number },
+              request: issueRequest,
             },
             gh: { owner: repo.owner, repo: repo.name, issueNumber: number },
             createdBy: { type: p.type, id: p.id },
@@ -901,11 +940,6 @@ export async function registerGithubV1Routes(app: FastifyInstance, context: V1Ro
         data: { queue: "runs.dispatch" },
       });
       await app.enqueue("runs.dispatch", { runId: run.id, orgId: p.orgId });
-      const githubFactory =
-        app.githubClientFactory ??
-        (config.githubAppId && config.githubAppPrivateKey
-          ? createGithubClientFactory(config)
-          : undefined);
       if (p.type === "user") {
         await assignIssueBestEffort(
           db,

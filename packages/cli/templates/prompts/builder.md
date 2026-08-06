@@ -19,8 +19,8 @@ and how far you got. A partial deliverable is a failure.
 You are NOT on a bare checkout. A prior CI step already installed dependencies
 and ran the provision command (`{{PROVISION_CMD}}`), and you run with full
 bypass permissions on an isolated, ephemeral runner. Never claim the
-environment is unavailable — verify by running the checks. In platform runs,
-Facility owns the final signed commit, push, and GitHub App pull-request call;
+environment is unavailable. In platform runs, Facility owns the final signed
+commit, push, and GitHub App pull-request call;
 you supply its exact semantic branch, commit message, PR title, and PR body in
 the delivery manifest described in the injected prompt. Do not require `gh`, a
 writable clone credential, or a local signing key.
@@ -30,7 +30,11 @@ writable clone credential, or a local signing key.
 - Do the full scope the task requires and finish it; keep each edit clean,
   cohesive, and aligned with existing patterns. Read only the code you need;
   run independent commands in parallel.
-- Verify by actually running the relevant checks: {{CHECKS_INLINE}}.
+- Verify by actually running relevant checks. In a repo-lane builder, run the
+  configured suite (`{{CHECKS_INLINE}}`). In a platform sandbox, run focused
+  checks that help you iterate, but do not duplicate that complete suite:
+  GitHub Actions runs it authoritatively on the durable draft PR and CI repair
+  agents continue on that same branch if it fails.
 - Apply the repo skills in `.claude/skills/` — `working-to-standard` while
   implementing, `maintainable-software` for design judgment,
   `reviewing-to-standard` when you self-review. They are part of this
@@ -45,7 +49,7 @@ writable clone credential, or a local signing key.
   no agent/tool prefix in branch names.
 - Signed bot authorship is the complete attribution. Never add a
   `Co-authored-by` trailer for the requester or any other person.
-- For issue-triggered work, author the complete non-draft PR metadata in
+- For issue-triggered work, author the complete PR metadata in
   `.agent-sdlc/delivery.json`; Facility transports it exactly. A generic title,
   boilerplate body, or link that asks a human to create the PR is not delivery.
 - Finish with one concise, team-lead-ready summary: what changed and why, the
@@ -54,11 +58,13 @@ writable clone credential, or a local signing key.
 </output_contract>
 
 <completion_criteria>
-Done only when the change is implemented (not proposed), the right checks were
-run and pass (or a failure is explicitly reported with what ran), and the
-completion checklist in `STANDARD.md` is satisfied. The workflow independently
-re-runs the configured checks and fails closed unless a semantic branch, verified
-commit, bot-authored PR, and machine-readable delivery receipt all exist.
+Done only when the change is implemented (not proposed), the checks appropriate
+to the execution lane were run and reported accurately, and the completion
+checklist in `STANDARD.md` is satisfied. The repo lane fails closed on its
+configured checks. The platform lane fails closed unless a semantic branch,
+verified commit, bot-authored draft PR, and machine-readable delivery receipt
+all exist; GitHub Actions owns final acceptance and failed CI remains visible
+for bounded repair iterations on that same PR.
 </completion_criteria>
 
 <safety_rules>

@@ -1102,6 +1102,11 @@ describe("github platform lane", async () => {
       headRef: "feature/ci-doctor",
       headSha: "ci-doctor-sha",
     });
+    await insertRun({
+      status: "succeeded",
+      trigger: { request: { title: "Repair the failing build" } },
+      gh: { owner, repo: repo.name, branch: "feature/ci-doctor" },
+    });
     const installation = (
       await db
         .select()
@@ -1129,7 +1134,8 @@ describe("github platform lane", async () => {
         repository: { owner: { login: owner }, name: repo.name },
         sender: { login: "maintainer" },
         workflow_run: {
-          name: "facility-guards",
+          id: 991,
+          name: "build",
           conclusion: "failure",
           head_branch: "feature/ci-doctor",
           head_sha: "ci-doctor-sha",
@@ -1149,7 +1155,27 @@ describe("github platform lane", async () => {
           graphql: async () => {
             throw new Error("GraphQL rate limited");
           },
-          rest: {},
+          rest: {
+            actions: {
+              listJobsForWorkflowRun: async () => ({
+                data: {
+                  jobs: [
+                    {
+                      id: 992,
+                      name: "test",
+                      conclusion: "failure",
+                      html_url: "https://github.test/jobs/992",
+                      steps: [{ number: 4, name: "pnpm test", conclusion: "failure" }],
+                    },
+                  ],
+                },
+              }),
+              downloadJobLogsForWorkflowRunJob: async () => ({ data: "expected true to be false" }),
+            },
+            issues: {
+              createComment: async () => ({ data: { id: 993 } }),
+            },
+          },
         }) as never,
       async (queue, data) => {
         enqueued.push({ queue, data });
@@ -1165,6 +1191,22 @@ describe("github platform lane", async () => {
       .from(runs)
       .where(and(eq(runs.projectId, projectId), sql`${runs.trigger}->>'delivery' = ${eventId}`));
     expect(run?.mode).toBe("ci_doctor");
+    expect(run?.trigger).toMatchObject({
+      workflowRun: {
+        name: "build",
+        failureContext: {
+          jobs: [
+            {
+              id: 992,
+              name: "test",
+              failedSteps: [{ number: 4, name: "pnpm test", conclusion: "failure" }],
+              logTail: "expected true to be false",
+            },
+          ],
+        },
+      },
+      deliveryContext: { producingRunId: expect.any(String) },
+    });
     expect(enqueued).toContainEqual({ queue: "runs.dispatch", data: { runId: run?.id, orgId } });
     const [processed] = await db.select().from(inboundEvents).where(eq(inboundEvents.id, eventId));
     expect(processed?.processedAt).not.toBeNull();
@@ -1183,6 +1225,306 @@ describe("github platform lane", async () => {
         message: "GitHub pull-request snapshot refresh failed; scheduled reconciliation will retry",
       },
     ]);
+
+    const duplicateEventId = newId("evt");
+    const [original] = await db.select().from(inboundEvents).where(eq(inboundEvents.id, eventId));
+    if (!original) throw new Error("workflow event fixture missing");
+    await db.insert(inboundEvents).values({
+      ...original,
+      id: duplicateEventId,
+      processedAt: null,
+      error: null,
+    });
+    await processGithubWebhook(
+      db,
+      config,
+      { inboundEventId: duplicateEventId },
+      async () =>
+        ({
+          graphql: async () => {
+            throw new Error("GraphQL rate limited");
+          },
+          rest: {},
+        }) as never,
+    );
+    const repairRuns = await db
+      .select()
+      .from(runs)
+      .where(
+        and(
+          eq(runs.projectId, projectId),
+          eq(runs.mode, "ci_doctor"),
+          sql`${runs.gh}->>'branch' = 'feature/ci-doctor'`,
+        ),
+      );
+    expect(repairRuns).toHaveLength(1);
+  });
+
+  it("repairs only Facility delivery branches and stops at the configured attempt limit", async () => {
+    const owner = `workflow-policy-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    await db
+      .update(repos)
+      .set({ renderAnswers: { execution_lane: { "ci-doctor": "platform" } } })
+      .where(eq(repos.id, repo.id));
+    await db
+      .update(projects)
+      .set({ settings: { ci_repair_max_attempts: 1 } })
+      .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)));
+    await insertAgent("ci-doctor", [
+      { type: "github", event: "workflow_run", action: "completed" },
+    ]);
+    const installation = (
+      await db
+        .select()
+        .from(githubInstallations)
+        .where(eq(githubInstallations.id, repo.installationId ?? ""))
+        .limit(1)
+    )[0];
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({ id: newId("int"), orgId, kind: "github", name: `policy-${Date.now()}` })
+        .returning()
+    )[0];
+    if (!installation || !integration) throw new Error("CI policy fixtures missing");
+
+    const deliverFailure = async (branch: string, headSha: string) => {
+      const eventId = newId("evt");
+      await db.insert(inboundEvents).values({
+        id: eventId,
+        orgId,
+        integrationId: integration.id,
+        eventType: "workflow_run",
+        verified: true,
+        payload: {
+          action: "completed",
+          installation: { id: installation.installationId },
+          repository: { owner: { login: owner }, name: repo.name },
+          workflow_run: {
+            id: nextInstallationId(),
+            name: "build",
+            conclusion: "failure",
+            head_branch: branch,
+            head_sha: headSha,
+            pull_requests: [],
+          },
+        },
+      });
+      const comments: string[] = [];
+      await processGithubWebhook(
+        db,
+        config,
+        { inboundEventId: eventId },
+        async () =>
+          ({
+            graphql: async () => {
+              throw new Error("snapshot unavailable");
+            },
+            rest: {
+              issues: {
+                createComment: async (input: { body: string }) => {
+                  comments.push(input.body);
+                  return { data: { id: 1 } };
+                },
+              },
+            },
+          }) as never,
+      );
+      return { eventId, comments };
+    };
+
+    await insertPullRequest(repo.id, 72_200, {
+      draft: true,
+      headRef: "feature/not-produced-by-facility",
+      headSha: "unrelated-sha",
+    });
+    const otherRepo = await insertRepo({ owner, name: "other-repo" });
+    await insertRun({
+      status: "succeeded",
+      trigger: { request: { title: "A different repository's delivery" } },
+      gh: { owner, repo: otherRepo.name, branch: "feature/not-produced-by-facility" },
+    });
+    const unrelated = await deliverFailure("feature/not-produced-by-facility", "unrelated-sha");
+    expect(
+      await db.select().from(runs).where(sql`${runs.trigger}->>'delivery' = ${unrelated.eventId}`),
+    ).toHaveLength(0);
+
+    const branch = "feature/facility-repair-limit";
+    await insertPullRequest(repo.id, 72_201, {
+      draft: true,
+      headRef: branch,
+      headSha: "repair-sha-2",
+    });
+    await insertRun({
+      status: "succeeded",
+      trigger: { request: { title: "Facility delivery" } },
+      gh: { owner, repo: repo.name, branch },
+    });
+    await insertRun({
+      mode: "ci_doctor",
+      status: "succeeded",
+      trigger: {
+        type: "github_event",
+        event: "workflow_run",
+        pullRequest: { headSha: "repair-sha-1" },
+      },
+      gh: { owner, repo: repo.name, branch },
+    });
+    const exhausted = await deliverFailure(branch, "repair-sha-2");
+    expect(
+      await db.select().from(runs).where(sql`${runs.trigger}->>'delivery' = ${exhausted.eventId}`),
+    ).toHaveLength(0);
+    expect(exhausted.comments).toEqual([
+      "Facility stopped automatic CI repair after 1 attempts. The draft PR and failing GitHub checks remain available for human iteration.",
+    ]);
+    const repeatedExhaustion = await deliverFailure(branch, "repair-sha-2");
+    expect(repeatedExhaustion.comments).toHaveLength(0);
+    const exhaustionAudits = await db
+      .select()
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.action, "github.ci_repair.exhausted"),
+          sql`${auditEvents.target}->>'id' = ${repo.id}`,
+          sql`${auditEvents.payload}->>'branch' = ${branch}`,
+          sql`${auditEvents.payload}->>'headSha' = 'repair-sha-2'`,
+        ),
+      );
+    expect(exhaustionAudits).toHaveLength(1);
+    const [draft] = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, 72_201)));
+    expect(draft?.draft).toBe(true);
+    await db
+      .update(projects)
+      .set({ settings: {} })
+      .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)));
+  });
+
+  it("marks a Facility draft ready only after the current GitHub CI rollup succeeds", async () => {
+    const owner = `ready-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const installation = (
+      await db
+        .select()
+        .from(githubInstallations)
+        .where(eq(githubInstallations.id, repo.installationId ?? ""))
+        .limit(1)
+    )[0];
+    const integration = (
+      await db
+        .insert(integrations)
+        .values({ id: newId("int"), orgId, kind: "github", name: `ready-${Date.now()}` })
+        .returning()
+    )[0];
+    if (!installation || !integration) throw new Error("ready fixtures missing");
+    const facilityBranch = "feature/facility-ready";
+    const unrelatedBranch = "feature/unrelated-draft";
+    await insertRun({
+      status: "succeeded",
+      trigger: { request: { title: "Facility delivery" } },
+      gh: { owner, repo: repo.name, branch: facilityBranch },
+    });
+    await insertPullRequest(repo.id, 72_300, {
+      draft: true,
+      headRef: facilityBranch,
+      headSha: "ready-sha",
+      ciState: "pending",
+      ciHeadSha: "ready-sha",
+    });
+    await insertPullRequest(repo.id, 72_301, {
+      draft: true,
+      headRef: unrelatedBranch,
+      headSha: "unrelated-ready-sha",
+      ciState: "pending",
+      ciHeadSha: "unrelated-ready-sha",
+    });
+    const readyMutations: Record<string, unknown>[] = [];
+    const factory = async () =>
+      ({
+        graphql: async (query: string, variables: Record<string, unknown>) => {
+          if (query.includes("markPullRequestReadyForReview")) {
+            readyMutations.push(variables);
+            return { markPullRequestReadyForReview: { pullRequest: { number: 72_300 } } };
+          }
+          const number = Number(variables.number);
+          const facility = number === 72_300;
+          const headSha = facility ? "ready-sha" : "unrelated-ready-sha";
+          const headRef = facility ? facilityBranch : unrelatedBranch;
+          return {
+            repository: {
+              pullRequest: {
+                number,
+                title: `PR ${number}`,
+                state: "OPEN",
+                isDraft: true,
+                author: { login: "octocat" },
+                headRefName: headRef,
+                headRefOid: headSha,
+                baseRefName: "main",
+                url: `https://github.test/${owner}/${repo.name}/pull/${number}`,
+                createdAt: "2026-08-01T00:00:00Z",
+                updatedAt: "2026-08-01T00:00:00Z",
+                closingIssuesReferences: { nodes: [] },
+                commits: {
+                  nodes: [{ commit: { oid: headSha, statusCheckRollup: { state: "SUCCESS" } } }],
+                },
+              },
+            },
+          };
+        },
+        rest: {
+          pulls: {
+            get: async (input: { pull_number: number }) => ({
+              data: {
+                number: input.pull_number,
+                title: `PR ${input.pull_number}`,
+                state: "open",
+                draft: true,
+                html_url: `https://github.test/pulls/${input.pull_number}`,
+                node_id: `PR_${input.pull_number}`,
+                head: {
+                  sha: input.pull_number === 72_300 ? "ready-sha" : "unrelated-ready-sha",
+                },
+              },
+            }),
+          },
+        },
+      }) as never;
+    const deliverSuccess = async (number: number, headSha: string) => {
+      const eventId = newId("evt");
+      await db.insert(inboundEvents).values({
+        id: eventId,
+        orgId,
+        integrationId: integration.id,
+        eventType: "check_suite",
+        verified: true,
+        payload: {
+          action: "completed",
+          installation: { id: installation.installationId },
+          repository: { owner: { login: owner }, name: repo.name },
+          check_suite: {
+            status: "completed",
+            conclusion: "success",
+            head_sha: headSha,
+            pull_requests: [{ number }],
+          },
+        },
+      });
+      await processGithubWebhook(db, config, { inboundEventId: eventId }, factory);
+    };
+
+    await deliverSuccess(72_300, "ready-sha");
+    await deliverSuccess(72_301, "unrelated-ready-sha");
+    const mirrored = await db
+      .select()
+      .from(ghPullRequests)
+      .where(eq(ghPullRequests.repoId, repo.id));
+    expect(mirrored.find((pull) => pull.number === 72_300)?.draft).toBe(false);
+    expect(mirrored.find((pull) => pull.number === 72_301)?.draft).toBe(true);
+    expect(readyMutations).toEqual([{ pullRequestId: "PR_72300" }]);
   });
 
   it("lists mirrored issues with pagination, state filtering, and linked runs", async () => {
@@ -1665,6 +2007,27 @@ describe("github platform lane", async () => {
       ({
         rest: {
           issues: {
+            get: async (input: { issue_number: number }) => ({
+              data: {
+                number: input.issue_number,
+                title: "Deliver complete error states",
+                body: "Update agencies and people detail routes.",
+                user: { login: "issue-author" },
+                labels: [{ name: "delivery" }, { name: "frontend" }],
+                html_url: `https://github.test/issues/${input.issue_number}`,
+              },
+            }),
+            listComments: async () => ({
+              data: [
+                {
+                  id: 4401,
+                  user: { login: "maintainer", type: "User" },
+                  body: "Keep the existing loading behavior.",
+                  created_at: "2026-08-01T00:00:00Z",
+                  html_url: "https://github.test/comments/4401",
+                },
+              ],
+            }),
             createComment: async () => ({ data: { id: 1, html_url: "https://example.test/c" } }),
             addAssignees: async (input: { issue_number: number; assignees: string[] }) => {
               assigned.push({ number: input.issue_number, logins: input.assignees });
@@ -1732,6 +2095,24 @@ describe("github platform lane", async () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().gh.issueNumber).toBe(44);
+    expect(response.json().trigger.request).toEqual({
+      title: "Deliver complete error states",
+      body: "Update agencies and people detail routes.",
+      comment: null,
+      author: "issue-author",
+      url: "https://github.test/issues/44",
+      labels: ["delivery", "frontend"],
+      comments: [
+        {
+          id: 4401,
+          author: "maintainer",
+          authorType: "User",
+          body: "Keep the existing loading behavior.",
+          createdAt: "2026-08-01T00:00:00Z",
+          url: "https://github.test/comments/4401",
+        },
+      ],
+    });
     const event = (
       await db.select().from(runEvents).where(eq(runEvents.runId, response.json().id))
     )[0];
@@ -1748,6 +2129,17 @@ describe("github platform lane", async () => {
       ({
         rest: {
           issues: {
+            get: async (input: { issue_number: number }) => ({
+              data: {
+                number: input.issue_number,
+                title: `Issue ${input.issue_number}`,
+                body: "Body",
+                user: { login: "author" },
+                labels: [],
+                html_url: `https://github.test/issues/${input.issue_number}`,
+              },
+            }),
+            listComments: async () => ({ data: [] }),
             addAssignees: async () => ({ data: { assignees: [] } }),
             createComment: async () => ({ data: { id: 2 } }),
           },
@@ -1782,6 +2174,17 @@ describe("github platform lane", async () => {
       ({
         rest: {
           issues: {
+            get: async (input: { issue_number: number }) => ({
+              data: {
+                number: input.issue_number,
+                title: `Issue ${input.issue_number}`,
+                body: "Body",
+                user: { login: "author" },
+                labels: [],
+                html_url: `https://github.test/issues/${input.issue_number}`,
+              },
+            }),
+            listComments: async () => ({ data: [] }),
             addAssignees: async () => {
               throw new Error("assignment permission denied");
             },
@@ -1839,6 +2242,55 @@ describe("github platform lane", async () => {
       login: null,
       reason: "missing_github_login",
     });
+
+    await insertIssue(repo.id, 48, "open", "2026-03-01T00:00:04Z");
+    await insertIssue(repo.id, 49, "open", "2026-03-01T00:00:05Z");
+    app.githubClientFactory = async () =>
+      ({
+        rest: {
+          issues: {
+            get: async (input: { issue_number: number }) => {
+              if (input.issue_number === 48) throw new Error("GitHub issue read failed");
+              return {
+                data: {
+                  number: input.issue_number,
+                  title: `Issue ${input.issue_number}`,
+                  body: "x".repeat(512 * 1024),
+                  user: { login: "author" },
+                  labels: [],
+                  html_url: `https://github.test/issues/${input.issue_number}`,
+                },
+              };
+            },
+            listComments: async () => ({ data: [] }),
+          },
+          repos: {},
+          git: {},
+          pulls: {},
+        },
+      }) as never;
+    const unavailableContext = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/issues/48/trigger?repoId=${repo.id}`,
+      headers: { cookie },
+      payload: { agent: "builder" },
+    });
+    expect(unavailableContext.statusCode).toBe(500);
+    const oversizedContext = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/issues/49/trigger?repoId=${repo.id}`,
+      headers: { cookie },
+      payload: { agent: "builder" },
+    });
+    expect(oversizedContext.statusCode).toBe(413);
+    expect(oversizedContext.json().error.code).toBe("issue_context_too_large");
+    const rejectedContextRuns = await db
+      .select()
+      .from(runs)
+      .where(
+        and(eq(runs.projectId, projectId), sql`(${runs.gh}->>'issueNumber')::int in (48, 49)`),
+      );
+    expect(rejectedContextRuns).toHaveLength(0);
 
     const missing = await app.inject({
       method: "POST",
@@ -2130,6 +2582,7 @@ describe("github platform lane", async () => {
         head: "feature/agent-owned-delivery",
         title: "feat: deliver agent-owned metadata",
         body: "## Summary\n\n- Preserve the builder's exact PR metadata.",
+        draft: true,
       }),
     );
     const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));

@@ -11,7 +11,8 @@ import {
   runs,
 } from "@facility/db";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
-import type { FacilityGithubClient } from "./client.js";
+import { ApiError } from "../errors.js";
+import { type FacilityGithubClient, GithubIssueContextTooLargeError } from "./client.js";
 import { syncRepoFacilityConfig } from "./kickstart.js";
 import { renderGithubRunProgress } from "./run-progress.js";
 
@@ -24,10 +25,24 @@ export type TriggerPayload = {
     body?: string | null;
     node_id?: string;
     pull_request?: unknown;
+    user?: { login?: string };
+    labels?: Array<string | { name?: string }>;
+    html_url?: string;
   };
   repository?: { id?: number; name?: string; owner?: { login?: string }; default_branch?: string };
   sender?: { login?: string; type?: string };
 };
+
+export type GithubIssueCommentContext = {
+  id: number;
+  author: string;
+  authorType: string;
+  body: string;
+  createdAt: string;
+  url: string;
+};
+
+export const ISSUE_CONTEXT_MAX_CHARS = 512 * 1024;
 
 const COMMAND_RE =
   /(?:^|\n)\s*\/(builder|architect|codex-builder|codex-architect)(?=$|[\s,.:;!?)])/g;
@@ -103,6 +118,9 @@ export async function routeTrigger(
     resolved.agentCommand ?? command,
   );
   if (!agent) return { routed: false, reason: "no_agent" };
+  const issueComments = await loadGithubIssueComments(client, issueNumber);
+  const request = githubRequestContext(payload, issueComments);
+  assertGithubRequestContextSize(request);
   const accepted =
     command === "builder"
       ? await githubPlanAcceptance(db, {
@@ -126,7 +144,7 @@ export async function routeTrigger(
     // treats scope as untrusted data beneath the agent contract, but without
     // this context an agent only received numeric GitHub IDs and could not know
     // what work the user requested.
-    request: githubRequestContext(payload),
+    request,
   };
   const run = await db.transaction(async (tx) => {
     if (accepted?.proposal) {
@@ -358,12 +376,54 @@ async function githubPlanAcceptance(
   return null;
 }
 
-export function githubRequestContext(payload: TriggerPayload) {
+export function githubRequestContext(
+  payload: TriggerPayload,
+  comments: GithubIssueCommentContext[] = [],
+) {
   return {
     title: nullableText(payload.issue?.title),
     body: nullableText(payload.issue?.body),
     comment: nullableText(payload.comment?.body),
+    author: nullableText(payload.issue?.user?.login),
+    url: nullableText(payload.issue?.html_url),
+    labels: (payload.issue?.labels ?? []).flatMap((label) => {
+      const name = typeof label === "string" ? label : label.name;
+      return typeof name === "string" && name.trim() ? [name.trim()] : [];
+    }),
+    comments: comments.map((entry) => ({
+      id: entry.id,
+      author: entry.author,
+      authorType: entry.authorType,
+      body: entry.body,
+      createdAt: entry.createdAt,
+      url: entry.url,
+    })),
   };
+}
+
+export function assertGithubRequestContextSize(context: unknown) {
+  if (JSON.stringify(context).length > ISSUE_CONTEXT_MAX_CHARS) {
+    throw new ApiError(
+      413,
+      "issue_context_too_large",
+      "The complete GitHub issue context is too large for a governed run",
+    );
+  }
+}
+
+export async function loadGithubIssueComments(client: FacilityGithubClient, issueNumber: number) {
+  try {
+    return await client.listIssueComments(issueNumber, ISSUE_CONTEXT_MAX_CHARS);
+  } catch (error) {
+    if (error instanceof GithubIssueContextTooLargeError) {
+      throw new ApiError(
+        413,
+        "issue_context_too_large",
+        "The complete GitHub issue context is too large for a governed run",
+      );
+    }
+    throw error;
+  }
 }
 
 function nullableText(value: unknown) {

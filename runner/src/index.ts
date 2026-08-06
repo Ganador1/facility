@@ -169,12 +169,13 @@ async function main() {
         },
       ]);
     }
-    // Platform-owned acceptance gates run independently of the engine's own
-    // exit code and self-report: a run only succeeds if the engine succeeded AND
-    // every configured check command passes. Skip them when the engine already
-    // failed (the run fails regardless). Without this an agent could report
-    // success while its required checks are red.
-    const checksConfigured = !requiresDelivery(bundle.mode) || bundle.checkCmds.length > 0;
+    // GitHub-backed deliveries publish their signed branch first and let GitHub
+    // Actions own acceptance. That preserves the work as a draft PR and lets a
+    // CI-doctor iterate on the same branch instead of spending the sandbox's
+    // lifetime duplicating CI before any reviewable artifact exists.
+    const githubCi = githubCiOwnsAcceptance(bundle);
+    const checksConfigured =
+      githubCi || !requiresDelivery(bundle.mode) || bundle.checkCmds.length > 0;
     if (!checksConfigured) {
       await emit([
         {
@@ -196,6 +197,20 @@ async function main() {
     // (address-review, ci-doctor — they push commits too), and custom/BYO
     // modes that use checks as generic acceptance.
     const readOnlyMode = readOnlyRepositoryMode(normalizedMode(bundle.mode));
+    if (githubCi && engineCode === 0) {
+      await emit([
+        {
+          type: "check",
+          data: {
+            self_reported: false,
+            name: "GitHub CI acceptance",
+            status: "skipped",
+            reason: "deferred_to_github",
+            note: "The signed draft pull request is the durable CI boundary",
+          },
+        },
+      ]);
+    }
     if (readOnlyMode && bundle.checkCmds.length > 0 && engineCode === 0) {
       await emit([
         {
@@ -212,7 +227,7 @@ async function main() {
     }
     const checksPassed =
       engineCode === 0 && checksConfigured && progressConfigured
-        ? readOnlyMode
+        ? githubCi || readOnlyMode
           ? true
           : await runChecks(bundle, cwdFor(bundle))
         : false;
@@ -1043,6 +1058,12 @@ async function postResult(
 
 export function requiresDelivery(mode: string) {
   return mode === "builder" || mode.endsWith("-builder");
+}
+
+export function githubCiOwnsAcceptance(bundle: Pick<RunBundle, "mode" | "repo">): boolean {
+  if (!bundle.repo.cloneUrl?.startsWith("https://github.com/")) return false;
+  const mode = normalizedMode(bundle.mode);
+  return requiresDelivery(bundle.mode) || repairRepositoryMode(mode);
 }
 
 export function deliveryStatusEvent(
@@ -2071,7 +2092,7 @@ export function composedPrompt(bundle: RunBundle) {
         .join("\n")}`
     : "";
   const deliveryNote = requiresDelivery(bundle.mode)
-    ? `\n\n## Agent-owned delivery\nFacility will create the signed commit, push, and non-draft pull request with the GitHub App after your engine exits. You own all delivery metadata. Before finishing, create \`.agent-sdlc/delivery.json\` with exactly this shape:\n\n\`\`\`json\n{\n  "branch": "feature/task-slug",\n  "commitMessage": "feat: describe the change",\n  "pullRequest": {\n    "title": "feat: describe the change",\n    "body": "## Summary\\n- ...\\n\\n## Context\\n- ...\\n\\n## Verification\\n- ...\\n\\n## Linked issues\\n- Closes #123"\n  }\n}\n\`\`\`\n\nThe branch must be semantic; the commit and PR title must use Conventional Commits and have the same release impact. If the commit has a \`BREAKING CHANGE:\` footer, mark the PR title with \`!\` too. The PR body must be your complete team-lead-ready description. Do not commit this managed file. Do not require \`gh\`, a writable clone token, or a local signing key: Facility transports your exact metadata and fails closed if it is absent or invalid.`
+    ? `\n\n## Agent-owned delivery\nFacility will create the signed commit, push, and draft pull request with the GitHub App after your engine exits. GitHub Actions is the authoritative acceptance boundary: do not duplicate the repository's full configured CI suite inside this sandbox. Run focused checks that help you iterate on the changed behavior, report their results accurately, and let the durable draft PR retain the work while CI and repair agents continue. You own all delivery metadata. Before finishing, create \`.agent-sdlc/delivery.json\` with exactly this shape:\n\n\`\`\`json\n{\n  "branch": "feature/task-slug",\n  "commitMessage": "feat: describe the change",\n  "pullRequest": {\n    "title": "feat: describe the change",\n    "body": "## Summary\\n- ...\\n\\n## Context\\n- ...\\n\\n## Verification\\n- ...\\n\\n## Linked issues\\n- Closes #123"\n  }\n}\n\`\`\`\n\nThe branch must be semantic; the commit and PR title must use Conventional Commits and have the same release impact. If the commit has a \`BREAKING CHANGE:\` footer, mark the PR title with \`!\` too. The PR body must be your complete team-lead-ready description. Do not commit this managed file. Do not require \`gh\`, a writable clone token, or a local signing key: Facility transports your exact metadata and fails closed if it is absent or invalid.`
     : "";
   const repairDeliveryNote = repairRepositoryMode(normalizedMode(bundle.mode))
     ? `\n\n## Agent-owned PR update\nIf and only if you make verified repository changes, create \`.agent-sdlc/delivery.json\` before finishing with exactly \`{"branch":"<the existing PR branch>","commitMessage":"<matching Conventional Commit type>: describe the correction"}\`. Facility will add a signed commit to that same branch through the GitHub App. The branch must exactly match the checked-out PR branch. Choose a truthful Conventional Commit type whose release impact is no greater than the existing pull request range; do not add \`!\` or a \`BREAKING CHANGE:\` footer unless that range is already breaking. If a truthful message would raise the impact, leave the manifest absent and report that the PR title must be updated first. Do not run \`git push\`, create another branch or pull request, force-push, or depend on \`gh\`. If no code change is needed, do not create the manifest.`

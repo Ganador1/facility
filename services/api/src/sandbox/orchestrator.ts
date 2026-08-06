@@ -880,6 +880,7 @@ async function openRunPullRequest(
     base: repo.defaultBranch,
     title: git.pullRequestTitle as string,
     body: pullRequestBody,
+    draft: true,
   });
   const nextGh = { ...gh, branch: git.branch, pr: { number: pr.number, url: pr.url } };
   await db.update(runs).set({ gh: nextGh, updatedAt: new Date() }).where(eq(runs.id, run.id));
@@ -932,7 +933,7 @@ async function openRunPullRequest(
     actor: { type: "agent", id: run.id },
     action: "github.pr.created",
     target: { type: "run", id: run.id },
-    payload: { runId: run.id, branch: git.branch, pr },
+    payload: { runId: run.id, branch: git.branch, pr, draft: true },
   });
   await requestConfiguredPreview(db, run, repo, pr.number, git.headSha, client, deps).catch(
     async (error) => {
