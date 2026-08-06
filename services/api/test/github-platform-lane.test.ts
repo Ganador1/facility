@@ -2892,7 +2892,7 @@ describe("github platform lane", async () => {
       queue: "previews.provision",
       data: { previewId: preview?.id },
     });
-    expect(comments.some((body) => body.includes(`/preview/${preview?.id}/`))).toBe(true);
+    expect(comments.some((body) => body.includes(`/previews/${preview?.id}/open`))).toBe(true);
     expect(comments.some((body) => body.includes("organization SSO"))).toBe(true);
   });
 

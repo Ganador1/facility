@@ -1,4 +1,5 @@
-import { previewSandboxes, repos, runs } from "@facility/db";
+import { can } from "@facility/core";
+import { orgMembers, previewSandboxes, repos, roles, runs, users } from "@facility/db";
 import { and, desc, eq } from "drizzle-orm";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -6,15 +7,25 @@ import { ApiError, notFound } from "../../errors.js";
 import {
   assertPreviewProvisioningAvailable,
   assertPreviewSession,
+  consumePreviewHandoff,
   createPreviewRecord,
   destroyPreview,
+  mintPreviewHandoff,
+  mintPreviewSession,
+  previewAccessUrl,
+  previewCookieName,
+  previewCookieOptions,
   proxyPreviewRequest,
+  readPreviewHandoff,
+  readPreviewSession,
   rewritePreviewHtml,
 } from "../../previews.js";
+import type { AppConfig } from "../../types.js";
 import type { V1RouteContext } from "./shared.js";
 
 const PreviewParams = z.object({ projectId: z.string(), previewId: z.string().optional() });
 const PublicPreviewParams = z.object({ previewId: z.string(), "*": z.string().optional() });
+const PreviewHandoffQuery = z.object({ handoff: z.string().min(1) });
 const PreviewCreate = z.object({
   repoId: z.string().optional(),
   runId: z.string().optional(),
@@ -80,7 +91,7 @@ export async function registerPreviewRoutes(
           ),
         )
         .orderBy(desc(previewSandboxes.createdAt));
-      return rows.map((row) => present(row, config.publicUrl));
+      return rows.map((row) => present(row, config));
     },
   );
 
@@ -153,7 +164,7 @@ export async function registerPreviewRoutes(
       });
       if (!preview) throw new ApiError(500, "preview_create_failed", "Preview was not created");
       await app.enqueue("previews.provision", { previewId: preview.id });
-      return reply.status(202).send(present(preview, config.publicUrl));
+      return reply.status(202).send(present(preview, config));
     },
   );
 
@@ -184,26 +195,87 @@ export async function registerPreviewRoutes(
       const destroyed = await destroyPreview(db, preview);
       if (!destroyed)
         throw new ApiError(500, "preview_destroy_failed", "Preview was not destroyed");
-      return present(destroyed, config.publicUrl);
+      return present(destroyed, config);
+    },
+  );
+
+  app.get(
+    "/v1/projects/:projectId/previews/:previewId/open",
+    {
+      config: { permission: "runs:read" },
+      schema: { params: PreviewParams },
+    },
+    async (request, reply) => {
+      assertPreviewSession(config, request.principal);
+      const principal = request.principal;
+      if (!principal?.userId) throw new ApiError(401, "unauthorized", "Authentication required");
+      const { projectId, previewId } = request.params as z.infer<typeof PreviewParams>;
+      const preview = (
+        await db
+          .select()
+          .from(previewSandboxes)
+          .where(
+            and(
+              eq(previewSandboxes.orgId, principal.orgId),
+              eq(previewSandboxes.projectId, projectId),
+              eq(previewSandboxes.id, previewId ?? ""),
+            ),
+          )
+          .limit(1)
+      )[0];
+      if (!preview) throw notFound("Preview");
+      if (preview.status !== "running") {
+        throw new ApiError(409, "preview_not_running", "Preview environment is not running");
+      }
+      const handoff = await mintPreviewHandoff(db, config, {
+        userId: principal.userId,
+        orgId: principal.orgId,
+        projectId,
+        previewId: preview.id,
+      });
+      await request.audit("preview.opened", { type: "preview", id: preview.id });
+      const previewUrl = new URL(config.previewUrl ?? config.publicUrl);
+      previewUrl.pathname = `/preview-auth/${encodeURIComponent(preview.id)}`;
+      previewUrl.search = new URLSearchParams({ handoff }).toString();
+      reply.header("cache-control", "no-store");
+      reply.header("referrer-policy", "no-referrer");
+      return reply.redirect(previewUrl.toString());
+    },
+  );
+
+  app.get(
+    "/preview-auth/:previewId",
+    {
+      config: { public: true },
+      schema: { params: PublicPreviewParams, querystring: PreviewHandoffQuery },
+    },
+    async (request, reply) => {
+      const { previewId } = request.params as z.infer<typeof PublicPreviewParams>;
+      const { handoff } = request.query as z.infer<typeof PreviewHandoffQuery>;
+      const claims = await readPreviewHandoff(config, handoff, previewId);
+      await loadAuthorizedPreview(db, claims, previewId, claims.projectId);
+      await consumePreviewHandoff(db, claims);
+      const previewSession = await mintPreviewSession(config, {
+        userId: claims.userId,
+        orgId: claims.orgId,
+        previewId,
+      });
+      reply.setCookie(
+        previewCookieName(previewId),
+        previewSession,
+        previewCookieOptions(config, previewId),
+      );
+      reply.header("cache-control", "no-store");
+      reply.header("referrer-policy", "no-referrer");
+      return reply.redirect(`/preview/${encodeURIComponent(previewId)}/`);
     },
   );
 
   const proxy = async (request: FastifyRequest, reply: FastifyReply) => {
-    assertPreviewSession(config, request.principal);
     const { previewId } = request.params as { previewId: string; "*"?: string };
-    const preview = (
-      await db
-        .select()
-        .from(previewSandboxes)
-        .where(
-          and(
-            eq(previewSandboxes.orgId, request.principal?.orgId ?? ""),
-            eq(previewSandboxes.id, previewId),
-          ),
-        )
-        .limit(1)
-    )[0];
-    if (!preview) throw notFound("Preview");
+    const token = request.cookies[previewCookieName(previewId)] ?? "";
+    const claims = await readPreviewSession(config, token, previewId);
+    const preview = await loadAuthorizedPreview(db, claims, previewId);
     const upstream = await proxyPreviewRequest(
       preview,
       (request.params as { "*"?: string })["*"] ?? "",
@@ -211,6 +283,8 @@ export async function registerPreviewRoutes(
       request.headers,
     );
     reply.status(upstream.statusCode);
+    reply.header("referrer-policy", "no-referrer");
+    reply.header("x-content-type-options", "nosniff");
     for (const name of ["content-type", "cache-control", "etag", "last-modified"]) {
       const value = upstream.headers[name];
       if (value) reply.header(name, value);
@@ -236,7 +310,7 @@ export async function registerPreviewRoutes(
         method,
         url,
         exposeHeadRoute: false,
-        config: { permission: "runs:read" },
+        config: { public: true },
         schema: {
           params: PublicPreviewParams,
           operationId: `${method.toLowerCase()}ProtectedPreview${suffix}`,
@@ -262,12 +336,56 @@ function rewritePreviewLocation(location: string, preview: typeof previewSandbox
   return location;
 }
 
-function present(preview: typeof previewSandboxes.$inferSelect, publicUrl: string) {
+async function loadAuthorizedPreview(
+  db: V1RouteContext["db"],
+  claims: { userId: string; orgId: string },
+  previewId: string,
+  projectId?: string,
+) {
+  const preview = (
+    await db
+      .select()
+      .from(previewSandboxes)
+      .where(
+        and(
+          eq(previewSandboxes.id, previewId),
+          eq(previewSandboxes.orgId, claims.orgId),
+          ...(projectId ? [eq(previewSandboxes.projectId, projectId)] : []),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!preview) throw notFound("Preview");
+  const membership = (
+    await db
+      .select({ permissions: roles.permissions })
+      .from(orgMembers)
+      .innerJoin(roles, eq(orgMembers.roleId, roles.id))
+      .innerJoin(users, eq(orgMembers.userId, users.id))
+      .where(
+        and(
+          eq(orgMembers.orgId, claims.orgId),
+          eq(orgMembers.userId, claims.userId),
+          eq(users.status, "active"),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!membership || !can(membership.permissions, "runs:read")) {
+    throw new ApiError(403, "preview_access_revoked", "Preview access has been revoked");
+  }
+  if (preview.status !== "running") {
+    throw new ApiError(409, "preview_not_running", "Preview environment is not running");
+  }
+  return preview;
+}
+
+function present(preview: typeof previewSandboxes.$inferSelect, config: AppConfig) {
   return {
     ...preview,
     originUrl: undefined,
     authMode: "facility_session" as const,
     config: (preview.config ?? {}) as Record<string, unknown>,
-    url: `${publicUrl.replace(/\/$/, "")}/preview/${encodeURIComponent(preview.id)}/`,
+    url: previewAccessUrl(config, preview.projectId, preview.id),
   };
 }

@@ -291,7 +291,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(135);
+    ).toBe(136);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },
@@ -308,6 +308,12 @@ describe("api", async () => {
       expect.objectContaining({ name: "Idempotency-Key", in: "header" }),
     );
     expect(document.paths["/health"]?.get?.security).toEqual([]);
+    expect(
+      document.paths["/v1/projects/{projectId}/previews/{previewId}/open"]?.get?.[
+        "x-facility-permission"
+      ],
+    ).toBe("runs:read");
+    expect(document.paths["/preview-auth/{previewId}"]?.get?.security).toEqual([]);
     expect(document.paths["/v1/runs/{runId}/kb-checkpoint"]?.post?.security).toEqual([
       { runnerToken: [] },
     ]);

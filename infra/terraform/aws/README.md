@@ -11,6 +11,10 @@ Topology:
 - `app_hostname` routes to the `web` ECS service through the public ALB.
 - `api_hostname` routes to the `api` ECS service through the public ALB.
 - `mcp_hostname` routes to the audience-bound MCP resource server.
+- `preview_hostname` routes only protected preview content to the existing API
+  tasks. Use a separately registered domain and certificate SAN, not a sibling
+  of the app/API hostnames; set `preview_route53_zone_id` when Terraform should
+  create that zone's alias record.
 - `gateway` has no public ALB route. It is reachable only inside the VPC through
   Cloud Map at the `gateway_internal_url` output.
 - Postgres accepts `5432` only from the ECS service security group.
@@ -34,7 +38,8 @@ Edit `playground.tfvars`:
 
 - Set `aws_region` and change the copied `environment = "playground"` value if
   this is not a playground deployment; a filename does not set the variable.
-- Set `app_hostname`, `api_hostname`, and `mcp_hostname`.
+- Set `app_hostname`, `api_hostname`, `mcp_hostname`, and the separately
+  registered `preview_hostname`.
 - Set `acm_certificate_arn` for HTTPS, or leave it empty for HTTP-only testing.
 - Set `route53_zone_id` if Terraform should create alias records.
 - Set `enable_cloudfront_api_endpoint = true` to get an AWS-managed HTTPS API

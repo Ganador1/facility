@@ -1,7 +1,17 @@
 import { createServer } from "node:http";
 import { newId } from "@facility/core";
-import { createDb, migrate, previewSandboxes, projects, seed } from "@facility/db";
-import { eq } from "drizzle-orm";
+import {
+  auditEvents,
+  createDb,
+  migrate,
+  orgMembers,
+  previewSandboxes,
+  projects,
+  roles,
+  seed,
+  users,
+} from "@facility/db";
+import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
@@ -9,6 +19,9 @@ import {
   assertPreviewSession,
   createPreviewRecord,
   destroyPreview,
+  mintPreviewHandoff,
+  mintPreviewSession,
+  previewCookieName,
   provisionPreview,
   proxyPreviewRequest,
   reconcilePreviews,
@@ -44,6 +57,8 @@ describe("SSO-protected preview sandboxes", async () => {
     secretMasterKey: Buffer.alloc(32, 15).toString("base64"),
     port: 4416,
     publicUrl: "http://facility.test",
+    webUrl: "http://app.test",
+    previewUrl: "http://facility-previews.test",
     sandboxApiUrl: "http://127.0.0.1:0",
     sandboxGatewayUrl: "http://127.0.0.1:0",
     gatewayUrl: "http://localhost:4410",
@@ -57,6 +72,7 @@ describe("SSO-protected preview sandboxes", async () => {
   let orgId = "";
   let projectId = "";
   let cookie = "";
+  let userId = "";
 
   beforeAll(async () => {
     await migrate(databaseUrl);
@@ -68,6 +84,7 @@ describe("SSO-protected preview sandboxes", async () => {
       payload: { email: `preview-${Date.now()}@example.com` },
     });
     orgId = login.json().orgId;
+    userId = login.json().userId;
     cookie = login.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
     projectId =
       (
@@ -169,25 +186,104 @@ describe("SSO-protected preview sandboxes", async () => {
       expect(row).toMatchObject({
         status: "running",
         authMode: "facility_session",
-        url: `http://facility.test/preview/${preview.id}/`,
+        url: `http://app.test/api/v1/projects/${projectId}/previews/${preview.id}/open`,
       });
       expect(row).not.toHaveProperty("originUrl");
-      const anonymous = await app.inject({
+      const anonymousOpen = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/previews/${preview.id}/open`,
+        headers: { host: "facility.test" },
+      });
+      expect(anonymousOpen.statusCode).toBe(401);
+      const controlOrigin = await app.inject({
         method: "GET",
         url: `/preview/${preview.id}/`,
+        headers: { host: "facility.test", cookie },
       });
-      expect(anonymous.statusCode).toBe(401);
+      expect(controlOrigin.statusCode).toBe(404);
+      const opened = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/previews/${preview.id}/open`,
+        headers: { host: "facility.test", cookie },
+      });
+      expect(opened.statusCode).toBe(302);
+      expect(opened.headers["cache-control"]).toBe("no-store");
+      expect(opened.headers["referrer-policy"]).toBe("no-referrer");
+      const handoffUrl = new URL(String(opened.headers.location));
+      expect(handoffUrl.origin).toBe("http://facility-previews.test");
+      const consumed = await app.inject({
+        method: "GET",
+        url: `${handoffUrl.pathname}${handoffUrl.search}`,
+        headers: { host: "facility-previews.test" },
+      });
+      expect(consumed.statusCode).toBe(302);
+      expect(consumed.headers.location).toBe(`/preview/${preview.id}/`);
+      const previewCookie = consumed.cookies.map((item) => `${item.name}=${item.value}`).join("; ");
+      expect(consumed.cookies[0]).toMatchObject({
+        name: previewCookieName(preview.id),
+        httpOnly: true,
+        sameSite: "Lax",
+        path: `/preview/${preview.id}`,
+      });
+      const replayed = await app.inject({
+        method: "GET",
+        url: `${handoffUrl.pathname}${handoffUrl.search}`,
+        headers: { host: "facility-previews.test" },
+      });
+      expect(replayed.statusCode).toBe(401);
+      const facilitySessionOnly = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: { host: "facility-previews.test", cookie },
+      });
+      expect(facilitySessionOnly.statusCode).toBe(401);
+      const malformedPreviewSession = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: {
+          host: "facility-previews.test",
+          cookie: `${previewCookieName(preview.id)}=not-a-sealed-token`,
+        },
+      });
+      expect(malformedPreviewSession.statusCode).toBe(401);
+      const expiredPreviewToken = await mintPreviewSession(
+        config,
+        { userId, orgId, previewId: preview.id },
+        Date.now() - 60 * 60_000,
+      );
+      const expiredPreviewSession = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: {
+          host: "facility-previews.test",
+          cookie: `${previewCookieName(preview.id)}=${expiredPreviewToken}`,
+        },
+      });
+      expect(expiredPreviewSession.statusCode).toBe(401);
+      const expiredHandoff = await mintPreviewHandoff(
+        db,
+        config,
+        { userId, orgId, projectId, previewId: preview.id },
+        Date.now() - 60_001,
+      );
+      const expiredConsume = await app.inject({
+        method: "GET",
+        url: `/preview-auth/${preview.id}?${new URLSearchParams({ handoff: expiredHandoff })}`,
+        headers: { host: "facility-previews.test" },
+      });
+      expect(expiredConsume.statusCode).toBe(401);
       const authenticated = await app.inject({
         method: "GET",
         url: `/preview/${preview.id}/`,
-        headers: { cookie },
+        headers: { host: "facility-previews.test", cookie: previewCookie },
       });
       expect(authenticated.statusCode).toBe(200);
       expect(authenticated.body).toContain(`/preview/${preview.id}/docs`);
+      expect(authenticated.headers["referrer-policy"]).toBe("no-referrer");
       const redirected = await app.inject({
         method: "GET",
         url: `/preview/${preview.id}/redirect`,
-        headers: { cookie },
+        headers: { host: "facility-previews.test", cookie: previewCookie },
       });
       expect(redirected.statusCode).toBe(302);
       expect(redirected.headers.location).toBe(`/preview/${preview.id}/docs`);
@@ -209,11 +305,90 @@ describe("SSO-protected preview sandboxes", async () => {
       await absolutePath.body.dump();
       expect(requestedPath).toBe("/http://203.0.113.1/should-stay-on-preview-origin");
 
+      const crossTenantToken = await mintPreviewSession(config, {
+        userId,
+        orgId: "org_not_the_preview_owner",
+        previewId: preview.id,
+      });
+      const crossTenant = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: {
+          host: "facility-previews.test",
+          cookie: `${previewCookieName(preview.id)}=${crossTenantToken}`,
+        },
+      });
+      expect(crossTenant.statusCode).toBe(404);
+
+      await db.update(users).set({ status: "inactive" }).where(eq(users.id, userId));
+      const deactivated = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: { host: "facility-previews.test", cookie: previewCookie },
+      });
+      expect(deactivated.statusCode).toBe(403);
+      await db.update(users).set({ status: "active" }).where(eq(users.id, userId));
+
+      const member = (
+        await db
+          .select({ roleId: orgMembers.roleId })
+          .from(orgMembers)
+          .where(and(eq(orgMembers.orgId, orgId), eq(orgMembers.userId, userId)))
+          .limit(1)
+      )[0];
+      if (!member) throw new Error("preview member missing");
+      const originalRole = (
+        await db
+          .select({ permissions: roles.permissions })
+          .from(roles)
+          .where(eq(roles.id, member.roleId))
+      )[0];
+      await db
+        .update(roles)
+        .set({ permissions: ["projects:read"] })
+        .where(eq(roles.id, member.roleId));
+      const permissionRevoked = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: { host: "facility-previews.test", cookie: previewCookie },
+      });
+      expect(permissionRevoked.statusCode).toBe(403);
+      await db
+        .update(roles)
+        .set({ permissions: originalRole?.permissions ?? ["*"] })
+        .where(eq(roles.id, member.roleId));
+
+      const openedAudit = (
+        await db
+          .select()
+          .from(auditEvents)
+          .where(and(eq(auditEvents.orgId, orgId), eq(auditEvents.action, "preview.opened")))
+          .limit(1)
+      )[0];
+      expect(openedAudit?.target).toEqual({ type: "preview", id: preview.id });
+
+      const corsProbe = await app.inject({
+        method: "OPTIONS",
+        url: "/v1/me",
+        headers: {
+          host: "facility.test",
+          origin: "http://facility-previews.test",
+          "access-control-request-method": "GET",
+        },
+      });
+      expect(corsProbe.headers["access-control-allow-origin"]).toBeUndefined();
+
       const destroyed = await destroyPreview(db, stored, "destroyed", driver);
       expect(destroyed?.status).toBe("destroyed");
       expect(destroyed?.ref).toBeNull();
       expect(destroyed?.originUrl).toBeNull();
       expect(destroyedRef).toBe("preview-container");
+      const destroyedAccess = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: { host: "facility-previews.test", cookie: previewCookie },
+      });
+      expect(destroyedAccess.statusCode).toBe(409);
 
       const retryable = await createPreviewRecord(db, {
         orgId,

@@ -1013,6 +1013,32 @@ export const previewSandboxes = pgTable(
   ],
 );
 
+export const previewAccessHandoffs = pgTable(
+  "preview_access_handoffs",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    previewId: text("preview_id")
+      .notNull()
+      .references(() => previewSandboxes.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("preview_access_handoffs_expiry_idx").on(table.expiresAt),
+    index("preview_access_handoffs_preview_user_idx").on(table.previewId, table.userId),
+  ],
+);
+
 export const analyticsDaily = pgTable(
   "analytics_daily",
   {

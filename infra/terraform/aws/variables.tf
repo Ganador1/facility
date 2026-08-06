@@ -43,8 +43,19 @@ variable "mcp_hostname" {
   type        = string
 }
 
+variable "preview_hostname" {
+  description = "Dedicated hostname for untrusted preview application content. Use a separately registered domain, not a sibling of app_hostname."
+  type        = string
+}
+
 variable "route53_zone_id" {
   description = "Optional Route53 hosted zone ID. When set, app/api alias records are created."
+  type        = string
+  default     = ""
+}
+
+variable "preview_route53_zone_id" {
+  description = "Optional Route53 hosted zone ID for preview_hostname. Keep this separate from the control-plane zone."
   type        = string
   default     = ""
 }

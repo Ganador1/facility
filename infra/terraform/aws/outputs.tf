@@ -18,6 +18,11 @@ output "mcp_url" {
   value       = local.public_urls.mcp
 }
 
+output "preview_url" {
+  description = "Isolated browser origin for protected preview applications."
+  value       = local.public_urls.preview
+}
+
 output "github_webhook_url" {
   description = "Public GitHub App webhook URL."
   value       = "${local.public_urls.api}/webhooks/github"

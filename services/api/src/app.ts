@@ -37,6 +37,7 @@ import {
   type OpenApiDocument,
   type OpenApiRouteRecord,
 } from "./openapi-contract.js";
+import { assertPreviewOriginSurface } from "./previews.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerGithubRoutes } from "./routes/github.js";
 import { registerInternalRoutes } from "./routes/internal.js";
@@ -201,6 +202,14 @@ export async function buildApp(
       });
     },
   );
+
+  // The preview hostname reaches the existing API tasks to avoid another
+  // service, but it is not an API origin. Enforce that boundary before any
+  // Facility session is resolved so untrusted preview JavaScript cannot use
+  // the host as an alternate control-plane entrypoint.
+  app.addHook("onRequest", async (request) => {
+    assertPreviewOriginSurface(config, request.headers.host, request.raw.url ?? request.url);
+  });
 
   app.addHook("onRequest", async (request, reply) => {
     reply.header("x-request-id", request.id);

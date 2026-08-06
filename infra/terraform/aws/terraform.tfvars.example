@@ -5,6 +5,9 @@ project     = "facility"
 app_hostname = "app.example.com"
 api_hostname = "api.example.com"
 mcp_hostname = "mcp.example.com"
+# Use a separately registered site so preview JavaScript cannot toss cookies
+# into the Facility control-plane domain.
+preview_hostname = "facility-previews.example.net"
 
 # Optional. Leave empty to create only HTTP listeners and print the ALB DNS name.
 acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/placeholder"

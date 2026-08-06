@@ -53,7 +53,11 @@ import {
   syncSecurityFindings,
 } from "../github/security-findings.js";
 import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
-import { assertPreviewProvisioningAvailable, createPreviewRecord } from "../previews.js";
+import {
+  assertPreviewProvisioningAvailable,
+  createPreviewRecord,
+  previewAccessUrl,
+} from "../previews.js";
 import type { AppConfig } from "../types.js";
 import { raisePlatformIssue } from "../watchtower/issues.js";
 import { nestedDockerEnabled, provisioningDepth } from "./capabilities.js";
@@ -1085,7 +1089,7 @@ async function requestConfiguredPreview(
   });
   if (!created) throw new Error("preview_record_create_failed");
   await deps.enqueue("previews.provision", { previewId: created.id });
-  const previewUrl = `${config.publicUrl.replace(/\/$/, "")}/preview/${created.id}/`;
+  const previewUrl = previewAccessUrl(config, created.projectId, created.id);
   await github
     .createIssueComment(
       prNumber,

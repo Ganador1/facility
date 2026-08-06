@@ -132,6 +132,18 @@ resource "aws_lb_listener_rule" "http_mcp" {
   }
 }
 
+resource "aws_lb_listener_rule" "http_preview" {
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 40
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["api"].arn
+  }
+  condition {
+    host_header { values = [var.preview_hostname] }
+  }
+}
+
 resource "aws_lb_listener_rule" "https_api" {
   count = var.acm_certificate_arn == "" ? 0 : 1
 
@@ -181,6 +193,19 @@ resource "aws_lb_listener_rule" "https_mcp" {
   }
 }
 
+resource "aws_lb_listener_rule" "https_preview" {
+  count        = var.acm_certificate_arn == "" ? 0 : 1
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 40
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["api"].arn
+  }
+  condition {
+    host_header { values = [var.preview_hostname] }
+  }
+}
+
 resource "aws_route53_record" "app" {
   count = var.route53_zone_id == "" ? 0 : 1
 
@@ -213,6 +238,18 @@ resource "aws_route53_record" "mcp" {
   count   = var.route53_zone_id == "" ? 0 : 1
   zone_id = var.route53_zone_id
   name    = var.mcp_hostname
+  type    = "A"
+  alias {
+    name                   = aws_lb.public.dns_name
+    zone_id                = aws_lb.public.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "preview" {
+  count   = var.preview_route53_zone_id == "" ? 0 : 1
+  zone_id = var.preview_route53_zone_id
+  name    = var.preview_hostname
   type    = "A"
   alias {
     name                   = aws_lb.public.dns_name

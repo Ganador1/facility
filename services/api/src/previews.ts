@@ -1,12 +1,43 @@
-import { newId } from "@facility/core";
-import { createDb, insertAuditEvent, previewSandboxes } from "@facility/db";
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { newId, open, seal } from "@facility/core";
+import { createDb, insertAuditEvent, previewAccessHandoffs, previewSandboxes } from "@facility/db";
+import { and, eq, gt, inArray, isNull, lt } from "drizzle-orm";
 import { request as upstreamRequest } from "undici";
+import { z } from "zod";
+import { ApiError } from "./errors.js";
 import { previewSandboxDriver, type SandboxDriver, SandboxLaunchError } from "./sandbox/driver.js";
 import type { AppConfig, Principal } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
 type Preview = typeof previewSandboxes.$inferSelect;
+
+const HandoffTtlMs = 60_000;
+const PreviewSessionTtlMs = 60 * 60_000;
+const PreviewAccessToken = z.discriminatedUnion("kind", [
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("handoff"),
+    handoffId: z.string(),
+    userId: z.string(),
+    orgId: z.string(),
+    projectId: z.string(),
+    previewId: z.string(),
+    expiresAt: z.number().int(),
+  }),
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("preview_session"),
+    userId: z.string(),
+    orgId: z.string(),
+    previewId: z.string(),
+    expiresAt: z.number().int(),
+  }),
+]);
+
+export type PreviewHandoffClaims = Extract<z.infer<typeof PreviewAccessToken>, { kind: "handoff" }>;
+export type PreviewSessionClaims = Extract<
+  z.infer<typeof PreviewAccessToken>,
+  { kind: "preview_session" }
+>;
 
 export type PreviewCreateInput = {
   orgId: string;
@@ -54,6 +85,179 @@ export function assertPreviewProvisioningAvailable(config: AppConfig) {
       "preview_auth_unavailable",
       "Preview provisioning is disabled until interactive authentication is configured",
     );
+  }
+  if (!config.facilityInsecureDev && !isolatedPreviewOrigin(config)) {
+    throw previewError(
+      503,
+      "preview_origin_unavailable",
+      "Preview provisioning is disabled until an isolated preview origin is configured",
+    );
+  }
+}
+
+export function isolatedPreviewOrigin(config: AppConfig) {
+  if (!config.previewUrl) return false;
+  const preview = new URL(config.previewUrl);
+  return [config.publicUrl, config.webUrl ?? config.publicUrl, config.mcpPublicUrl]
+    .filter((value): value is string => Boolean(value))
+    .every((value) => new URL(value).hostname !== preview.hostname);
+}
+
+export function assertPreviewOriginSurface(
+  config: AppConfig,
+  rawHost: string | undefined,
+  rawPath: string,
+) {
+  if (!isolatedPreviewOrigin(config) || !config.previewUrl) return;
+  const requestHost = hostname(rawHost);
+  const previewHost = new URL(config.previewUrl).hostname.toLowerCase();
+  const path = rawPath.split("?", 1)[0] ?? "/";
+  const servesPreview = /^\/(?:preview|preview-auth)\//.test(path);
+  if (requestHost === previewHost ? !servesPreview : servesPreview) {
+    throw previewError(404, "not_found", "Route not found");
+  }
+}
+
+export async function mintPreviewHandoff(
+  db: Db,
+  config: AppConfig,
+  input: { userId: string; orgId: string; projectId: string; previewId: string },
+  now = Date.now(),
+) {
+  const claims: PreviewHandoffClaims = {
+    version: 1,
+    kind: "handoff",
+    handoffId: newId("pvh"),
+    ...input,
+    expiresAt: now + HandoffTtlMs,
+  };
+  await db.insert(previewAccessHandoffs).values({
+    id: claims.handoffId,
+    orgId: claims.orgId,
+    projectId: claims.projectId,
+    previewId: claims.previewId,
+    userId: claims.userId,
+    expiresAt: new Date(claims.expiresAt),
+  });
+  return seal(JSON.stringify(claims), config.secretMasterKey);
+}
+
+export async function readPreviewHandoff(
+  config: AppConfig,
+  token: string,
+  previewId: string,
+  now = Date.now(),
+) {
+  const claims = await readPreviewToken(config, token, now);
+  if (claims.kind !== "handoff" || claims.previewId !== previewId) {
+    throw invalidPreviewAccess();
+  }
+  return claims;
+}
+
+export async function consumePreviewHandoff(
+  db: Db,
+  claims: PreviewHandoffClaims,
+  now = new Date(),
+) {
+  const consumed = (
+    await db
+      .update(previewAccessHandoffs)
+      .set({ consumedAt: now })
+      .where(
+        and(
+          eq(previewAccessHandoffs.id, claims.handoffId),
+          eq(previewAccessHandoffs.orgId, claims.orgId),
+          eq(previewAccessHandoffs.projectId, claims.projectId),
+          eq(previewAccessHandoffs.previewId, claims.previewId),
+          eq(previewAccessHandoffs.userId, claims.userId),
+          isNull(previewAccessHandoffs.consumedAt),
+          gt(previewAccessHandoffs.expiresAt, now),
+        ),
+      )
+      .returning({ id: previewAccessHandoffs.id })
+  )[0];
+  if (!consumed) throw invalidPreviewAccess();
+}
+
+export async function mintPreviewSession(
+  config: AppConfig,
+  input: { userId: string; orgId: string; previewId: string },
+  now = Date.now(),
+) {
+  const claims: PreviewSessionClaims = {
+    version: 1,
+    kind: "preview_session",
+    ...input,
+    expiresAt: now + PreviewSessionTtlMs,
+  };
+  return seal(JSON.stringify(claims), config.secretMasterKey);
+}
+
+export async function readPreviewSession(
+  config: AppConfig,
+  token: string,
+  previewId: string,
+  now = Date.now(),
+) {
+  const claims = await readPreviewToken(config, token, now);
+  if (claims.kind !== "preview_session" || claims.previewId !== previewId) {
+    throw invalidPreviewAccess();
+  }
+  return claims;
+}
+
+export function previewCookieName(previewId: string) {
+  if (!/^[A-Za-z0-9_-]+$/.test(previewId)) throw invalidPreviewAccess();
+  return `facility_preview_${previewId}`;
+}
+
+export function previewCookieOptions(config: AppConfig, previewId: string) {
+  return {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    secure: config.previewUrl?.startsWith("https://") ?? false,
+    path: `/preview/${encodeURIComponent(previewId)}`,
+    maxAge: PreviewSessionTtlMs / 1000,
+  };
+}
+
+export function previewAccessUrl(config: AppConfig, projectId: string, previewId: string) {
+  const controlUrl = new URL(config.webUrl ?? config.publicUrl);
+  const apiUrl = new URL(config.publicUrl);
+  const throughWebProxy = controlUrl.origin !== apiUrl.origin;
+  controlUrl.pathname = `${throughWebProxy ? "/api" : ""}/v1/projects/${encodeURIComponent(
+    projectId,
+  )}/previews/${encodeURIComponent(previewId)}/open`;
+  controlUrl.search = "";
+  controlUrl.hash = "";
+  return controlUrl.toString();
+}
+
+async function readPreviewToken(config: AppConfig, token: string, now: number) {
+  try {
+    if (!token || Buffer.from(token, "base64").toString("base64") !== token) {
+      throw invalidPreviewAccess();
+    }
+    const claims = PreviewAccessToken.parse(JSON.parse(await open(token, config.secretMasterKey)));
+    if (claims.expiresAt <= now) throw invalidPreviewAccess();
+    return claims;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw invalidPreviewAccess();
+  }
+}
+
+function invalidPreviewAccess() {
+  return previewError(401, "preview_access_invalid", "Preview access is invalid or expired");
+}
+
+function hostname(rawHost: string | undefined) {
+  if (!rawHost) return "";
+  try {
+    return new URL(`http://${rawHost}`).hostname.toLowerCase();
+  } catch {
+    return "";
   }
 }
 
@@ -260,6 +464,7 @@ export async function reconcilePreviews(config: AppConfig, driverOverride?: Sand
   const { db, client } = createDb(config.databaseUrl);
   const changed: string[] = [];
   try {
+    await db.delete(previewAccessHandoffs).where(lt(previewAccessHandoffs.expiresAt, new Date()));
     const expired = await db
       .select()
       .from(previewSandboxes)
@@ -474,5 +679,5 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function previewError(statusCode: number, code: string, message: string) {
-  return Object.assign(new Error(message), { statusCode, code });
+  return new ApiError(statusCode, code, message);
 }

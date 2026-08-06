@@ -34,9 +34,10 @@ locals {
   }
 
   public_urls = {
-    api = var.enable_cloudfront_api_endpoint ? "https://${aws_cloudfront_distribution.api[0].domain_name}" : "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.api_hostname}"
-    web = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.app_hostname}"
-    mcp = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.mcp_hostname}"
+    api     = var.enable_cloudfront_api_endpoint ? "https://${aws_cloudfront_distribution.api[0].domain_name}" : "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.api_hostname}"
+    web     = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.app_hostname}"
+    mcp     = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.mcp_hostname}"
+    preview = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.preview_hostname}"
   }
 
   common_environment = [
@@ -68,6 +69,7 @@ locals {
     { name = "PORT", value = tostring(local.ports.api) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
+    { name = "FACILITY_PREVIEW_URL", value = local.public_urls.preview },
     { name = "AUTH_IDENTITY_PROVIDER", value = var.auth_identity_provider },
     { name = "AUTH_CALLBACK_URL", value = "${local.public_urls.web}/api/auth/callback" },
     { name = "GITHUB_OAUTH_ALLOWED_ORGANIZATION", value = lower(trimspace(var.github_oauth_allowed_organization)) },
@@ -83,6 +85,7 @@ locals {
     { name = "PORT", value = tostring(local.ports.worker) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
+    { name = "FACILITY_PREVIEW_URL", value = local.public_urls.preview },
     { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
     { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])

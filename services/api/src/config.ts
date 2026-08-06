@@ -29,6 +29,7 @@ const EnvSchema = z
     PORT: z.coerce.number().int().positive().default(4400),
     PUBLIC_URL: z.string().url().default("http://localhost:4400"),
     WEB_URL: z.string().url().optional(),
+    FACILITY_PREVIEW_URL: OptionalUrl,
     SANDBOX_API_URL: z.string().url().optional(),
     GATEWAY_URL: z.string().url().default("http://localhost:4410"),
     SANDBOX_GATEWAY_URL: z.string().url().optional(),
@@ -89,6 +90,51 @@ const EnvSchema = z
         message: "FACILITY_INSECURE_DEV is refused in production",
       });
     }
+    if (env.FACILITY_PREVIEW_URL) {
+      const preview = new URL(env.FACILITY_PREVIEW_URL);
+      if (
+        preview.username ||
+        preview.password ||
+        preview.pathname !== "/" ||
+        preview.search ||
+        preview.hash
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["FACILITY_PREVIEW_URL"],
+          message:
+            "FACILITY_PREVIEW_URL must be an origin without credentials, path, query, or fragment",
+        });
+      }
+    }
+    if (env.NODE_ENV === "production") {
+      if (!env.FACILITY_PREVIEW_URL) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["FACILITY_PREVIEW_URL"],
+          message: "FACILITY_PREVIEW_URL is required in production",
+        });
+      } else {
+        const preview = new URL(env.FACILITY_PREVIEW_URL);
+        const controlHosts = [env.PUBLIC_URL, env.WEB_URL ?? env.PUBLIC_URL, env.MCP_PUBLIC_URL]
+          .filter((value): value is string => Boolean(value))
+          .map((value) => new URL(value).hostname);
+        if (preview.protocol !== "https:") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["FACILITY_PREVIEW_URL"],
+            message: "FACILITY_PREVIEW_URL must use HTTPS in production",
+          });
+        }
+        if (controlHosts.includes(preview.hostname)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["FACILITY_PREVIEW_URL"],
+            message: "FACILITY_PREVIEW_URL must use a host separate from other Facility origins",
+          });
+        }
+      }
+    }
     if (
       env.AUTH_IDENTITY_PROVIDER === "github" &&
       Boolean(env.GITHUB_OAUTH_CLIENT_ID) !== Boolean(env.GITHUB_OAUTH_CLIENT_SECRET)
@@ -132,6 +178,7 @@ export function readConfig(env = process.env): AppConfig {
     port: parsed.PORT,
     publicUrl: parsed.PUBLIC_URL,
     webUrl,
+    previewUrl: parsed.FACILITY_PREVIEW_URL?.replace(/\/$/, ""),
     sandboxApiUrl: parsed.SANDBOX_API_URL ?? parsed.PUBLIC_URL,
     sandboxGatewayUrl: parsed.SANDBOX_GATEWAY_URL ?? parsed.GATEWAY_URL,
     gatewayUrl: parsed.GATEWAY_URL,

@@ -102,6 +102,12 @@ FACILITY_DEV_ORIGINS=dev.example.com
 Leave `PUBLIC_URL` as `http://localhost:4400`: it is the control plane's own
 origin, not the browser-facing one.
 
+Preview applications never share that browser origin. The default
+`FACILITY_PREVIEW_URL=http://preview.localhost:4400` resolves to loopback in
+modern browsers without editing `/etc/hosts`. If a teammate must open previews
+through a tunnel, give the preview origin its own HTTPS hostname on a
+separately registered site; do not reuse `dev.example.com` or a sibling of it.
+
 In the GitHub App settings:
 
 - **Callback URL** → `https://dev.example.com/api/auth/callback` (byte for byte;

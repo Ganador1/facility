@@ -64,6 +64,7 @@ export const FACILITY_V1_ROUTES = [
   "GET /v1/projects/:projectId/kickstart/preview",
   "GET /v1/projects/:projectId/pipeline",
   "GET /v1/projects/:projectId/previews",
+  "GET /v1/projects/:projectId/previews/:previewId/open",
   "GET /v1/projects/:projectId/repos",
   "GET /v1/projects/:projectId/runs",
   "GET /v1/projects/:projectId/stories/:number",

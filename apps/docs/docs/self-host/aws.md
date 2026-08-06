@@ -148,6 +148,11 @@ For production, leave the CloudFront validation endpoint disabled, point
 `api_hostname` at the ALB with a real certificate, and set `route53_zone_id`
 only when Terraform should create the alias record.
 
+Protected previews also require `preview_hostname` on a separately registered
+site, covered by the same ACM certificate. Set `preview_route53_zone_id` when
+Terraform should create its alias; otherwise create the DNS record externally.
+Production tasks reject a missing, HTTP, or control-plane-hosted preview URL.
+
 No secret values belong in tfvars. The file is gitignored; keep it that way.
 
 ## 2. First apply
