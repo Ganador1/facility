@@ -32,6 +32,7 @@ export type PipelineRun = {
   status: string;
   engine: string;
   pr?: unknown;
+  gh?: unknown;
 };
 
 export type PipelinePullRequest = {
@@ -341,7 +342,12 @@ function placeOpen(
   const reviewablePulls = openPulls.filter((pull) => !pull.draft);
   const pending = reviewablePulls.some(hasCurrentCiState("pending"));
   if (pending) return { stage: "validating", placed };
-  const builderDelivered = runs.some((run) => isMode(run, "builder") && run.status === "succeeded");
+  const builderDelivered = runs.some(
+    (run) =>
+      isMode(run, "builder") &&
+      run.status === "succeeded" &&
+      numberValue(objectValue(objectValue(run.gh).pr).number) !== null,
+  );
   if (reviewablePulls.length > 0) return { stage: "review", placed };
   if (openPulls.some((pull) => pull.draft)) return { stage: "building", placed };
   if (builderDelivered) return { stage: "review", placed };

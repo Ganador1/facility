@@ -27,13 +27,53 @@ import { verifyStoredReceipts } from "../src/receipt-integrity.js";
 import { AwsSandboxDriver } from "../src/sandbox/aws.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
 import type { SandboxDriver } from "../src/sandbox/driver.js";
-import { dispatchRun, finishRun, reconcileSandboxes } from "../src/sandbox/orchestrator.js";
+import {
+  dispatchRun,
+  finishRun,
+  reconcileSandboxes,
+  runDeliveryRefMismatch,
+} from "../src/sandbox/orchestrator.js";
 import { appendRunEvents } from "../src/sandbox/state.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_test";
 const masterKey = Buffer.alloc(32, 8).toString("base64");
+
+describe("run delivery integrity binding", () => {
+  const expected = {
+    headBranch: "facility/run-1",
+    expectedHeadSha: "expected-sha",
+    baseBranch: "main",
+  };
+
+  it("accepts only the exact head, base, and commit", () => {
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "facility/run-1", headSha: "expected-sha", baseRef: "main" },
+        expected,
+      ),
+    ).toBeNull();
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "facility/run-1", headSha: "moved-sha", baseRef: "main" },
+        expected,
+      ),
+    ).toBe("pull_request_head_sha_mismatch");
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "foreign-branch", headSha: "expected-sha", baseRef: "main" },
+        expected,
+      ),
+    ).toBe("pull_request_ref_mismatch");
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "facility/run-1", headSha: "expected-sha", baseRef: "release" },
+        expected,
+      ),
+    ).toBe("pull_request_ref_mismatch");
+  });
+});
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });

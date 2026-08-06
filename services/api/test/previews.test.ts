@@ -8,6 +8,7 @@ import {
   previewSandboxes,
   projects,
   roles,
+  runs,
   seed,
   users,
 } from "@facility/db";
@@ -119,6 +120,79 @@ describe("SSO-protected preview sandboxes", async () => {
     expect(() =>
       assertPreviewSession({ ...config, facilityInsecureDev: false }, user),
     ).toThrowError(expect.objectContaining({ code: "preview_auth_unavailable", statusCode: 503 }));
+  });
+
+  it("reuses the run preview record when delivery is replayed", async () => {
+    const runId = newId("run");
+    await db.insert(runs).values({
+      id: runId,
+      orgId,
+      projectId,
+      mode: "builder",
+      engine: "codex",
+      status: "succeeded",
+      trigger: {},
+      sandbox: {},
+      gh: {},
+      createdBy: { type: "user", id: userId },
+    });
+    const first = await createPreviewRecord(db, {
+      orgId,
+      projectId,
+      runId,
+      image: "ghcr.io/example/app:first",
+      port: 3000,
+      ttlHours: 24,
+      createdBy: { type: "agent", id: runId },
+    });
+    const replay = await createPreviewRecord(db, {
+      orgId,
+      projectId,
+      runId,
+      image: "ghcr.io/example/app:replayed",
+      port: 3000,
+      ttlHours: 24,
+      createdBy: { type: "agent", id: runId },
+    });
+    expect(replay?.id).toBe(first?.id);
+    const records = await db
+      .select()
+      .from(previewSandboxes)
+      .where(eq(previewSandboxes.runId, runId));
+    expect(records).toHaveLength(1);
+    expect(records[0]?.config).toMatchObject({ image: "ghcr.io/example/app:first" });
+
+    await db
+      .update(previewSandboxes)
+      .set({ status: "failed", error: "preview_boot_failed", updatedAt: new Date() })
+      .where(eq(previewSandboxes.id, first?.id as string));
+    const retry = await createPreviewRecord(db, {
+      orgId,
+      projectId,
+      runId,
+      image: "ghcr.io/example/app:retry-after-failure",
+      port: 3000,
+      ttlHours: 24,
+      createdBy: { type: "agent", id: runId },
+    });
+    expect(retry?.id).not.toBe(first?.id);
+    expect(retry?.config).toMatchObject({ image: "ghcr.io/example/app:retry-after-failure" });
+
+    await db
+      .update(previewSandboxes)
+      .set({ status: "destroyed", updatedAt: new Date() })
+      .where(eq(previewSandboxes.id, retry?.id as string));
+    const replacement = await createPreviewRecord(db, {
+      orgId,
+      projectId,
+      runId,
+      image: "ghcr.io/example/app:replacement",
+      port: 3000,
+      ttlHours: 24,
+      createdBy: { type: "agent", id: runId },
+    });
+    expect(replacement?.id).not.toBe(retry?.id);
+    expect(replacement?.config).toMatchObject({ image: "ghcr.io/example/app:replacement" });
   });
 
   it("provisions a private origin, exposes only the SSO proxy URL, and destroys on demand", async () => {

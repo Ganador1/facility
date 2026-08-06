@@ -48,6 +48,14 @@ export type Octokit = {
       create: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { number: number; html_url: string } }>;
+      list?: (args: Record<string, unknown>) => Promise<{
+        data: Array<{
+          number: number;
+          html_url: string;
+          head?: { ref?: string; sha?: string };
+          base?: { ref?: string };
+        }>;
+      }>;
       update: (args: Record<string, unknown>) => Promise<{ data: unknown }>;
       listReviews?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
       listReviewComments?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
@@ -64,7 +72,8 @@ export type Octokit = {
           merged_at?: string | null;
           html_url: string;
           node_id?: string;
-          head?: { sha?: string };
+          head?: { ref?: string; sha?: string };
+          base?: { ref?: string };
           user?: { login?: string } | null;
         };
       }>;
@@ -365,6 +374,65 @@ export class FacilityGithubClient {
       draft: args.draft ?? false,
     });
     return { number: response.data.number, url: response.data.html_url };
+  }
+
+  async listOpenPullRequestsForHead(
+    head: string,
+    base: string,
+  ): Promise<
+    Array<{ number: number; url: string; headRef: string; headSha: string; baseRef: string }>
+  > {
+    if (!this.octokit.rest.pulls.list) {
+      throw new Error("GitHub pull-request lookup is unavailable");
+    }
+    const response = await this.octokit.rest.pulls.list({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      state: "open",
+      head: `${this.repo.owner}:${head}`,
+      base,
+      per_page: 100,
+    });
+    return response.data.flatMap((pull) => {
+      if (!pull.head?.ref || !pull.head.sha || !pull.base?.ref) return [];
+      return [
+        {
+          number: pull.number,
+          url: pull.html_url,
+          headRef: pull.head.ref,
+          headSha: pull.head.sha,
+          baseRef: pull.base.ref,
+        },
+      ];
+    });
+  }
+
+  async getPullRequestDeliveryRef(number: number): Promise<{
+    number: number;
+    url: string;
+    headRef: string;
+    headSha: string;
+    baseRef: string;
+  }> {
+    if (!this.octokit.rest.pulls.get) {
+      throw new Error("GitHub pull-request lookup is unavailable");
+    }
+    const response = await this.octokit.rest.pulls.get({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      pull_number: number,
+    });
+    const { head, base } = response.data;
+    if (!head?.ref || !head.sha || !base?.ref) {
+      throw new Error("GitHub pull-request delivery ref is unavailable");
+    }
+    return {
+      number: response.data.number,
+      url: response.data.html_url,
+      headRef: head.ref,
+      headSha: head.sha,
+      baseRef: base.ref,
+    };
   }
 
   async markPullRequestReadyForReview(number: number, expectedHeadSha: string): Promise<boolean> {

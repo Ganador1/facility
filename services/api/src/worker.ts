@@ -11,6 +11,7 @@ import { expireIdempotencyRecords } from "./idempotency.js";
 import { deliverPendingWebhooks } from "./integrations/outbound.js";
 import { runLearningNightly } from "./learning.js";
 import { destroyPreviewById, provisionPreview, reconcilePreviews } from "./previews.js";
+import { deliverPendingRunDeliveries } from "./sandbox/delivery.js";
 import { dispatchRun, reconcileSandboxes } from "./sandbox/orchestrator.js";
 import { runAgentSchedules } from "./schedules.js";
 import { runAnalyticsRollup } from "./watchtower/analytics.js";
@@ -28,6 +29,7 @@ export async function startWorker() {
   await boss.start();
   const queues = [
     "runs.dispatch",
+    "deliveries.deliver",
     "watchtower.outcomes",
     "watchtower.health",
     "watchtower.canary",
@@ -55,6 +57,17 @@ export async function startWorker() {
       let result: Record<string, unknown> | undefined;
       if (queue === "runs.dispatch") {
         await dispatchRun(config, data as { runId?: string; orgId?: string });
+      } else if (queue === "deliveries.deliver") {
+        const deliveries = await deliverPendingRunDeliveries(db, config, {
+          runId: String((data as { runId?: string }).runId ?? "") || undefined,
+          enqueue: (name, payload) => boss.send(name, payload),
+        });
+        result = {
+          claimed: deliveries.length,
+          delivered: deliveries.filter((delivery) => delivery.status === "delivered").length,
+          pending: deliveries.filter((delivery) => delivery.status === "pending").length,
+          blocked: deliveries.filter((delivery) => delivery.status === "blocked").length,
+        };
       } else if (queue === "sandbox.reconcile") {
         await reconcileSandboxes(config, (name, payload) => boss.send(name, payload));
       } else if (queue === "agent.schedules") {
@@ -113,6 +126,7 @@ export async function startWorker() {
     });
   }
   await boss.schedule("sandbox.reconcile", "*/2 * * * *", {});
+  await boss.schedule("deliveries.deliver", "* * * * *", {});
   await boss.schedule("agent.schedules", "* * * * *", {});
   await boss.schedule("webhooks.deliver", "* * * * *", {});
   await boss.schedule("idempotency.expire", "15 2 * * *", {});

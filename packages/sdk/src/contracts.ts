@@ -121,6 +121,7 @@ export type RunReceipt = NonNullable<Run["receipt"]>;
 export type RunGithubArtifacts = Run["gh"];
 export type RunWithProject = ArrayItem<FacilityGeneratedResponse<"GET", "/v1/runs">>;
 export type RunEvent = ArrayItem<FacilityGeneratedResponse<"GET", "/v1/runs/{runId}/events">>;
+export type RunDelivery = FacilityGeneratedResponse<"GET", "/v1/runs/{runId}/delivery">;
 /** The transcript endpoint returns raw application/x-ndjson text. */
 export type RunTranscript = string;
 

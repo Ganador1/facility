@@ -572,6 +572,8 @@ describe("FacilityClient request behaviour", () => {
     );
     await client.outcomes({ projectId: "project-1", state: "terminal", limit: 10 });
     await client.integrationEvents("integration-1", { limit: 25, offset: 50 });
+    await client.runDelivery("run-1");
+    await client.retryRunDelivery("run-1");
     await client.interruptRun("run-1");
     await client.resumeRun("run-1", { message: "Try the fallback" });
     await expect(client.runTranscript("run-1")).resolves.toBe(transcript);
@@ -594,6 +596,8 @@ describe("FacilityClient request behaviour", () => {
       "POST /v1/projects/project-1/issues/17/trigger?repoId=repo-1",
       "GET /v1/outcomes?projectId=project-1&state=terminal&limit=10",
       "GET /v1/integrations/integration-1/events?limit=25&offset=50",
+      "GET /v1/runs/run-1/delivery",
+      "POST /v1/runs/run-1/delivery/retry",
       "POST /v1/runs/run-1/interrupt",
       "POST /v1/runs/run-1/resume",
       "GET /v1/runs/run-1/transcript",
@@ -603,7 +607,7 @@ describe("FacilityClient request behaviour", () => {
     );
     expect(requestAt(requests, 5).body).toBe(JSON.stringify({ body: "Continue" }));
     expect(requestAt(requests, 14).body).toBe(JSON.stringify({ agent: "builder" }));
-    expect(requestAt(requests, 18).body).toBe(JSON.stringify({ message: "Try the fallback" }));
+    expect(requestAt(requests, 20).body).toBe(JSON.stringify({ message: "Try the fallback" }));
   });
 });
 

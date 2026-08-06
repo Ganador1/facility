@@ -18,6 +18,7 @@ import {
   proposals,
   registryItems,
   repos,
+  runDeliveries,
   runEvents,
   runs,
   schedulerWatermarks,
@@ -29,13 +30,20 @@ import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { executeApprovedProposal } from "../src/executors.js";
+import type { GithubClientFactory, Octokit } from "../src/github/client.js";
 import { syncRepoIssues, upsertGhIssueFromWebhook } from "../src/github/issues-sync.js";
 import { enqueueGithubIssuesSync, processGithubWebhook } from "../src/github/processor.js";
 import {
   syncRepoPullRequests,
   upsertGhPullRequestFromWebhook,
 } from "../src/github/pull-requests-sync.js";
-import { finishRun, pullRequestBodyForIssue } from "../src/sandbox/orchestrator.js";
+import { deliverPendingRunDeliveries } from "../src/sandbox/delivery.js";
+import {
+  finishRun,
+  publishRunDelivery,
+  pullRequestBodyForIssue,
+  RunDeliveryLeaseLostError,
+} from "../src/sandbox/orchestrator.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -2541,8 +2549,7 @@ describe("github platform lane", async () => {
       gh: { owner: repo.owner, repo: repo.name, issueNumber: 55 },
     });
     const createdPulls: Array<Record<string, unknown>> = [];
-    const finished = await finishRun(
-      db,
+    const finished = await finishAndDeliver(
       run,
       {
         status: "succeeded",
@@ -2591,6 +2598,511 @@ describe("github platform lane", async () => {
     expect(outcome?.prNumber).toBe(12);
   });
 
+  it("blocks SHA drift without creating a PR and permits an authorized retry", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-sha-${Date.now()}`);
+    const run = await insertRun({
+      status: "running",
+      gh: { owner: repo.owner, repo: repo.name, issueNumber: 91 },
+    });
+    const queued: Array<{ queue: string; data: Record<string, unknown> }> = [];
+    await finishRun(
+      db,
+      run,
+      {
+        status: "succeeded",
+        git: {
+          changed: true,
+          branch: "feature/exact-delivery",
+          headSha: "expected-sha",
+          pullRequestTitle: "fix: bind delivery to the pushed commit",
+          pullRequestBody: "Exact delivery",
+        },
+      },
+      {
+        config,
+        enqueue: async (queue, data) => {
+          queued.push({ queue, data });
+          return null;
+        },
+      },
+    );
+    expect(queued).toContainEqual({ queue: "deliveries.deliver", data: { runId: run.id } });
+    const [pending] = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(pending).toMatchObject({
+      status: "pending",
+      owner: repo.owner,
+      repoName: repo.name,
+      expectedHeadSha: "expected-sha",
+    });
+
+    let createCalls = 0;
+    const blocked = await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      githubClientFactory: async () =>
+        ({
+          rest: {
+            git: { getRef: async () => ({ data: { object: { sha: "moved-sha" } } }) },
+            pulls: {
+              create: async () => {
+                createCalls += 1;
+                return { data: { number: 92, html_url: "https://github.test/pr/92" } };
+              },
+            },
+            issues: {},
+            repos: {},
+          },
+        }) as never,
+    });
+    expect(blocked).toEqual([{ runId: run.id, status: "blocked" }]);
+    expect(createCalls).toBe(0);
+    const [blockedRow] = await db
+      .select()
+      .from(runDeliveries)
+      .where(eq(runDeliveries.runId, run.id));
+    expect(blockedRow).toMatchObject({ status: "blocked", blockedReason: "head_sha_mismatch" });
+    const [successfulRun] = await db.select().from(runs).where(eq(runs.id, run.id));
+    expect(successfulRun).toMatchObject({ status: "succeeded", error: null });
+    expect((successfulRun?.gh as { pr?: unknown }).pr).toBeUndefined();
+
+    const viewer = await generateApiKey("fak");
+    await db.insert(apiKeys).values({
+      id: viewer.id,
+      orgId,
+      name: `delivery-viewer-${Date.now()}`,
+      prefix: viewer.lookup,
+      last4: viewer.last4,
+      hash: viewer.hash,
+      scopeType: "project",
+      projectId,
+      roleId: "role_bundled_viewer",
+    });
+    const visible = await app.inject({
+      method: "GET",
+      url: `/v1/runs/${run.id}/delivery`,
+      headers: { authorization: `Bearer ${viewer.secret}` },
+    });
+    expect(visible.statusCode, visible.body).toBe(200);
+    expect(visible.json()).toMatchObject({
+      runId: run.id,
+      status: "blocked",
+      blockedReason: "head_sha_mismatch",
+    });
+    const denied = await app.inject({
+      method: "POST",
+      url: `/v1/runs/${run.id}/delivery/retry`,
+      headers: { authorization: `Bearer ${viewer.secret}` },
+    });
+    expect(denied.statusCode).toBe(403);
+    const retried = await app.inject({
+      method: "POST",
+      url: `/v1/runs/${run.id}/delivery/retry`,
+      headers: { cookie },
+    });
+    expect(retried.statusCode, retried.body).toBe(200);
+    expect(retried.json()).toMatchObject({ status: "pending", attempts: 0 });
+
+    const recovered = await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      githubClientFactory: deliveryFactory({
+        branch: "feature/exact-delivery",
+        headSha: "expected-sha",
+        number: 92,
+      }),
+    });
+    expect(recovered).toEqual([{ runId: run.id, status: "delivered" }]);
+  });
+
+  it("blocks a deleted delivery branch instead of retrying it forever", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-missing-head-${Date.now()}`);
+    const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
+    await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/deleted-before-delivery",
+        headSha: "deleted-sha",
+        pullRequestTitle: "fix: handle a deleted delivery branch",
+        pullRequestBody: "Require operator repair.",
+      },
+    });
+    let createCalls = 0;
+    const result = await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      githubClientFactory: async () =>
+        ({
+          rest: {
+            git: {
+              getRef: async () => {
+                throw Object.assign(new Error("Not Found"), { status: 404 });
+              },
+            },
+            pulls: {
+              create: async () => {
+                createCalls += 1;
+                return { data: { number: 1, html_url: "https://github.test/pr/1" } };
+              },
+            },
+            issues: {},
+            repos: {},
+          },
+        }) as never,
+    });
+    expect(result).toEqual([{ runId: run.id, status: "blocked" }]);
+    expect(createCalls).toBe(0);
+    const [delivery] = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(delivery).toMatchObject({ status: "blocked", blockedReason: "head_branch_missing" });
+  });
+
+  it("adopts the exact existing PR after a create-before-persist crash", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-adopt-${Date.now()}`);
+    const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
+    await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/adopt-exact",
+        headSha: "adopt-sha",
+        pullRequestTitle: "fix: recover delivery",
+        pullRequestBody: "Recover the external PR.",
+      },
+    });
+    let createCalls = 0;
+    const delivered = await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      githubClientFactory: async () =>
+        ({
+          rest: {
+            git: { getRef: async () => ({ data: { object: { sha: "adopt-sha" } } }) },
+            pulls: {
+              list: async () => ({
+                data: [
+                  {
+                    number: 93,
+                    html_url: "https://github.test/pr/93",
+                    head: { ref: "feature/adopt-exact", sha: "adopt-sha" },
+                    base: { ref: "main" },
+                  },
+                ],
+              }),
+              create: async () => {
+                createCalls += 1;
+                return { data: { number: 94, html_url: "https://github.test/pr/94" } };
+              },
+            },
+            issues: {},
+            repos: {},
+          },
+        }) as never,
+    });
+    expect(delivered).toEqual([{ runId: run.id, status: "delivered" }]);
+    expect(createCalls).toBe(0);
+    const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
+    expect((stored?.gh as { pr?: { number?: number } }).pr?.number).toBe(93);
+  });
+
+  it("adopts the exact PR when GitHub reports a concurrent-create conflict", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-race-${Date.now()}`);
+    const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
+    await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/concurrent-create",
+        headSha: "race-sha",
+        pullRequestTitle: "fix: adopt a concurrent delivery",
+        pullRequestBody: "Recover the create race.",
+      },
+    });
+    let listCalls = 0;
+    let createCalls = 0;
+    const result = await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      githubClientFactory: async () =>
+        ({
+          rest: {
+            git: { getRef: async () => ({ data: { object: { sha: "race-sha" } } }) },
+            pulls: {
+              list: async () => {
+                listCalls += 1;
+                return {
+                  data:
+                    listCalls === 1
+                      ? []
+                      : [
+                          {
+                            number: 95,
+                            html_url: "https://github.test/pr/95",
+                            head: { ref: "feature/concurrent-create", sha: "race-sha" },
+                            base: { ref: "main" },
+                          },
+                        ],
+                };
+              },
+              create: async () => {
+                createCalls += 1;
+                throw Object.assign(new Error("already exists"), { status: 422 });
+              },
+            },
+            issues: {},
+            repos: {},
+          },
+        }) as never,
+    });
+    expect(result).toEqual([{ runId: run.id, status: "delivered" }]);
+    expect({ listCalls, createCalls }).toEqual({ listCalls: 2, createCalls: 1 });
+  });
+
+  it("prevents a stale worker from overwriting a newer delivery lease", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-lease-${Date.now()}`);
+    const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
+    await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/leased-delivery",
+        headSha: "lease-sha",
+        pullRequestTitle: "fix: fence stale delivery workers",
+        pullRequestBody: "A stale lease cannot finalize.",
+      },
+    });
+    const oldLeaseAt = new Date("2026-08-01T00:00:00.000Z");
+    const newerLeaseAt = new Date("2026-08-01T00:06:00.000Z");
+    const [oldLease] = await db
+      .update(runDeliveries)
+      .set({ status: "delivering", attempts: 1, updatedAt: oldLeaseAt })
+      .where(eq(runDeliveries.runId, run.id))
+      .returning();
+    if (!oldLease) throw new Error("old delivery lease fixture missing");
+    await db
+      .update(runDeliveries)
+      .set({ status: "delivering", attempts: 2, updatedAt: newerLeaseAt })
+      .where(eq(runDeliveries.runId, run.id));
+
+    await expect(
+      publishRunDelivery(db, oldLease, {
+        config,
+        githubClientFactory: deliveryFactory({
+          branch: "feature/leased-delivery",
+          headSha: "lease-sha",
+          number: 96,
+        }),
+      }),
+    ).rejects.toBeInstanceOf(RunDeliveryLeaseLostError);
+    const [current] = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(current).toMatchObject({ status: "delivering", attempts: 2, prNumber: null });
+    expect(current?.updatedAt).toEqual(newerLeaseAt);
+    const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
+    expect((stored?.gh as { pr?: unknown }).pr).toBeUndefined();
+    const producedOutcomes = await db.select().from(outcomes).where(eq(outcomes.runId, run.id));
+    expect(producedOutcomes).toHaveLength(0);
+  });
+
+  it("prevents a stale worker from signalling a blocked delivery after lease takeover", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-blocked-lease-${Date.now()}`);
+    const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
+    await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/blocked-lease",
+        headSha: "blocked-lease-sha",
+        pullRequestTitle: "fix: fence stale blocked delivery workers",
+        pullRequestBody: "A stale lease cannot emit blocked side effects.",
+      },
+    });
+    const now = new Date("2026-08-06T12:00:00.000Z");
+    const newerLeaseAt = new Date("2026-08-06T12:00:00.001Z");
+    await db
+      .update(runDeliveries)
+      .set({
+        status: "delivering",
+        attempts: 1,
+        updatedAt: new Date(now.getTime() - 6 * 60_000),
+      })
+      .where(eq(runDeliveries.runId, run.id));
+
+    const result = await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      now,
+      githubClientFactory: async () =>
+        ({
+          rest: {
+            git: {
+              getRef: async () => {
+                await db
+                  .update(runDeliveries)
+                  .set({ status: "delivering", attempts: 3, updatedAt: newerLeaseAt })
+                  .where(eq(runDeliveries.runId, run.id));
+                return { data: { object: { sha: "moved-after-takeover" } } };
+              },
+            },
+            pulls: { create: async () => ({ data: { number: 97, html_url: "unused" } }) },
+            issues: {},
+            repos: {},
+          },
+        }) as never,
+    });
+
+    expect(result).toEqual([{ runId: run.id, status: "pending" }]);
+    const [current] = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(current).toMatchObject({
+      status: "delivering",
+      attempts: 3,
+      blockedReason: null,
+      error: null,
+    });
+    expect(current?.updatedAt).toEqual(newerLeaseAt);
+    const artifacts = await db
+      .select()
+      .from(runEvents)
+      .where(and(eq(runEvents.runId, run.id), eq(runEvents.type, "artifact_error")));
+    expect(artifacts).toHaveLength(0);
+    const issues = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, `pr_delivery_pending:${run.id}`));
+    expect(issues).toHaveLength(0);
+  });
+
+  it("blocks a forged cross-tenant repository binding before requesting a GitHub token", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-scope-${Date.now()}`);
+    const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
+    await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/scoped-delivery",
+        headSha: "scope-sha",
+        pullRequestTitle: "fix: preserve tenant scope",
+        pullRequestBody: "Tenant-bound delivery.",
+      },
+    });
+    const foreignOrgId = newId("org");
+    await db
+      .insert(orgs)
+      .values({ id: foreignOrgId, name: "Foreign delivery org", slug: `foreign-${Date.now()}` });
+    const foreignProjectId = newId("proj");
+    await db.insert(projects).values({
+      id: foreignProjectId,
+      orgId: foreignOrgId,
+      name: "Foreign delivery project",
+      slug: `foreign-project-${Date.now()}`,
+      settings: {},
+    });
+    const foreignInstallation = (
+      await db
+        .insert(githubInstallations)
+        .values({
+          id: newId("int"),
+          orgId: foreignOrgId,
+          installationId: nextInstallationId(),
+          accountLogin: "foreign",
+          targetType: "Organization",
+        })
+        .returning()
+    )[0];
+    const foreignRepo = (
+      await db
+        .insert(repos)
+        .values({
+          id: newId("repo"),
+          orgId: foreignOrgId,
+          projectId: foreignProjectId,
+          installationId: foreignInstallation?.id,
+          owner: repo.owner,
+          name: repo.name,
+          defaultBranch: "main",
+        })
+        .returning()
+    )[0];
+    await db
+      .update(runDeliveries)
+      .set({ repoId: foreignRepo?.id as string })
+      .where(eq(runDeliveries.runId, run.id));
+    let factoryCalls = 0;
+    const result = await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      githubClientFactory: async () => {
+        factoryCalls += 1;
+        throw new Error("must not request a foreign installation token");
+      },
+    });
+    expect(result).toEqual([{ runId: run.id, status: "blocked" }]);
+    expect(factoryCalls).toBe(0);
+    const [delivery] = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(delivery).toMatchObject({ status: "blocked", blockedReason: "repo_scope_mismatch" });
+  });
+
+  it("keeps retrying transient delivery failures beyond the webhook retry budget", async () => {
+    const repo = await insertRepoWithInstallation(`delivery-retry-${Date.now()}`);
+    const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
+    await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/retry-forever",
+        headSha: "retry-sha",
+        pullRequestTitle: "fix: retry durable delivery",
+        pullRequestBody: "Do not abandon completed work.",
+      },
+    });
+    const factory: GithubClientFactory = async () =>
+      ({
+        rest: {
+          git: { getRef: async () => ({ data: { object: { sha: "retry-sha" } } }) },
+          pulls: {
+            list: async () => ({ data: [] }),
+            create: async () => {
+              throw new Error("github unavailable");
+            },
+          },
+          issues: {},
+          repos: {},
+        },
+      }) as never;
+    for (let attempt = 1; attempt <= 9; attempt += 1) {
+      const result = await deliverPendingRunDeliveries(db, config, {
+        runId: run.id,
+        now: new Date(Date.now() + attempt * 2 * 24 * 60 * 60_000),
+        githubClientFactory: factory,
+      });
+      expect(result).toEqual([{ runId: run.id, status: "pending" }]);
+    }
+    const [delivery] = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(delivery).toMatchObject({ status: "pending", attempts: 9, error: "github unavailable" });
+  });
+
+  it("fails loudly and preserves pushed git metadata when the bound repository disappeared", async () => {
+    const run = await insertRun({
+      status: "running",
+      gh: { owner: `missing-${Date.now()}`, repo: "repository" },
+    });
+    const finished = await finishRun(db, run, {
+      status: "succeeded",
+      git: {
+        changed: true,
+        branch: "feature/preserved-branch",
+        headSha: "preserved-sha",
+        pullRequestTitle: "fix: preserve delivery metadata",
+        pullRequestBody: "Keep the pushed ref actionable.",
+      },
+    });
+    expect(finished.status).toBe("failed");
+    expect(finished.error).toContain("delivery_repo_unresolvable:run_repo_missing_installation");
+    const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
+    expect(stored?.gh).toMatchObject({
+      branch: "feature/preserved-branch",
+      headSha: "preserved-sha",
+    });
+    const delivery = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(delivery).toHaveLength(0);
+    const [issue] = await db
+      .select()
+      .from(platformIssues)
+      .where(eq(platformIssues.fingerprint, `delivery_repo_unresolvable:${run.id}`));
+    expect(issue?.state).toBe("open");
+  });
+
   it("finishRun creates GitHub's closing link and assigns the persisted trigger login", async () => {
     const repo = await insertRepoWithInstallation(`finish-linked-${Date.now()}`);
     await insertIssue(repo.id, 57, "open", "2026-08-01T00:00:00Z");
@@ -2601,8 +3113,7 @@ describe("github platform lane", async () => {
     });
     const createdPulls: Array<Record<string, unknown>> = [];
     const assignments: Array<Record<string, unknown>> = [];
-    await finishRun(
-      db,
+    await finishAndDeliver(
       run,
       {
         status: "succeeded",
@@ -2664,8 +3175,7 @@ describe("github platform lane", async () => {
       trigger: { type: "web_issue", githubLogin: "platform-owner" },
       gh: { owner: repo.owner, repo: repo.name, issueNumber: 59 },
     });
-    const finished = await finishRun(
-      db,
+    const finished = await finishAndDeliver(
       run,
       {
         status: "succeeded",
@@ -2738,7 +3248,9 @@ describe("github platform lane", async () => {
       assignmentCalls: 0,
     },
   ])("finishRun succeeds and audits when $label", async (fixture) => {
-    const repo = await insertRepoWithInstallation(`finish-assignment-skip-${fixture.issueNumber}`);
+    const repo = await insertRepoWithInstallation(
+      `finish-assignment-skip-${fixture.issueNumber}-${Date.now()}`,
+    );
     await insertIssue(repo.id, fixture.issueNumber, "open", "2026-08-01T00:00:00Z");
     const run = await insertRun({
       status: "running",
@@ -2750,8 +3262,7 @@ describe("github platform lane", async () => {
     });
     let assignmentCalls = 0;
     const pullNumber = fixture.issueNumber + 1;
-    const finished = await finishRun(
-      db,
+    const finished = await finishAndDeliver(
       run,
       {
         status: "succeeded",
@@ -2833,8 +3344,7 @@ describe("github platform lane", async () => {
     });
     const enqueued: Array<{ queue: string; data: Record<string, unknown> }> = [];
     const comments: string[] = [];
-    await finishRun(
-      db,
+    await finishAndDeliver(
       run,
       {
         status: "succeeded",
@@ -2941,11 +3451,10 @@ describe("github platform lane", async () => {
     expect(proposal?.payload).toMatchObject({ issueNumber: 71, repoId: repo.id });
   });
 
-  it("finishRun PR failures fail delivery and raise an artifact issue", async () => {
+  it("keeps a successful run durable while transient PR delivery retries", async () => {
     const repo = await insertRepoWithInstallation(`finish-fail-${Date.now()}`);
     const run = await insertRun({ status: "running", gh: { owner: repo.owner, repo: repo.name } });
-    await finishRun(
-      db,
+    await finishAndDeliver(
       run,
       {
         status: "succeeded",
@@ -2975,19 +3484,123 @@ describe("github platform lane", async () => {
       },
     );
     const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
-    expect(stored?.status).toBe("failed");
-    expect(stored?.error).toContain("pr_open_failed:github down");
+    expect(stored?.status).toBe("succeeded");
+    expect(stored?.error).toBeNull();
+    const [delivery] = await db.select().from(runDeliveries).where(eq(runDeliveries.runId, run.id));
+    expect(delivery).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      error: "github down",
+      expectedHeadSha: "deadbeef",
+    });
     const [artifact] = await db
       .select()
       .from(runEvents)
       .where(and(eq(runEvents.runId, run.id), eq(runEvents.type, "artifact_error")));
-    expect(artifact?.data).toMatchObject({ kind: "pr_open_failed" });
+    expect(artifact?.data).toMatchObject({ kind: "pr_delivery_pending", attempt: 1 });
     const [issue] = await db
       .select()
       .from(platformIssues)
-      .where(eq(platformIssues.fingerprint, `pr_open_failed:${run.id}`));
+      .where(eq(platformIssues.fingerprint, `pr_delivery_pending:${run.id}`));
     expect(issue?.state).toBe("open");
   });
+
+  function deliveryFactory(input: {
+    branch: string;
+    headSha: string;
+    number: number;
+  }): GithubClientFactory {
+    return async () =>
+      ({
+        rest: {
+          git: { getRef: async () => ({ data: { object: { sha: input.headSha } } }) },
+          pulls: {
+            list: async () => ({ data: [] }),
+            create: async () => ({
+              data: { number: input.number, html_url: `https://github.test/pr/${input.number}` },
+            }),
+            get: async () => ({
+              data: {
+                number: input.number,
+                title: "Facility delivery",
+                body: "",
+                state: "open",
+                html_url: `https://github.test/pr/${input.number}`,
+                head: { ref: input.branch, sha: input.headSha },
+                base: { ref: "main" },
+              },
+            }),
+          },
+          issues: { createComment: async () => ({ data: { id: 1 } }) },
+          repos: {},
+        },
+      }) as never;
+  }
+
+  async function finishAndDeliver(
+    run: Parameters<typeof finishRun>[1],
+    input: Parameters<typeof finishRun>[2],
+    deps: NonNullable<Parameters<typeof finishRun>[3]>,
+  ) {
+    const originalFactory = deps.githubClientFactory;
+    const git = input.git;
+    if (!originalFactory || !git?.branch || !git.headSha) {
+      throw new Error("delivery test requires a GitHub factory and exact git ref");
+    }
+    const factory: GithubClientFactory = async (installationId) => {
+      const octokit = await originalFactory(installationId);
+      const originalCreate = octokit.rest.pulls.create.bind(octokit.rest.pulls);
+      let created:
+        | { number: number; html_url: string; title?: string; body?: string | null }
+        | undefined;
+      return {
+        ...octokit,
+        rest: {
+          ...octokit.rest,
+          git: {
+            ...octokit.rest.git,
+            getRef:
+              octokit.rest.git.getRef ??
+              (async () => ({ data: { object: { sha: git.headSha as string } } })),
+          },
+          pulls: {
+            ...octokit.rest.pulls,
+            create: async (args) => {
+              const response = await originalCreate(args);
+              created = response.data;
+              return response;
+            },
+            list: octokit.rest.pulls.list ?? (async () => ({ data: [] })),
+            get:
+              octokit.rest.pulls.get ??
+              (async ({ pull_number }) => {
+                if (!created || created.number !== pull_number) {
+                  throw new Error("delivery test PR was not created");
+                }
+                return {
+                  data: {
+                    number: created.number,
+                    title: created.title ?? "Facility delivery",
+                    body: created.body ?? "",
+                    state: "open",
+                    html_url: created.html_url,
+                    head: { ref: git.branch as string, sha: git.headSha as string },
+                    base: { ref: "main" },
+                  },
+                };
+              }),
+          },
+        },
+      } as Octokit;
+    };
+    const finished = await finishRun(db, run, input, { ...deps, githubClientFactory: factory });
+    await deliverPendingRunDeliveries(db, config, {
+      runId: run.id,
+      githubClientFactory: factory,
+      enqueue: deps.enqueue,
+    });
+    return finished;
+  }
 
   async function insertInstallation(owner: string) {
     const row = (

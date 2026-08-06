@@ -131,6 +131,35 @@ describe("server-owned story pipeline", () => {
     expect(staged.get("review")).toEqual([]);
   });
 
+  it("does not classify a successful builder as delivered until its PR is durable", () => {
+    const pendingRun = run("run_pending", "alice", "alpha", 40, "builder", "succeeded");
+    const deliveredRun = run("run_delivered", "alice", "alpha", 41, "builder", "succeeded");
+    deliveredRun.gh = {
+      owner: "alice",
+      repo: "alpha",
+      issueNumber: 41,
+      pr: { number: 141, url: "https://github.test/alice/alpha/pull/141" },
+    };
+    const pending = {
+      ...storyWith({}),
+      key: "repo_a:issue:40",
+      number: 40,
+      prs: [],
+      linkedRuns: [pendingRun],
+    };
+    const delivered = {
+      ...storyWith({}),
+      key: "repo_a:issue:41",
+      number: 41,
+      prs: [],
+      linkedRuns: [deliveredRun],
+    };
+
+    const staged = classifyPipeline([pending, delivered], new Set(), NOW.getTime());
+    expect(staged.get("backlog")?.map((story) => story.number)).toContain(40);
+    expect(staged.get("review")?.map((story) => story.number)).toContain(41);
+  });
+
   it("ships recent closed issues and merged orphan PRs, but not abandoned PRs", () => {
     const recent = new Date(NOW.getTime() - 24 * 60 * 60 * 1000);
     const issueStory = { ...storyWith({}), state: "closed" as const, closedAt: recent, prs: [] };

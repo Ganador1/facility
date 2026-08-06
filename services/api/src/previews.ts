@@ -263,7 +263,7 @@ function hostname(rawHost: string | undefined) {
 
 export async function createPreviewRecord(db: Db, input: PreviewCreateInput) {
   const id = newId("sbx");
-  return (
+  const inserted = (
     await db
       .insert(previewSandboxes)
       .values({
@@ -288,7 +288,23 @@ export async function createPreviewRecord(db: Db, input: PreviewCreateInput) {
         expiresAt: new Date(Date.now() + input.ttlHours * 3_600_000),
         createdBy: input.createdBy,
       })
+      .onConflictDoNothing()
       .returning()
+  )[0];
+  if (inserted || !input.runId) return inserted;
+  return (
+    await db
+      .select()
+      .from(previewSandboxes)
+      .where(
+        and(
+          eq(previewSandboxes.runId, input.runId),
+          eq(previewSandboxes.orgId, input.orgId),
+          eq(previewSandboxes.projectId, input.projectId),
+          inArray(previewSandboxes.status, ["provisioning", "running"]),
+        ),
+      )
+      .limit(1)
   )[0];
 }
 

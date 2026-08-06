@@ -479,6 +479,56 @@ export const runEvents = pgTable(
   ],
 );
 
+export const runDeliveries = pgTable(
+  "run_deliveries",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .references(() => runs.id),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    repoId: text("repo_id")
+      .notNull()
+      .references(() => repos.id),
+    owner: text("owner").notNull(),
+    repoName: text("repo_name").notNull(),
+    headBranch: text("head_branch").notNull(),
+    expectedHeadSha: text("expected_head_sha").notNull(),
+    baseBranch: text("base_branch").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    issueNumber: integer("issue_number"),
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+    blockedReason: text("blocked_reason"),
+    error: text("error"),
+    prNumber: integer("pr_number"),
+    prUrl: text("pr_url"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    index("run_deliveries_pending_idx")
+      .on(table.status, table.nextAttemptAt)
+      .where(sql`${table.status} in ('pending', 'delivering')`),
+    index("run_deliveries_org_project_idx").on(
+      table.orgId,
+      table.projectId,
+      table.createdAt.desc(),
+    ),
+    check(
+      "run_deliveries_status_check",
+      sql`${table.status} in ('pending', 'delivering', 'delivered', 'blocked')`,
+    ),
+    check("run_deliveries_attempts_check", sql`${table.attempts} >= 0`),
+  ],
+);
+
 export const steerMessages = pgTable(
   "steer_messages",
   {
@@ -998,6 +1048,9 @@ export const previewSandboxes = pgTable(
     ...timestamps,
   },
   (table) => [
+    uniqueIndex("preview_sandboxes_run_uidx")
+      .on(table.runId)
+      .where(sql`${table.runId} is not null and ${table.status} in ('provisioning', 'running')`),
     index("preview_sandboxes_org_project_idx").on(
       table.orgId,
       table.projectId,
