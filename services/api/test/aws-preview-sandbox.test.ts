@@ -29,7 +29,6 @@ describe("AWS preview sandbox driver", () => {
           taskDefinitionArn: "arn:aws:ecs:eu-west-1:123:task-definition/facility-prod-preview:7",
         },
       },
-      { tasks: [{ taskArn: "arn:aws:ecs:eu-west-1:123:task/facility-prod/task-1" }] },
       {
         tasks: [
           {
@@ -39,6 +38,8 @@ describe("AWS preview sandbox driver", () => {
           },
         ],
       },
+      { tasks: [] },
+      { tasks: [{ lastStatus: "RUNNING" }] },
       { tasks: [{ lastStatus: "RUNNING" }] },
       {},
       {},
@@ -83,10 +84,103 @@ describe("AWS preview sandbox driver", () => {
     });
     expect(commands[1]).toBeInstanceOf(RunTaskCommand);
     expect(commands[2]).toBeInstanceOf(DescribeTasksCommand);
+    expect(commands[3]).toBeInstanceOf(DescribeTasksCommand);
     await expect(driver.status(launched.ref)).resolves.toBe("running");
+    expect(commands[4]).toBeInstanceOf(DescribeTasksCommand);
     await driver.destroy(launched.ref);
-    expect(commands[4]).toBeInstanceOf(StopTaskCommand);
-    expect(commands[5]).toBeInstanceOf(DeregisterTaskDefinitionCommand);
+    expect(commands[5]).toBeInstanceOf(StopTaskCommand);
+    expect(commands[6]).toBeInstanceOf(DeregisterTaskDefinitionCommand);
+  });
+
+  it("returns a private endpoint after the existing activation budget expires", async () => {
+    const commands: unknown[] = [];
+    let sleeps = 0;
+    const ecs = {
+      send: async (command: unknown) => {
+        commands.push(command);
+        if (command instanceof RegisterTaskDefinitionCommand) {
+          return { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:task-definition/preview:8" } };
+        }
+        if (command instanceof RunTaskCommand) {
+          return { tasks: [{ taskArn: "arn:aws:ecs:task/facility-prod/slow" }] };
+        }
+        if (command instanceof DescribeTasksCommand) {
+          return {
+            tasks: [
+              {
+                lastStatus: "ACTIVATING",
+                attachments: [{ details: [{ name: "privateIPv4Address", value: "10.0.2.42" }] }],
+              },
+            ],
+          };
+        }
+        return {};
+      },
+    };
+    const driver = new AwsPreviewSandboxDriver(
+      ecs as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+      async () => {
+        sleeps += 1;
+      },
+    );
+    const launched = await driver.launch({
+      runId: "preview:slow",
+      image: "example.invalid/preview:latest",
+      env: {},
+      cpu: 1,
+      memoryMb: 1024,
+      timeoutMin: 60,
+      servicePort: 3000,
+    });
+    expect(launched.endpoint).toBe("http://10.0.2.42:3000");
+    expect(commands.filter((command) => command instanceof DescribeTasksCommand)).toHaveLength(30);
+    expect(sleeps).toBe(29);
+  });
+
+  it("cleans up a preview task that stops after receiving a private IP", async () => {
+    const commands: unknown[] = [];
+    const responses = [
+      { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:task-definition/preview:9" } },
+      { tasks: [{ taskArn: "arn:aws:ecs:task/facility-prod/stopped" }] },
+      {
+        tasks: [
+          {
+            lastStatus: "PENDING",
+            attachments: [{ details: [{ name: "privateIPv4Address", value: "10.0.2.43" }] }],
+          },
+        ],
+      },
+      { tasks: [{ lastStatus: "STOPPED", stoppedReason: "CannotPullContainerError" }] },
+      {},
+      {},
+    ];
+    const ecs = {
+      send: async (command: unknown) => {
+        commands.push(command);
+        return responses.shift() ?? {};
+      },
+    };
+    const driver = new AwsPreviewSandboxDriver(
+      ecs as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+      async () => undefined,
+    );
+    await expect(
+      driver.launch({
+        runId: "preview:stopped",
+        image: "example.invalid/preview:missing",
+        env: {},
+        cpu: 1,
+        memoryMb: 1024,
+        timeoutMin: 60,
+        servicePort: 3000,
+      }),
+    ).rejects.toThrow("aws_preview_task_stopped_before_running:STOPPED");
+    expect(commands.at(-2)).toBeInstanceOf(StopTaskCommand);
+    expect(commands.at(-1)).toBeInstanceOf(DeregisterTaskDefinitionCommand);
   });
 
   it("deregisters the per-preview definition when task launch is denied", async () => {

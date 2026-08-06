@@ -249,6 +249,20 @@ describe("SSO-protected preview sandboxes", async () => {
         config: expect.objectContaining({ readinessPath: "/healthz" }),
         commitSha: "abc123def456",
       });
+      const provisionedAudit = (
+        await db
+          .select()
+          .from(auditEvents)
+          .where(and(eq(auditEvents.orgId, orgId), eq(auditEvents.action, "preview.provisioned")))
+      ).find((event) => (event.target as { id?: string }).id === preview.id);
+      expect(provisionedAudit?.payload).toMatchObject({
+        driver: "docker",
+        status: "running",
+        auth_mode: "facility_session",
+        queue_delay_ms: expect.any(Number),
+        launch_ms: expect.any(Number),
+        total_ms: expect.any(Number),
+      });
 
       const listed = await app.inject({
         method: "GET",
@@ -532,6 +546,18 @@ describe("SSO-protected preview sandboxes", async () => {
     await expect(provisionPreview(config, preview.id, leakingDriver)).rejects.toThrow(
       "launch_cleanup_failed",
     );
+    const failedAudit = (
+      await db
+        .select()
+        .from(auditEvents)
+        .where(and(eq(auditEvents.orgId, orgId), eq(auditEvents.action, "preview.failed")))
+    ).find((event) => (event.target as { id?: string }).id === preview.id);
+    expect(failedAudit?.payload).toMatchObject({
+      error: "launch_cleanup_failed",
+      queue_delay_ms: expect.any(Number),
+      launch_ms: expect.any(Number),
+      total_ms: expect.any(Number),
+    });
     const retained = (
       await db.select().from(previewSandboxes).where(eq(previewSandboxes.id, preview.id)).limit(1)
     )[0];

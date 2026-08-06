@@ -313,6 +313,7 @@ export async function provisionPreview(
   previewId: string,
   driverOverride?: SandboxDriver,
 ) {
+  const provisionStartedAt = Date.now();
   const { db, client } = createDb(config.databaseUrl);
   try {
     const preview = (
@@ -326,7 +327,10 @@ export async function provisionPreview(
       .set({ driver: driver.name, updatedAt: new Date() })
       .where(eq(previewSandboxes.id, preview.id));
     let launchedRef: string | undefined;
+    let launchStartedAt = provisionStartedAt;
+    let launchFinishedAt: number | undefined;
     try {
+      launchStartedAt = Date.now();
       const launched = await driver.launch({
         runId: `preview:${preview.id}`,
         image: spec.image,
@@ -338,6 +342,7 @@ export async function provisionPreview(
         network: { egress: "unrestricted" },
         servicePort: spec.port,
       });
+      launchFinishedAt = Date.now();
       launchedRef = launched.ref;
       await db
         .update(previewSandboxes)
@@ -367,6 +372,7 @@ export async function provisionPreview(
           ? await waitForPreviewReadiness(launched.endpoint, spec.readinessPath)
           : true);
       const status = ready ? "running" : "provisioning";
+      const provisionFinishedAt = Date.now();
       const updated = (
         await db
           .update(previewSandboxes)
@@ -387,10 +393,18 @@ export async function provisionPreview(
         actor: { type: "system", id: "preview.provisioner" },
         action: "preview.provisioned",
         target: { type: "preview", id: preview.id },
-        payload: { driver: driver.name, status, auth_mode: "facility_session" },
+        payload: {
+          driver: driver.name,
+          status,
+          auth_mode: "facility_session",
+          queue_delay_ms: elapsedMs(preview.createdAt.getTime(), provisionStartedAt),
+          launch_ms: elapsedMs(launchStartedAt, launchFinishedAt ?? provisionFinishedAt),
+          total_ms: elapsedMs(preview.createdAt.getTime(), provisionFinishedAt),
+        },
       });
       return updated;
     } catch (error) {
+      const failedAt = Date.now();
       const message = error instanceof Error ? error.message : String(error);
       const retryRef = error instanceof SandboxLaunchError ? error.ref : launchedRef;
       await db
@@ -408,13 +422,22 @@ export async function provisionPreview(
         actor: { type: "system", id: "preview.provisioner" },
         action: "preview.failed",
         target: { type: "preview", id: preview.id },
-        payload: { error: message },
+        payload: {
+          error: message,
+          queue_delay_ms: elapsedMs(preview.createdAt.getTime(), provisionStartedAt),
+          launch_ms: elapsedMs(launchStartedAt, launchFinishedAt ?? failedAt),
+          total_ms: elapsedMs(preview.createdAt.getTime(), failedAt),
+        },
       });
       throw error;
     }
   } finally {
     await client.end();
   }
+}
+
+function elapsedMs(startedAt: number, endedAt: number) {
+  return Math.max(0, endedAt - startedAt);
 }
 
 export async function destroyPreview(

@@ -81,6 +81,9 @@ AWS preview environments are the deliberate exception to the execution backend:
 they need a private inbound service endpoint, which CodeBuild does not expose.
 The AWS module therefore registers an immutable, unprivileged ECS Fargate task
 definition for each preview image while agent runs remain on privileged CodeBuild.
+Endpoint discovery and the ECS `RUNNING` check share one bounded launch window;
+unusually slow tasks remain `provisioning` and converge through the existing
+lifecycle reconciler instead of creating another scheduler or warm-pool service.
 
 ## What's inside (and what isn't)
 

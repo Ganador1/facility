@@ -14,6 +14,7 @@ import {
   type RunTaskCommandOutput,
   StopTaskCommand,
   type StopTaskCommandOutput,
+  type Task,
 } from "@aws-sdk/client-ecs";
 import { type LaunchSpec, type SandboxDriver, SandboxLaunchError } from "./driver.js";
 
@@ -133,8 +134,11 @@ export class AwsPreviewSandboxDriver implements SandboxDriver {
       if (launched.failures?.length) throw new Error(formatFailures(launched.failures));
       taskArn = launched.tasks?.[0]?.taskArn;
       if (!taskArn) throw new Error("ECS RunTask did not return a preview task ARN");
-      const privateIp =
-        privateIpv4(launched.tasks?.[0]) ?? (await this.waitForPrivateIp(config.cluster, taskArn));
+      const privateIp = await this.waitForRunnableEndpoint(
+        config.cluster,
+        taskArn,
+        launched.tasks?.[0],
+      );
       return {
         ref: encodeRef({ taskArn, taskDefinitionArn }),
         ...(privateIp ? { endpoint: `http://${privateIp}:${spec.servicePort}` } : {}),
@@ -180,11 +184,7 @@ export class AwsPreviewSandboxDriver implements SandboxDriver {
       return "starting";
     }
     if (task.lastStatus === "RUNNING") return "running";
-    if (
-      ["DEACTIVATING", "STOPPING", "DEPROVISIONING", "STOPPED", "DELETED"].includes(
-        task.lastStatus ?? "",
-      )
-    ) {
+    if (terminalTaskStatus(task.lastStatus)) {
       return "exited";
     }
     return "lost";
@@ -256,15 +256,26 @@ export class AwsPreviewSandboxDriver implements SandboxDriver {
     if (failure) throw failure;
   }
 
-  private async waitForPrivateIp(cluster: string, taskArn: string) {
+  private async waitForRunnableEndpoint(cluster: string, taskArn: string, initialTask?: Task) {
+    let privateIp = privateIpv4(initialTask);
+    if (initialTask?.lastStatus === "RUNNING" && privateIp) return privateIp;
+    if (terminalTaskStatus(initialTask?.lastStatus)) {
+      throw new Error(`aws_preview_task_stopped_before_running:${initialTask?.lastStatus}`);
+    }
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const task = await this.describe(cluster, taskArn);
-      const privateIp = privateIpv4(task);
-      if (privateIp) return privateIp;
-      if (!task || task.lastStatus === "STOPPED") return undefined;
-      await this.sleep(2_000);
+      privateIp ??= privateIpv4(task);
+      // RunTask is eventually consistent: an immediate DescribeTasks can
+      // temporarily omit the task, so keep the existing bounded poll alive.
+      if (task?.lastStatus === "RUNNING" && privateIp) return privateIp;
+      if (terminalTaskStatus(task?.lastStatus)) {
+        throw new Error(`aws_preview_task_stopped_before_running:${task?.lastStatus}`);
+      }
+      if (attempt < 29) await this.sleep(2_000);
     }
-    return undefined;
+    // Preserve the existing reconciliation fallback for unusually slow task
+    // activation. The endpoint is private even before ECS reports RUNNING.
+    return privateIp;
   }
 
   private async describe(cluster: string, taskArn: string) {
@@ -345,6 +356,12 @@ function privateIpv4(
   return task?.attachments
     ?.flatMap((attachment) => attachment.details ?? [])
     .find((detail) => detail.name === "privateIPv4Address")?.value;
+}
+
+function terminalTaskStatus(status: string | undefined) {
+  return ["DEACTIVATING", "STOPPING", "DEPROVISIONING", "STOPPED", "DELETED"].includes(
+    status ?? "",
+  );
 }
 
 function formatFailures(failures: { arn?: string; reason?: string; detail?: string }[]) {
