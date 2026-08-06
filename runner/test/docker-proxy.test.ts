@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   dockerRequestPolicy,
@@ -511,6 +513,17 @@ test("custom CodeBuild lifecycle commands drop root", async () => {
   expect(script).toMatch(
     /exec setpriv --reuid="\$untrusted_uid" --regid="\$untrusted_gid" --clear-groups -- "\$@"/,
   );
+});
+
+test("CodeBuild rejects malformed nested-Docker capability values before setup", () => {
+  const script = fileURLToPath(new URL("../codebuild-runner.sh", import.meta.url));
+  const result = spawnSync("bash", [script], {
+    encoding: "utf8",
+    env: { ...process.env, FACILITY_SANDBOX_NESTED_DOCKER: "false" },
+  });
+  expect(result.status).toBe(2);
+  expect(result.stderr).toContain("FACILITY_SANDBOX_NESTED_DOCKER must be 0 or 1");
+  expect(result.stdout).not.toContain("host boundary configured");
 });
 
 test("CodeBuild keeps pinned bind aliases outside the recursively managed workspace", async () => {

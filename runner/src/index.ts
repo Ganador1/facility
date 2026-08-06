@@ -26,6 +26,7 @@ import {
   parseCodexSessionId,
 } from "./parsers.js";
 import { RunPhaseRecorder } from "./phases.js";
+import { sandboxRuntimeEvent } from "./runtime.js";
 import type { RunBundle, RunEvent } from "./types.js";
 
 const workRoot = "/work";
@@ -91,6 +92,8 @@ async function main() {
     })) as RunBundle;
     const activeBundle = bundle;
     await phases.finish({ outcome: "succeeded" });
+    const runtimeEvent = sandboxRuntimeEvent();
+    if (runtimeEvent) await emit([runtimeEvent]).catch(() => undefined);
     await phases.measure("workspace", () =>
       prepareWorkspace(activeBundle, String(hello.virtualKey), {
         platformKey: hello.platformKey ? String(hello.platformKey) : null,

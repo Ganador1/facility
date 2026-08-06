@@ -56,6 +56,7 @@ import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
 import { assertPreviewProvisioningAvailable, createPreviewRecord } from "../previews.js";
 import type { AppConfig } from "../types.js";
 import { raisePlatformIssue } from "../watchtower/issues.js";
+import { nestedDockerEnabled } from "./capabilities.js";
 import { DockerSandboxDriver } from "./docker.js";
 import type { LaunchSpec, SandboxDriver, SandboxDriverName } from "./driver.js";
 import { sandboxDriver } from "./driver.js";
@@ -146,6 +147,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
 
     const runnerToken = `frt_${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const driverName = normalizeDriver(profile.driver);
+    const nestedDocker = nestedDockerEnabled(profile.setup);
     const driver = await (deps.sandboxDriver ?? sandboxDriver)(driverName);
     const launchSpec: LaunchSpec = {
       runId: run.id,
@@ -154,6 +156,9 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
         FACILITY_API_URL: config.sandboxApiUrl,
         RUN_ID: run.id,
         RUNNER_TOKEN: runnerToken,
+        ...(driverName === "aws"
+          ? { FACILITY_SANDBOX_NESTED_DOCKER: nestedDocker ? "1" : "0" }
+          : {}),
       },
       cpu: resourceNumber(profile.resources, "cpu", 2),
       memoryMb: resourceNumber(profile.resources, "memory_mb", 4096),
@@ -192,7 +197,14 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
       return;
     }
     await appendRunEvents(db, run.orgId, run.id, [
-      { type: "sandbox", data: { driver: driver.name, ref: launched.ref } },
+      {
+        type: "sandbox",
+        data: {
+          driver: driver.name,
+          ref: launched.ref,
+          ...(driverName === "aws" ? { nested_docker: nestedDocker } : {}),
+        },
+      },
     ]);
     await updateGithubRunProgress(db, run.id, "provisioning", { config }).catch(() => undefined);
   } catch (error) {

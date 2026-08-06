@@ -4,6 +4,7 @@ import { and, asc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError } from "../../errors.js";
+import { nestedDockerSettingIsValid } from "../../sandbox/capabilities.js";
 import { validateScheduleTrigger } from "../../schedules.js";
 import type { Principal } from "../../types.js";
 import {
@@ -27,6 +28,10 @@ export async function registerAgentsSandboxesRoutes(
   registerCrud(app, "/v1/projects/:projectId/agents", "agents", agentDefs, "agent");
   registerCrud(app, "/v1/sandbox-profiles", "sandboxes", sandboxProfiles, "sbx");
 }
+
+const SandboxSetup = AnyObject.refine(nestedDockerSettingIsValid, {
+  message: "setup.nested_docker must be a boolean",
+});
 
 function _objectOrEmpty(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -61,7 +66,7 @@ function registerCrud(
           name: z.string(),
           driver: z.string(),
           image: z.string(),
-          setup: AnyObject.default({}),
+          setup: SandboxSetup.default({}),
           resources: AnyObject.default({}),
           network: AnyObject.default({}),
         });
@@ -82,7 +87,7 @@ function registerCrud(
           name: z.string().optional(),
           driver: z.string().optional(),
           image: z.string().optional(),
-          setup: AnyObject.optional(),
+          setup: SandboxSetup.optional(),
           resources: AnyObject.optional(),
           network: AnyObject.optional(),
         });

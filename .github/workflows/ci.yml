@@ -215,6 +215,15 @@ jobs:
             --env FACILITY_CODEBUILD_SMOKE=1 \
             facility-runner:dev
 
+      - name: Exercise the no-Docker CodeBuild fast path
+        if: steps.policy.outputs.required == 'true'
+        run: |
+          timeout 2m docker run --rm --privileged --user root \
+            --entrypoint /app/codebuild-runner.sh \
+            --env FACILITY_CODEBUILD_SMOKE=1 \
+            --env FACILITY_SANDBOX_NESTED_DOCKER=0 \
+            facility-runner:dev
+
       - name: Run the Docker-backed sandbox loop
         if: steps.policy.outputs.required == 'true'
         env:

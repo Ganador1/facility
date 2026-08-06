@@ -257,6 +257,187 @@ describe("sandbox api", async () => {
     }
   });
 
+  it("derives the trusted CodeBuild nested-Docker flag only from the selected profile", async () => {
+    const suffix = Date.now();
+    const contract = (
+      await db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId,
+          kind: "agent_contract",
+          name: `nested-docker-${suffix}`,
+          latestVersion: 1,
+        })
+        .returning()
+    )[0];
+    if (!contract) throw new Error("nested-Docker contract fixture missing");
+    await db.insert(registryVersions).values({
+      id: newId("ver"),
+      orgId,
+      itemId: contract.id,
+      version: 1,
+      content: "Exercise the selected sandbox capability.",
+      contentHash: `nested-docker-${suffix}`,
+      status: "active",
+    });
+    const profile = (
+      await db
+        .insert(sandboxProfiles)
+        .values({
+          id: newId("sbx"),
+          orgId,
+          projectId,
+          name: `nested-docker-${suffix}`,
+          driver: "aws",
+          image: "facility-runner:test",
+          setup: { nested_docker: false },
+          resources: { timeout_min: 5 },
+        })
+        .returning()
+    )[0];
+    if (!profile) throw new Error("nested-Docker profile fixture missing");
+    const agent = (
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name: `nested-docker-${suffix}`,
+          engine: "byo",
+          model: { cmd: "true" },
+          contractItemId: contract.id,
+          sandboxProfileId: profile.id,
+          triggers: [],
+          permissions: [],
+          enabled: true,
+        })
+        .returning()
+    )[0];
+    if (!agent) throw new Error("nested-Docker agent fixture missing");
+
+    const launched: Array<Parameters<SandboxDriver["launch"]>[0]> = [];
+    const driver: SandboxDriver = {
+      name: "aws",
+      launch: async (spec) => {
+        launched.push(spec);
+        return { ref: `fake-${spec.runId}` };
+      },
+      status: async () => "running",
+      async *logs() {},
+      stop: async () => undefined,
+      destroy: async () => undefined,
+    };
+    for (const fixture of [
+      { setup: { nested_docker: false }, expected: "0" },
+      { setup: { nested_docker: true }, expected: "1" },
+      // Profiles created before this capability keep their legacy full boundary.
+      { setup: {}, expected: "1" },
+    ] as const) {
+      await db
+        .update(sandboxProfiles)
+        .set({ setup: fixture.setup })
+        .where(eq(sandboxProfiles.id, profile.id));
+      const run = (
+        await db
+          .insert(runs)
+          .values({
+            id: newId("run"),
+            orgId,
+            projectId,
+            agentDefId: agent.id,
+            mode: "builder",
+            engine: "byo",
+            trigger: {},
+            createdBy: { type: "user", id: "nested-docker-test" },
+          })
+          .returning()
+      )[0];
+      if (!run) throw new Error("nested-Docker run fixture missing");
+
+      await dispatchRun(config, { runId: run.id, orgId }, { sandboxDriver: async () => driver });
+
+      expect(launched.at(-1)?.env.FACILITY_SANDBOX_NESTED_DOCKER).toBe(fixture.expected);
+      const sandboxEvent = (
+        await db.select({ data: runEvents.data }).from(runEvents).where(eq(runEvents.runId, run.id))
+      ).find((event) => (event.data as Record<string, unknown>).nested_docker !== undefined);
+      expect(sandboxEvent?.data).toMatchObject({
+        driver: "aws",
+        nested_docker: fixture.expected === "1",
+      });
+    }
+
+    await db
+      .update(sandboxProfiles)
+      .set({ driver: "docker", setup: { nested_docker: false } })
+      .where(eq(sandboxProfiles.id, profile.id));
+    const dockerRun = (
+      await db
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId,
+          projectId,
+          agentDefId: agent.id,
+          mode: "builder",
+          engine: "byo",
+          trigger: {},
+          createdBy: { type: "user", id: "nested-docker-docker-driver-test" },
+        })
+        .returning()
+    )[0];
+    if (!dockerRun) throw new Error("docker-driver run fixture missing");
+    const dockerDriver: SandboxDriver = { ...driver, name: "docker" };
+
+    await dispatchRun(
+      config,
+      { runId: dockerRun.id, orgId },
+      { sandboxDriver: async () => dockerDriver },
+    );
+
+    expect(launched.at(-1)?.env).not.toHaveProperty("FACILITY_SANDBOX_NESTED_DOCKER");
+    const dockerSandboxEvent = (
+      await db
+        .select({ data: runEvents.data })
+        .from(runEvents)
+        .where(eq(runEvents.runId, dockerRun.id))
+    ).find((event) => (event.data as Record<string, unknown>).driver === "docker");
+    expect(dockerSandboxEvent?.data).not.toHaveProperty("nested_docker");
+  });
+
+  it("accepts only boolean nested-Docker profile settings", async () => {
+    const valid = await app.inject({
+      method: "POST",
+      url: "/v1/sandbox-profiles",
+      headers: { cookie },
+      payload: {
+        name: `no-nested-docker-${Date.now()}`,
+        driver: "aws",
+        image: "facility-runner:test",
+        setup: { nested_docker: false },
+      },
+    });
+    expect(valid.statusCode).toBe(200);
+    expect(valid.json().setup).toMatchObject({ nested_docker: false });
+
+    const invalid = await app.inject({
+      method: "POST",
+      url: "/v1/sandbox-profiles",
+      headers: { cookie },
+      payload: {
+        name: `invalid-nested-docker-${Date.now()}`,
+        driver: "aws",
+        image: "facility-runner:test",
+        setup: { nested_docker: "false" },
+      },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.body).toContain("setup.nested_docker must be a boolean");
+  });
+
   it("appendRunEvents allocates contiguous seqs under concurrent appends", async () => {
     const runId = newId("run");
     await insertRunnerRun("frt_seq", "running", runId, {});
