@@ -72,7 +72,7 @@ itself when the team wants agents running in its own CI.
 
 | Goal | Facility provides | Available with |
 |---|---|---|
-| Take work from an issue to a pull request | `/architect` investigates and proposes a plan; a human invokes `/builder`; the builder implements, runs the repository's checks, pushes a branch, and opens a PR. | Installer or platform |
+| Take work from an issue to a pull request | `/architect` investigates and proposes a plan; a human invokes `/builder`; the builder implements and publishes a reviewable PR. Platform runs publish a draft before GitHub CI decides acceptance. | Installer or platform |
 | Keep accountability with people | A person accepts the plan; at Gate 2 a person validates the live preview, reviews the PR, and squash-merges it. Agents cannot approve, merge, or push to protected branches. | Installer or platform |
 | Give agents a usable job site | Each run starts with the repository's provision command, then follows `STANDARD.md`, relevant skills, specialist review, and the configured test/build commands. | Installer or platform |
 | Validate behavior before merge | Facility can provision a private Docker or AWS preview from a project-defined image, wait for its readiness endpoint, and expose it only through the SSO-authenticated proxy. Existing provider previews remain supported. | Installer or platform |
@@ -375,11 +375,15 @@ Whichever setup you choose, work follows the same reviewed path:
 1. Work starts as an issue or another owned signal.
 2. `/architect` inspects the real repository and proposes a plan in the issue.
 3. A human accepts that plan by invoking `/builder`.
-4. `/builder` provisions the environment, implements the complete change, runs
-   the configured checks, and opens a pull request.
+4. `/builder` provisions the environment and implements the complete change.
+   Repo-lane builders run the configured checks before opening a PR. A
+   platform-lane builder runs focused checks and Facility immediately publishes
+   its signed commit as a draft PR.
 5. Facility or the configured deployment provider creates a live, isolated preview for fast validation.
 6. Automated review, deterministic guards, and the repository's CI examine the
-   result.
+   result. GitHub CI is authoritative for platform-lane delivery; failed checks
+   can dispatch the configured CI-doctor on the same branch, and Facility marks
+   the draft ready only after the current head's aggregate rollup succeeds.
 7. At Gate 2, a human validates the preview, reviews the PR, and squash-merges it.
 8. The run leaves a receipt; the watchtower joins it with the eventual outcome
    and reports health over time.
@@ -389,6 +393,12 @@ GitHub workflows in your existing CI and has no platform dependency at run
 time. The **platform lane** runs the same contracts in an isolated sandbox and
 adds live streaming, steering, centralized credentials, and platform-enforced
 budgets. A project can move one trigger at a time between lanes.
+
+Platform CI repair is limited to branches produced by that project's Facility
+builder runs. It retries at most three changed heads by default; set the project
+setting `ci_repair_max_attempts` to an integer from 1 through 10 to change the
+limit. Exhaustion leaves the draft PR and its failing checks intact for human
+iteration.
 
 Read [the method](apps/docs/docs/concepts/method.md) for the reasoning behind the roles, gates,
 standards, guards, and watchtower.

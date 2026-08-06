@@ -1,13 +1,16 @@
 import { newId } from "@facility/core";
 import {
   agentDefs,
+  auditEvents,
   type FacilityDb,
+  ghPullRequests,
   githubInstallations,
   inboundEvents,
   insertAuditEvent,
   integrations,
   outcomes,
   previewSandboxes,
+  projects,
   repos,
   runEvents,
   runs,
@@ -26,7 +29,11 @@ import {
   syncRepoIssues,
   upsertGhIssueFromWebhook,
 } from "./issues-sync.js";
-import { syncRepoFacilityConfig, verifyFingerprints } from "./kickstart.js";
+import {
+  createGithubClientForRepo,
+  syncRepoFacilityConfig,
+  verifyFingerprints,
+} from "./kickstart.js";
 import {
   refreshGhPullRequest,
   refreshPullRequestsForSignal,
@@ -75,6 +82,16 @@ type WebhookPayload = TriggerPayload & {
     head_branch?: string;
     head_sha?: string;
     pull_requests?: Array<{ number?: number; head?: { ref?: string }; base?: { ref?: string } }>;
+    failureContext?: {
+      jobs: Array<{
+        id: number;
+        name: string;
+        conclusion: string;
+        url: string | null;
+        failedSteps: Array<{ number: number | null; name: string; conclusion: string | null }>;
+        logTail: string | null;
+      }>;
+    };
   };
   deployment_status?: {
     id?: number;
@@ -196,7 +213,7 @@ export async function processGithubWebhook(
       if (isTerminalPullRequestSignal(event.eventType, payload)) {
         await refreshPullRequestsBestEffort(
           () =>
-            refreshPullRequestsFromSignal(
+            refreshPullRequestsAndPromoteReady(
               db,
               event.orgId,
               payload,
@@ -213,7 +230,7 @@ export async function processGithubWebhook(
       if (isTerminalPullRequestSignal(event.eventType, payload)) {
         await refreshPullRequestsBestEffort(
           () =>
-            refreshPullRequestsFromSignal(
+            refreshPullRequestsAndPromoteReady(
               db,
               event.orgId,
               payload,
@@ -227,7 +244,7 @@ export async function processGithubWebhook(
       if (isTerminalPullRequestSignal(event.eventType, payload)) {
         await refreshPullRequestsBestEffort(
           () =>
-            refreshPullRequestsFromSignal(
+            refreshPullRequestsAndPromoteReady(
               db,
               event.orgId,
               payload,
@@ -611,24 +628,9 @@ async function processWorkflowRun(
   factory: GithubClientFactory,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
-  if (payload.action !== "completed" || !payload.workflow_run?.name?.startsWith("facility-"))
-    return;
-  const owner = payload.repository?.owner?.login;
-  const name = payload.repository?.name;
-  if (!owner || !name || payload.workflow_run.conclusion !== "failure") return;
-  const repo = (
-    await db
-      .select()
-      .from(repos)
-      .where(and(eq(repos.orgId, orgId), eq(repos.owner, owner), eq(repos.name, name)))
-      .limit(1)
-  )[0];
-  if (!repo) return;
-  // Store as an audit-visible health signal; watchtower escalation is a later worker chunk.
-  await auditGithub(db, repo.orgId, "github.workflow.failed", repo, {
-    workflow: payload.workflow_run.name,
-    url: payload.workflow_run.html_url,
-  });
+  if (payload.action !== "completed") return;
+  const workflowRun = payload.workflow_run;
+  if (workflowRun?.conclusion !== "failure") return;
   await processGithubAgentEvent(db, orgId, eventId, "workflow_run", payload, factory, enqueue);
 }
 
@@ -673,44 +675,119 @@ async function processGithubAgentEvent(
   // legacy/default lane is repo, so connecting an existing repository never
   // silently starts a weaker duplicate reviewer or repair agent.
   if (laneFor(repo, agent.name) !== "platform") return;
-  const pullRequest = pullRequestContext(eventType, payload);
+  let pullRequest = pullRequestContext(eventType, payload);
+  const workflowBranch = pullRequest.head;
+  if (eventType === "workflow_run" && workflowBranch && !pullRequest.number) {
+    const mirrored = (
+      await db
+        .select()
+        .from(ghPullRequests)
+        .where(
+          and(
+            eq(ghPullRequests.repoId, repo.id),
+            eq(ghPullRequests.state, "open"),
+            eq(ghPullRequests.headRef, workflowBranch),
+          ),
+        )
+        .orderBy(desc(ghPullRequests.updatedAt))
+        .limit(1)
+    )[0];
+    if (mirrored) {
+      pullRequest = {
+        number: mirrored.number,
+        title: mirrored.title,
+        body: mirrored.bodyMd,
+        url: mirrored.htmlUrl,
+        head: mirrored.headRef,
+        headSha: payload.workflow_run?.head_sha ?? mirrored.headSha,
+        base: mirrored.baseRef,
+      };
+    }
+  }
   const pullNumber = pullRequest.number;
   const branch = pullRequest.head;
   const deliveryContext = branch ? await githubDeliveryContext(db, repo, branch) : null;
-  const run = (
-    await db
-      .insert(runs)
-      .values({
-        id: newId("run"),
-        orgId,
-        projectId: repo.projectId,
-        agentDefId: agent.id,
-        mode: agent.name.replace(/-/g, "_"),
-        engine: agent.engine,
-        trigger: {
-          type: "github_event",
-          event: eventType,
-          action: payload.action ?? null,
-          delivery: eventId,
-          repository: { owner, name, defaultBranch: repo.defaultBranch },
-          pullRequest,
-          review: payload.review ?? null,
-          workflowRun: payload.workflow_run ?? null,
-          deliveryContext,
-        },
-        gh: {
+  if (eventType === "workflow_run") {
+    if (!pullNumber || !branch || !pullRequest.headSha || !deliveryContext) return;
+    await auditGithub(db, repo.orgId, "github.workflow.failed", repo, {
+      workflow: payload.workflow_run?.name,
+      url: payload.workflow_run?.html_url,
+      pullNumber,
+      branch,
+      headSha: pullRequest.headSha,
+    });
+    const eligibility = await ciRepairEligibility(db, repo, branch, pullRequest.headSha);
+    if (!eligibility.allowed) {
+      if (eligibility.reason === "attempts_exhausted") {
+        if (await ciRepairExhaustionReported(db, repo, branch, pullRequest.headSha)) return;
+        const client = new FacilityGithubClient(await factory(installationId), {
           owner,
           repo: name,
-          ...(pullNumber ? { issueNumber: pullNumber } : {}),
-          ...(branch ? { branch } : {}),
-        },
-        createdBy: {
-          type: "github",
-          id: payload.sender?.login ?? `${eventType}-webhook`,
-        },
-      })
-      .returning()
-  )[0];
+          defaultBranch: repo.defaultBranch,
+        });
+        await client
+          .createIssueComment(
+            pullNumber,
+            `Facility stopped automatic CI repair after ${eligibility.maxAttempts} attempts. The draft PR and failing GitHub checks remain available for human iteration.`,
+          )
+          .catch(() => undefined);
+        await auditGithub(db, orgId, "github.ci_repair.exhausted", repo, {
+          pullNumber,
+          branch,
+          headSha: pullRequest.headSha,
+          attempts: eligibility.attempts,
+          maxAttempts: eligibility.maxAttempts,
+        });
+      }
+      return;
+    }
+    const workflowRun = payload.workflow_run;
+    const workflowRunId = workflowRun?.id;
+    if (workflowRun && workflowRunId) {
+      const client = new FacilityGithubClient(await factory(installationId), {
+        owner,
+        repo: name,
+        defaultBranch: repo.defaultBranch,
+      });
+      workflowRun.failureContext = await client
+        .getWorkflowFailureContext(workflowRunId)
+        .catch(() => ({ jobs: [] }));
+    }
+  }
+  const values = {
+    id: newId("run"),
+    orgId,
+    projectId: repo.projectId,
+    agentDefId: agent.id,
+    mode: agent.name.replace(/-/g, "_"),
+    engine: agent.engine,
+    trigger: {
+      type: "github_event",
+      event: eventType,
+      action: payload.action ?? null,
+      delivery: eventId,
+      repository: { owner, name, defaultBranch: repo.defaultBranch },
+      pullRequest,
+      review: payload.review ?? null,
+      workflowRun: payload.workflow_run ?? null,
+      deliveryContext,
+    },
+    gh: {
+      owner,
+      repo: name,
+      ...(pullNumber ? { issueNumber: pullNumber } : {}),
+      ...(branch ? { branch } : {}),
+    },
+    createdBy: {
+      type: "github",
+      id: payload.sender?.login ?? `${eventType}-webhook`,
+    },
+  };
+  const inserted =
+    eventType === "workflow_run"
+      ? await db.insert(runs).values(values).onConflictDoNothing().returning()
+      : await db.insert(runs).values(values).returning();
+  const run = inserted[0];
   if (!run) return;
   await db.insert(runEvents).values({
     orgId,
@@ -789,6 +866,8 @@ async function githubDeliveryContext(
         and(
           eq(runs.orgId, repo.orgId),
           eq(runs.projectId, repo.projectId),
+          sql`${runs.gh}->>'owner' = ${repo.owner}`,
+          sql`${runs.gh}->>'repo' = ${repo.name}`,
           sql`${runs.gh}->>'branch' = ${branch}`,
           // The builder run owns the accepted plan and original request. Newer
           // review/repair runs on the same branch must not erase that lineage.
@@ -811,6 +890,8 @@ async function githubDeliveryContext(
           eq(runs.orgId, repo.orgId),
           eq(runs.projectId, repo.projectId),
           eq(runs.status, "succeeded"),
+          sql`${runs.gh}->>'owner' = ${repo.owner}`,
+          sql`${runs.gh}->>'repo' = ${repo.name}`,
           sql`${runs.gh}->>'branch' = ${branch}`,
           inArray(runs.mode, ["address_review", "address-review", "ci_doctor", "ci-doctor"]),
         ),
@@ -853,6 +934,85 @@ async function githubDeliveryContext(
       };
     }),
   };
+}
+
+async function ciRepairEligibility(
+  db: FacilityDb,
+  repo: typeof repos.$inferSelect,
+  branch: string,
+  headSha: string,
+) {
+  const project = (
+    await db
+      .select({ settings: projects.settings })
+      .from(projects)
+      .where(and(eq(projects.orgId, repo.orgId), eq(projects.id, repo.projectId)))
+      .limit(1)
+  )[0];
+  const configured = objectValue(project?.settings).ci_repair_max_attempts;
+  const maxAttempts =
+    typeof configured === "number" && Number.isInteger(configured) && configured >= 1
+      ? Math.min(configured, 10)
+      : 3;
+  const repairRuns = await db
+    .select({ trigger: runs.trigger })
+    .from(runs)
+    .where(
+      and(
+        eq(runs.orgId, repo.orgId),
+        eq(runs.projectId, repo.projectId),
+        sql`${runs.gh}->>'owner' = ${repo.owner}`,
+        sql`${runs.gh}->>'repo' = ${repo.name}`,
+        sql`${runs.gh}->>'branch' = ${branch}`,
+        inArray(runs.mode, ["ci_doctor", "ci-doctor"]),
+        sql`${runs.trigger}->>'event' = 'workflow_run'`,
+      ),
+    );
+  const duplicate = repairRuns.some(
+    (run) => objectValue(objectValue(run.trigger).pullRequest).headSha === headSha,
+  );
+  if (duplicate) {
+    return {
+      allowed: false,
+      reason: "duplicate_head_sha" as const,
+      attempts: repairRuns.length,
+      maxAttempts,
+    };
+  }
+  if (repairRuns.length >= maxAttempts) {
+    return {
+      allowed: false,
+      reason: "attempts_exhausted" as const,
+      attempts: repairRuns.length,
+      maxAttempts,
+    };
+  }
+  return { allowed: true, reason: "eligible" as const, attempts: repairRuns.length, maxAttempts };
+}
+
+async function ciRepairExhaustionReported(
+  db: FacilityDb,
+  repo: typeof repos.$inferSelect,
+  branch: string,
+  headSha: string,
+) {
+  const reported = (
+    await db
+      .select({ id: auditEvents.id })
+      .from(auditEvents)
+      .where(
+        and(
+          eq(auditEvents.orgId, repo.orgId),
+          eq(auditEvents.projectId, repo.projectId),
+          eq(auditEvents.action, "github.ci_repair.exhausted"),
+          sql`${auditEvents.target}->>'id' = ${repo.id}`,
+          sql`${auditEvents.payload}->>'branch' = ${branch}`,
+          sql`${auditEvents.payload}->>'headSha' = ${headSha}`,
+        ),
+      )
+      .limit(1)
+  )[0];
+  return Boolean(reported);
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -1064,7 +1224,7 @@ async function refreshPullRequestFromWebhook(
   await refreshGhPullRequest(db, factory, repo, number);
 }
 
-async function refreshPullRequestsFromSignal(
+async function refreshPullRequestsAndPromoteReady(
   db: FacilityDb,
   orgId: string,
   payload: WebhookPayload,
@@ -1096,7 +1256,65 @@ async function refreshPullRequestsFromSignal(
     payload.check_suite?.head_sha ??
     payload.workflow_run?.head_sha ??
     payload.sha;
-  return refreshPullRequestsForSignal(db, factory, repo, { numbers, headSha });
+  const refreshed = await refreshPullRequestsForSignal(db, factory, repo, { numbers, headSha });
+  await promotePassingFacilityDrafts(db, factory, repo, { numbers, headSha });
+  return refreshed;
+}
+
+async function promotePassingFacilityDrafts(
+  db: FacilityDb,
+  factory: GithubClientFactory,
+  repo: typeof repos.$inferSelect,
+  input: { numbers: number[]; headSha?: string | null },
+) {
+  const candidates = await db
+    .select()
+    .from(ghPullRequests)
+    .where(
+      and(
+        eq(ghPullRequests.repoId, repo.id),
+        eq(ghPullRequests.state, "open"),
+        eq(ghPullRequests.draft, true),
+        eq(ghPullRequests.ciState, "success"),
+        sql`${ghPullRequests.ciHeadSha} = ${ghPullRequests.headSha}`,
+        input.headSha
+          ? eq(ghPullRequests.headSha, input.headSha)
+          : input.numbers.length
+            ? inArray(ghPullRequests.number, input.numbers)
+            : sql`false`,
+      ),
+    );
+  if (!candidates.length) return;
+  const client = await createGithubClientForRepo(db, factory, repo);
+  let firstError: unknown;
+  for (const pull of candidates) {
+    try {
+      const deliveryContext = await githubDeliveryContext(db, repo, pull.headRef);
+      if (!deliveryContext) continue;
+      const transitioned = await client.markPullRequestReadyForReview(pull.number, pull.headSha);
+      if (!transitioned) continue;
+      await db
+        .update(ghPullRequests)
+        .set({ draft: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(ghPullRequests.orgId, repo.orgId),
+            eq(ghPullRequests.repoId, repo.id),
+            eq(ghPullRequests.number, pull.number),
+            eq(ghPullRequests.headSha, pull.headSha),
+            eq(ghPullRequests.ciState, "success"),
+          ),
+        );
+      await auditGithub(db, repo.orgId, "github.pr.ready", repo, {
+        pullNumber: pull.number,
+        branch: pull.headRef,
+        headSha: pull.headSha,
+      });
+    } catch (error) {
+      firstError ??= error;
+    }
+  }
+  if (firstError) throw firstError;
 }
 
 /**

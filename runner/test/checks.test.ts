@@ -4,6 +4,7 @@ import {
   checkEvent,
   deliveryFailure,
   engineEnv,
+  githubCiOwnsAcceptance,
   parseSelfReportedChecks,
   redactEventData,
   redactSecrets,
@@ -65,6 +66,24 @@ describe("builder delivery invariant", () => {
     expect(requiresDelivery("codex-builder")).toBe(true);
     expect(requiresDelivery("architect")).toBe(false);
     expect(requiresDelivery("review")).toBe(false);
+  });
+
+  it("defers GitHub builder and repair acceptance to the durable pull request", () => {
+    expect(githubCiOwnsAcceptance({ mode: "builder", repo })).toBe(true);
+    expect(githubCiOwnsAcceptance({ mode: "codex-builder", repo })).toBe(true);
+    expect(githubCiOwnsAcceptance({ mode: "ci-doctor", repo })).toBe(true);
+    expect(githubCiOwnsAcceptance({ mode: "address-review", repo })).toBe(true);
+  });
+
+  it("keeps local gates for non-GitHub and non-delivery runs", () => {
+    expect(
+      githubCiOwnsAcceptance({
+        mode: "builder",
+        repo: { ...repo, cloneUrl: "https://gitlab.example/acme/project.git" },
+      }),
+    ).toBe(false);
+    expect(githubCiOwnsAcceptance({ mode: "review", repo })).toBe(false);
+    expect(githubCiOwnsAcceptance({ mode: "custom", repo })).toBe(false);
   });
 
   it("rejects no-op, unpushed, and push-failed builder results", () => {

@@ -63,9 +63,33 @@ export type Octokit = {
           closed_at?: string | null;
           merged_at?: string | null;
           html_url: string;
+          node_id?: string;
+          head?: { sha?: string };
           user?: { login?: string } | null;
         };
       }>;
+    };
+    actions?: {
+      listJobsForWorkflowRun: (args: Record<string, unknown>) => Promise<{
+        data: {
+          jobs?: Array<{
+            id: number;
+            name: string;
+            status?: string | null;
+            conclusion?: string | null;
+            html_url?: string | null;
+            steps?: Array<{
+              number?: number;
+              name?: string;
+              status?: string | null;
+              conclusion?: string | null;
+            }>;
+          }>;
+        };
+      }>;
+      downloadJobLogsForWorkflowRunJob?: (
+        args: Record<string, unknown>,
+      ) => Promise<{ data: unknown }>;
     };
     issues: {
       create: (
@@ -81,6 +105,16 @@ export type Octokit = {
       updateComment: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { id: number; html_url?: string } }>;
+      get?: (args: Record<string, unknown>) => Promise<{
+        data: {
+          number: number;
+          title: string;
+          body?: string | null;
+          html_url: string;
+          user?: { login?: string } | null;
+          labels?: Array<string | { name?: string }>;
+        };
+      }>;
       addAssignees?: (args: Record<string, unknown>) => Promise<{
         data: { assignees?: Array<{ login?: string | null }> };
       }>;
@@ -106,6 +140,13 @@ export type GithubInstallationTokenFactory = (input: {
   repo: string;
   permissions?: Record<string, string>;
 }) => Promise<string>;
+
+export class GithubIssueContextTooLargeError extends Error {
+  constructor() {
+    super("GitHub issue comments exceed the governed context limit");
+    this.name = "GithubIssueContextTooLargeError";
+  }
+}
 
 export function createGithubClientFactory(config: AppConfig): GithubClientFactory {
   if (!config.githubAppId || !config.githubAppPrivateKey) {
@@ -311,6 +352,7 @@ export class FacilityGithubClient {
     body: string;
     head: string;
     base?: string;
+    draft?: boolean;
   }): Promise<{ number: number; url: string }> {
     this.refuseDefaultBranch(args.head);
     const response = await this.octokit.rest.pulls.create({
@@ -320,8 +362,79 @@ export class FacilityGithubClient {
       body: args.body,
       head: args.head,
       base: args.base ?? this.repo.defaultBranch,
+      draft: args.draft ?? false,
     });
     return { number: response.data.number, url: response.data.html_url };
+  }
+
+  async markPullRequestReadyForReview(number: number, expectedHeadSha: string): Promise<boolean> {
+    if (!this.octokit.rest.pulls.get || !this.octokit.graphql) {
+      throw new Error("GitHub draft pull-request transitions are unavailable");
+    }
+    const response = await this.octokit.rest.pulls.get({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      pull_number: number,
+    });
+    if (response.data.draft !== true || response.data.head?.sha !== expectedHeadSha) return false;
+    const pullRequestId = response.data.node_id;
+    if (!pullRequestId) throw new Error("GitHub pull request node id is unavailable");
+    await this.octokit.graphql(
+      `mutation FacilityMarkPullRequestReady($pullRequestId: ID!) {
+        markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {
+          pullRequest { number isDraft }
+        }
+      }`,
+      { pullRequestId },
+    );
+    return true;
+  }
+
+  async getWorkflowFailureContext(runId: number) {
+    const actions = this.octokit.rest.actions;
+    if (!actions?.listJobsForWorkflowRun) return { jobs: [] };
+    const response = await actions.listJobsForWorkflowRun({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      run_id: runId,
+      filter: "latest",
+      per_page: 100,
+    });
+    const failed = (response.data.jobs ?? []).filter((job) =>
+      ["failure", "timed_out", "cancelled", "action_required"].includes(job.conclusion ?? ""),
+    );
+    const jobs = await Promise.all(
+      failed.slice(0, 5).map(async (job) => {
+        let logTail: string | null = null;
+        if (actions.downloadJobLogsForWorkflowRunJob) {
+          try {
+            const logs = await actions.downloadJobLogsForWorkflowRunJob({
+              owner: this.repo.owner,
+              repo: this.repo.repo,
+              job_id: job.id,
+            });
+            logTail = workflowLogText(logs.data).slice(-16_000) || null;
+          } catch {
+            // Failed steps still give the repair agent a deterministic target.
+          }
+        }
+        return {
+          id: job.id,
+          name: job.name,
+          conclusion: job.conclusion ?? "failure",
+          url: job.html_url ?? null,
+          failedSteps: (job.steps ?? [])
+            .filter((step) => step.conclusion && step.conclusion !== "success")
+            .map((step) => ({
+              number: step.number ?? null,
+              name: step.name ?? "unknown step",
+              conclusion: step.conclusion ?? null,
+            })),
+          logTail,
+        };
+      }),
+    );
+    return { jobs };
   }
 
   async listPullRequestSnapshots(params: {
@@ -527,7 +640,10 @@ export class FacilityGithubClient {
     return response.data;
   }
 
-  async listIssueComments(number: number): Promise<
+  async listIssueComments(
+    number: number,
+    maxChars?: number,
+  ): Promise<
     Array<{
       id: number;
       author: string;
@@ -538,20 +654,52 @@ export class FacilityGithubClient {
     }>
   > {
     if (!this.octokit.rest.issues.listComments) return [];
-    const response = await this.octokit.rest.issues.listComments({
+    const comments: Array<{
+      id: number;
+      author: string;
+      authorType: string;
+      body: string;
+      createdAt: string;
+      url: string;
+    }> = [];
+    let serializedChars = 2;
+    for (let page = 1; ; page += 1) {
+      const response = await this.octokit.rest.issues.listComments({
+        owner: this.repo.owner,
+        repo: this.repo.repo,
+        issue_number: number,
+        page,
+        per_page: 100,
+      });
+      const mapped = response.data.map((comment) => ({
+        id: comment.id,
+        author: comment.user?.login ?? "unknown",
+        authorType: comment.user?.type ?? "User",
+        body: comment.body ?? "",
+        createdAt: comment.created_at,
+        url: comment.html_url,
+      }));
+      for (const comment of mapped) {
+        serializedChars += JSON.stringify(comment).length + 1;
+        if (maxChars !== undefined && serializedChars > maxChars) {
+          throw new GithubIssueContextTooLargeError();
+        }
+        comments.push(comment);
+      }
+      if (response.data.length < 100) return comments;
+    }
+  }
+
+  async getIssue(number: number) {
+    if (!this.octokit.rest.issues.get) {
+      throw new Error("GitHub issue retrieval is unavailable");
+    }
+    const response = await this.octokit.rest.issues.get({
       owner: this.repo.owner,
       repo: this.repo.repo,
       issue_number: number,
-      per_page: 100,
     });
-    return response.data.map((comment) => ({
-      id: comment.id,
-      author: comment.user?.login ?? "unknown",
-      authorType: comment.user?.type ?? "User",
-      body: comment.body ?? "",
-      createdAt: comment.created_at,
-      url: comment.html_url,
-    }));
+    return response.data;
   }
 
   async getPullRequest(number: number): Promise<{
@@ -656,6 +804,13 @@ export class FacilityGithubClient {
     }
     return { ...node, closingIssuesReferences: { nodes } };
   }
+}
+
+function workflowLogText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+  if (value instanceof ArrayBuffer) return Buffer.from(value).toString("utf8");
+  return "";
 }
 
 type ClosingIssueNode = {
