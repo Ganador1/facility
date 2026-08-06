@@ -65,8 +65,18 @@ function eventLabel(event: RunEvent) {
   return `${event.type}: ${text}`;
 }
 
-function phaseForEvent(event: RunEvent): PhaseKey {
+export function phaseForEvent(event: RunEvent): PhaseKey {
   const haystack = `${event.type} ${textFromData(event.data)}`.toLowerCase();
+  if (event.type === "phase") {
+    const name = typeof event.data.name === "string" ? event.data.name : "";
+    if (name === "acceptance") return "checks";
+    if (
+      ["bootstrap", "workspace", "runner_runtime", "package_install", "provision"].includes(name)
+    ) {
+      return "provisioning";
+    }
+    return "running";
+  }
   if (event.type === "queued" || haystack.includes("queue")) return "queued";
   if (
     event.type === "provisioning" ||
@@ -117,7 +127,10 @@ function resultIsBad(event: RunEvent) {
   );
 }
 
-function derivePhases(events: RunEvent[], run: Run) {
+export function derivePhases(
+  events: RunEvent[],
+  run: Pick<Run, "queuedAt" | "startedAt" | "status">,
+) {
   const byPhase = new Map<PhaseKey, RunEvent[]>();
   for (const event of events) {
     const phase = phaseForEvent(event);

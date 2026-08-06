@@ -318,6 +318,32 @@ describe("sandbox api", async () => {
     }
   });
 
+  it("persists authenticated runner phase timings without a schema migration", async () => {
+    const token = "frt_phase_timing";
+    const run = await insertRunnerRun(token, "running");
+    const payload = {
+      name: "package_install",
+      status: "completed",
+      duration_ms: 1_234,
+      outcome: "succeeded",
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/runs/${run.id}/events`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: [{ type: "phase", data: payload }],
+    });
+
+    expect(response.statusCode).toBe(200);
+    const [stored] = await db
+      .select({ type: runEvents.type, data: runEvents.data, ts: runEvents.ts })
+      .from(runEvents)
+      .where(eq(runEvents.runId, run.id));
+    expect(stored).toMatchObject({ type: "phase", data: payload });
+    expect(stored?.ts).toBeInstanceOf(Date);
+  });
+
   it("aws driver fails loudly as not_configured when env is missing", async () => {
     await expect(
       new AwsSandboxDriver().launch({

@@ -5,7 +5,8 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { deliveryFailure, prepareWorkspace, shipGitChanges } from "../src/index.js";
+import { deliveryFailure, emitRunEvents, prepareWorkspace, shipGitChanges } from "../src/index.js";
+import { RunPhaseRecorder } from "../src/phases.js";
 import type { RunBundle } from "../src/types.js";
 
 type RecordedRequest = {
@@ -360,6 +361,39 @@ function configureRunner(facilityOrigin: string) {
   process.env.RUN_ID = "run_integration";
   process.env.RUNNER_TOKEN = "runner-integration-token";
 }
+
+it("delivers phase events through the authenticated runner API", async () => {
+  const facility = await startFacilityServer("github-integration-token");
+  configureRunner(facility.origin);
+  const phases = new RunPhaseRecorder(emitRunEvents, () => 100);
+
+  await phases.measure(
+    "workspace",
+    async () => undefined,
+    () => ({ outcome: "succeeded" }),
+  );
+
+  const requests = facilityRequests(facility.requests, "/events");
+  expect(requests).toHaveLength(1);
+  expect(
+    requests.every(
+      (request) => request.headers.authorization === "Bearer runner-integration-token",
+    ),
+  ).toBe(true);
+  expect(requests.map((request) => JSON.parse(request.body))).toEqual([
+    [
+      {
+        type: "phase",
+        data: {
+          name: "workspace",
+          status: "completed",
+          duration_ms: 0,
+          outcome: "succeeded",
+        },
+      },
+    ],
+  ]);
+});
 
 function facilityRequests(requests: RecordedRequest[], suffix: string) {
   return requests.filter((request) => request.path.endsWith(suffix));

@@ -189,8 +189,29 @@ describe("sandbox docker e2e", () => {
       .orderBy(runEvents.seq);
     const types = events.map((event) => event.type);
     expect(types).toEqual(
-      expect.arrayContaining(["hello", "shell", "assistant", "steer", "check"]),
+      expect.arrayContaining(["hello", "phase", "shell", "assistant", "steer", "check"]),
     );
+    const phaseEvents = events
+      .filter((event) => event.type === "phase")
+      .map((event) => event.data as Record<string, unknown>);
+    expect(phaseEvents.map((event) => event.name)).toEqual([
+      "bootstrap",
+      "workspace",
+      "runner_runtime",
+      "package_install",
+      "provision",
+      "agent",
+      "result_capture",
+      "acceptance",
+      "delivery",
+    ]);
+    for (const event of phaseEvents) {
+      expect(event.status).toMatch(/^(completed|skipped)$/);
+      expect(event.duration_ms).toEqual(expect.any(Number));
+      expect(event.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(event).not.toHaveProperty("command");
+      expect(event).not.toHaveProperty("output");
+    }
     // Revocation trails the terminal status (it runs in the orchestrator's
     // cleanup, not the status transition) — poll instead of racing it.
     await waitFor(async () => {

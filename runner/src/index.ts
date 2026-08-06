@@ -25,6 +25,7 @@ import {
   parseCodexJsonlLine,
   parseCodexSessionId,
 } from "./parsers.js";
+import { RunPhaseRecorder } from "./phases.js";
 import type { RunBundle, RunEvent } from "./types.js";
 
 const workRoot = "/work";
@@ -75,85 +76,124 @@ export function redactSecrets(text: string, secrets: Iterable<string> = secretsT
 
 async function main() {
   const startedAt = Date.now();
+  const phases = new RunPhaseRecorder(emit);
   let bundle: RunBundle | null = null;
   let steerStop: (() => void) | undefined;
   let progressStop: (() => Promise<boolean>) | undefined;
   secretsToRedact.add(runnerToken());
   try {
+    phases.start("bootstrap");
     const hello = await api<Record<string, unknown>>(`/internal/runs/${currentRunId()}/hello`, {
       method: "POST",
     });
     bundle = (await fetchJson(String(hello.bundleUrl), {
       headers: { authorization: `Bearer ${runnerToken()}` },
     })) as RunBundle;
-    await prepareWorkspace(bundle, String(hello.virtualKey), {
-      platformKey: hello.platformKey ? String(hello.platformKey) : null,
-      platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl(),
-      projectId: hello.projectId ? String(hello.projectId) : "",
-      repoToken: hello.repoToken ? String(hello.repoToken) : null,
+    const activeBundle = bundle;
+    await phases.finish({ outcome: "succeeded" });
+    await phases.measure("workspace", () =>
+      prepareWorkspace(activeBundle, String(hello.virtualKey), {
+        platformKey: hello.platformKey ? String(hello.platformKey) : null,
+        platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl(),
+        projectId: hello.projectId ? String(hello.projectId) : "",
+        repoToken: hello.repoToken ? String(hello.repoToken) : null,
+      }),
+    );
+    await phases.measure("runner_runtime", async () => {
+      await grantWorkspaceToUntrusted();
+      await prepareRunnerRuntime();
     });
-    await grantWorkspaceToUntrusted();
-    await prepareRunnerRuntime();
     steerStop = startSteeringPoll();
-    if (bundle.packageInstallCmd) {
+    const packageInstallCmd = activeBundle.packageInstallCmd;
+    if (packageInstallCmd) {
       const packageToken = hello.packageRegistryToken
         ? String(hello.packageRegistryToken).trim()
         : null;
       if (packageToken) secretsToRedact.add(packageToken);
-      if (packageToken && !privateRegistryInstallCommand(bundle.packageInstallCmd)) {
+      if (packageToken && !privateRegistryInstallCommand(packageInstallCmd)) {
         throw new Error("package_install_command_not_allowed_for_private_registry");
       }
-      const installed = await runPackageInstall(
-        bundle.packageInstallCmd,
-        cwdFor(bundle),
-        bundle.timeoutMin,
-        packageToken,
+      const installed = await phases.measure(
+        "package_install",
+        () =>
+          runPackageInstall(
+            packageInstallCmd,
+            cwdFor(activeBundle),
+            activeBundle.timeoutMin,
+            packageToken,
+          ),
+        (code) => ({ outcome: code === 0 ? "succeeded" : "failed" }),
       );
       if (installed !== 0) {
         await postResult(bundle, "failed", startedAt, { code: "package_install_failed" });
         return;
       }
+    } else {
+      await phases.skip("package_install", "not_configured");
     }
-    if (bundle.provisionCmd) {
-      const provision = await runShell(
-        bundle.provisionCmd,
-        cwdFor(bundle),
-        "shell",
-        bundle.timeoutMin,
+    const provisionCmd = activeBundle.provisionCmd;
+    if (provisionCmd) {
+      const provision = await phases.measure(
+        "provision",
+        () => runShell(provisionCmd, cwdFor(activeBundle), "shell", activeBundle.timeoutMin),
+        (code) => ({ outcome: code === 0 ? "succeeded" : "failed" }),
       );
       if (provision !== 0) {
         await postResult(bundle, "failed", startedAt, { code: "provision_failed" });
         return;
       }
+    } else {
+      await phases.skip("provision", "not_configured");
     }
     await writeFile(transcriptFile, "");
     progressStop = startAgentProgressPoll(cwdFor(bundle));
-    const engineCode = await runEngine(bundle, startedAt);
-    const progressPublished = await progressStop();
-    progressStop = undefined;
-    const securityReport = isSecurityMode(bundle.mode)
-      ? await readSecurityReport(join(cwdFor(bundle), ".agent-sdlc", "security-findings.json"))
-      : undefined;
-    const securityReportConfigured = !isSecurityMode(bundle.mode) || securityReport !== null;
-    if (isSecurityMode(bundle.mode)) {
-      await emit([
-        {
-          type: "check",
-          data: {
-            self_reported: false,
-            name: "structured security findings",
-            status: securityReportConfigured ? "passed" : "failed",
-            ...(securityReportConfigured ? {} : { reason: "security_report_invalid" }),
+    const stopProgress = progressStop;
+    const engineCode = await phases.measure(
+      "agent",
+      () => runEngine(activeBundle, startedAt),
+      (code) => ({
+        outcome: interruptRequested ? "canceled" : code === 0 ? "succeeded" : "failed",
+      }),
+    );
+    const captured = await phases.measure("result_capture", async () => {
+      const progressPublished = await stopProgress();
+      progressStop = undefined;
+      const securityReport = isSecurityMode(activeBundle.mode)
+        ? await readSecurityReport(
+            join(cwdFor(activeBundle), ".agent-sdlc", "security-findings.json"),
+          )
+        : undefined;
+      const securityReportConfigured =
+        !isSecurityMode(activeBundle.mode) || securityReport !== null;
+      if (isSecurityMode(activeBundle.mode)) {
+        await emit([
+          {
+            type: "check",
+            data: {
+              self_reported: false,
+              name: "structured security findings",
+              status: securityReportConfigured ? "passed" : "failed",
+              ...(securityReportConfigured ? {} : { reason: "security_report_invalid" }),
+            },
           },
-        },
-      ]);
-    }
-    await uploadTranscript();
-    await uploadSessionState(bundle);
+        ]);
+      }
+      await uploadTranscript();
+      await uploadSessionState(activeBundle);
+      return {
+        progressPublished,
+        securityReport,
+        securityReportConfigured,
+      };
+    });
+    const { progressPublished, securityReport, securityReportConfigured } = captured;
     if (interruptRequested) {
+      await phases.skip("acceptance", "agent_canceled");
+      await phases.skip("delivery", "agent_canceled");
       await postResult(bundle, "canceled", startedAt, "human_interrupt");
       return;
     }
+    phases.start("acceptance");
     await emitChecks(cwdFor(bundle));
     const progressConfigured = !requiresAgentProgress(bundle.mode) || progressPublished;
     if (requiresAgentProgress(bundle.mode)) {
@@ -231,15 +271,29 @@ async function main() {
           ? true
           : await runChecks(bundle, cwdFor(bundle))
         : false;
+    await phases.finish({ outcome: checksPassed ? "succeeded" : "failed" });
     const engineAndChecksSucceeded = engineCode === 0 && checksPassed && securityReportConfigured;
+    let delivery: {
+      git: Awaited<ReturnType<typeof shipGitChanges>> | undefined;
+      error: string | null;
+    };
     if (engineAndChecksSucceeded) {
-      await emit([{ type: "delivery", data: { status: "preparing" } }]);
+      delivery = await phases.measure(
+        "delivery",
+        async () => {
+          await emit([{ type: "delivery", data: { status: "preparing" } }]);
+          const git = await shipGitChanges(activeBundle);
+          const error = deliveryFailure(activeBundle, git);
+          await emit([deliveryStatusEvent(git, error)]);
+          return { git, error };
+        },
+        ({ error }) => ({ outcome: error ? "failed" : "succeeded" }),
+      );
+    } else {
+      await phases.skip("delivery", "run_preconditions_failed");
+      delivery = { git: undefined, error: null };
     }
-    const git = engineAndChecksSucceeded ? await shipGitChanges(bundle) : undefined;
-    const deliveryError = engineAndChecksSucceeded ? deliveryFailure(bundle, git) : null;
-    if (engineAndChecksSucceeded) {
-      await emit([deliveryStatusEvent(git, deliveryError)]);
-    }
+    const { git, error: deliveryError } = delivery;
     const succeeded = engineAndChecksSucceeded && deliveryError === null;
     await postResult(
       bundle,
@@ -262,6 +316,7 @@ async function main() {
       securityReport ?? undefined,
     );
   } catch (error) {
+    await phases.fail().catch(() => undefined);
     await postResult(bundle, "failed", startedAt, { error: errorMessage(error) }).catch(
       () => undefined,
     );
@@ -1832,6 +1887,8 @@ async function emit(events: RunEvent[]) {
     body: JSON.stringify(safe),
   });
 }
+
+export { emit as emitRunEvents };
 
 async function api<T>(
   path: string,
