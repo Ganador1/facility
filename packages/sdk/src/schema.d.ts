@@ -799,6 +799,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/stories/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get story */
+        get: operations["getProjectsByProjectIdStoriesByNumber"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{projectId}/stories/{number}/github-activity": {
         parameters: {
             query?: never;
@@ -2718,6 +2735,8 @@ export interface operations {
                             userId?: string;
                             email?: string;
                             name?: string;
+                            githubLogin?: string;
+                            avatarUrl?: string;
                             projectId?: string | null;
                             permissions: string[];
                         };
@@ -8463,6 +8482,7 @@ export interface operations {
                     "application/json": {
                         items: {
                             id: string;
+                            repoId: string;
                             number: number;
                             title: string;
                             state: string;
@@ -8580,27 +8600,66 @@ export interface operations {
                 content: {
                     "application/json": {
                         stages: {
-                            key: string;
+                            /** @enum {string} */
+                            key: "backlog" | "planning" | "ready" | "building" | "validating" | "review" | "shipped";
                             label: string;
                             sub: string;
-                            kind: string;
+                            /** @enum {string} */
+                            kind: "human" | "agent" | "machine" | "done";
                             count: number;
-                            issues: {
+                            stories: {
+                                key: string;
+                                id: string;
+                                /** @enum {string} */
+                                storyType: "issue" | "pull_request";
+                                repoId: string;
+                                repoOwner: string;
+                                repoName: string;
                                 number: number;
                                 title: string;
-                                state: string;
-                                htmlUrl: string | null;
+                                /** @enum {string} */
+                                state: "open" | "closed" | "merged";
+                                labels: string[];
+                                assignees: string[];
+                                author: string | null;
+                                htmlUrl: string;
+                                commentsCount: number;
+                                /** Format: date-time */
+                                ghCreatedAt: string | null;
+                                /** Format: date-time */
+                                ghUpdatedAt: string | null;
+                                /** Format: date-time */
+                                closedAt: string | null;
                                 /** @enum {string|null} */
                                 runState: "live" | "failed" | null;
                                 currentRun: {
                                     id: string;
                                     mode: string;
                                     status: string;
+                                    engine: string;
                                 } | null;
+                                attemptCount: number;
                                 prs: {
                                     number: number;
+                                    title: string;
                                     url: string;
+                                    /** @enum {string} */
+                                    state: "open" | "closed" | "merged";
+                                    draft: boolean;
+                                    headSha: string | null;
+                                    /** @enum {string|null} */
+                                    ciState: "pending" | "success" | "failure" | null;
+                                    ciHeadSha: string | null;
+                                    /** Format: date-time */
+                                    createdAt: string | null;
+                                    /** Format: date-time */
+                                    closedAt: string | null;
+                                    /** Format: date-time */
+                                    mergedAt: string | null;
                                 }[];
+                                /** @enum {string|null} */
+                                ciState: "pending" | "failure" | null;
+                                ciUrl: string | null;
                             }[];
                         }[];
                     };
@@ -8682,7 +8741,9 @@ export interface operations {
     };
     getProjectsByProjectIdIssuesByNumber: {
         parameters: {
-            query?: never;
+            query?: {
+                repoId?: string;
+            };
             header?: never;
             path: {
                 projectId: string;
@@ -8700,6 +8761,7 @@ export interface operations {
                 content: {
                     "application/json": {
                         id: string;
+                        repoId: string;
                         number: number;
                         title: string;
                         state: string;
@@ -8812,9 +8874,176 @@ export interface operations {
             };
         };
     };
+    getProjectsByProjectIdStoriesByNumber: {
+        parameters: {
+            query?: {
+                repoId?: string;
+                storyType?: "issue" | "pull_request";
+            };
+            header?: never;
+            path: {
+                projectId: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Default Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        key: string;
+                        id: string;
+                        /** @enum {string} */
+                        storyType: "issue" | "pull_request";
+                        repoId: string;
+                        repoOwner: string;
+                        repoName: string;
+                        number: number;
+                        title: string;
+                        /** @enum {string} */
+                        state: "open" | "closed" | "merged";
+                        labels: string[];
+                        assignees: string[];
+                        author: string | null;
+                        htmlUrl: string;
+                        bodyMd: string | null;
+                        commentsCount: number;
+                        /** Format: date-time */
+                        ghCreatedAt: string | null;
+                        /** Format: date-time */
+                        ghUpdatedAt: string | null;
+                        /** Format: date-time */
+                        closedAt: string | null;
+                        prs: {
+                            number: number;
+                            title: string;
+                            url: string;
+                            /** @enum {string} */
+                            state: "open" | "closed" | "merged";
+                            draft: boolean;
+                            headSha: string | null;
+                            /** @enum {string|null} */
+                            ciState: "pending" | "success" | "failure" | null;
+                            ciHeadSha: string | null;
+                            /** Format: date-time */
+                            createdAt: string | null;
+                            /** Format: date-time */
+                            closedAt: string | null;
+                            /** Format: date-time */
+                            mergedAt: string | null;
+                        }[];
+                        stage: {
+                            /** @enum {string} */
+                            key: "backlog" | "planning" | "ready" | "building" | "validating" | "review" | "shipped";
+                            label: string;
+                        } | null;
+                        pipelineStages: {
+                            /** @enum {string} */
+                            key: "backlog" | "planning" | "ready" | "building" | "validating" | "review" | "shipped";
+                            label: string;
+                        }[];
+                        allowLegacyProposalNumber: boolean;
+                        runs: {
+                            id: string;
+                            mode: string;
+                            engine: string;
+                            status: string;
+                            /** Format: date-time */
+                            startedAt: string | null;
+                            /** Format: date-time */
+                            endedAt: string | null;
+                            receipt: unknown;
+                            pr?: unknown;
+                            triggeredBy: string | null;
+                        }[];
+                    };
+                };
+            };
+            /** @description The request is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication is required or invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The authenticated principal lacks the required permission. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The requested resource was not found or is outside the principal scope. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request conflicts with current resource state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request rate limit was exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error occurred. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A required service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     getProjectsByProjectIdStoriesByNumberGithubActivity: {
         parameters: {
-            query?: never;
+            query?: {
+                repoId?: string;
+                storyType?: "issue" | "pull_request";
+            };
             header?: never;
             path: {
                 projectId: string;
@@ -8844,7 +9073,14 @@ export interface operations {
                             bodyMd: string;
                             author: string;
                             url: string;
-                            state: string;
+                            /** @enum {string} */
+                            state: "open" | "closed" | "merged";
+                            draft: boolean;
+                            createdAt: string | null;
+                            closedAt: string | null;
+                            mergedAt: string | null;
+                            /** @enum {string|null} */
+                            ciState: "pending" | "success" | "failure" | null;
                         }[];
                     };
                 };
@@ -9024,7 +9260,9 @@ export interface operations {
     };
     postProjectsByProjectIdIssuesByNumberTrigger: {
         parameters: {
-            query?: never;
+            query?: {
+                repoId?: string;
+            };
             header?: {
                 /** @description Replays the original response for the same principal, path, key, and request body for 24 hours. */
                 "Idempotency-Key"?: string;

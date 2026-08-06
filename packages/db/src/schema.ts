@@ -253,6 +253,53 @@ export const ghIssues = pgTable(
   ],
 );
 
+export const ghPullRequests = pgTable(
+  "gh_pull_requests",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    repoId: text("repo_id")
+      .notNull()
+      .references(() => repos.id),
+    number: integer("number").notNull(),
+    title: text("title").notNull(),
+    state: text("state").notNull(),
+    draft: boolean("draft").notNull().default(false),
+    author: text("author"),
+    headRef: text("head_ref").notNull(),
+    headSha: text("head_sha").notNull(),
+    baseRef: text("base_ref").notNull(),
+    htmlUrl: text("html_url").notNull(),
+    bodyMd: text("body_md"),
+    closingIssues: integer("closing_issues").array().notNull().default(sql`'{}'::integer[]`),
+    ciState: text("ci_state"),
+    ciHeadSha: text("ci_head_sha"),
+    ciUpdatedAt: timestamp("ci_updated_at", { withTimezone: true }),
+    ghCreatedAt: timestamp("gh_created_at", { withTimezone: true }),
+    ghUpdatedAt: timestamp("gh_updated_at", { withTimezone: true }),
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    mergedAt: timestamp("merged_at", { withTimezone: true }),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).defaultNow().notNull(),
+    ...timestamps,
+  },
+  (table) => [
+    unique("gh_pull_requests_repo_number_uidx").on(table.repoId, table.number),
+    index("gh_pull_requests_org_project_state_idx").on(table.orgId, table.projectId, table.state),
+    index("gh_pull_requests_repo_head_sha_idx").on(table.repoId, table.headSha),
+    index("gh_pull_requests_closing_issues_idx").using("gin", table.closingIssues),
+    check("gh_pull_requests_state_check", sql`${table.state} in ('open', 'closed', 'merged')`),
+    check(
+      "gh_pull_requests_ci_state_check",
+      sql`${table.ciState} is null or ${table.ciState} in ('pending', 'success', 'failure')`,
+    ),
+  ],
+);
+
 export const registryItems = pgTable(
   "registry_items",
   {
@@ -1076,6 +1123,8 @@ export const idempotencyRecords = pgTable(
 export const schedulerWatermarks = pgTable("scheduler_watermarks", {
   name: text("name").primaryKey(),
   lastTick: timestamp("last_tick", { withTimezone: true }).notNull(),
+  cursor: text("cursor"),
+  scanStartedAt: timestamp("scan_started_at", { withTimezone: true }),
   ...timestamps,
 });
 

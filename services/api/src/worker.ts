@@ -94,11 +94,20 @@ export async function startWorker() {
           data as { inboundEventId?: string },
           undefined,
           (name, payload) => boss.send(name, payload),
+          {
+            warn: (context, message) => logger.warn(context, message),
+          },
         );
       } else if (queue === "fingerprints.verify") {
         await enqueueFingerprintVerify(db, config, data as { repoId?: string });
       } else if (queue === "github.issues-sync") {
-        await enqueueGithubIssuesSync(db, config, data as { repoId?: string; orgId?: string });
+        result = await enqueueGithubIssuesSync(
+          db,
+          config,
+          data as { repoId?: string; orgId?: string },
+          undefined,
+          (targetQueue, targetData) => boss.send(targetQueue, targetData),
+        );
       }
       logger.info({ queue, jobId, ...result }, "worker completed job");
     });
@@ -114,6 +123,7 @@ export async function startWorker() {
   await boss.schedule("watchtower.canary", "0 4 * * 2", {});
   await boss.schedule("analytics.rollup", "5 * * * *", {});
   await boss.schedule("learning.nightly", "0 3 * * *", {});
+  await boss.schedule("github.issues-sync", "23 */6 * * *", {});
   logger.info({ queues }, "facility worker started");
   boss.on("stopped", () => void client.end());
   return boss;

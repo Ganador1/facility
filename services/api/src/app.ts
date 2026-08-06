@@ -8,6 +8,7 @@ import {
   orgs,
   projects,
   roles as rolesTable,
+  userIdentities,
   users,
 } from "@facility/db";
 import cookie from "@fastify/cookie";
@@ -406,11 +407,20 @@ async function resolvePrincipal(
       }
       const member = (
         await db
-          .select({ role: rolesTable, user: users, member: orgMembers })
+          .select({
+            role: rolesTable,
+            user: users,
+            member: orgMembers,
+            githubLogin: userIdentities.login,
+          })
           .from(orgMembers)
           .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
           .innerJoin(users, eq(orgMembers.userId, users.id))
           .innerJoin(githubInstallations, eq(githubInstallations.orgId, orgMembers.orgId))
+          .leftJoin(
+            userIdentities,
+            and(eq(userIdentities.userId, users.id), eq(userIdentities.provider, "github")),
+          )
           .where(
             and(
               eq(users.id, userId),
@@ -431,6 +441,8 @@ async function resolvePrincipal(
         orgId: member.member.orgId,
         email: member.user.email,
         name: member.user.name ?? undefined,
+        githubLogin: member.githubLogin ?? undefined,
+        avatarUrl: member.user.avatarUrl ?? undefined,
         permissions: member.role.permissions,
       };
     }
@@ -449,10 +461,14 @@ async function resolvePrincipal(
     }
     const member = (
       await db
-        .select({ role: rolesTable, user: users })
+        .select({ role: rolesTable, user: users, githubLogin: userIdentities.login })
         .from(orgMembers)
         .innerJoin(rolesTable, eq(orgMembers.roleId, rolesTable.id))
         .innerJoin(users, eq(orgMembers.userId, users.id))
+        .leftJoin(
+          userIdentities,
+          and(eq(userIdentities.userId, users.id), eq(userIdentities.provider, "github")),
+        )
         .where(
           and(
             eq(orgMembers.userId, session.userId),
@@ -471,6 +487,8 @@ async function resolvePrincipal(
       orgId: session.orgId,
       email: member.user.email,
       name: member.user.name ?? undefined,
+      githubLogin: member.githubLogin ?? undefined,
+      avatarUrl: member.user.avatarUrl ?? undefined,
       permissions: member.role.permissions,
     };
   } catch {

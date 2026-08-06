@@ -66,6 +66,7 @@ export const FACILITY_V1_ROUTES = [
   "GET /v1/projects/:projectId/previews",
   "GET /v1/projects/:projectId/repos",
   "GET /v1/projects/:projectId/runs",
+  "GET /v1/projects/:projectId/stories/:number",
   "GET /v1/projects/:projectId/stories/:number/github-activity",
   "GET /v1/projects/:projectId/tasks",
   "GET /v1/projects/:projectId/virtual-keys",

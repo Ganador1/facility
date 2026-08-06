@@ -6,6 +6,7 @@ import {
   oauthArtifacts,
   orgMembers,
   seed,
+  userIdentities,
   users,
 } from "@facility/db";
 import { createLocalJWKSet, decodeJwt, exportJWK, generateKeyPair, SignJWT } from "jose";
@@ -145,7 +146,19 @@ describe("Facility OAuth resource-server integration", async () => {
       payload: { email: `oauth-${Date.now()}@example.com` },
     });
     orgId = login.json().orgId;
-    await db.insert(users).values({ id: userId, email: `${userId}@example.com`, status: "active" });
+    await db.insert(users).values({
+      id: userId,
+      email: `${userId}@example.com`,
+      status: "active",
+      avatarUrl: "https://avatars.example/oauth-user.png",
+    });
+    await db.insert(userIdentities).values({
+      id: `identity_${Date.now()}`,
+      userId,
+      provider: "github",
+      providerSubject: `oauth-${Date.now()}`,
+      login: "oauth-octocat",
+    });
     await db
       .insert(orgMembers)
       .values({ id: newId("member"), orgId, userId, roleId: "role_bundled_owner" });
@@ -228,6 +241,10 @@ describe("Facility OAuth resource-server integration", async () => {
       headers: { authorization: `Bearer ${await token({ sub: userId, orgId })}` },
     });
     expect(accepted.statusCode).toBe(200);
+    expect(accepted.json().principal).toMatchObject({
+      githubLogin: "oauth-octocat",
+      avatarUrl: "https://avatars.example/oauth-user.png",
+    });
     const denied = await app.inject({
       method: "GET",
       url: "/v1/me",

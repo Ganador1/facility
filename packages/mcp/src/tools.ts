@@ -691,10 +691,14 @@ const readTools: ToolDefinition[] = [
     inputSchema: {
       projectId: z.string().min(1).describe("Facility project id."),
       number: z.number().int().positive().describe("GitHub issue number."),
+      repoId: optionalString.describe(
+        "Repository id. Required when the issue number exists in more than one project repository.",
+      ),
     },
     request: (args) => ({
       method: "GET",
       path: `/v1/projects/${pathPart(args.projectId)}/issues/${pathPart(String(args.number))}`,
+      query: { repoId: str(args.repoId) },
     }),
   },
   {
@@ -859,10 +863,13 @@ const writeTools: ToolDefinition[] = [
     inputSchema: {
       projectId: z.string().min(1).describe("Facility project id."),
       number: z.number().int().positive().describe("Synchronized GitHub issue number."),
+      repoId: optionalString.describe(
+        "Repository id. Required when the issue number exists in more than one project repository.",
+      ),
       agentName: z.string().min(1).describe("Agent definition name or command handle."),
     },
     summarize: (args) =>
-      `Trigger ${str(args.agentName)} from GitHub issue #${String(args.number)} in project ${str(args.projectId)}.`,
+      `Trigger ${str(args.agentName)} from GitHub issue #${String(args.number)}${args.repoId ? ` in repository ${str(args.repoId)}` : ""} in project ${str(args.projectId)}.`,
   },
   {
     name: "facility_create_project",

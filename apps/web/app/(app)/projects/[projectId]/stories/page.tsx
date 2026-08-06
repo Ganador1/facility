@@ -1,31 +1,34 @@
 import { cx, Eyebrow, StatusDot } from "@facility/ui";
 import Link from "next/link";
-import type { GhIssue } from "@/components/issues/issue-row";
+import type { ReactNode } from "react";
 import { IssueRow } from "@/components/issues/issue-row";
 import { SyncIssuesButton } from "@/components/issues/sync-button";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { StageSection } from "@/components/project/stage-section";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api } from "@/lib/api";
-import {
-  classifyPipeline,
-  PIPELINE_STAGES,
-  type PipelineStage,
-  pipelineCounts,
-} from "@/lib/pipeline";
-import { fetchAllProjectIssues } from "@/lib/project-issues";
+import type { PipelineStageKey, PipelineStageKind } from "@/lib/pipeline";
+import { pipelineStories } from "@/lib/pipeline";
 
 export const metadata = { title: "stories" };
 
-/** The list reads delivery-first: what's closest to shipping sits on top. */
-const DELIVERY_FIRST = [...PIPELINE_STAGES].reverse();
+const FILTER_DOT: Record<PipelineStageKind, ReactNode> = {
+  human: <StatusDot tone="human" />,
+  agent: <StatusDot tone="agent" />,
+  machine: <StatusDot tone="machine" />,
+  done: <StatusDot tone="ok" />,
+};
+const FILTER_COUNT_TONE: Record<PipelineStageKind, string> = {
+  human: "text-(--human)",
+  agent: "text-(--ink)",
+  machine: "text-(--info)",
+  done: "text-(--ink)",
+};
 
 function hasPermission(permissions: string[], permission: string) {
   const [resource] = permission.split(":");
   return permissions.some((p) => p === "*" || p === permission || p === `${resource}:*`);
 }
-
-const STAGE_KEYS = new Set(PIPELINE_STAGES.map((s) => s.key));
 
 export default async function ProjectStoriesPage({
   params,
@@ -35,30 +38,24 @@ export default async function ProjectStoriesPage({
   searchParams: Promise<{ stage?: string }>;
 }) {
   const [{ projectId }, { stage }] = await Promise.all([params, searchParams]);
-  const activeStage =
-    stage && STAGE_KEYS.has(stage as PipelineStage) ? (stage as PipelineStage) : null;
-  const [issues, me, inbox] = await Promise.all([
-    fetchAllProjectIssues<GhIssue>(projectId),
-    api.me(),
-    api.inboxFull(),
-  ]);
+  const [pipelineResult, me] = await Promise.all([api.pipeline(projectId), api.me()]);
 
-  if (!issues.ok && issues.offline) return <Offline />;
+  if (!pipelineResult.ok && pipelineResult.offline) return <Offline />;
 
   const permissions = me.ok ? me.data.permissions : [];
   const canTrigger = hasPermission(permissions, "runs:trigger");
   const canSync = hasPermission(permissions, "repos:write");
-  const items = issues.ok ? issues.items : [];
-  const proposals = inbox.ok
-    ? inbox.data.proposals.filter((x) => !x.projectId || x.projectId === projectId)
-    : [];
-  const stages = classifyPipeline(items, proposals);
-  const counts = [...pipelineCounts(stages)].reverse();
-  const openCount = items.filter((i) => i.state === "open").length;
+  const stages = pipelineResult.ok ? pipelineResult.data.stages : [];
+  const stageKeys = new Set(stages.map((candidate) => candidate.key));
+  const activeStage =
+    stage && stageKeys.has(stage as PipelineStageKey) ? (stage as PipelineStageKey) : null;
+  const items = pipelineResult.ok ? pipelineStories(pipelineResult.data) : [];
+  const counts = [...stages].reverse();
+  const activeOpenStoryCount = items.filter((story) => story.state === "open").length;
 
   const visibleStages = activeStage
-    ? DELIVERY_FIRST.filter((s) => s.key === activeStage)
-    : DELIVERY_FIRST;
+    ? counts.filter((candidate) => candidate.key === activeStage)
+    : counts;
 
   return (
     <div className="flex flex-col gap-8">
@@ -68,9 +65,9 @@ export default async function ProjectStoriesPage({
           <Eyebrow>stories</Eyebrow>
           <h1 className="text-[clamp(22px,3vw,32px)] font-semibold tracking-tight">Stories</h1>
           <p className="text-[12.5px] text-(--dim)">
-            {issues.ok
-              ? `${openCount} open stories · closest to shipping on top`
-              : "mirror unavailable"}{" "}
+            {pipelineResult.ok
+              ? `${activeOpenStoryCount} active open stories · closest to shipping on top`
+              : "pipeline unavailable"}{" "}
             · the full life of each unit of work — synced with GitHub
           </p>
         </div>
@@ -100,16 +97,12 @@ export default async function ProjectStoriesPage({
                 : "border-(--line) text-(--mut) hover:text-(--ink)",
             )}
           >
-            {s.kind === "human" ? <StatusDot tone="human" /> : null}
+            {FILTER_DOT[s.kind]}
             {s.label}
             <span
               className={cx(
                 "font-mono text-[11px]",
-                s.count > 0
-                  ? s.kind === "human"
-                    ? "text-(--human)"
-                    : "text-(--ink)"
-                  : "text-(--dim)",
+                s.count > 0 ? FILTER_COUNT_TONE[s.kind] : "text-(--dim)",
               )}
             >
               {s.count}
@@ -118,23 +111,23 @@ export default async function ProjectStoriesPage({
         ))}
       </div>
 
-      {!issues.ok ? (
+      {!pipelineResult.ok ? (
         <ErrorNotice
           message={
-            issues.status === 404
-              ? "The issue mirror isn't available on this control plane yet."
-              : `Couldn't load issues — ${issues.message}`
+            pipelineResult.status === 404
+              ? "The story pipeline isn't available on this control plane yet."
+              : `Couldn't load stories — ${pipelineResult.message}`
           }
         />
       ) : items.length === 0 ? (
         <p className="max-w-lg text-sm leading-relaxed text-(--dim)">
-          Nothing mirrored yet. Issues sync from the connected repository automatically; use sync to
-          backfill.
+          No active stories right now. Closed and merged stories leave Shipped after seven days;
+          sync refreshes the GitHub mirror.
         </p>
       ) : (
         <div className="flex flex-col gap-6">
           {visibleStages.map((s) => {
-            const stageItems = stages.get(s.key) ?? [];
+            const stageItems = s.stories;
             return (
               <StageSection
                 key={s.key}
@@ -142,8 +135,12 @@ export default async function ProjectStoriesPage({
                 sub={s.sub}
                 kind={s.kind}
                 total={stageItems.length}
-                liveCount={stageItems.filter((p) => p.runState === "live").length}
-                failedCount={stageItems.filter((p) => p.runState === "failed").length}
+                liveCount={stageItems.filter((story) => story.runState === "live").length}
+                failedCount={
+                  stageItems.filter(
+                    (story) => story.runState === "failed" || story.ciState === "failure",
+                  ).length
+                }
                 defaultOpen={activeStage !== null || s.key !== "shipped"}
               >
                 {stageItems.length === 0 ? (
@@ -152,11 +149,11 @@ export default async function ProjectStoriesPage({
                   </p>
                 ) : (
                   <div className="flex flex-col border border-(--line)">
-                    {stageItems.map((placed) => (
+                    {stageItems.map((story) => (
                       <IssueRow
-                        key={placed.issue.number}
+                        key={story.key}
                         projectId={projectId}
-                        issue={placed.issue}
+                        story={story}
                         canTrigger={canTrigger}
                       />
                     ))}

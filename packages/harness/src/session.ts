@@ -75,7 +75,7 @@ Read the project before writing about it:
 - Active decisions (not superseded): GET ${base}/v1/projects/:projectId/kb/decisions?active=1
 - Search the KB (substring, optional &type=): GET ${base}/v1/projects/:projectId/kb/search?q=...
 - An entry with its link neighborhood: GET ${base}/v1/kb/entries/:entryId/neighborhood
-- Pipeline state (issues by stage, current runs, PRs, gates): GET ${base}/v1/projects/:projectId/pipeline
+- Pipeline state (repository-qualified issue/PR stories by stage, current runs, CI, gates): GET ${base}/v1/projects/:projectId/pipeline
 
 Proposal writers receive the allowed action-type IDs and required payload
 fields in their run scope. A proposal is not submitted until POST /v1/proposals

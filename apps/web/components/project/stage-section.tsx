@@ -1,5 +1,18 @@
 import { cx, StatusDot } from "@facility/ui";
-import type { StageKind } from "@/lib/pipeline";
+import type { ReactNode } from "react";
+import type { PipelineStageKind } from "@/lib/pipeline";
+
+const KIND_DOT: Record<
+  PipelineStageKind,
+  (state: { total: number; liveCount: number }) => ReactNode
+> = {
+  human: () => <StatusDot tone="human" />,
+  agent: ({ total, liveCount }) => (
+    <StatusDot tone={total > 0 ? "agent" : "machine"} pulse={liveCount > 0} />
+  ),
+  machine: () => <StatusDot tone="machine" />,
+  done: () => <StatusDot tone="ok" />,
+};
 
 /**
  * A collapsible pipeline stage. Native <details> keeps this a server
@@ -18,7 +31,7 @@ export function StageSection({
 }: {
   label: string;
   sub: string;
-  kind: StageKind;
+  kind: PipelineStageKind;
   total: number;
   liveCount: number;
   failedCount: number;
@@ -34,15 +47,7 @@ export function StageSection({
         >
           ▸
         </span>
-        {failedCount > 0 ? (
-          <StatusDot tone="bad" />
-        ) : kind === "human" ? (
-          <StatusDot tone="human" />
-        ) : kind === "agent" ? (
-          <StatusDot tone={total > 0 ? "agent" : "machine"} pulse={liveCount > 0} />
-        ) : (
-          <StatusDot tone="ok" />
-        )}
+        {failedCount > 0 ? <StatusDot tone="bad" /> : KIND_DOT[kind]({ total, liveCount })}
         <h2 className="text-[14px] font-semibold tracking-tight">{label}</h2>
         <span className="font-mono text-[12px] text-(--dim)">{total}</span>
         <span className="text-[11.5px] text-(--dim)">{sub}</span>

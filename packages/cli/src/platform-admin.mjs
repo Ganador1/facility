@@ -104,7 +104,7 @@ const ADMIN_FLAGS = {
     ...WRITE_FLAGS,
   ],
   conversations: ["agent", "title", ...WRITE_FLAGS],
-  github: ["query", "state", "cursor", "agent", "limit", ...WRITE_FLAGS],
+  github: ["query", "state", "cursor", "agent", "limit", "repo", ...WRITE_FLAGS],
   providers: ["provider", "name", "secret", "base-url", ...PAGE_FLAGS, ...WRITE_FLAGS],
   budgets: ["id", "scope", "project", "agent", "period", "limit-cents", "mode", "enabled", ...PAGE_FLAGS, ...WRITE_FLAGS],
   registry: [
@@ -226,9 +226,9 @@ const ADMIN_SUBCOMMAND_FLAGS = {
     installations: [],
     repos: ["query"],
     issues: ["state", "query", "cursor", "limit"],
-    issue: [],
+    issue: ["repo"],
     sync: [...WRITE_FLAGS],
-    trigger: ["agent", ...WRITE_FLAGS],
+    trigger: ["agent", "repo", ...WRITE_FLAGS],
   },
   providers: {
     __default: [...PAGE_FLAGS],
@@ -690,7 +690,12 @@ async function github(args, ctx, flags) {
   if (sub === "issue") {
     const project = await ctx.resolveProject(args[1]);
     const number = integerArgument(args[2], "issue number");
-    return details(ctx, await ctx.api("GET", `/v1/projects/${project.id}/issues/${number}`));
+    return details(
+      ctx,
+      await ctx.api("GET", `/v1/projects/${project.id}/issues/${number}`, {
+        query: compact({ repoId: stringFlag(flags.repo) }),
+      }),
+    );
   }
   if (sub === "sync") {
     const project = await ctx.resolveProject(args[1]);
@@ -704,7 +709,10 @@ async function github(args, ctx, flags) {
     const result = await ctx.api(
       "POST",
       `/v1/projects/${project.id}/issues/${number}/trigger`,
-      { body: { agent } },
+      {
+        query: compact({ repoId: stringFlag(flags.repo) }),
+        body: { agent },
+      },
     );
     return changed(ctx, result, `triggered session ${result.id} from issue #${number}`);
   }

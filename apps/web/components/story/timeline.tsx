@@ -5,7 +5,7 @@ import { Markdown } from "@/components/markdown";
 import { RunOutcome } from "@/components/story/run-outcome";
 import type { Proposal } from "@/lib/api";
 import { fmtCost, fmtDuration } from "@/lib/runs";
-import { type StoryItem, type StoryRun, stageLabel } from "@/lib/story";
+import type { StoryItem, StoryRun } from "@/lib/story";
 
 const TERMINAL = new Set(["succeeded", "failed"]);
 
@@ -57,9 +57,9 @@ function keyOf(item: StoryItem): string {
     case "comment":
       return `comment-${item.comment.id}`;
     case "pr_opened":
-      return `pr-open-${item.outcome.id}`;
+      return `pr-open-${item.pr.number}`;
     case "pr_closed":
-      return `pr-closed-${item.outcome.id}`;
+      return `pr-closed-${item.pr.number}`;
     case "stage":
       return `stage-${item.stage}-${item.ts}`;
     default:
@@ -77,11 +77,13 @@ function TimelineItem({
   canDecide: boolean;
 }) {
   switch (item.kind) {
-    case "issue_opened":
+    case "story_opened":
       return (
         <MilestoneLine
           ts={item.ts}
-          text={`issue opened${item.author ? ` by ${item.author}` : ""}`}
+          text={`${item.storyType === "issue" ? "issue" : "PR"} opened${
+            item.author ? ` by ${item.author}` : ""
+          }`}
         />
       );
     case "issue_closed":
@@ -93,7 +95,7 @@ function TimelineItem({
             →
           </span>
           <span className="border border-(--line-strong) px-2 py-0.5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-(--mut)">
-            {stageLabel(item.stage)}
+            {item.label}
           </span>
           <Stamp ts={item.ts} />
         </div>
@@ -158,25 +160,24 @@ function TimelineItem({
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <StatusDot tone="agent" />
             <a
-              href={
-                item.pr?.url ??
-                `https://github.com/${item.outcome.repo}/pull/${item.outcome.prNumber}`
-              }
+              href={item.pr.url}
               target="_blank"
               rel="noreferrer"
               className="font-mono text-[12.5px] text-(--ink) underline-offset-4 hover:underline"
             >
-              PR #{item.outcome.prNumber} ↗
+              PR #{item.pr.number} ↗
             </a>
-            {item.pr?.title ? (
+            {item.pr.title ? (
               <span className="min-w-0 truncate text-[12.5px] text-(--mut)">{item.pr.title}</span>
             ) : null}
-            <span className="text-[11.5px] text-(--dim)">opened · {item.outcome.agentLane}</span>
+            <span className="text-[11.5px] text-(--dim)">
+              opened · {item.outcome?.agentLane ?? item.pr.author}
+            </span>
             <span className="ml-auto">
               <Stamp ts={item.ts} />
             </span>
           </div>
-          {item.pr?.bodyMd?.trim() ? (
+          {item.pr.bodyMd.trim() ? (
             <details>
               <summary className="cursor-pointer font-mono text-[10.5px] text-(--dim) hover:text-(--ink)">
                 PR description
@@ -192,12 +193,12 @@ function TimelineItem({
       return (
         <MilestoneLine
           ts={item.ts}
-          text={`PR #${item.outcome.prNumber} ${item.outcome.fate ?? "closed"}${
-            item.outcome.reviewRounds > 0
-              ? ` · ${item.outcome.reviewRounds} review round${item.outcome.reviewRounds === 1 ? "" : "s"}`
+          text={`PR #${item.pr.number} ${item.pr.state}${
+            (item.outcome?.reviewRounds ?? 0) > 0
+              ? ` · ${item.outcome?.reviewRounds} review round${item.outcome?.reviewRounds === 1 ? "" : "s"}`
               : ""
           }`}
-          tone={item.outcome.fate === "merged" ? "ok" : "machine"}
+          tone={item.pr.state === "merged" ? "ok" : "machine"}
         />
       );
     default:

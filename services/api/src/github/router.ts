@@ -118,6 +118,7 @@ export async function routeTrigger(
   }
   const githubTrigger = {
     type: "github_comment",
+    githubLogin: sender,
     repo: { id: repo.id, owner, name },
     issue: { number: issueNumber },
     ...(commentId ? { comment: { id: commentId } } : {}),
@@ -162,6 +163,7 @@ export async function routeTrigger(
           trigger: accepted?.proposal
             ? {
                 source: "plan_acceptance",
+                githubLogin: sender,
                 proposalId: accepted.proposal.id,
                 architectRunId: accepted.architectRun.id,
                 architectTrigger: accepted.architectRun.trigger,
@@ -176,7 +178,7 @@ export async function routeTrigger(
             ...(commentId ? { commentId } : {}),
             ...(payload.issue?.node_id ? { issueNodeId: payload.issue.node_id } : {}),
           },
-          createdBy: { type: "github", login: sender },
+          createdBy: { type: "github", id: sender },
         })
         .returning()
     )[0];
@@ -205,6 +207,21 @@ export async function routeTrigger(
     return created;
   });
   if (!run) return { routed: false, reason: "insert_failed" };
+  try {
+    const assigned = await client.assignIssue(issueNumber, sender);
+    if (!assigned) {
+      await auditAssignmentSkipped(db, repo, run.id, issueNumber, sender, "github_rejected");
+    }
+  } catch (error) {
+    await auditAssignmentSkipped(
+      db,
+      repo,
+      run.id,
+      issueNumber,
+      sender,
+      error instanceof Error ? error.message : String(error),
+    );
+  }
   if (accepted?.proposal) {
     await insertAuditEvent(db, {
       orgId: accepted.proposal.orgId,
@@ -270,6 +287,24 @@ export async function routeTrigger(
   }
   await enqueue?.("runs.dispatch", { runId: run.id, orgId: repo.orgId });
   return { routed: true, runId: run.id };
+}
+
+async function auditAssignmentSkipped(
+  db: FacilityDb,
+  repo: typeof repos.$inferSelect,
+  runId: string,
+  issueNumber: number,
+  login: string,
+  reason: string,
+) {
+  await insertAuditEvent(db, {
+    orgId: repo.orgId,
+    projectId: repo.projectId,
+    actor: { type: "user", id: `github:${login}`, name: login },
+    action: "github.assignment.skipped",
+    target: { type: "issue", id: `${repo.id}:${issueNumber}` },
+    payload: { runId, issueNumber, login, reason },
+  });
 }
 
 async function githubPlanAcceptance(

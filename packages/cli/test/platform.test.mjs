@@ -1301,10 +1301,17 @@ test("sessions expose transcripts, interrupt, and resume without the web applica
 
 test("conversations, GitHub issues, catalog, outcomes, and event history are first-class CLI surfaces", async () => {
   const calls = [];
+  const repoQualifiedCalls = [];
   const fetch = async (url, init = {}) => {
     const parsed = new URL(url);
     const body = init.body ? JSON.parse(init.body) : undefined;
     calls.push({ path: parsed.pathname, method: init.method, body });
+    if (parsed.pathname.includes("/issues/42")) {
+      repoQualifiedCalls.push({
+        path: parsed.pathname,
+        repoId: parsed.searchParams.get("repoId"),
+      });
+    }
     if (parsed.pathname === "/v1/projects") {
       return json([{ id: "proj_1", slug: "demo", name: "Demo", status: "active" }]);
     }
@@ -1326,8 +1333,9 @@ test("conversations, GitHub issues, catalog, outcomes, and event history are fir
     ["conversations", ["start", "demo", "--title", "Release review"]],
     ["conversations", ["send", "evt_thread", "Please", "continue"]],
     ["github", ["issues", "demo", "--state", "open"]],
+    ["github", ["issue", "demo", "42", "--repo", "repo_1"]],
     ["github", ["sync", "demo"]],
-    ["github", ["trigger", "demo", "42", "--agent", "builder"]],
+    ["github", ["trigger", "demo", "42", "--repo", "repo_1", "--agent", "builder"]],
     ["agents", ["status", "demo"]],
     ["integrations", ["events", "int_1"]],
     ["outcomes", ["--state", "all"]],
@@ -1354,4 +1362,8 @@ test("conversations, GitHub issues, catalog, outcomes, and event history are fir
   assert.ok(calls.some((call) => call.path === "/v1/integrations/int_1/events"));
   assert.ok(calls.some((call) => call.path === "/v1/outcomes"));
   assert.ok(calls.some((call) => call.path === "/v1/catalog"));
+  assert.deepEqual(repoQualifiedCalls, [
+    { path: "/v1/projects/proj_1/issues/42", repoId: "repo_1" },
+    { path: "/v1/projects/proj_1/issues/42/trigger", repoId: "repo_1" },
+  ]);
 });

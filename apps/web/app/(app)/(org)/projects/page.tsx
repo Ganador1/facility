@@ -4,8 +4,6 @@ import { ErrorNotice, Offline } from "@/components/offline";
 import { PipelineStrip } from "@/components/project/pipeline";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api, type Issue, type Proposal, summarizeSpend } from "@/lib/api";
-import { classifyPipeline } from "@/lib/pipeline";
-import { fetchAllProjectIssues } from "@/lib/project-issues";
 import { fetchAllRuns, fmtAgo, fmtCost, type RunWithProject } from "@/lib/runs";
 import { ProjectsTabs } from "./tabs";
 
@@ -110,13 +108,13 @@ export default async function ProjectsPage() {
   ]);
   if (offline) return <Offline />;
 
-  // One paged issues-mirror sweep per project — fine at dashboard scale; an
-  // aggregate endpoint is the upstream ask if this ever lists dozens of projects.
-  const issuesByProject = new Map(
+  // One compact, server-classified pipeline request per project. An aggregate
+  // endpoint is the upstream ask if this dashboard ever lists dozens.
+  const pipelineByProject = new Map(
     await Promise.all(
       projects.map(async (project) => {
-        const res = await fetchAllProjectIssues(project.id);
-        return [project.id, res.ok ? res.items : []] as const;
+        const res = await api.pipeline(project.id);
+        return [project.id, res.ok ? res.data.stages : []] as const;
       }),
     ),
   );
@@ -162,10 +160,7 @@ export default async function ProjectsPage() {
         <HairlineGrid cols="sm:grid-cols-2">
           {projects.map((project) => {
             const pulse = pulseFor(project.id, runs, proposals, inboxIssues);
-            const stages = classifyPipeline(
-              issuesByProject.get(project.id) ?? [],
-              proposals.filter((x) => x.projectId === project.id),
-            );
+            const stages = pipelineByProject.get(project.id) ?? [];
             return (
               <Cell key={project.id} interactive className="p-0">
                 <Link

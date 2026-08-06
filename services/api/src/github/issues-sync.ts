@@ -1,9 +1,19 @@
 import { newId } from "@facility/core";
-import { type FacilityDb, ghIssues, githubInstallations, repos } from "@facility/db";
-import { and, eq, max, sql } from "drizzle-orm";
+import {
+  type FacilityDb,
+  ghIssues,
+  githubInstallations,
+  repos,
+  schedulerWatermarks,
+} from "@facility/db";
+import { and, eq, sql } from "drizzle-orm";
 import { FacilityGithubClient, type GithubClientFactory } from "./client.js";
 
 const ISSUE_BODY_LIMIT = 64 * 1024;
+const SYNC_OVERLAP_MS = 2 * 60 * 1000;
+const ISSUE_WATERMARK_PREFIX = "github.issues";
+const MAX_PAGES_PER_JOB = 10;
+const INITIAL_WATERMARK = new Date(0);
 
 export type GithubIssuePayload = {
   action?: string;
@@ -73,7 +83,7 @@ export async function bumpGhIssueCommentCount(
     .update(ghIssues)
     .set({
       commentsCount: sql`${ghIssues.commentsCount} + 1`,
-      ghUpdatedAt: new Date(),
+      ghUpdatedAt: dateOrNull(payload.issue?.updated_at) ?? sql`${ghIssues.ghUpdatedAt}`,
       syncedAt: new Date(),
       updatedAt: new Date(),
     })
@@ -94,7 +104,7 @@ export async function syncRepoIssues(
   clientFactory: GithubClientFactory,
   repo: typeof repos.$inferSelect,
 ) {
-  if (!repo.installationId) return { synced: 0 };
+  if (!repo.installationId) return { synced: 0, incomplete: false };
   const installation = (
     await db
       .select()
@@ -107,35 +117,142 @@ export async function syncRepoIssues(
       )
       .limit(1)
   )[0];
-  if (!installation || installation.suspendedAt) return { synced: 0 };
-  const cursor = (
+  if (!installation || installation.suspendedAt) return { synced: 0, incomplete: false };
+  const watermarkName = `${ISSUE_WATERMARK_PREFIX}:${repo.id}`;
+  const watermark = (
     await db
-      .select({ value: max(ghIssues.syncedAt) })
-      .from(ghIssues)
-      .where(and(eq(ghIssues.orgId, repo.orgId), eq(ghIssues.repoId, repo.id)))
-  )[0]?.value;
+      .select()
+      .from(schedulerWatermarks)
+      .where(eq(schedulerWatermarks.name, watermarkName))
+      .limit(1)
+  )[0];
   const client = new FacilityGithubClient(await clientFactory(installation.installationId), {
     owner: repo.owner,
     repo: repo.name,
     defaultBranch: repo.defaultBranch,
   });
+  const progress = issueScanProgress(watermark?.cursor);
+  const completedSince = watermark
+    ? new Date(Math.max(0, watermark.lastTick.getTime() - SYNC_OVERLAP_MS)).toISOString()
+    : undefined;
+  const syncStartedAt = watermark?.scanStartedAt ?? new Date();
+  let highWater = progress?.highWater ?? null;
+  let page = progress?.page ?? 1;
   let synced = 0;
-  for (let page = 1; page <= 10; page++) {
+  for (let pages = 0; pages < MAX_PAGES_PER_JOB; pages += 1) {
+    const pageStartHighWater = highWater;
+    // Page offsets are safe only while the lower bound is unchanged. Advancing
+    // the lower bound after every page prevents updates to already-scanned
+    // issues from shifting an unseen issue behind a persisted page offset.
+    // One millisecond of overlap keeps every record at GitHub's second-level
+    // boundary visible; a same-boundary continuation uses the next page.
+    const since = highWater
+      ? new Date(Math.max(0, highWater.getTime() - 1)).toISOString()
+      : completedSince;
     const issues = await client.listIssues({
       state: "all",
-      since: cursor ? cursor.toISOString() : undefined,
+      since,
       page,
       perPage: 100,
     });
-    if (issues.length === 0) break;
     for (const raw of issues) {
       const issue = raw as GithubIssue;
+      const updatedAt = dateOrNull(issue.updated_at);
+      if (updatedAt && (!highWater || updatedAt > highWater)) highWater = updatedAt;
       if (issue.pull_request) continue;
       await upsertIssue(db, repo, issue);
       synced += 1;
     }
+    if (issues.length < 100) {
+      await completeIssueScan(
+        db,
+        watermarkName,
+        laterDate(watermark?.lastTick ?? null, highWater) ?? syncStartedAt,
+      );
+      return { synced, incomplete: false };
+    }
+    const advanced =
+      highWater !== null &&
+      (pageStartHighWater === null || highWater.getTime() > pageStartHighWater.getTime());
+    const nextPage = advanced ? 1 : page + 1;
+    await saveIssueScanProgress(db, {
+      name: watermarkName,
+      previousCompletedAt: watermark?.lastTick ?? INITIAL_WATERMARK,
+      page: nextPage,
+      highWater,
+      scanStartedAt: syncStartedAt,
+    });
+    page = nextPage;
   }
-  return { synced };
+  return { synced, incomplete: true };
+}
+
+function laterDate(left: Date | null, right: Date | null) {
+  if (!left) return right;
+  if (!right) return left;
+  return left > right ? left : right;
+}
+
+async function saveIssueScanProgress(
+  db: FacilityDb,
+  input: {
+    name: string;
+    previousCompletedAt: Date;
+    page: number;
+    highWater: Date | null;
+    scanStartedAt: Date;
+  },
+) {
+  const cursor = JSON.stringify({
+    page: input.page,
+    highWater: input.highWater?.toISOString() ?? null,
+  });
+  await db
+    .insert(schedulerWatermarks)
+    .values({
+      name: input.name,
+      lastTick: input.previousCompletedAt,
+      cursor,
+      scanStartedAt: input.scanStartedAt,
+    })
+    .onConflictDoUpdate({
+      target: schedulerWatermarks.name,
+      set: {
+        cursor,
+        scanStartedAt: input.scanStartedAt,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+async function completeIssueScan(db: FacilityDb, name: string, completedThrough: Date) {
+  await db
+    .insert(schedulerWatermarks)
+    .values({ name, lastTick: completedThrough })
+    .onConflictDoUpdate({
+      target: schedulerWatermarks.name,
+      set: {
+        lastTick: completedThrough,
+        cursor: null,
+        scanStartedAt: null,
+        updatedAt: new Date(),
+      },
+    });
+}
+
+function issueScanProgress(value: string | null | undefined) {
+  if (!value) return null;
+  try {
+    const parsed = JSON.parse(value) as { page?: unknown; highWater?: unknown };
+    if (typeof parsed.page !== "number" || !Number.isInteger(parsed.page) || parsed.page < 1) {
+      return null;
+    }
+    const highWater = typeof parsed.highWater === "string" ? new Date(parsed.highWater) : null;
+    if (highWater && !Number.isFinite(highWater.getTime())) return null;
+    return { page: parsed.page, highWater };
+  } catch {
+    return null;
+  }
 }
 
 async function resolveRepo(db: FacilityDb, orgId: string, owner: string, name: string) {

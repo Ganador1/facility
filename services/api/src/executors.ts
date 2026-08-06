@@ -224,6 +224,13 @@ async function executePlanAcceptance(
   if (!builder) throw new Error("plan_acceptance_builder_not_configured");
   const builderGh = { ...objectOrEmpty(architectRun.gh) };
   delete builderGh.progressComment;
+  const architectTrigger = objectOrEmpty(architectRun.trigger);
+  const architectCreator = objectOrEmpty(architectRun.createdBy);
+  const githubLogin =
+    stringField(architectTrigger.githubLogin) ??
+    (architectCreator.type === "github"
+      ? (stringField(architectCreator.id) ?? stringField(architectCreator.login))
+      : null);
 
   const createdRun = (
     await db
@@ -237,6 +244,7 @@ async function executePlanAcceptance(
         engine: builder.engine,
         trigger: {
           source: "plan_acceptance",
+          ...(githubLogin ? { githubLogin } : {}),
           proposalId: proposal.id,
           architectRunId: architectRun.id,
           architectTrigger: architectRun.trigger,
@@ -882,21 +890,23 @@ async function executeKnownMcpTool(
   if (toolName === "facility_trigger_github_issue") {
     const projectId = requiredString(args.projectId, "projectId");
     const number = requiredNumber(args.number, "number");
+    const repoId = optionalString(args.repoId);
     const agentName = requiredString(args.agentName, "agentName");
-    const issue = (
-      await db
-        .select()
-        .from(ghIssues)
-        .where(
-          and(
-            eq(ghIssues.orgId, orgId),
-            eq(ghIssues.projectId, projectId),
-            eq(ghIssues.number, number),
-          ),
-        )
-        .limit(1)
-    )[0];
-    if (!issue) throw new Error("github_issue_not_found");
+    const issues = await db
+      .select()
+      .from(ghIssues)
+      .where(
+        and(
+          eq(ghIssues.orgId, orgId),
+          eq(ghIssues.projectId, projectId),
+          eq(ghIssues.number, number),
+          ...(repoId ? [eq(ghIssues.repoId, repoId)] : []),
+        ),
+      )
+      .limit(2);
+    if (issues.length === 0) throw new Error("github_issue_not_found");
+    if (issues.length > 1) throw new Error("github_issue_ambiguous:repoId_required");
+    const issue = issues[0] as (typeof issues)[number];
     const repo = (
       await db
         .select()
@@ -1905,18 +1915,25 @@ async function executeIssueUpdate(
 ) {
   const payload = objectOrEmpty(proposal.payload);
   const issueNumber = typeof payload.issueNumber === "number" ? payload.issueNumber : Number.NaN;
+  const repoId = stringField(payload.repoId);
   const title = stringField(payload.title);
   const bodyMd = stringField(payload.bodyMd);
   if (!Number.isFinite(issueNumber) || !title || bodyMd == null) {
     throw new Error("issue_update_payload_invalid");
   }
-  const repo = (
-    await db
-      .select()
-      .from(repos)
-      .where(and(eq(repos.orgId, proposal.orgId), eq(repos.projectId, proposal.projectId ?? "")))
-      .limit(1)
-  )[0];
+  const matchingRepos = await db
+    .select()
+    .from(repos)
+    .where(
+      and(
+        eq(repos.orgId, proposal.orgId),
+        eq(repos.projectId, proposal.projectId ?? ""),
+        ...(repoId ? [eq(repos.id, repoId)] : []),
+      ),
+    )
+    .limit(2);
+  if (!repoId && matchingRepos.length > 1) throw new Error("issue_update_ambiguous_repo");
+  const repo = matchingRepos[0];
   if (!repo) throw new Error("issue_update_missing_repo");
   const github = options.github ?? (await githubIssueClientForRepo(db, repo, options));
   if (!github.updateIssue) throw new Error("issue_update_unsupported_client");

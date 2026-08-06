@@ -229,6 +229,20 @@ export type GithubIssueDetail = FacilityGeneratedResponse<
   "/v1/projects/{projectId}/issues/{number}"
 >;
 export type GithubIssueLinkedRun = ArrayItem<GithubIssue["linkedRuns"]>;
+export type Pipeline = FacilityGeneratedResponse<"GET", "/v1/projects/{projectId}/pipeline">;
+export type PipelineStage = ArrayItem<Pipeline["stages"]>;
+export type PipelineStageKey = PipelineStage["key"];
+export type PipelineStageKind = PipelineStage["kind"];
+export type PipelineStory = ArrayItem<PipelineStage["stories"]>;
+export type PipelinePullRequest = ArrayItem<PipelineStory["prs"]>;
+export type StoryDetail = FacilityGeneratedResponse<
+  "GET",
+  "/v1/projects/{projectId}/stories/{number}"
+>;
+export type StoryGithubActivity = FacilityGeneratedResponse<
+  "GET",
+  "/v1/projects/{projectId}/stories/{number}/github-activity"
+>;
 export type GithubInstallation = ArrayItem<
   FacilityGeneratedResponse<"GET", "/v1/github/installations">
 >;

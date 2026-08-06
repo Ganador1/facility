@@ -12,9 +12,11 @@ import type {
   InboxResponse,
   Issue,
   Me,
+  Pipeline,
   Project,
   QueryParams,
   RunWithProject,
+  StoryDetail,
   Task,
   TriggerRunRequest,
 } from "../src/index.js";
@@ -555,8 +557,19 @@ describe("FacilityClient request behaviour", () => {
     await client.githubInstallationRepos(42, { query: "facility" });
     await client.githubIssues("project-1", { state: "open", limit: 20 });
     await client.githubIssue("project-1", 17);
+    await client.pipeline("project-1");
+    await client.story("project-1", 17, { repoId: "repo-1", storyType: "issue" });
+    await client.storyGithubActivity("project-1", 17, {
+      repoId: "repo-1",
+      storyType: "issue",
+    });
     await client.syncGithubIssues("project-1");
-    await client.triggerGithubIssue("project-1", 17, { agent: "builder" });
+    await client.triggerGithubIssue(
+      "project-1",
+      17,
+      { agent: "builder" },
+      { query: { repoId: "repo-1" } },
+    );
     await client.outcomes({ projectId: "project-1", state: "terminal", limit: 10 });
     await client.integrationEvents("integration-1", { limit: 25, offset: 50 });
     await client.interruptRun("run-1");
@@ -574,8 +587,11 @@ describe("FacilityClient request behaviour", () => {
       "GET /v1/github/installations/42/repos?query=facility",
       "GET /v1/projects/project-1/issues?state=open&limit=20",
       "GET /v1/projects/project-1/issues/17",
+      "GET /v1/projects/project-1/pipeline",
+      "GET /v1/projects/project-1/stories/17?repoId=repo-1&storyType=issue",
+      "GET /v1/projects/project-1/stories/17/github-activity?repoId=repo-1&storyType=issue",
       "POST /v1/projects/project-1/issues/sync",
-      "POST /v1/projects/project-1/issues/17/trigger",
+      "POST /v1/projects/project-1/issues/17/trigger?repoId=repo-1",
       "GET /v1/outcomes?projectId=project-1&state=terminal&limit=10",
       "GET /v1/integrations/integration-1/events?limit=25&offset=50",
       "POST /v1/runs/run-1/interrupt",
@@ -586,8 +602,8 @@ describe("FacilityClient request behaviour", () => {
       JSON.stringify({ agentDefId: "agent-1", title: "Fix CI" }),
     );
     expect(requestAt(requests, 5).body).toBe(JSON.stringify({ body: "Continue" }));
-    expect(requestAt(requests, 11).body).toBe(JSON.stringify({ agent: "builder" }));
-    expect(requestAt(requests, 15).body).toBe(JSON.stringify({ message: "Try the fallback" }));
+    expect(requestAt(requests, 14).body).toBe(JSON.stringify({ agent: "builder" }));
+    expect(requestAt(requests, 18).body).toBe(JSON.stringify({ message: "Try the fallback" }));
   });
 });
 
@@ -597,6 +613,12 @@ describe("typed route contracts", () => {
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/projects">>().toEqualTypeOf<Project[]>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/runs">>().toEqualTypeOf<RunWithProject[]>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/inbox">>().toEqualTypeOf<InboxResponse>();
+    expectTypeOf<
+      FacilityRouteResponse<"GET", "/v1/projects/proj_1/pipeline">
+    >().toEqualTypeOf<Pipeline>();
+    expectTypeOf<
+      FacilityRouteResponse<"GET", "/v1/projects/proj_1/stories/17">
+    >().toEqualTypeOf<StoryDetail>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/issues">>().toEqualTypeOf<Issue[]>();
     expectTypeOf<FacilityRouteResponse<"GET", "/v1/analytics">>().toEqualTypeOf<AnalyticsRow[]>();
     expectTypeOf<

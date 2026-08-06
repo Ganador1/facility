@@ -122,7 +122,7 @@ async function verifyPlatformCanary(
             message: CANARY_MESSAGE,
             messageHash: CANARY_MESSAGE_HASH,
           },
-          createdBy: { type: "system", name: "watchtower" },
+          createdBy: { type: "system", id: "watchtower" },
         })
         .returning()
     )[0];

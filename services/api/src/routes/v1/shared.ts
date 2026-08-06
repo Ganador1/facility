@@ -45,8 +45,7 @@ export async function proposalOpener(
   )[0];
   const createdBy = (run?.createdBy ?? null) as { type?: string; id?: string } | null;
   if (
-    !run ||
-    run.mode !== "assistant" ||
+    run?.mode !== "assistant" ||
     run.status !== "running" ||
     createdBy?.type !== p.type ||
     createdBy?.id !== p.id
@@ -121,6 +120,8 @@ export const PrincipalSchema = z.object({
   userId: z.string().optional(),
   email: z.string().optional(),
   name: z.string().optional(),
+  githubLogin: z.string().optional(),
+  avatarUrl: z.string().optional(),
   projectId: z.string().nullable().optional(),
   permissions: z.array(z.string()),
 });

@@ -289,7 +289,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(134);
+    ).toBe(135);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },
@@ -321,6 +321,10 @@ describe("api", async () => {
     expect(document.paths["/v1/projects/{projectId}/issues/{number}/trigger"]?.post).toMatchObject({
       summary: "Trigger issue",
       tags: ["GitHub"],
+    });
+    expect(document.paths["/v1/projects/{projectId}/stories/{number}"]?.get).toMatchObject({
+      summary: "Get story",
+      tags: ["Projects"],
     });
     expect(document.paths["/v1/webhook-deliveries/{deliveryId}/retry"]?.post?.tags).toEqual([
       "Integrations",
@@ -2687,11 +2691,35 @@ describe("api", async () => {
         state: "open",
         htmlUrl: `https://github.com/${repo?.owner}/${repo?.name}/issues/41`,
       });
+      const collidingRepo = (
+        await db
+          .insert(repos)
+          .values({
+            id: newId("repo"),
+            orgId,
+            projectId: target.projectId,
+            owner: `mcp-collision-${Date.now()}`,
+            name: "facility",
+            defaultBranch: "main",
+          })
+          .returning()
+      )[0];
+      await db.insert(ghIssues).values({
+        id: newId("evt"),
+        orgId,
+        projectId: target.projectId,
+        repoId: collidingRepo?.id ?? "",
+        number: 41,
+        title: "Same number in another repository",
+        state: "open",
+        htmlUrl: `https://github.com/${collidingRepo?.owner}/${collidingRepo?.name}/issues/41`,
+      });
       await execute("facility_sync_github_issues", "repos:write", {
         projectId: target.projectId,
       });
       await execute("facility_trigger_github_issue", "runs:trigger", {
         projectId: target.projectId,
+        repoId: repo?.id,
         number: 41,
         agentName: target.agent.name,
       });
@@ -2702,7 +2730,11 @@ describe("api", async () => {
           .where(sql`${runs.projectId} = ${target.projectId} and ${runs.gh}->>'issueNumber' = '41'`)
           .limit(1)
       )[0];
-      expect(issueRun?.trigger).toMatchObject({ type: "mcp_issue", issue: { number: 41 } });
+      expect(issueRun?.trigger).toMatchObject({
+        type: "mcp_issue",
+        repo: { id: repo?.id },
+        issue: { number: 41 },
+      });
       expect(queues).toEqual(
         expect.arrayContaining([
           { queue: "github.issues-sync", data: { repoId: repo?.id, orgId } },

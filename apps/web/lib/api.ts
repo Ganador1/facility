@@ -10,6 +10,7 @@ import type {
   FacilityRouteResponse,
   Issue,
   KickstartAnswers,
+  Pipeline,
   Proposal,
   SpendRow,
 } from "@facility/sdk";
@@ -25,7 +26,6 @@ export type {
   Catalog,
   ConnectProjectRepoRequest,
   CreateProjectRequest,
-  GithubIssueDetail,
   Integration,
   IntegrationEvent,
   Issue,
@@ -36,6 +36,12 @@ export type {
   Member,
   MemberRow,
   Outcome,
+  Pipeline,
+  PipelinePullRequest,
+  PipelineStage,
+  PipelineStageKey,
+  PipelineStageKind,
+  PipelineStory,
   Project,
   ProjectRepo,
   Proposal,
@@ -47,6 +53,8 @@ export type {
   Run,
   RunEvent,
   SpendRow,
+  StoryDetail,
+  StoryGithubActivity,
 } from "@facility/sdk";
 
 /**
@@ -162,10 +170,21 @@ export const api = {
     const d = res.data;
     return { ok: true, data: Array.isArray(d) ? d : (d.proposals ?? d.items ?? []) };
   },
-  issue: (projectId: string, number: number) =>
-    apiFetch("GET", `/v1/projects/${projectId}/issues/${number}`),
-  storyGithubActivity: (projectId: string, number: number) =>
-    apiFetch("GET", `/v1/projects/${projectId}/stories/${number}/github-activity`),
+  pipeline: (projectId: string): Promise<ApiResult<Pipeline>> =>
+    apiFetch("GET", `/v1/projects/${projectId}/pipeline`),
+  story: (
+    projectId: string,
+    number: number,
+    query: FacilityGeneratedQuery<"GET", "/v1/projects/{projectId}/stories/{number}">,
+  ) => apiFetch("GET", `/v1/projects/${projectId}/stories/${number}`, { query }),
+  storyGithubActivity: (
+    projectId: string,
+    number: number,
+    query: FacilityGeneratedQuery<
+      "GET",
+      "/v1/projects/{projectId}/stories/{number}/github-activity"
+    >,
+  ) => apiFetch("GET", `/v1/projects/${projectId}/stories/${number}/github-activity`, { query }),
   proposal: (id: string) => apiFetch("GET", `/v1/proposals/${id}`),
   outcomes: (params = "") => apiFetch("GET", "/v1/outcomes", { query: queryFromParams(params) }),
   auditVerify: () => apiFetch("GET", "/v1/audit/verify"),
