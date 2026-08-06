@@ -47,7 +47,7 @@ import {
 } from "@facility/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import postgres from "postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp, mintSessionCookie } from "../src/app.js";
 import { registerAssistantTurn, releaseAssistantTurn } from "../src/assistant/turn-registry.js";
 import type { GithubClientFactory } from "../src/github/client.js";
@@ -3374,11 +3374,31 @@ describe("api", async () => {
       costCents: 123,
       latencyMs: 10,
     });
-    const spend = await app.inject({
-      method: "GET",
-      url: "/v1/spend?groupBy=model",
-      headers: { cookie },
+    // Database-managed created_at can lead the millisecond application clock.
+    // The default spend window must therefore use the database clock too.
+    const RealDate = Date;
+    const applicationNow = RealDate.now() - 1_000;
+    const SkewedDate = new Proxy(RealDate, {
+      construct(target, args) {
+        return Reflect.construct(target, args.length ? args : [applicationNow]);
+      },
+      get(target, property, receiver) {
+        if (property === "now") return () => applicationNow;
+        return Reflect.get(target, property, receiver);
+      },
     });
+    vi.stubGlobal("Date", SkewedDate);
+    const spend = await (async () => {
+      try {
+        return await app.inject({
+          method: "GET",
+          url: "/v1/spend?groupBy=model",
+          headers: { cookie },
+        });
+      } finally {
+        vi.stubGlobal("Date", RealDate);
+      }
+    })();
     expect(spend.statusCode).toBe(200);
     expect(
       spend

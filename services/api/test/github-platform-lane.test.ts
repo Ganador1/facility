@@ -2638,6 +2638,9 @@ describe("github platform lane", async () => {
     let createCalls = 0;
     const blocked = await deliverPendingRunDeliveries(db, config, {
       runId: run.id,
+      // Round-trip the stored millisecond value. A database default with extra
+      // microseconds would make this freshly queued row incorrectly ineligible.
+      now: pending?.nextAttemptAt,
       githubClientFactory: async () =>
         ({
           rest: {

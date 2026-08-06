@@ -920,6 +920,10 @@ async function prepareRunDelivery(
     title: git.pullRequestTitle,
     body: pullRequestBody,
     issueNumber,
+    // Use the application clock that will immediately evaluate eligibility.
+    // A PostgreSQL default has microsecond precision, while JavaScript Date is
+    // millisecond-only and can otherwise make a new row briefly look future-dated.
+    nextAttemptAt: new Date(),
   } satisfies typeof runDeliveries.$inferInsert;
 }
 
