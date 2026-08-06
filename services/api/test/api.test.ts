@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -60,6 +60,9 @@ import type { AppConfig } from "../src/types.js";
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_test";
 const masterKey = Buffer.alloc(32, 9).toString("base64");
+const githubAppTestKey = generateKeyPairSync("rsa", { modulusLength: 1024 })
+  .privateKey.export({ type: "pkcs8", format: "pem" })
+  .toString();
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
@@ -3915,7 +3918,7 @@ describe("api", async () => {
     config.s3SecretKey = "test";
     config.awsRegion = "us-east-1";
     config.githubAppId = "1";
-    config.githubAppPrivateKey = "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----";
+    config.githubAppPrivateKey = githubAppTestKey;
     config.githubAppWebhookSecret = "secret";
     config.githubAppSlug = "facility-test";
     const first = await insertAuditEvent(db, {
@@ -3949,6 +3952,10 @@ describe("api", async () => {
       expect(checkStatus(healthy.json(), "object_storage")).toBe("pass");
       expect(checkStatus(healthy.json(), "audit_hash_chain")).toBe("pass");
       expect(checkStatus(healthy.json(), "worker_heartbeat")).toBe("pass");
+      expect(checkStatus(healthy.json(), "github_app")).toBe("pass");
+      expect(
+        healthy.json().checks.some((check: { id: string }) => check.id === "aws_sandbox"),
+      ).toBe(false);
       // The seeded default profile runs the configured runner image on the docker
       // driver (Docker reachable in the test env). Whether that image is present
       // locally is environmental, so the platform-lane check is pass (image
@@ -3957,6 +3964,17 @@ describe("api", async () => {
       expect([...objects.keys()].some((key) => key.includes("/facility-test/envelopes/"))).toBe(
         true,
       );
+
+      config.githubAppPrivateKey = "not-a-private-key";
+      const invalidGithubKey = await app.inject({
+        method: "GET",
+        url: "/v1/admin/doctor",
+        headers: { cookie },
+      });
+      expect(invalidGithubKey.json().ok).toBe(false);
+      expect(checkStatus(invalidGithubKey.json(), "github_app")).toBe("fail");
+      expect(JSON.stringify(invalidGithubKey.json())).not.toContain("not-a-private-key");
+      config.githubAppPrivateKey = githubAppTestKey;
 
       await db.update(auditEvents).set({ hash: "broken" }).where(eq(auditEvents.id, second.id));
       const broken = await app.inject({

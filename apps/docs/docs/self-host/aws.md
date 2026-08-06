@@ -409,7 +409,11 @@ node packages/cli/bin/facility.mjs doctor --platform
 
 Do not send traffic until it reports no `FAIL`. It verifies migrations, object
 storage, seed essentials, the `sandbox_runner` profile, the production
-`auth_config`, and the audit hash chain.
+`auth_config`, the GitHub App private key, and the audit hash chain. On AWS it
+also makes one read-only CodeBuild call to verify that the configured project is
+reachable through the task role and has a runner image. Transient AWS service
+errors are warnings; missing configuration, credentials, permission, project,
+or image fail readiness.
 
 Add provider credentials under **Settings → Providers** rather than enabling
 the gateway's development fallback or placing a provider secret in command-line

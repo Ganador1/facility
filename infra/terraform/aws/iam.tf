@@ -221,6 +221,7 @@ resource "aws_iam_role_policy" "task" {
         Sid    = "ManageRunnerBuilds"
         Effect = "Allow"
         Action = [
+          "codebuild:BatchGetProjects",
           "codebuild:BatchGetBuilds",
           "codebuild:StopBuild"
         ]
