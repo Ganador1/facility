@@ -56,7 +56,7 @@ import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
 import { assertPreviewProvisioningAvailable, createPreviewRecord } from "../previews.js";
 import type { AppConfig } from "../types.js";
 import { raisePlatformIssue } from "../watchtower/issues.js";
-import { nestedDockerEnabled } from "./capabilities.js";
+import { nestedDockerEnabled, provisioningDepth } from "./capabilities.js";
 import { DockerSandboxDriver } from "./docker.js";
 import type { LaunchSpec, SandboxDriver, SandboxDriverName } from "./driver.js";
 import { sandboxDriver } from "./driver.js";
@@ -148,6 +148,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
     const runnerToken = `frt_${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const driverName = normalizeDriver(profile.driver);
     const nestedDocker = nestedDockerEnabled(profile.setup);
+    const provisioning = provisioningDepth(profile.setup);
     const driver = await (deps.sandboxDriver ?? sandboxDriver)(driverName);
     const launchSpec: LaunchSpec = {
       runId: run.id,
@@ -202,6 +203,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
         data: {
           driver: driver.name,
           ref: launched.ref,
+          provisioning,
           ...(driverName === "aws" ? { nested_docker: nestedDocker } : {}),
         },
       },
@@ -1397,8 +1399,10 @@ async function buildRunBundle(
       .limit(1)
   )[0];
   const timeoutMin = resourceNumber(profile.resources, "timeout_min", 60);
-  const packageInstallCmd = resolvePackageInstallCmd(profile, repo?.renderAnswers);
-  const provisionCmd = resolveProvisionCmd(profile, repo?.renderAnswers);
+  const { packageInstallCmd, provisionCmd } = resolveProvisioningCommands(
+    profile,
+    repo?.renderAnswers,
+  );
   const checkCmds = resolveCheckCmds(profile, repo?.renderAnswers, project?.settings);
   const provisionSummary = [packageInstallCmd, provisionCmd].filter(Boolean).join(" && ") || null;
   const contract = renderRunContract(rawContract, provisionSummary, checkCmds);
@@ -2108,6 +2112,17 @@ export function resolvePackageInstallCmd(profile: { setup: unknown }, renderAnsw
     stringField(renderAnswers, "packageInstallCmd") ??
     stringField(renderAnswers, "package_install_cmd")
   );
+}
+
+export function resolveProvisioningCommands(
+  profile: { setup: unknown },
+  renderAnswers: unknown,
+): { packageInstallCmd: string | null; provisionCmd: string | null } {
+  const depth = provisioningDepth(profile.setup);
+  return {
+    packageInstallCmd: depth === "none" ? null : resolvePackageInstallCmd(profile, renderAnswers),
+    provisionCmd: depth === "full" ? resolveProvisionCmd(profile, renderAnswers) : null,
+  };
 }
 
 // Seed contracts are also used by the repository lane, where these placeholders

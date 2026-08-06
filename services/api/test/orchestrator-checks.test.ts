@@ -5,6 +5,7 @@ import {
   resolveCheckCmds,
   resolvePackageInstallCmd,
   resolveProvisionCmd,
+  resolveProvisioningCommands,
   resolveRepoEngineConfig,
   runSafePermissions,
 } from "../src/sandbox/orchestrator.js";
@@ -116,6 +117,38 @@ describe("platform run repository setup", () => {
         { provisionCmd: "pnpm install" },
       ),
     ).toBe("make bootstrap");
+  });
+
+  it("gates repository setup with an explicit provisioning depth", () => {
+    const answers = {
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    };
+    expect(resolveProvisioningCommands({ setup: {} }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "full" } }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "deps_only" } }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: null,
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "deps_only" } }, {})).toEqual({
+      packageInstallCmd: null,
+      provisionCmd: null,
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "none" } }, answers)).toEqual({
+      packageInstallCmd: null,
+      provisionCmd: null,
+    });
+    // Invalid persisted state stays on the legacy full lifecycle.
+    expect(resolveProvisioningCommands({ setup: { provisioning: "skip" } }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    });
   });
 
   it("renders repository setup and gates into platform contracts", () => {

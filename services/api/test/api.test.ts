@@ -7,11 +7,13 @@ import { hashKey, newId, seal } from "@facility/core";
 import {
   actionTypes,
   agentDefs,
+  analysisSandboxProfileId,
   auditEvents,
   budgets,
   conversationMessages,
   conversations,
   createDb,
+  defaultSandboxProfileId,
   ghIssues,
   githubInstallations,
   inboundEvents,
@@ -620,6 +622,37 @@ describe("api", async () => {
     expect(await validateProjectKb(db, orgId, projectId)).toMatchObject({
       ok: true,
       errors: [],
+    });
+    const projectAgents = await db
+      .select({ name: agentDefs.name, sandboxProfileId: agentDefs.sandboxProfileId })
+      .from(agentDefs)
+      .where(and(eq(agentDefs.orgId, orgId), eq(agentDefs.projectId, projectId)));
+    const profileByAgent = new Map(
+      projectAgents.map((agent) => [agent.name, agent.sandboxProfileId]),
+    );
+    for (const name of ["architect", "codex-architect", "review", "security-sweep"]) {
+      expect(profileByAgent.get(name), name).toBe(analysisSandboxProfileId(orgId));
+    }
+    for (const name of [
+      "builder",
+      "codex-builder",
+      "address-review",
+      "ci-doctor",
+      "project-owner",
+      "learning",
+    ]) {
+      expect(profileByAgent.get(name), name).toBe(defaultSandboxProfileId(orgId));
+    }
+    const analysisProfile = (
+      await db
+        .select()
+        .from(sandboxProfiles)
+        .where(eq(sandboxProfiles.id, analysisSandboxProfileId(orgId)))
+        .limit(1)
+    )[0];
+    expect(analysisProfile?.setup).toMatchObject({
+      nested_docker: false,
+      provisioning: "deps_only",
     });
     let listedProject = false;
     for (let offset = 0; !listedProject; offset += 100) {

@@ -48,8 +48,14 @@ const BUNDLED_ACTION_TYPES = [
   { name: "mcp_tool_call", required: ["toolName", "args", "requestedBy"] },
 ];
 
-function defaultSandboxProfileId(orgId: string): string {
+const ANALYSIS_AGENT_NAMES = ["architect", "codex-architect", "review", "security-sweep"] as const;
+
+export function defaultSandboxProfileId(orgId: string): string {
   return orgId === "org_dev_the_agile_monkeys" ? "sbx_dev_default" : `sbx_default_${orgId}`;
+}
+
+export function analysisSandboxProfileId(orgId: string): string {
+  return orgId === "org_dev_the_agile_monkeys" ? "sbx_dev_analysis" : `sbx_analysis_${orgId}`;
 }
 
 // The default sandbox profile must run the Facility runner (its ENTRYPOINT), or
@@ -314,6 +320,28 @@ async function seedOrgEssentialsSql(sql: postgres.Sql, orgId: string): Promise<v
       updated_at = now()
   `;
 
+  await sql`
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    VALUES (
+      ${analysisSandboxProfileId(orgId)},
+      ${orgId},
+      'Analysis runner',
+      ${defaultSandboxDriver()},
+      ${defaultRunnerImage()},
+      '{"deps":[],"nested_docker":false,"provisioning":"deps_only"}'::jsonb,
+      ${defaultSandboxResources()}::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `;
+
   for (const actionType of BUNDLED_ACTION_TYPES) {
     await sql`
       INSERT INTO action_types (id, org_id, name, payload_schema, resolver, executor, default_ttl_hours)
@@ -346,6 +374,7 @@ async function seedOrgEssentialsForOrgsSql(sql: postgres.Sql, orgIds: string[]):
   const orgInputs = orgIds.map((orgId) => ({
     org_id: orgId,
     profile_id: defaultSandboxProfileId(orgId),
+    analysis_profile_id: analysisSandboxProfileId(orgId),
   }));
   await sql`
     WITH inputs AS (
@@ -372,6 +401,53 @@ async function seedOrgEssentialsForOrgsSql(sql: postgres.Sql, orgIds: string[]):
       resources = EXCLUDED.resources,
       network = EXCLUDED.network,
       updated_at = now()
+  `;
+  await sql`
+    WITH inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text, profile_id text, analysis_profile_id text)
+    )
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    SELECT
+      inputs.analysis_profile_id,
+      inputs.org_id,
+      'Analysis runner',
+      ${defaultSandboxDriver()},
+      ${defaultRunnerImage()},
+      '{"deps":[],"nested_docker":false,"provisioning":"deps_only"}'::jsonb,
+      ${defaultSandboxResources()}::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    FROM inputs
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `;
+  // One-time activation for legacy agents that still point at Facility's
+  // canonical default. The timestamp guard makes a later operator assignment
+  // back to the full profile durable; custom and NULL assignments also remain
+  // untouched. The org join prevents cross-tenant profile references.
+  await sql`
+    WITH inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text, profile_id text, analysis_profile_id text)
+    )
+    UPDATE agent_defs AS agents
+    SET sandbox_profile_id = inputs.analysis_profile_id, updated_at = now()
+    FROM inputs
+    INNER JOIN sandbox_profiles AS analysis_profiles
+      ON analysis_profiles.id = inputs.analysis_profile_id
+      AND analysis_profiles.org_id = inputs.org_id
+    WHERE agents.org_id = inputs.org_id
+      AND agents.sandbox_profile_id = inputs.profile_id
+      AND agents.name = ANY(${[...ANALYSIS_AGENT_NAMES]})
+      AND agents.updated_at < analysis_profiles.created_at
   `;
   const actionInputs = BUNDLED_ACTION_TYPES.map((actionType) => ({
     name: actionType.name,
@@ -416,6 +492,8 @@ async function seedOrgEssentialsForOrgsSql(sql: postgres.Sql, orgIds: string[]):
 }
 
 async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void> {
+  // New-org onboarding has no legacy agents to reassign. Existing-tenant
+  // activation intentionally remains in the set-wise deploy seed above.
   await db.execute(drizzleSql`
     INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
     VALUES (
@@ -425,6 +503,28 @@ async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void>
       ${defaultSandboxDriver()},
       ${defaultRunnerImage()},
       '{"deps":[]}'::jsonb,
+      ${defaultSandboxResources()}::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `);
+
+  await db.execute(drizzleSql`
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    VALUES (
+      ${analysisSandboxProfileId(orgId)},
+      ${orgId},
+      'Analysis runner',
+      ${defaultSandboxDriver()},
+      ${defaultRunnerImage()},
+      '{"deps":[],"nested_docker":false,"provisioning":"deps_only"}'::jsonb,
       ${defaultSandboxResources()}::jsonb,
       '{"egress":"restricted"}'::jsonb
     )

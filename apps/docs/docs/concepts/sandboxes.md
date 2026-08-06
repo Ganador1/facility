@@ -16,6 +16,27 @@ runner image with your project's provision command. The provisioned-site rule
 is enforced: if provisioning fails, the agent never starts — a partial
 environment produces hedging, not work.
 
+Facility also seeds an **Analysis runner** profile for agents that never ship
+repository changes (`architect`, `codex-architect`, `review`, and
+`security-sweep`). It keeps the repository's dependency-install phase so tools
+can resolve imports and types, but skips service/database/browser provisioning
+and disables nested Docker. Builder and repair agents stay on the full default
+profile. These are ordinary profile assignments: operators can replace them
+without changing agent or runner code. The deploy seed moves unchanged legacy
+analysis agents from the managed Default profile once; later operator
+assignments are preserved.
+
+The optional `setup.provisioning` capability controls repository setup depth:
+
+- `full` runs dependency installation and provisioning (also the legacy default
+  when the key is absent or invalid in persisted data).
+- `deps_only` installs dependencies but skips the repository provision command.
+- `none` skips both phases.
+
+Command overrides remain strings (`package_install_cmd` and `provision_cmd`). A
+profile write is rejected when it configures a command for a phase its
+`provisioning` depth disables.
+
 :::note The runner image & driver
 A **platform-lane** run (Claude Code, Codex) needs a sandbox profile whose
 **driver matches the deployment** and that can run the Facility runner:

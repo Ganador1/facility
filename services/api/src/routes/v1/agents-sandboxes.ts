@@ -4,7 +4,11 @@ import { and, asc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError } from "../../errors.js";
-import { nestedDockerSettingIsValid } from "../../sandbox/capabilities.js";
+import {
+  nestedDockerSettingIsValid,
+  provisioningCommandsAreCoherent,
+  provisioningSettingIsValid,
+} from "../../sandbox/capabilities.js";
 import { validateScheduleTrigger } from "../../schedules.js";
 import type { Principal } from "../../types.js";
 import {
@@ -29,8 +33,28 @@ export async function registerAgentsSandboxesRoutes(
   registerCrud(app, "/v1/sandbox-profiles", "sandboxes", sandboxProfiles, "sbx");
 }
 
-const SandboxSetup = AnyObject.refine(nestedDockerSettingIsValid, {
-  message: "setup.nested_docker must be a boolean",
+const SandboxSetup = AnyObject.superRefine((setup, context) => {
+  if (!nestedDockerSettingIsValid(setup)) {
+    context.addIssue({
+      code: "custom",
+      message: "setup.nested_docker must be a boolean",
+      path: ["nested_docker"],
+    });
+  }
+  if (!provisioningSettingIsValid(setup)) {
+    context.addIssue({
+      code: "custom",
+      message: "setup.provisioning must be full, deps_only, or none",
+      path: ["provisioning"],
+    });
+  }
+  if (!provisioningCommandsAreCoherent(setup)) {
+    context.addIssue({
+      code: "custom",
+      message: "setup command overrides cannot target phases disabled by setup.provisioning",
+      path: ["provisioning"],
+    });
+  }
 });
 
 function _objectOrEmpty(value: unknown): Record<string, unknown> {

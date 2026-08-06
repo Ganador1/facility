@@ -318,6 +318,18 @@ describe("sandbox api", async () => {
         .returning()
     )[0];
     if (!agent) throw new Error("nested-Docker agent fixture missing");
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId,
+      owner: `sandbox-capabilities-${suffix}`,
+      name: "repo",
+      defaultBranch: "main",
+      renderAnswers: {
+        packageInstallCmd: "pnpm install --frozen-lockfile",
+        provisionCmd: "pnpm run local:setup:ui",
+      },
+    });
 
     const launched: Array<Parameters<SandboxDriver["launch"]>[0]> = [];
     const driver: SandboxDriver = {
@@ -332,10 +344,28 @@ describe("sandbox api", async () => {
       destroy: async () => undefined,
     };
     for (const fixture of [
-      { setup: { nested_docker: false }, expected: "0" },
-      { setup: { nested_docker: true }, expected: "1" },
+      {
+        setup: { nested_docker: false, provisioning: "deps_only" },
+        expected: "0",
+        provisioning: "deps_only",
+        packageInstallCmd: "pnpm install --frozen-lockfile",
+        provisionCmd: null,
+      },
+      {
+        setup: { nested_docker: true, provisioning: "none" },
+        expected: "1",
+        provisioning: "none",
+        packageInstallCmd: null,
+        provisionCmd: null,
+      },
       // Profiles created before this capability keep their legacy full boundary.
-      { setup: {}, expected: "1" },
+      {
+        setup: {},
+        expected: "1",
+        provisioning: "full",
+        packageInstallCmd: "pnpm install --frozen-lockfile",
+        provisionCmd: "pnpm run local:setup:ui",
+      },
     ] as const) {
       await db
         .update(sandboxProfiles)
@@ -361,12 +391,22 @@ describe("sandbox api", async () => {
       await dispatchRun(config, { runId: run.id, orgId }, { sandboxDriver: async () => driver });
 
       expect(launched.at(-1)?.env.FACILITY_SANDBOX_NESTED_DOCKER).toBe(fixture.expected);
+      const persistedRun = (
+        await db.select({ sandbox: runs.sandbox }).from(runs).where(eq(runs.id, run.id)).limit(1)
+      )[0];
+      expect(
+        (persistedRun?.sandbox as { bundle?: Record<string, unknown> } | null)?.bundle,
+      ).toMatchObject({
+        packageInstallCmd: fixture.packageInstallCmd,
+        provisionCmd: fixture.provisionCmd,
+      });
       const sandboxEvent = (
         await db.select({ data: runEvents.data }).from(runEvents).where(eq(runEvents.runId, run.id))
       ).find((event) => (event.data as Record<string, unknown>).nested_docker !== undefined);
       expect(sandboxEvent?.data).toMatchObject({
         driver: "aws",
         nested_docker: fixture.expected === "1",
+        provisioning: fixture.provisioning,
       });
     }
 
@@ -406,9 +446,10 @@ describe("sandbox api", async () => {
         .where(eq(runEvents.runId, dockerRun.id))
     ).find((event) => (event.data as Record<string, unknown>).driver === "docker");
     expect(dockerSandboxEvent?.data).not.toHaveProperty("nested_docker");
+    expect(dockerSandboxEvent?.data).toMatchObject({ provisioning: "full" });
   });
 
-  it("accepts only boolean nested-Docker profile settings", async () => {
+  it("accepts only coherent sandbox capability settings", async () => {
     const valid = await app.inject({
       method: "POST",
       url: "/v1/sandbox-profiles",
@@ -417,25 +458,59 @@ describe("sandbox api", async () => {
         name: `no-nested-docker-${Date.now()}`,
         driver: "aws",
         image: "facility-runner:test",
-        setup: { nested_docker: false },
+        setup: { nested_docker: false, provisioning: "deps_only" },
       },
     });
     expect(valid.statusCode).toBe(200);
-    expect(valid.json().setup).toMatchObject({ nested_docker: false });
-
-    const invalid = await app.inject({
-      method: "POST",
-      url: "/v1/sandbox-profiles",
-      headers: { cookie },
-      payload: {
-        name: `invalid-nested-docker-${Date.now()}`,
-        driver: "aws",
-        image: "facility-runner:test",
-        setup: { nested_docker: "false" },
-      },
+    expect(valid.json().setup).toMatchObject({
+      nested_docker: false,
+      provisioning: "deps_only",
     });
-    expect(invalid.statusCode).toBe(400);
-    expect(invalid.body).toContain("setup.nested_docker must be a boolean");
+
+    for (const [setup, message] of [
+      [{ nested_docker: "false" }, "setup.nested_docker must be a boolean"],
+      [{ provisioning: "skip" }, "setup.provisioning must be full, deps_only, or none"],
+      [
+        { provisioning: "deps_only", provision_cmd: "pnpm setup" },
+        "setup command overrides cannot target phases disabled by setup.provisioning",
+      ],
+      [
+        { provisioning: "none", package_install_cmd: "pnpm install" },
+        "setup command overrides cannot target phases disabled by setup.provisioning",
+      ],
+    ] as const) {
+      const invalid = await app.inject({
+        method: "POST",
+        url: "/v1/sandbox-profiles",
+        headers: { cookie },
+        payload: {
+          name: `invalid-capability-${Date.now()}`,
+          driver: "aws",
+          image: "facility-runner:test",
+          setup,
+        },
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.body).toContain(message);
+    }
+
+    const invalidPatch = await app.inject({
+      method: "PATCH",
+      url: `/v1/sandbox-profiles/${valid.json().id}`,
+      headers: { cookie },
+      payload: { setup: { provisioning: false } },
+    });
+    expect(invalidPatch.statusCode).toBe(400);
+    expect(invalidPatch.body).toContain("setup.provisioning must be full, deps_only, or none");
+
+    const validPatch = await app.inject({
+      method: "PATCH",
+      url: `/v1/sandbox-profiles/${valid.json().id}`,
+      headers: { cookie },
+      payload: { setup: { nested_docker: false, provisioning: "none" } },
+    });
+    expect(validPatch.statusCode).toBe(200);
+    expect(validPatch.json().setup).toEqual({ nested_docker: false, provisioning: "none" });
   });
 
   it("appendRunEvents allocates contiguous seqs under concurrent appends", async () => {

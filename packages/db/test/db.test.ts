@@ -2,7 +2,15 @@ import { hashChain, newId } from "@facility/core";
 import { count, eq, inArray, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb, insertAuditEvent, migrate, seed, withOrg } from "../src/index.js";
+import {
+  analysisSandboxProfileId,
+  createDb,
+  defaultSandboxProfileId,
+  insertAuditEvent,
+  migrate,
+  seed,
+  withOrg,
+} from "../src/index.js";
 import * as schema from "../src/schema.js";
 
 const databaseUrl =
@@ -187,7 +195,10 @@ describe("db", async () => {
       "skill_proposal",
       "task_creation",
     ]);
-    expect(seededProfiles.map((profile) => profile.name)).toEqual(["Default runner"]);
+    expect(seededProfiles.map((profile) => profile.name).sort()).toEqual([
+      "Analysis runner",
+      "Default runner",
+    ]);
     expect(seededActionTypes.find((action) => action.name === "plan_acceptance")?.executor).toEqual(
       {
         type: "internal",
@@ -243,6 +254,140 @@ describe("db", async () => {
           .limit(1)
       )[0]?.executor,
     ).toEqual({ type: "webhook", config: { url: "https://hooks.invalid/plan" } });
+  });
+
+  it("moves only managed analysis agents to their tenant's analysis profile", async () => {
+    const orgA = newId("org");
+    const orgB = newId("org");
+    const projectA = newId("proj");
+    const projectB = newId("proj");
+    await db.insert(schema.orgs).values([
+      { id: orgA, name: "Analysis A", slug: `analysis-a-${orgA}`, settings: {} },
+      { id: orgB, name: "Analysis B", slug: `analysis-b-${orgB}`, settings: {} },
+    ]);
+    await db.insert(schema.projects).values([
+      { id: projectA, orgId: orgA, name: "Analysis A", slug: "analysis", settings: {} },
+      { id: projectB, orgId: orgB, name: "Analysis B", slug: "analysis", settings: {} },
+    ]);
+    await seed(databaseUrl, { includeDemoData: false });
+
+    const contractA = (
+      await db
+        .select({ id: schema.registryItems.id })
+        .from(schema.registryItems)
+        .where(eq(schema.registryItems.orgId, orgA))
+        .limit(1)
+    )[0];
+    const contractB = (
+      await db
+        .select({ id: schema.registryItems.id })
+        .from(schema.registryItems)
+        .where(eq(schema.registryItems.orgId, orgB))
+        .limit(1)
+    )[0];
+    if (!contractA || !contractB) throw new Error("analysis migration contract fixtures missing");
+
+    const customProfileId = newId("sbx");
+    await db.insert(schema.sandboxProfiles).values({
+      id: customProfileId,
+      orgId: orgA,
+      name: "Custom analysis",
+      driver: "docker",
+      image: "custom-runner:test",
+      setup: {},
+      resources: {},
+      network: {},
+    });
+    const fixtures = [
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "architect",
+        contractItemId: contractA.id,
+        sandboxProfileId: defaultSandboxProfileId(orgA),
+      },
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "review",
+        contractItemId: contractA.id,
+        sandboxProfileId: customProfileId,
+      },
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "security-sweep",
+        contractItemId: contractA.id,
+        sandboxProfileId: null,
+      },
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "builder",
+        contractItemId: contractA.id,
+        sandboxProfileId: defaultSandboxProfileId(orgA),
+      },
+      {
+        id: newId("agent"),
+        orgId: orgB,
+        projectId: projectB,
+        name: "codex-architect",
+        contractItemId: contractB.id,
+        sandboxProfileId: defaultSandboxProfileId(orgB),
+      },
+    ].map((fixture) => ({
+      ...fixture,
+      engine: "codex",
+      model: {},
+      triggers: [],
+      permissions: [],
+      enabled: true,
+      // These rows model agents created before the managed Analysis profile was
+      // introduced. Later API edits advance updatedAt and are not migrated.
+      createdAt: new Date("2020-01-01T00:00:00Z"),
+      updatedAt: new Date("2020-01-01T00:00:00Z"),
+    }));
+    await db.insert(schema.agentDefs).values(fixtures);
+
+    await seed(databaseUrl, { includeDemoData: false });
+    const assignments = new Map(
+      (
+        await db
+          .select({ id: schema.agentDefs.id, sandboxProfileId: schema.agentDefs.sandboxProfileId })
+          .from(schema.agentDefs)
+          .where(
+            inArray(
+              schema.agentDefs.id,
+              fixtures.map((fixture) => fixture.id),
+            ),
+          )
+      ).map((agent) => [agent.id, agent.sandboxProfileId]),
+    );
+    expect(assignments.get(fixtures[0]?.id ?? "")).toBe(analysisSandboxProfileId(orgA));
+    expect(assignments.get(fixtures[1]?.id ?? "")).toBe(customProfileId);
+    expect(assignments.get(fixtures[2]?.id ?? "")).toBeNull();
+    expect(assignments.get(fixtures[3]?.id ?? "")).toBe(defaultSandboxProfileId(orgA));
+    expect(assignments.get(fixtures[4]?.id ?? "")).toBe(analysisSandboxProfileId(orgB));
+    expect(assignments.get(fixtures[4]?.id ?? "")).not.toBe(analysisSandboxProfileId(orgA));
+
+    await db
+      .update(schema.agentDefs)
+      .set({ sandboxProfileId: defaultSandboxProfileId(orgA), updatedAt: new Date() })
+      .where(eq(schema.agentDefs.id, fixtures[0]?.id ?? ""));
+    await seed(databaseUrl, { includeDemoData: false });
+    expect(
+      (
+        await db
+          .select({ sandboxProfileId: schema.agentDefs.sandboxProfileId })
+          .from(schema.agentDefs)
+          .where(eq(schema.agentDefs.id, fixtures[0]?.id ?? ""))
+          .limit(1)
+      )[0]?.sandboxProfileId,
+    ).toBe(defaultSandboxProfileId(orgA));
   });
 
   it("allows only one plan-acceptance builder run per architect plan under a race", async () => {

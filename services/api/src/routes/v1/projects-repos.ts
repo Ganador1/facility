@@ -1,6 +1,8 @@
 import { newId } from "@facility/core";
 import {
   agentDefs,
+  analysisSandboxProfileId,
+  defaultSandboxProfileId,
   githubInstallations,
   projects,
   registryItems,
@@ -403,14 +405,17 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       .from(registryItems)
       .where(and(eq(registryItems.orgId, orgId), eq(registryItems.scope, "bundled")));
     const byName = new Map(items.map((item) => [item.name, item]));
-    const sandbox = (
-      await db
-        .select()
-        .from(sandboxProfiles)
-        .where(eq(sandboxProfiles.orgId, orgId))
-        .orderBy(asc(sandboxProfiles.createdAt))
-        .limit(1)
-    )[0];
+    const availableSandboxes = await db
+      .select()
+      .from(sandboxProfiles)
+      .where(and(eq(sandboxProfiles.orgId, orgId), isNull(sandboxProfiles.projectId)))
+      .orderBy(asc(sandboxProfiles.createdAt));
+    const defaultSandbox =
+      availableSandboxes.find((profile) => profile.id === defaultSandboxProfileId(orgId)) ??
+      availableSandboxes[0];
+    const analysisSandbox =
+      availableSandboxes.find((profile) => profile.id === analysisSandboxProfileId(orgId)) ??
+      defaultSandbox;
     const productChain = byName.get("product-chain");
     const poContract = byName.get("po-agent");
     const learningContract = byName.get("learning-agent");
@@ -428,6 +433,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
     const crew = [
       {
         name: "architect",
+        sandbox: "analysis",
         engine: "claude_code",
         model: { model: "claude-sonnet-5" },
         contract: "prompts/architect",
@@ -438,6 +444,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       },
       {
         name: "builder",
+        sandbox: "full",
         engine: "claude_code",
         model: { model: "claude-fable-5" },
         contract: "prompts/builder",
@@ -448,6 +455,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       },
       {
         name: "codex-architect",
+        sandbox: "analysis",
         engine: "codex",
         model: { primary: "gpt-5.6-sol", reasoning_effort: "high" },
         contract: "prompts/architect",
@@ -458,6 +466,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       },
       {
         name: "codex-builder",
+        sandbox: "full",
         engine: "codex",
         model: { primary: "gpt-5.6-sol", reasoning_effort: "high" },
         contract: "prompts/builder",
@@ -468,6 +477,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       },
       {
         name: "review",
+        sandbox: "analysis",
         engine: "claude_code",
         model: { model: "claude-sonnet-5" },
         contract: "prompts/review",
@@ -475,6 +485,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       },
       {
         name: "address-review",
+        sandbox: "full",
         engine: "claude_code",
         model: { model: "claude-sonnet-5" },
         contract: "prompts/address-review",
@@ -482,6 +493,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       },
       {
         name: "ci-doctor",
+        sandbox: "full",
         engine: "claude_code",
         model: { model: "claude-sonnet-5" },
         contract: "prompts/doctor",
@@ -489,6 +501,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
       },
       {
         name: "security-sweep",
+        sandbox: "analysis",
         engine: "claude_code",
         model: { model: "claude-sonnet-5" },
         contract: "prompts/sweep",
@@ -511,7 +524,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
             { type: "schedule", config: { cron: "0 6 * * *", timezone: "UTC" } },
             { type: "manual", config: {} },
           ],
-          sandboxProfileId: sandbox?.id,
+          sandboxProfileId: defaultSandbox?.id,
           // Read grants are explicit (write does not imply read in can()): the
           // PO reads its KB, the pipeline, and delegated runs, and may
           // dispatch a read-only architect consult.
@@ -541,7 +554,7 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
           contractItemId: learningContract.id,
           harnessItemId: productChain?.id,
           triggers: [{ type: "schedule", config: { cron: "0 3 * * *", timezone: "UTC" } }],
-          sandboxProfileId: sandbox?.id,
+          sandboxProfileId: defaultSandbox?.id,
           permissions: ["runs:read", "hitl:write", "kb:read"],
           enabled: true,
         })
@@ -559,7 +572,10 @@ export async function registerProjectsReposRoutes(app: FastifyInstance, context:
         model: spec.model,
         contractItemId: contract.id,
         triggers: [...spec.triggers],
-        sandboxProfileId: sandbox?.id,
+        // This is a seed-time assignment, not run-time mode inference. Operators
+        // can replace it through the existing agent/profile APIs. Keep the
+        // analysis set aligned with the runner's read-only repository modes.
+        sandboxProfileId: spec.sandbox === "analysis" ? analysisSandbox?.id : defaultSandbox?.id,
         permissions: ["runs:read"],
         enabled: true,
       });
