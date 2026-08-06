@@ -1,12 +1,21 @@
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { hashChain, newId } from "@facility/core";
 import { count, eq, inArray, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   analysisSandboxProfileId,
+  applyMigrations,
   createDb,
   defaultSandboxProfileId,
+  deployDatabase,
   insertAuditEvent,
+  MigrationChecksumError,
+  MigrationExecutionError,
+  MigrationLockTimeoutError,
   migrate,
   seed,
   withOrg,
@@ -47,6 +56,130 @@ describe("db", async () => {
 
   afterAll(async () => {
     await client.end();
+  });
+
+  it("stores migration checksums and rejects edits to applied SQL before applying more", async () => {
+    const migrationsDir = await mkdtemp(join(tmpdir(), "facility-migrations-"));
+    const schemaName = `migration_test_${randomUUID().replaceAll("-", "_")}`;
+    const isolated = postgres(databaseUrl, { max: 1 });
+    try {
+      await isolated.unsafe(`CREATE SCHEMA "${schemaName}"`);
+      await isolated.unsafe(`SET search_path TO "${schemaName}"`);
+      await writeFile(join(migrationsDir, "0001_first.sql"), "CREATE TABLE first (id text);\n");
+
+      const first = await applyMigrations(isolated, { migrationsDir, log: () => undefined });
+      expect(first.applied).toEqual(["0001_first.sql"]);
+      const checksumRows = await isolated<{ checksum: string | null }[]>`
+        SELECT checksum FROM _facility_migrations WHERE name = '0001_first.sql'
+      `;
+      expect(checksumRows[0]?.checksum).toMatch(/^[a-f0-9]{64}$/);
+
+      const second = await applyMigrations(isolated, { migrationsDir, log: () => undefined });
+      expect(second.skipped).toEqual(["0001_first.sql"]);
+      await isolated`UPDATE _facility_migrations SET checksum = NULL WHERE name = '0001_first.sql'`;
+      const legacy = await applyMigrations(isolated, { migrationsDir, log: () => undefined });
+      expect(legacy.backfilled).toEqual(["0001_first.sql"]);
+
+      await writeFile(join(migrationsDir, "0001_first.sql"), "CREATE TABLE first (id text);\n\n");
+      await writeFile(join(migrationsDir, "0002_second.sql"), "CREATE TABLE second (id text);\n");
+      await expect(
+        applyMigrations(isolated, { migrationsDir, log: () => undefined }),
+      ).rejects.toBeInstanceOf(MigrationChecksumError);
+      const secondTable = await isolated<{ name: string | null }[]>`
+        SELECT to_regclass('second')::text AS name
+      `;
+      expect(secondTable[0]?.name).toBeNull();
+
+      await writeFile(join(migrationsDir, "0001_first.sql"), "CREATE TABLE first (id text);\n");
+      await writeFile(
+        join(migrationsDir, "0002_second.sql"),
+        "CREATE TABLE rolled_back (id text); SELECT * FROM table_that_does_not_exist;\n",
+      );
+      await expect(
+        applyMigrations(isolated, { migrationsDir, log: () => undefined }),
+      ).rejects.toBeInstanceOf(MigrationExecutionError);
+      const rollbackRows = await isolated<{ ledger: number; table_name: string | null }[]>`
+        SELECT
+          (SELECT count(*)::int FROM _facility_migrations WHERE name = '0002_second.sql') AS ledger,
+          to_regclass('rolled_back')::text AS table_name
+      `;
+      expect(rollbackRows[0]).toEqual({ ledger: 0, table_name: null });
+    } finally {
+      await isolated.unsafe(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch(() => undefined);
+      await isolated.end();
+      await rm(migrationsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("times out cleanly when another deploy holds the database lock", async () => {
+    const blocker = postgres(databaseUrl, { max: 1 });
+    const events: Array<{ phase: string; status: string }> = [];
+    try {
+      await blocker`SELECT pg_advisory_lock(hashtext('facility:migrations'))`;
+      await expect(
+        deployDatabase(databaseUrl, {
+          includeDemoData: false,
+          lockPollMs: 5,
+          lockTimeoutMs: 20,
+          log: (event) => events.push(event),
+        }),
+      ).rejects.toBeInstanceOf(MigrationLockTimeoutError);
+      expect(events).toContainEqual(expect.objectContaining({ phase: "lock", status: "failed" }));
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ phase: "migrations", status: "started" }),
+      );
+    } finally {
+      await blocker`SELECT pg_advisory_unlock(hashtext('facility:migrations'))`.catch(
+        () => undefined,
+      );
+      await blocker.end();
+    }
+  });
+
+  it("runs schema and system-data reconciliation behind one deploy entry point", async () => {
+    const observer = postgres(databaseUrl, { max: 1 });
+    // Open the observer before the very short empty-database reconciliation;
+    // otherwise connection startup can finish only after the deploy unlocks.
+    await observer`SELECT 1`;
+    const events: Array<{
+      migrationsApplied?: number;
+      migrationsSkipped?: number;
+      phase: string;
+      status: string;
+    }> = [];
+    const observeLock = () => observer<{ acquired: boolean }[]>`
+      SELECT pg_try_advisory_lock(hashtext('facility:migrations')) AS acquired
+    `;
+    let reconciliationLock: Promise<Awaited<ReturnType<typeof observeLock>>> | undefined;
+    try {
+      await deployDatabase(databaseUrl, {
+        includeDemoData: false,
+        log: (event) => {
+          events.push(event);
+          if (event.phase === "reconciliation" && event.status === "started") {
+            // postgres.js queries are lazy; attaching then() here makes this
+            // observation race reconciliation, not the post-deploy assertion.
+            reconciliationLock = observeLock().then((rows) => rows);
+          }
+        },
+      });
+      expect((await reconciliationLock)?.[0]?.acquired).toBe(false);
+    } finally {
+      await observer.end();
+    }
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ phase: "lock", status: "completed" }),
+        expect.objectContaining({ phase: "migrations", status: "completed" }),
+        expect.objectContaining({ phase: "reconciliation", status: "completed" }),
+        expect.objectContaining({ phase: "deploy", status: "completed" }),
+      ]),
+    );
+    const migrationEvent = events.find(
+      (event) => event.phase === "migrations" && event.status === "completed",
+    );
+    expect(migrationEvent?.migrationsApplied).toBe(0);
+    expect(migrationEvent?.migrationsSkipped).toBeGreaterThan(0);
   });
 
   it("round-trips typed rows across core tables", async () => {

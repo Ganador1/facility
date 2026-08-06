@@ -56,7 +56,7 @@ services:
       [
         "sh",
         "-c",
-        "node node_modules/@facility/db/dist/bin/migrate.js && FACILITY_SEED_DEMO=0 node node_modules/@facility/db/dist/bin/seed.js",
+        "FACILITY_SEED_DEMO=0 node node_modules/@facility/db/dist/bin/deploy.js",
       ]
     environment:
       DATABASE_URL: postgres://facility:${POSTGRES_PASSWORD:-facility}@postgres:5432/facility

@@ -4,6 +4,7 @@ import * as schema from "./schema.js";
 import { withOrg } from "./scoped.js";
 
 export * from "./audit.js";
+export * from "./deploy.js";
 export * from "./migrate.js";
 export * from "./schema.js";
 export * from "./scoped.js";

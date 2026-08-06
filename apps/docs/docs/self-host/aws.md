@@ -296,9 +296,10 @@ print secret values or commit `.env`, tfvars, state, or private-key files.
 
 ## 5. Migrate and seed, before any service starts
 
-The `migrate` task applies migrations **and** seeds the bundled roles, action
-types and default sandbox profile that the next step and `facility doctor`
-depend on. It is idempotent.
+The `migrate` task is one database deploy gate: one bounded advisory-lock
+session applies checksum-verified migrations and reconciles the bundled roles,
+action types, registry, and sandbox profiles that the next step and
+`facility doctor` depend on. Re-running it is safe.
 
 ```bash
 FACILITY_CLUSTER="$(terraform -chdir="$FACILITY_TF_DIR" output -raw ecs_cluster_name)"
@@ -331,7 +332,11 @@ facility_wait_for_task "$FACILITY_TASK"
 ```
 
 If the helper returns nonzero, do not continue. Read the named CloudWatch log
-group before retrying, and do not start any service.
+group before retrying, and do not start any service. Exit `10` is a lock timeout
+and can be retried; exit `11` identifies a changed applied migration; exit `12`
+identifies migration SQL that rolled back. Successful logs contain JSON
+`facility.db.deploy` events with lock, migration, reconciliation, and total
+durations.
 
 ## 6. Bind the instance to your GitHub organization
 

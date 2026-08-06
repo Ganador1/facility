@@ -19,8 +19,9 @@ const repoRoot = existsSync(join(packagedAssetsRoot, "packages/harness/contracts
   : workspaceRoot;
 loadDotenv({ path: join(workspaceRoot, ".env"), quiet: true });
 
-type SeedOptions = {
+export type SeedOptions = {
   includeDemoData?: boolean;
+  log?: (message: string) => void;
 };
 
 type RegistryDb = {
@@ -135,35 +136,43 @@ export async function seed(
   if (!connectionString) {
     throw new Error("DATABASE_URL is required");
   }
-  const includeDemoData = options.includeDemoData ?? process.env.FACILITY_SEED_DEMO !== "0";
   const sql = postgres(connectionString, { max: 1 });
   try {
-    for (const role of BUNDLED_ROLES) {
-      await sql`
+    await seedWithClient(sql, options);
+  } finally {
+    await sql.end();
+  }
+}
+
+export async function seedWithClient(sql: postgres.Sql, options: SeedOptions = {}): Promise<void> {
+  const includeDemoData = options.includeDemoData ?? process.env.FACILITY_SEED_DEMO !== "0";
+  const log = options.log ?? console.log;
+  for (const role of BUNDLED_ROLES) {
+    await sql`
         INSERT INTO roles (id, org_id, name, description, permissions)
         VALUES (${`role_bundled_${role.name}`}, NULL, ${role.name}, ${role.description}, ${role.permissions})
         ON CONFLICT (coalesce(org_id, '__bundled__'), name)
         DO UPDATE SET description = EXCLUDED.description, permissions = EXCLUDED.permissions, updated_at = now()
       `;
-    }
-    const seededOrgs = await sql<{ id: string }[]>`SELECT id FROM orgs`;
-    await seedOrgEssentialsForOrgsSql(
+  }
+  const seededOrgs = await sql<{ id: string }[]>`SELECT id FROM orgs`;
+  await seedOrgEssentialsForOrgsSql(
+    sql,
+    seededOrgs.map((org) => org.id),
+  );
+  if (!includeDemoData) {
+    // Deploy-time seeds refresh bundled contracts and templates for existing
+    // tenants too. Do this set-wise so an upgrade is not one database round
+    // trip per file per tenant.
+    await seedBundledRegistryForOrgsSql(
       sql,
       seededOrgs.map((org) => org.id),
     );
-    if (!includeDemoData) {
-      // Deploy-time seeds refresh bundled contracts and templates for existing
-      // tenants too. Do this set-wise so an upgrade is not one database round
-      // trip per file per tenant.
-      await seedBundledRegistryForOrgsSql(
-        sql,
-        seededOrgs.map((org) => org.id),
-      );
-      console.log("seed complete");
-      return;
-    }
+    log("seed complete");
+    return;
+  }
 
-    await sql`
+  await sql`
       INSERT INTO orgs (id, name, slug, settings)
       VALUES (
         'org_dev_the_agile_monkeys',
@@ -173,19 +182,19 @@ export async function seed(
       )
       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
     `;
-    await sql`
+  await sql`
       INSERT INTO users (id, email, name, status)
       VALUES ('user_dev_admin', 'admin@theagilemonkeys.com', 'Dev Admin', 'active')
       ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
     `;
-    await sql`
+  await sql`
       INSERT INTO org_members (id, org_id, user_id, role_id)
       VALUES ('member_dev_admin', 'org_dev_the_agile_monkeys', 'user_dev_admin', 'role_bundled_owner')
       ON CONFLICT (org_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, updated_at = now()
     `;
 
-    await seedOrgEssentialsSql(sql, "org_dev_the_agile_monkeys");
-    const devProjects = await sql<{ id: string }[]>`
+  await seedOrgEssentialsSql(sql, "org_dev_the_agile_monkeys");
+  const devProjects = await sql<{ id: string }[]>`
       INSERT INTO projects (id, org_id, name, slug, description, settings)
       VALUES (
         'proj_dev_facility',
@@ -201,11 +210,11 @@ export async function seed(
         updated_at = now()
       RETURNING id
     `;
-    const devProjectId = devProjects[0]?.id;
-    if (!devProjectId) throw new Error("failed to seed dev project");
+  const devProjectId = devProjects[0]?.id;
+  if (!devProjectId) throw new Error("failed to seed dev project");
 
-    const bundled = await seedBundledRegistrySql(sql, "org_dev_the_agile_monkeys");
-    await sql`
+  const bundled = await seedBundledRegistrySql(sql, "org_dev_the_agile_monkeys");
+  await sql`
       INSERT INTO agent_defs (
         id,
         org_id,
@@ -246,7 +255,7 @@ export async function seed(
         enabled = true,
         updated_at = now()
     `;
-    await sql`
+  await sql`
       INSERT INTO agent_defs (
         id,
         org_id,
@@ -286,10 +295,7 @@ export async function seed(
         enabled = true,
         updated_at = now()
     `;
-    console.log("seed complete");
-  } finally {
-    await sql.end();
-  }
+  log("seed complete");
 }
 
 export async function seedBundledRegistryForOrg(db: RegistryDb, orgId: string): Promise<void> {

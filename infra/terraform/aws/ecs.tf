@@ -104,13 +104,12 @@ resource "aws_ecs_task_definition" "migrate" {
       name      = "migrate"
       image     = local.images.api
       essential = true
-      # Migrate AND seed: bundled roles/action-types/default sandbox profile must
-      # exist before administrative instance bootstrap and before `facility doctor`
-      # passes. Seed is idempotent (ON CONFLICT) so re-running each deploy is safe.
+      # One lock session covers both schema migrations and idempotent system-data
+      # reconciliation before instance bootstrap or `facility doctor` can run.
       command = [
         "sh",
         "-c",
-        "node node_modules/@facility/db/dist/bin/migrate.js && node node_modules/@facility/db/dist/bin/seed.js",
+        "node node_modules/@facility/db/dist/bin/deploy.js",
       ]
       environment = concat(local.common_environment, [{ name = "FACILITY_SEED_DEMO", value = "0" }])
       secrets     = local.common_secrets

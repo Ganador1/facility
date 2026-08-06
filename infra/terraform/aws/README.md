@@ -196,10 +196,11 @@ plaintext to the terminal.
 
 ## 5. Run the migrate + seed task once
 
-The `migrate` task runs database migrations **and** seeds the bundled essentials
-(roles, action types, default sandbox profile) that administrative bootstrap and
-`facility doctor` require — seeding is idempotent. Run it only after the
-`database_url` secret and images are populated:
+The `migrate` task is one database deploy gate. It holds one bounded lock while
+it applies checksum-verified migrations and reconciles the bundled essentials
+(roles, action types, registry, and sandbox profiles) that administrative
+bootstrap and `facility doctor` require. Re-running it is safe. Run it only
+after the `database_url` secret and images are populated:
 
 ```bash
 aws ecs run-task \
@@ -209,9 +210,11 @@ aws ecs run-task \
   --network-configuration "awsvpcConfiguration={subnets=$(terraform output -json private_subnet_ids),securityGroups=[$(terraform output -raw service_security_group_id)],assignPublicIp=DISABLED}"
 ```
 
-Watch `/facility/<environment>/migrate` in CloudWatch Logs for
-`applied 0001_control_plane.sql` (or `already applied`) followed by the seed
-summary. `facility doctor` will flag `seed_essentials` if this task did not run.
+Watch `/facility/<environment>/migrate` in CloudWatch Logs for JSON
+`facility.db.deploy` events ending with `phase=deploy,status=completed`. Exit
+`10` is a retryable lock timeout; exit `11` identifies an applied migration
+whose SHA-256 changed; exit `12` identifies migration SQL that rolled back.
+`facility doctor` will flag `seed_essentials` if this task did not run.
 
 ## 6. Bind the instance
 
