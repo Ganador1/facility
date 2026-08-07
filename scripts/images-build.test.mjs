@@ -209,6 +209,8 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   const controlDockerfile = await readFile(join(root, "Dockerfile"), "utf8");
   const webDockerfile = await readFile(join(root, "apps/web/Dockerfile"), "utf8");
   const runnerDockerfile = await readFile(join(root, "runner/Dockerfile"), "utf8");
+  const runnerGrypePolicy = await readFile(join(root, "runner/grype.yaml"), "utf8");
+  const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   const agentCliPackage = JSON.parse(
     await readFile(join(root, "runner", "agent-clis", "package.json"), "utf8"),
   );
@@ -222,15 +224,106 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   assert.ok(
     webDockerfile.indexOf("RUN pnpm install") < webDockerfile.indexOf("COPY apps/web apps/web"),
   );
-  assert.doesNotMatch(runnerDockerfile, /npm (?:i|install) -g/);
+  assert.equal(rootPackage.packageManager, "pnpm@11.20.0");
+  for (const [dockerfile, targets] of [
+    [controlDockerfile, ["api", "gateway", "mcp"]],
+    [webDockerfile, ["web"]],
+  ]) {
+    assert.match(dockerfile, /FROM base AS runtime[\s\S]*runtime package manager remains/);
+    assert.match(dockerfile, /rm -rf \/usr\/local\/lib\/node_modules\/npm/);
+    for (const target of targets) {
+      assert.match(dockerfile, new RegExp(`FROM runtime AS ${target}`));
+    }
+  }
+  assert.match(runnerDockerfile, /ARG NPM_VERSION=12\.0\.2/);
+  assert.ok(
+    runnerDockerfile.indexOf("FROM node:24-trixie@sha256:") <
+      runnerDockerfile.indexOf("ARG NPM_VERSION=12.0.2"),
+    "the patched npm runtime must be installed in the Node stage",
+  );
+  for (const patchedPackage of [
+    "brace-expansion@5.0.9",
+    "ip-address@10.3.1",
+    "tar@7.5.21",
+    "undici@6.28.0",
+  ]) {
+    assert.match(runnerDockerfile, new RegExp(patchedPackage.replace(".", "\\.")));
+  }
   assert.match(
     runnerDockerfile,
     /COPY runner\/agent-clis\/package\.json runner\/agent-clis\/package-lock\.json/,
   );
   assert.match(runnerDockerfile, /npm ci --omit=dev/);
+  assert.match(
+    runnerDockerfile,
+    /^FROM docker:29-dind-rootless@sha256:[0-9a-f]{64} AS docker-tools$/m,
+  );
+  assert.match(runnerDockerfile, /COPY --from=docker-tools \/usr\/local\/bin\//);
+  assert.doesNotMatch(runnerDockerfile, /^\s+docker\.io\s+\\$/m);
+  assert.doesNotMatch(runnerDockerfile, /^\s+rootlesskit\s+\\$/m);
+  assert.match(runnerDockerfile, /GH_VERSION=2\.97\.0/);
+  assert.match(
+    runnerDockerfile,
+    /a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112/,
+  );
+  assert.match(
+    runnerDockerfile,
+    /73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5/,
+  );
+  const riskRules = [
+    ...runnerGrypePolicy.matchAll(
+      /- vulnerability: ([^\n]+)\n\s+package:\n\s+name: ([^\n]+)\n\s+version: ([^\n]+)\n\s+type: ([^\n]+)\n\s+location: ([^\n]+)/g,
+    ),
+  ].map((match) => ({
+    vulnerability: match[1],
+    name: match[2],
+    version: match[3],
+    type: match[4],
+    location: match[5],
+  }));
+  assert.equal([...runnerGrypePolicy.matchAll(/^\s+- vulnerability:/gm)].length, 14);
+  assert.equal(riskRules.length, 14);
+  const allowedLocations = new Set([
+    "/usr/local/bin/containerd",
+    "/usr/local/bin/containerd-shim-runc-v2",
+    "/usr/local/bin/ctr",
+    "/usr/local/bin/rootlesskit",
+    "/usr/local/bin/runc",
+    "/usr/local/libexec/docker/cli-plugins/docker-buildx",
+    "/usr/local/libexec/docker/cli-plugins/docker-compose",
+  ]);
+  for (const rule of riskRules) {
+    assert.match(rule.vulnerability, /^(?:GHSA-[a-z0-9-]+|GO-\d{4}-\d+)$/);
+    assert.match(
+      rule.name,
+      /^(?:github\.com\/docker\/docker|golang\.org\/x\/(?:net|text)|google\.golang\.org\/grpc)$/,
+    );
+    assert.match(rule.version, /^v[^*\s]+$/);
+    assert.equal(rule.type, "go-module");
+    assert.ok(allowedLocations.has(rule.location));
+  }
+  for (const packageName of [
+    "libasound2t64",
+    "libatk-bridge2.0-0t64",
+    "libatk1.0-0t64",
+    "libatspi2.0-0t64",
+    "libcups2t64",
+    "libglib2.0-0t64",
+    "uidmap",
+    "fuse-overlayfs",
+    "iptables",
+  ]) {
+    assert.match(
+      runnerDockerfile,
+      new RegExp(`^\\s+${packageName.replaceAll(".", "\\.")}\\s+\\\\$`, "m"),
+    );
+  }
   assert.deepEqual(agentCliPackage.dependencies, {
     "@anthropic-ai/claude-code": "2.1.215",
     "@openai/codex": "0.144.6",
+  });
+  assert.deepEqual(agentCliPackage.allowScripts, {
+    "@anthropic-ai/claude-code@2.1.215": true,
   });
   assert.deepEqual(agentCliLock.packages[""].dependencies, agentCliPackage.dependencies);
   for (const packageName of Object.keys(agentCliPackage.dependencies)) {

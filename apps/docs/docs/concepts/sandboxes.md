@@ -44,7 +44,7 @@ A **platform-lane** run (Claude Code, Codex) needs a sandbox profile whose
 - **docker** (local/self-host) — the profile's image entrypoint must be the
   runner. Build it with `docker build -f runner/Dockerfile -t facility-runner:dev .` and set
   `FACILITY_RUNNER_IMAGE` (default `facility-runner:dev`). A bare base image like
-  `node:22-bookworm` only supports **BYO-command** runs.
+  `node:24-trixie` only supports **BYO-command** runs.
 - **aws** (CodeBuild) — each run starts a private CodeBuild job using the runner
   image fixed in the deployed CodeBuild project. Profile image overrides are
   deliberately ignored: an editable image cannot inherit the project's AWS

@@ -133,6 +133,8 @@ jobs:
       contents: read
       packages: read
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: facility-image-digests-${{ github.sha }}
@@ -194,7 +196,15 @@ jobs:
               }
               process.stdout.write(manifest.digest);
             ' "$DIGEST_DIRECTORY/$image.json" "$image")"
-            if ! "$GRYPE" "registry:$IMAGE_PREFIX/$image@$digest" --fail-on high --only-fixed; then
+            grype_config=()
+            if [[ "$image" == "runner" ]]; then
+              grype_config=(--config "$GITHUB_WORKSPACE/runner/grype.yaml")
+            fi
+            # Service scans run outside the checkout so a future repository
+            # config cannot silently weaken them. Only runner receives the
+            # explicit, path- and version-pinned upstream-binary policy.
+            if ! (cd "$RUNNER_TEMP" && "$GRYPE" "${grype_config[@]}" \
+              "registry:$IMAGE_PREFIX/$image@$digest" --fail-on high --only-fixed); then
               scan_failed=1
             fi
           done

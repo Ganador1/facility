@@ -1,10 +1,25 @@
 # Facility web (Next.js standalone). Built once; FACILITY_API_URL is supplied
 # when the container starts so the same artifact works in every installation.
 #   docker build -f apps/web/Dockerfile -t facility/web .
-FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS base
+FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS base
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN corepack enable
 WORKDIR /app
+
+# The standalone server needs Node, not the package managers used to build it.
+# Removing their vendored dependencies keeps unused tooling out of the image
+# CVE inventory and makes a future base-layout change fail visibly at build time.
+FROM base AS runtime
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /pnpm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/pnpm \
+    /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+    /usr/local/bin/corepack \
+  && for tool in npm npx pnpm corepack yarn; do \
+    if command -v "$tool" >/dev/null 2>&1; then \
+      echo "runtime package manager remains available: $tool" >&2; \
+      exit 1; \
+    fi; \
+  done
 
 FROM base AS build
 # Keep dependency resolution keyed to the lockfile and relevant workspace
@@ -25,7 +40,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # clean image has no SDK artifact, so build it before Next consumes the output.
 RUN pnpm --filter '@facility/sdk...' run build && pnpm --filter '@facility/web' build
 
-FROM base AS web
+FROM runtime AS web
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3400 HOSTNAME=0.0.0.0
 COPY --from=build /app/apps/web/.next/standalone ./
 COPY --from=build /app/apps/web/.next/static ./apps/web/.next/static

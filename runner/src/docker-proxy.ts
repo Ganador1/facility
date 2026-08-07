@@ -66,6 +66,14 @@ export function dockerRequestPolicy(method: string, rawUrl: string): PolicyDecis
   return { allowed: false, reason: `docker_api_denied:${method}:${pathname}` };
 }
 
+export function dockerUpgradeAllowed(method: string, rawUrl: string): boolean {
+  const pathname = dockerPath(rawUrl);
+  return (
+    method === "POST" &&
+    /^\/(?:grpc|session|exec\/[^/]+\/start|containers\/[^/]+\/attach)$/.test(pathname)
+  );
+}
+
 export function validateDockerBody(
   kind: "container" | "exec" | "volume",
   value: unknown,
@@ -348,8 +356,7 @@ function handleUpgrade(
 ) {
   const method = request.method ?? "GET";
   const url = request.url ?? "/";
-  const pathname = dockerPath(url);
-  if (method !== "POST" || !/^\/(?:exec\/[^/]+\/start|containers\/[^/]+\/attach)$/.test(pathname)) {
+  if (!dockerUpgradeAllowed(method, url)) {
     client.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 21\r\n\r\ndocker_upgrade_denied");
     return;
   }
@@ -362,9 +369,11 @@ function handleUpgrade(
       `${method} ${url} HTTP/${request.httpVersion}\r\n${headers.join("\r\n")}\r\n\r\n`,
     );
     if (head.length > 0) upstream.write(head);
-    client.pipe(upstream).pipe(client);
+    client.pipe(upstream);
+    upstream.pipe(client);
   });
   upstream.on("error", () => client.destroy());
+  client.on("error", () => upstream.destroy());
 }
 
 function dockerPath(rawUrl: string) {

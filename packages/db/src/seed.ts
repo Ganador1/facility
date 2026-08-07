@@ -60,7 +60,7 @@ export function analysisSandboxProfileId(orgId: string): string {
 }
 
 // The default sandbox profile must run the Facility runner (its ENTRYPOINT), or
-// platform-lane runs never start. A bare base image like node:22-bookworm only
+// platform-lane runs never start. A bare base image like node:24-trixie only
 // works for BYO-command runs. Keep this in sync with config.sandboxRunnerImage.
 function defaultRunnerImage(): string {
   return process.env.FACILITY_RUNNER_IMAGE ?? "facility-runner:dev";

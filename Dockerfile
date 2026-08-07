@@ -4,7 +4,7 @@
 #
 #   docker build --target api     -t facility/api .
 #   docker build --target gateway -t facility/gateway .
-FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS base
+FROM node:24-trixie-slim@sha256:0711b541c1c33a8a530ac4f0d391baa9a15b3d804695b1b24a47daa5fb60e74d AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:$PATH
 RUN apt-get update \
@@ -16,6 +16,21 @@ RUN apt-get update \
 ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/aws-rds-global.pem
 RUN corepack enable
 WORKDIR /app
+
+# Deployable services execute Node directly. Keep package managers in the build
+# stages, but delete their global dependency trees from the runtime rootfs so
+# unused npm/Corepack code cannot become a production CVE surface.
+FROM base AS runtime
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /pnpm \
+  && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/pnpm \
+    /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg \
+    /usr/local/bin/corepack \
+  && for tool in npm npx pnpm corepack yarn; do \
+    if command -v "$tool" >/dev/null 2>&1; then \
+      echo "runtime package manager remains available: $tool" >&2; \
+      exit 1; \
+    fi; \
+  done
 
 # --- deps: install with the full workspace manifest set for cache reuse ---
 FROM base AS deps
@@ -72,7 +87,7 @@ RUN pnpm --filter '@facility/core' --filter '@facility/sdk' \
 RUN pnpm --filter '@facility/mcp' deploy --prod --legacy /prod/mcp
 
 # --- api (also serves the worker via `node dist/worker.js`) ---
-FROM base AS api
+FROM runtime AS api
 ENV NODE_ENV=production
 COPY --from=build-api /prod/api /app
 # The CLI travels with the API image so operator commands can be run as one-shot
@@ -108,14 +123,14 @@ EXPOSE 4400
 CMD ["node", "dist/start.js"]
 
 # --- gateway ---
-FROM base AS gateway
+FROM runtime AS gateway
 ENV NODE_ENV=production
 COPY --from=build-gateway /prod/gateway /app
 EXPOSE 4410
 CMD ["node", "dist/start.js"]
 
 # --- MCP streamable-HTTP gateway ---
-FROM base AS mcp
+FROM runtime AS mcp
 ENV NODE_ENV=production
 COPY --from=build-mcp /prod/mcp /app
 EXPOSE 4420

@@ -1,22 +1,49 @@
-FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241 AS bind-broker-build
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS bind-broker-build
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends gcc libc6-dev \
   && rm -rf /var/lib/apt/lists/*
+
 COPY runner/bind-broker.c /src/bind-broker.c
 RUN gcc -std=c11 -O2 -Wall -Wextra -Werror \
       -D_FORTIFY_SOURCE=2 -fstack-protector-strong -fPIE \
       /src/bind-broker.c -Wl,-z,relro,-z,now -pie \
       -o /facility-bind-broker
 
-FROM node:22-bookworm@sha256:0557ac14e0d45d02ed563067b82856ca5e7aa3437fa28d98d4350ea9c3d9494a
+# Docker's official rootless image publishes a coherent, multi-platform static
+# daemon/client/runtime set built with a current Go toolchain. Copying from one
+# digest-pinned source avoids Debian's lagging docker.io binaries and a second
+# architecture-specific download/checksum matrix.
+FROM docker:29-dind-rootless@sha256:7451e3dc398b11ba2d8183bb7915402683e3d32e5ec8cef835c215f314a65fef AS docker-tools
+
+# GitHub CLI has no official container image. Its immutable release archives
+# are verified per target architecture before the single binary crosses stages.
+FROM debian:trixie-slim@sha256:3a39a0592364683e6bab97937b72cad5a8fa6dcbbee90edb3bb48c7f8e94f258 AS gh-build
+ARG TARGETARCH
+ARG GH_VERSION=2.97.0
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl \
+  && case "$TARGETARCH" in \
+    amd64) gh_sha256="a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112" ;; \
+    arm64) gh_sha256="73ea440ecad9c9e284429997ee6f93577bc6f7bc6fba357ef62c53ad8fb641a5" ;; \
+    *) echo "unsupported GitHub CLI architecture: $TARGETARCH" >&2; exit 1 ;; \
+  esac \
+  && archive="gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+  && curl --fail --silent --show-error --location --retry 3 \
+    "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${archive}" \
+    --output "/tmp/${archive}" \
+  && printf '%s  %s\n' "$gh_sha256" "/tmp/${archive}" | sha256sum --check --strict \
+  && tar -xzf "/tmp/${archive}" -C /tmp \
+  && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /gh
+
+FROM node:24-trixie@sha256:66bb8d36ae1ddd72199ed235a089904874ca4079ee517936ca3adb80506a75c1
 
 RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     busybox-static \
     curl \
-    docker.io \
     fonts-noto-color-emoji \
     fonts-freefont-ttf \
     fonts-ipafont-gothic \
@@ -26,20 +53,19 @@ RUN apt-get update \
     fonts-wqy-zenhei \
     fuse-overlayfs \
     git \
-    gh \
     iproute2 \
     iptables \
     jq \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libatspi2.0-0 \
+    libasound2t64 \
+    libatk-bridge2.0-0t64 \
+    libatk1.0-0t64 \
+    libatspi2.0-0t64 \
     libcairo2 \
-    libcups2 \
+    libcups2t64 \
     libdbus-1-3 \
     libdrm2 \
     libgbm1 \
-    libglib2.0-0 \
+    libglib2.0-0t64 \
     libnspr4 \
     libnss3 \
     libpango-1.0-0 \
@@ -52,13 +78,44 @@ RUN apt-get update \
     libxkbcommon0 \
     libxrandr2 \
     ripgrep \
-    rootlesskit \
     slirp4netns \
     uidmap \
     util-linux \
     xfonts-scalable \
     xvfb \
   && rm -rf /var/lib/apt/lists/*
+
+# npm is a runtime capability for repositories that use package-lock.json, so
+# keep it rather than forcing every project through pnpm. The Node base can lag
+# fixes in npm's own dependency tree: install the current CLI, overlay its
+# same-major patched transitives, and remove the older nested copies that Node
+# would otherwise resolve first.
+ARG NPM_VERSION=12.0.2
+RUN npm install --global "npm@${NPM_VERSION}" \
+  && npm install --global --omit=dev --ignore-scripts \
+    brace-expansion@5.0.9 \
+    ip-address@10.3.1 \
+    tar@7.5.21 \
+    undici@6.28.0 \
+  && rm -rf \
+    /usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+    /usr/local/lib/node_modules/npm/node_modules/ip-address \
+    /usr/local/lib/node_modules/npm/node_modules/tar \
+    /usr/local/lib/node_modules/npm/node_modules/undici \
+  && test "$(npm --version)" = "$NPM_VERSION" \
+  && npm config get registry >/dev/null
+
+COPY --from=docker-tools /usr/local/bin/ /usr/local/bin/
+COPY --from=docker-tools /usr/local/libexec/docker/cli-plugins/ /usr/local/libexec/docker/cli-plugins/
+COPY --from=gh-build /gh /usr/local/bin/gh
+RUN docker --version \
+  && dockerd --version \
+  && rootlesskit --version \
+  && containerd --version \
+  && runc --version \
+  && docker compose version \
+  && docker buildx version \
+  && gh --version
 
 # Keep the Docker daemon and its socket proxy on identities that the untrusted
 # agent user cannot impersonate. The daemon itself is rootless; the proxy is the
@@ -103,7 +160,7 @@ COPY runner/package.json runner/package-lock.json runner/tsconfig.json ./
 COPY packages/run-objective/package.json /packages/run-objective/
 COPY packages/run-objective/src /packages/run-objective/src
 COPY runner/src ./src
-COPY runner/runner-entrypoint.sh runner/codebuild-runner.sh /app/
+COPY runner/runner-entrypoint.sh runner/codebuild-runner.sh runner/find-descendant.awk /app/
 RUN npm ci && npm run build && npm prune --omit=dev
 
 # Run non-root: agent CLIs (Claude Code) refuse bypass-permissions as root, and
