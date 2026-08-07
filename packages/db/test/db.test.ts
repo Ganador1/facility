@@ -18,6 +18,7 @@ import {
   MigrationLockTimeoutError,
   migrate,
   seed,
+  verifyAuditChain,
   withOrg,
 } from "../src/index.js";
 import * as schema from "../src/schema.js";
@@ -361,6 +362,27 @@ describe("db", async () => {
       }),
     );
     expect(second?.prevHash).toBe(first?.hash);
+  });
+
+  it("keeps the audit chain valid when JSON persistence omits undefined fields", async () => {
+    const orgId = newId("org");
+    await db
+      .insert(schema.orgs)
+      .values({ id: orgId, name: "Audit JSON", slug: `audit-json-${orgId}`, settings: {} });
+
+    const event = await insertAuditEvent(db, {
+      orgId,
+      actor: { type: "agent", id: "run_success" },
+      action: "run.finished",
+      target: { type: "run", id: "run_success" },
+      payload: { status: "succeeded", error: undefined, values: [undefined, "kept"] },
+    });
+
+    expect(event?.payload).toEqual({ status: "succeeded", values: [null, "kept"] });
+    await expect(verifyAuditChain(db, orgId)).resolves.toEqual({
+      ok: true,
+      firstBreakSeq: null,
+    });
   });
 
   it("seeds idempotently", async () => {

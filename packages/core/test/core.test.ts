@@ -359,6 +359,15 @@ describe("audit", () => {
       "5347c7c917380c15ab8fbf413dccbddcca3bdfc3df03905c0e54cfe788c83289",
     );
   });
+
+  it("hashes the JSON value that persistence retains", () => {
+    expect(hashChain(null, { status: "succeeded", error: undefined })).toBe(
+      hashChain(null, { status: "succeeded" }),
+    );
+    expect(hashChain(null, { values: [undefined, "kept"] })).toBe(
+      hashChain(null, { values: [null, "kept"] }),
+    );
+  });
 });
 
 describe("receipts", () => {
