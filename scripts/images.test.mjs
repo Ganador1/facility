@@ -132,15 +132,10 @@ test("CI gates release images and the reusable publisher stages digests before p
     "the isolated build checkout must be stamped before Docker consumes it",
   );
   assert.match(imagesWorkflow, /push-by-digest=true,name-canonical=true,push=true/);
-  assert.match(
+  assert.doesNotMatch(
     buildJob,
-    /- image: web[\s\S]*?build_args: FACILITY_API_URL=https:\/\/api\.facility\.tam-os\.com/,
-    "the release web image must receive the API URL compiled into its rewrites",
-  );
-  assert.match(
-    buildJob,
-    /build-args: \$\{\{ matrix\.build_args \}\}/,
-    "the matrix build arguments must reach docker/build-push-action",
+    /build[_-]args|FACILITY_API_URL=/,
+    "the release web image must remain portable across runtime API origins",
   );
   assert.match(imagesWorkflow, /promote:\n {4}needs: \[plan, build\]/);
   assert.match(imagesWorkflow, /node scripts\/images\.mjs promote/);

@@ -22,7 +22,7 @@ const stdin = args[0] === "login" ? readFileSync(0, "utf8") : null;
 appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify({
   args,
   cwd: process.cwd(),
-  env: Object.fromEntries(["ECR_REGISTRY", "ECR_PREFIX", "IMAGE_TAG", "PLATFORM", "FACILITY_API_URL"].map((name) => [name, process.env[name] ?? null])),
+  env: Object.fromEntries(["ECR_REGISTRY", "ECR_PREFIX", "IMAGE_TAG", "PLATFORM"].map((name) => [name, process.env[name] ?? null])),
   stdin,
 }) + "\\n");
 if (args[0] === "buildx" && args[1] === "version" && process.env.FAKE_BUILDX_UNAVAILABLE === "1") process.exit(17);
@@ -56,7 +56,6 @@ function environment(fake, overrides = {}) {
     IMAGE_TAG: "abc123def456",
     CPU_ARCHITECTURE: "X86_64",
     PLATFORM: "linux/amd64",
-    FACILITY_API_URL: "https://api.facility.example",
     ...overrides,
   };
 }
@@ -111,7 +110,6 @@ test("AWS fallback builds the complete image set through one Bake graph", async 
     ECR_PREFIX: "facility-test",
     IMAGE_TAG: "abc123def456",
     PLATFORM: "linux/amd64",
-    FACILITY_API_URL: "https://api.facility.example",
   });
   assert.equal(docker[1].stdin, "registry-password\n");
   assert.deepEqual(await invocations(fake.awsLog), [
@@ -148,7 +146,6 @@ test("Bake aliases worker to the API result and keeps all target boundaries", as
 for (const [name, overrides, message] of [
   ["platform mismatch", { PLATFORM: "linux/arm64" }, /does not match CPU_ARCHITECTURE/],
   ["invalid architecture", { CPU_ARCHITECTURE: "MIPS64" }, /must be X86_64 or ARM64/],
-  ["missing web API URL", { FACILITY_API_URL: "" }, /FACILITY_API_URL is required/],
 ]) {
   test(`${name} fails before registry authentication`, async (t) => {
     const fake = await fakeCommands(t);

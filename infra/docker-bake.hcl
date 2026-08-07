@@ -14,10 +14,6 @@ variable "PLATFORM" {
   default = "linux/amd64"
 }
 
-variable "FACILITY_API_URL" {
-  default = ""
-}
-
 group "default" {
   targets = ["api", "gateway", "mcp", "web", "runner"]
 }
@@ -54,9 +50,6 @@ target "web" {
   dockerfile = "apps/web/Dockerfile"
   target     = "web"
   platforms  = [PLATFORM]
-  args = {
-    FACILITY_API_URL = FACILITY_API_URL
-  }
   tags = ["${ECR_REGISTRY}/${ECR_PREFIX}/web:${IMAGE_TAG}"]
 }
 

@@ -31,8 +31,6 @@ login() {
     docker login --username AWS --password-stdin "$ECR_REGISTRY"
 }
 
-: "${FACILITY_API_URL:?FACILITY_API_URL is required to build the web image}"
-
 BAKE_FILE="$ROOT_DIR/infra/docker-bake.hcl"
 if [[ ! -f "$BAKE_FILE" ]]; then
   printf 'Missing Facility image build definition: %s\n' "$BAKE_FILE" >&2
@@ -43,7 +41,7 @@ if ! docker buildx version >/dev/null 2>&1; then
   exit 1
 fi
 
-export ECR_REGISTRY ECR_PREFIX IMAGE_TAG PLATFORM FACILITY_API_URL
+export ECR_REGISTRY ECR_PREFIX IMAGE_TAG PLATFORM
 
 login
 

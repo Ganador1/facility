@@ -82,30 +82,22 @@ jobs:
             dockerfile: Dockerfile
             target: api
             context: .
-            build_args: ""
           - image: gateway
             dockerfile: Dockerfile
             target: gateway
             context: .
-            build_args: ""
           - image: mcp
             dockerfile: Dockerfile
             target: mcp
             context: .
-            build_args: ""
           - image: web
             dockerfile: apps/web/Dockerfile
             target: web
             context: .
-            # The official image serves Facility's hosted control plane. AWS
-            # self-hosters with a different api_url must build their web image
-            # for that deployment, as documented in the runbook.
-            build_args: FACILITY_API_URL=https://api.facility.tam-os.com
           - image: runner
             dockerfile: runner/Dockerfile
             target: ""
             context: .
-            build_args: ""
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
@@ -132,7 +124,6 @@ jobs:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
           target: ${{ matrix.target }}
-          build-args: ${{ matrix.build_args }}
           platforms: linux/amd64
           outputs: type=image,name=${{ env.REGISTRY }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.image }}

@@ -123,18 +123,16 @@ Record these outputs:
 ## 3. Build and push images when needed
 
 If you configured and verified public `image_overrides` before the first apply,
-skip this step. The overridden `web` image must have been built with
-`FACILITY_API_URL` set to this deployment's `api_url`; unlike the other images,
-its same-origin proxy destination is compiled into the Next.js build. Otherwise,
-from the module directory used above, build from the repository root and return
-afterward:
+skip this step. The web image reads `FACILITY_API_URL` when it runs, so one
+published artifact works for every deployment. Set it to a bare HTTP(S) origin
+with no credentials, path, query, or fragment. Otherwise, from the module
+directory used above, build from the repository root and return afterward:
 
 ```bash
 cd ../../..
 AWS_REGION=us-east-1 \
 ECR_PREFIX="$(terraform -chdir=infra/terraform/aws output -raw ecs_cluster_name)" \
 IMAGE_TAG=$(git rev-parse --short HEAD) \
-FACILITY_API_URL="$(terraform -chdir=infra/terraform/aws output -raw api_url)" \
 ./infra/build-images.sh
 cd infra/terraform/aws
 ```
@@ -154,9 +152,8 @@ The graph builds `linux/amd64` by default, matching Terraform's default
 in Terraform. The build exits before registry login if Buildx is unavailable or
 an explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
 
-Rebuild and redeploy the `web` image whenever `api_url` changes. Supplying only
-the runtime ECS environment variable does not update Next.js rewrite rules that
-were compiled into an existing image.
+When `api_url` changes, update the web task's runtime `FACILITY_API_URL` and
+redeploy the existing image; it does not need to be rebuilt.
 
 If you changed `container_image_tags` after the first apply, apply again before
 running the migrate task. Keeping the tag stable avoids that extra apply.
