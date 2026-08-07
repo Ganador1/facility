@@ -52,18 +52,20 @@ Security and privacy are first-class concerns; this page is the contract.
   interactive GitHub/OIDC login is configured. Machine keys can request a preview, but cannot view
   or delete it.
 - Preview HTML and JavaScript are served only from `FACILITY_PREVIEW_URL`, a
-  separately registered browser site that routes to the existing API tasks.
-  The preview host denies every control-plane route, and the control-plane
-  hosts deny preview content routes.
+  browser site isolated at the registered-site boundary that routes to the
+  existing API tasks. The AWS module creates a dedicated AWS-assigned
+  CloudFront origin by default; custom deployments must provide a separately
+  registered site. The preview host denies every control-plane route, and the
+  control-plane hosts deny preview content routes.
 - Opening a preview exchanges the Facility session for a single-use,
   60-second handoff and then a short-lived HttpOnly cookie bound to one user,
   organization, and preview. Every request rechecks active membership and
   `runs:read`; the proxy strips cookies and authorization before forwarding
   only browser-safe `GET` and `HEAD` requests.
-- Do not configure the preview hostname as a sibling of the app/API hostnames,
-  and never widen Facility cookies with a parent `Domain` attribute. A separate
-  registered site prevents untrusted preview JavaScript from tossing cookies
-  into the control-plane site.
+- Do not configure a custom preview hostname as a sibling of the app/API
+  hostnames, and never widen Facility cookies with a parent `Domain` attribute.
+  The AWS-assigned origin or a separate registered site prevents untrusted
+  preview JavaScript from tossing cookies into the control-plane site.
 - No provider or production secrets are injected. Projects publish an immutable
   review image whose command prepares only non-production data.
 - Preview application containers currently have outbound network access. Place

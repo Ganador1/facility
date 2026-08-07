@@ -206,9 +206,16 @@ export async function buildApp(
   // The preview hostname reaches the existing API tasks to avoid another
   // service, but it is not an API origin. Enforce that boundary before any
   // Facility session is resolved so untrusted preview JavaScript cannot use
-  // the host as an alternate control-plane entrypoint.
+  // the host as an alternate control-plane entrypoint. A trusted reverse proxy
+  // may replace Host, in which case its value-compared marker identifies the
+  // preview surface without trusting user-controlled forwarding headers.
   app.addHook("onRequest", async (request) => {
-    assertPreviewOriginSurface(config, request.headers.host, request.raw.url ?? request.url);
+    assertPreviewOriginSurface(
+      config,
+      request.headers.host,
+      request.raw.url ?? request.url,
+      request.headers["x-facility-preview-surface"],
+    );
   });
 
   app.addHook("onRequest", async (request, reply) => {

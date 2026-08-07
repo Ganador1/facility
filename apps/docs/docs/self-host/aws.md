@@ -171,10 +171,21 @@ only when Terraform should create the alias record. With an ACM certificate,
 the port 80 listener preserves the host, path, and query while redirecting every
 request to HTTPS; it never forwards plaintext traffic to a Facility service.
 Certificate-less testing retains direct HTTP forwarding.
+In that validation-only mode, the browser-to-CloudFront hop is HTTPS but the
+CloudFront-to-ALB hop is plaintext HTTP. Configure the ALB certificate for
+production transport confidentiality.
 
-Protected previews also require `preview_hostname` on a separately registered
-site, covered by the same ACM certificate. Set `preview_route53_zone_id` when
-Terraform should create its alias; otherwise create the DNS record externally.
+Protected previews use a dedicated AWS-assigned CloudFront HTTPS origin by
+default. Keep `preview_hostname = ""`; Terraform creates the distribution,
+restricts its ALB ingress to CloudFront, and prints `preview_url`. This needs no
+additional domain, DNS zone, or certificate. The distribution forwards only
+browser-safe methods and marks requests with an unguessable value checked by
+the API, so direct control-plane requests cannot select the preview surface.
+
+If you already operate a custom preview site, set `preview_hostname` to that
+separately registered site and cover it with the ALB certificate. Set
+`preview_route53_zone_id` when Terraform should create its alias; otherwise
+create the DNS record externally. Do not use a sibling of the app/API site.
 Production tasks reject a missing, HTTP, or control-plane-hosted preview URL.
 
 No secret values belong in tfvars. The file is gitignored; keep it that way.

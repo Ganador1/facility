@@ -60,6 +60,7 @@ describe("SSO-protected preview sandboxes", async () => {
     publicUrl: "http://facility.test",
     webUrl: "http://app.test",
     previewUrl: "http://facility-previews.test",
+    previewSurfaceToken: "p".repeat(64),
     sandboxApiUrl: "http://127.0.0.1:0",
     sandboxGatewayUrl: "http://127.0.0.1:0",
     gatewayUrl: "http://localhost:4410",
@@ -679,6 +680,26 @@ describe("SSO-protected preview sandboxes", async () => {
         headers: { host: "facility-previews.test", cookie },
       });
       expect(encodedControlApiOnPreviewOrigin.statusCode).toBe(404);
+      const markedControlRoute = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/previews`,
+        headers: {
+          host: "facility.test",
+          "x-facility-preview-surface": config.previewSurfaceToken,
+          cookie,
+        },
+      });
+      expect(markedControlRoute.statusCode).toBe(404);
+      const forgedMarkedPreview = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: {
+          host: "facility.test",
+          "x-facility-preview-surface": "wrong",
+          cookie,
+        },
+      });
+      expect(forgedMarkedPreview.statusCode).toBe(404);
       const opened = await app.inject({
         method: "GET",
         url: `/v1/projects/${projectId}/previews/${preview.id}/open`,
@@ -692,7 +713,10 @@ describe("SSO-protected preview sandboxes", async () => {
       const consumed = await app.inject({
         method: "GET",
         url: `${handoffUrl.pathname}${handoffUrl.search}`,
-        headers: { host: "facility-previews.test" },
+        headers: {
+          host: "facility.test",
+          "x-facility-preview-surface": config.previewSurfaceToken,
+        },
       });
       expect(consumed.statusCode).toBe(302);
       expect(consumed.headers.location).toBe(`/preview/${preview.id}/`);
@@ -715,6 +739,16 @@ describe("SSO-protected preview sandboxes", async () => {
         headers: { host: "facility-previews.test", cookie },
       });
       expect(facilitySessionOnly.statusCode).toBe(401);
+      const markedAuthenticated = await app.inject({
+        method: "GET",
+        url: `/preview/${preview.id}/`,
+        headers: {
+          host: "facility.test",
+          "x-facility-preview-surface": config.previewSurfaceToken,
+          cookie: previewCookie,
+        },
+      });
+      expect(markedAuthenticated.statusCode).toBe(200);
       const malformedPreviewSession = await app.inject({
         method: "GET",
         url: `/preview/${preview.id}/`,

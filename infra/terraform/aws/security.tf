@@ -68,7 +68,7 @@ resource "aws_vpc_security_group_ingress_rule" "alb_https" {
 }
 
 data "aws_ec2_managed_prefix_list" "cloudfront_origin" {
-  count = var.enable_cloudfront_api_endpoint ? 1 : 0
+  count = var.enable_cloudfront_api_endpoint || local.managed_preview_origin ? 1 : 0
 
   name = "com.amazonaws.global.cloudfront.origin-facing"
 }
@@ -82,6 +82,19 @@ resource "aws_vpc_security_group_ingress_rule" "alb_http_cloudfront" {
   ip_protocol       = "tcp"
   to_port           = 80
   description       = "CloudFront origin traffic to the API"
+}
+
+# Avoid duplicating the API distribution's port-80 rule when both AWS-managed
+# endpoints use the same certificate-less ALB origin.
+resource "aws_vpc_security_group_ingress_rule" "alb_preview_cloudfront" {
+  count = local.managed_preview_origin && !(var.enable_cloudfront_api_endpoint && var.acm_certificate_arn == "") ? 1 : 0
+
+  security_group_id = aws_security_group.alb.id
+  prefix_list_id    = data.aws_ec2_managed_prefix_list.cloudfront_origin[0].id
+  from_port         = var.acm_certificate_arn == "" ? 80 : 443
+  ip_protocol       = "tcp"
+  to_port           = var.acm_certificate_arn == "" ? 80 : 443
+  description       = "CloudFront origin traffic for isolated previews"
 }
 
 resource "aws_vpc_security_group_egress_rule" "alb_to_api" {

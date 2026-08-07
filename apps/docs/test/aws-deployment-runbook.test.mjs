@@ -109,7 +109,7 @@ test("the public ALB forwards HTTP only when no ACM certificate exists", () => {
     "CloudFront's HTTP-only ALB origin must reject certificate-backed mode",
   );
 
-  for (const route of ["api", "web", "mcp", "preview"]) {
+  for (const route of ["api", "web", "mcp"]) {
     const rule = terraformResource(albTerraform, "aws_lb_listener_rule", `http_${route}`);
     assert.match(
       rule,
@@ -118,6 +118,25 @@ test("the public ALB forwards HTTP only when no ACM certificate exists", () => {
     );
     assert.match(rule, /type\s*=\s*"forward"/);
   }
+
+  const customPreviewRule = terraformResource(albTerraform, "aws_lb_listener_rule", "http_preview");
+  assert.match(
+    customPreviewRule,
+    /count\s*=\s*var\.acm_certificate_arn == "" && !local\.managed_preview_origin \? 1 : 0/,
+    "the custom preview HTTP rule must require both certificate-less and custom-domain mode",
+  );
+  const managedPreviewRule = terraformResource(
+    albTerraform,
+    "aws_lb_listener_rule",
+    "http_preview_managed",
+  );
+  assert.match(
+    managedPreviewRule,
+    /count\s*=\s*var\.acm_certificate_arn == "" && local\.managed_preview_origin \? 1 : 0/,
+    "the managed preview HTTP rule must not exist when HTTPS is configured",
+  );
+  assert.match(customPreviewRule, /type\s*=\s*"forward"/);
+  assert.match(managedPreviewRule, /type\s*=\s*"forward"/);
 
   for (const [guideName, markdown] of guides) {
     assert.match(
