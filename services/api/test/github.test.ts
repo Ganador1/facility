@@ -152,29 +152,60 @@ describe("FacilityGithubClient", () => {
     expect(mutations).toEqual([{ pullRequestId: "PR_node" }]);
   });
 
-  it("collects bounded failed workflow details and paginates issue comments", async () => {
+  it("collects bounded CI-doctor evidence without job logs and paginates comments", async () => {
     const pages: number[] = [];
+    const evidencePages: number[] = [];
     const client = new FacilityGithubClient(
       {
         rest: {
-          actions: {
-            listJobsForWorkflowRun: async () => ({
+          pulls: {
+            get: async () => ({
               data: {
-                jobs: [
+                number: 8,
+                title: "fix: repair CI",
+                state: "open",
+                draft: true,
+                html_url: "https://github.test/octo/repo/pull/8",
+                head: {
+                  ref: "feature/repair",
+                  sha: "a".repeat(40),
+                  repo: { full_name: "octo/repo" },
+                },
+                base: { ref: "main", repo: { full_name: "octo/repo" } },
+              },
+            }),
+            listFiles: async (input: Record<string, unknown>) => {
+              const page = Number(input.page);
+              evidencePages.push(page);
+              const count = page === 1 ? 100 : 1;
+              return {
+                data: Array.from({ length: count }, (_, index) => ({
+                  filename: `src/file-${page}-${index}.ts`,
+                })),
+              };
+            },
+          },
+          checks: {
+            listForRef: async () => ({
+              data: {
+                check_runs: [
                   {
                     id: 9,
-                    name: "build",
+                    name: "typecheck",
+                    status: "completed",
                     conclusion: "failure",
-                    html_url: "https://github.test/actions/jobs/9",
-                    steps: [
-                      { number: 1, name: "checkout", conclusion: "success" },
-                      { number: 2, name: "test", conclusion: "failure" },
-                    ],
+                    details_url: "https://github.test/actions/runs/99/job/9",
+                    output: { title: "failed", summary: "untrusted raw output" },
+                    app: { slug: "github-actions" },
                   },
                 ],
               },
             }),
-            downloadJobLogsForWorkflowRunJob: async () => ({ data: Buffer.from("test failed") }),
+          },
+          actions: {
+            listWorkflowRunsForRepo: async () => ({
+              data: { workflow_runs: [{ id: 99, name: "facility-doctor" }] },
+            }),
           },
           issues: {
             listComments: async (input: Record<string, unknown>) => {
@@ -196,18 +227,19 @@ describe("FacilityGithubClient", () => {
       } as never,
       { owner: "octo", repo: "repo", defaultBranch: "main" },
     );
-    await expect(client.getWorkflowFailureContext(99)).resolves.toEqual({
-      jobs: [
-        {
-          id: 9,
-          name: "build",
-          conclusion: "failure",
-          url: "https://github.test/actions/jobs/9",
-          failedSteps: [{ number: 2, name: "test", conclusion: "failure" }],
-          logTail: "test failed",
-        },
-      ],
+    const evidence = await client.getCiDoctorEvidence(8, "a".repeat(40));
+    expect(evidence).toMatchObject({
+      pullRequest: {
+        number: 8,
+        head: { ref: "feature/repair", sha: "a".repeat(40) },
+        changedFiles: expect.arrayContaining(["src/file-2-0.ts"]),
+      },
+      checks: [{ name: "typecheck", conclusion: "failure" }],
+      doctorRunIds: [99],
     });
+    expect(evidence.pullRequest.changedFiles).toHaveLength(101);
+    expect(evidencePages).toEqual([1, 2]);
+    expect(JSON.stringify(evidence)).not.toContain("job logs");
     await expect(client.listIssueComments(42)).resolves.toHaveLength(101);
     expect(pages).toEqual([1, 2]);
     await expect(client.listIssueComments(42, 100)).rejects.toThrow(

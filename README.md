@@ -395,9 +395,10 @@ adds live streaming, steering, centralized credentials, and platform-enforced
 budgets. A project can move one trigger at a time between lanes.
 
 Platform CI repair is limited to branches produced by that project's Facility
-builder runs. It retries at most three changed heads by default; set the project
-setting `ci_repair_max_attempts` to an integer from 1 through 10 to change the
-limit. Exhaustion leaves the draft PR and its failing checks intact for human
+builder runs. It retries the same SHA-stable failure at most twice and retains
+an absolute three-attempt branch ceiling by default; set the project setting
+`ci_repair_max_attempts` to an integer from 1 through 10 to change that branch
+ceiling. Exhaustion leaves the draft PR and its failing checks intact for human
 iteration.
 
 Read [the method](apps/docs/docs/concepts/method.md) for the reasoning behind the roles, gates,

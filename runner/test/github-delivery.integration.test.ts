@@ -253,7 +253,7 @@ function runBundle(cloneUrl: string, overrides: Partial<RunBundle> = {}): RunBun
     contract: "Deliver the integration fixture.",
     skills: [],
     engineConfig: {},
-    repo: { cloneUrl, branch: "main", installationTokenRef: null },
+    repo: { cloneUrl, branch: "main", expectedHeadSha: null, installationTokenRef: null },
     harness: null,
     packageInstallCmd: null,
     provisionCmd: null,
@@ -301,7 +301,12 @@ async function deliveryFixture(
     repair
       ? {
           mode: "address_review",
-          repo: { cloneUrl: origin, branch: "feature/task", installationTokenRef: null },
+          repo: {
+            cloneUrl: origin,
+            branch: "feature/task",
+            expectedHeadSha: null,
+            installationTokenRef: null,
+          },
           scope: {
             pullRequest: {
               base: "main",

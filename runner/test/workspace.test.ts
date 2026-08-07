@@ -50,7 +50,7 @@ function bundle(overrides: Partial<RunBundle> = {}): RunBundle {
     contract: "Do the work.",
     skills: [],
     engineConfig: {},
-    repo: { cloneUrl: null, branch: null, installationTokenRef: null },
+    repo: { cloneUrl: null, branch: null, expectedHeadSha: null, installationTokenRef: null },
     harness: null,
     packageInstallCmd: null,
     provisionCmd: null,
@@ -198,7 +198,12 @@ describe("workspace preparation", () => {
 
     await prepareWorkspace(
       bundle({
-        repo: { cloneUrl: `file://${source}`, branch: "main", installationTokenRef: null },
+        repo: {
+          cloneUrl: `file://${source}`,
+          branch: "main",
+          expectedHeadSha: null,
+          installationTokenRef: null,
+        },
         skills: [{ name: "team-practice", content: "# Facility catalog practice" }],
       }),
       "virtual-key",
@@ -217,6 +222,50 @@ describe("workspace preparation", () => {
     await expect(
       readFile(join(root, "repo", ".agents", "skills", "team-practice", "SKILL.md"), "utf8"),
     ).resolves.toContain("Facility catalog practice");
+  });
+
+  it("rejects a repair clone whose head differs from deterministic admission", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-stale-head-"));
+    const source = await mkdtemp(join(tmpdir(), "facility-stale-repo-"));
+    await writeFile(join(source, "README.md"), "# Current head\n");
+    execFileSync("git", ["init", "--initial-branch=feature/repair"], { cwd: source });
+    execFileSync("git", ["add", "."], { cwd: source });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Facility Test",
+        "-c",
+        "user.email=test@facility.local",
+        "commit",
+        "-m",
+        "test: seed stale repair fixture",
+      ],
+      { cwd: source },
+    );
+
+    await expect(
+      prepareWorkspace(
+        bundle({
+          mode: "ci_doctor",
+          repo: {
+            cloneUrl: `file://${source}`,
+            branch: "feature/repair",
+            expectedHeadSha: "a".repeat(40),
+            installationTokenRef: null,
+          },
+        }),
+        "virtual-key",
+        {
+          platformKey: null,
+          platformApiUrl: "https://api.test",
+          projectId: "proj_test",
+          repoToken: null,
+        },
+        root,
+      ),
+    ).rejects.toThrow("repository_head_sha_mismatch");
+    await expect(lstat(join(root, "repo", ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps runner release classification aligned with the root policy", async () => {
@@ -356,6 +405,7 @@ describe("workspace preparation", () => {
           repo: {
             cloneUrl: "https://github.com/acme/widget.git",
             branch: "main",
+            expectedHeadSha: null,
             installationTokenRef: "installation",
           },
         }),
@@ -786,7 +836,12 @@ describe("workspace preparation", () => {
 
     await prepareWorkspace(
       bundle({
-        repo: { cloneUrl: origin, branch: "main", installationTokenRef: null },
+        repo: {
+          cloneUrl: origin,
+          branch: "main",
+          expectedHeadSha: null,
+          installationTokenRef: null,
+        },
         skills: [{ name: "validation evidence", content: "# Validation evidence" }],
         harness: {
           files: {

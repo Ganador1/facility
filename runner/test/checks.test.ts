@@ -58,6 +58,7 @@ describe("builder delivery invariant", () => {
   const repo = {
     cloneUrl: "https://github.com/example/project.git",
     branch: "main",
+    expectedHeadSha: null,
     installationTokenRef: "installation",
   };
 

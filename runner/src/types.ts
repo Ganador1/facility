@@ -5,7 +5,12 @@ export type RunBundle = {
   contract: string;
   skills: Array<{ name: string; content: string }>;
   engineConfig: Record<string, unknown>;
-  repo: { cloneUrl: string | null; branch: string | null; installationTokenRef: string | null };
+  repo: {
+    cloneUrl: string | null;
+    branch: string | null;
+    expectedHeadSha: string | null;
+    installationTokenRef: string | null;
+  };
   harness?: { files: Record<string, string> } | null;
   packageInstallCmd: string | null;
   provisionCmd: string | null;

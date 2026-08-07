@@ -32,6 +32,7 @@ import {
   dispatchRun,
   finishRun,
   reconcileSandboxes,
+  repairExpectedHeadSha,
   runDeliveryRefMismatch,
 } from "../src/sandbox/orchestrator.js";
 import { appendRunEvents } from "../src/sandbox/state.js";
@@ -73,6 +74,21 @@ describe("run delivery integrity binding", () => {
         expected,
       ),
     ).toBe("pull_request_ref_mismatch");
+  });
+
+  it("pins repair bundles to the admitted head and prefers doctor evidence", () => {
+    const admitted = "a".repeat(40);
+    const webhook = "b".repeat(40);
+    expect(
+      repairExpectedHeadSha("ci_doctor", {
+        ciDoctor: { admittedHeadSha: admitted },
+        pullRequest: { headSha: webhook },
+      }),
+    ).toBe(admitted);
+    expect(repairExpectedHeadSha("address_review", { pullRequest: { headSha: webhook } })).toBe(
+      webhook,
+    );
+    expect(repairExpectedHeadSha("builder", { pullRequest: { headSha: webhook } })).toBeNull();
   });
 });
 
@@ -1111,6 +1127,7 @@ describe("sandbox api", async () => {
         repo: {
           cloneUrl: `https://github.com/${owner}/private-repo.git`,
           branch: "main",
+          expectedHeadSha: null,
           installationTokenRef: installation.id,
         },
         packageInstallCmd: "pnpm install --frozen-lockfile",
@@ -1176,7 +1193,7 @@ describe("sandbox api", async () => {
         contract: "contract",
         skills: [],
         engineConfig: {},
-        repo: { cloneUrl: null, branch: null, installationTokenRef: null },
+        repo: { cloneUrl: null, branch: null, expectedHeadSha: null, installationTokenRef: null },
         packageInstallCmd: null,
         provisionCmd: null,
         checkCmds: [],

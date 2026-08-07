@@ -368,6 +368,18 @@ export async function prepareWorkspace(
     if (bundle.resume?.branch) {
       await checkoutResumeBranch(repoDirFor(root), bundle.resume.branch);
     }
+    if (bundle.repo.expectedHeadSha) {
+      if (!/^[0-9a-f]{40}$/i.test(bundle.repo.expectedHeadSha)) {
+        throw new Error("repository_expected_head_sha_invalid");
+      }
+      const actualHeadSha = (await gitOutput(repoDirFor(root), ["rev-parse", "HEAD"])).trim();
+      if (actualHeadSha !== bundle.repo.expectedHeadSha) {
+        // Admission evaluated a different tree. Stop before provisioning, the
+        // model, or a contents-write token; the newer head will emit its own CI
+        // completion signal and receive a fresh deterministic decision.
+        throw new Error("repository_head_sha_mismatch");
+      }
+    }
     // Provisioning and live-agent metadata must never leak into the delivered
     // diff. The runner owns these paths even when a repository has no
     // .gitignore (a common case for small/new projects).

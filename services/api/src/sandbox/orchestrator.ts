@@ -1692,6 +1692,10 @@ async function buildRunBundle(
   const contract = renderRunContract(rawContract, provisionSummary, checkCmds);
   const githubBranch = typeof runGh.branch === "string" ? runGh.branch : null;
   const checkoutBranch = githubPullRequestMode(run.mode) && githubBranch ? githubBranch : null;
+  const expectedHeadSha = repairExpectedHeadSha(run.mode, run.trigger);
+  if (run.mode.replace(/^codex-/, "").replace(/-/g, "_") === "ci_doctor" && !expectedHeadSha) {
+    throw new Error("ci_doctor_admitted_head_missing");
+  }
   // Point the agent CLIs directly at the gateway service. Anthropic's SDK
   // appends /v1/messages, while Codex appends /responses to a provider base
   // URL that must already include /v1.
@@ -1707,9 +1711,10 @@ async function buildRunBundle(
       ? {
           cloneUrl: `https://github.com/${repo.owner}/${repo.name}.git`,
           branch: checkoutBranch ?? repo.defaultBranch,
+          expectedHeadSha,
           installationTokenRef: repo.installationId,
         }
-      : { cloneUrl: null, branch: null, installationTokenRef: null },
+      : { cloneUrl: null, branch: null, expectedHeadSha: null, installationTokenRef: null },
     packageInstallCmd,
     provisionCmd,
     // Acceptance gates: a sandbox profile's setup.check_cmds is an explicit
@@ -2243,6 +2248,16 @@ function isSecurityMode(mode: string) {
 
 function repairPullRequestMode(mode: string) {
   return ["address_review", "ci_doctor"].includes(mode.replace(/^codex-/, "").replace(/-/g, "_"));
+}
+
+export function repairExpectedHeadSha(mode: string, trigger: unknown) {
+  if (!repairPullRequestMode(mode)) return null;
+  const runTrigger = objectOrEmpty(trigger);
+  return (
+    stringValue(objectOrEmpty(runTrigger.ciDoctor).admittedHeadSha) ||
+    stringValue(objectOrEmpty(runTrigger.pullRequest).headSha) ||
+    null
+  );
 }
 
 function readOnlyRepositoryMode(mode: string) {

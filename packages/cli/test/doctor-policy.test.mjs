@@ -15,6 +15,12 @@ import {
 const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 const SHA_C = "c".repeat(40);
+const CONFORMANCE_VECTORS = JSON.parse(
+  readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "fixtures/doctor-policy-conformance.json"),
+    "utf8",
+  ),
+);
 
 function pullRequest(overrides = {}) {
   const { head, base, ...rest } = overrides;
@@ -61,6 +67,28 @@ function decide(overrides = {}) {
     doctorRunIds: ["900"],
     allowedBotLogins: ["claude[bot]", "facility-agent[bot]"],
     ...overrides,
+  });
+}
+
+// Shared vectors cover the overlapping security law. Repository-lane-only
+// author admission and comment-marker retries intentionally remain in the
+// focused tests below; the platform lane uses Facility provenance + Postgres.
+for (const vector of CONFORMANCE_VECTORS) {
+  test(`shared policy: ${vector.name}`, () => {
+    const decision = decideDoctorAction({
+      eventHeadSha: vector.eventHeadSha,
+      pullRequest: pullRequest({
+        head: { sha: vector.headSha, repo: { full_name: vector.headRepo } },
+        base: { repo: { full_name: vector.baseRepo } },
+        changedFiles: vector.changedFiles,
+      }),
+      checks: vector.checks.map((value) => check(value)),
+      comments: [],
+      doctorRunIds: [],
+      allowedBotLogins: ["facility-agent[bot]"],
+    });
+    assert.equal(decision.action, vector.expected.action);
+    if (vector.expected.category) assert.equal(decision.failure?.category, vector.expected.category);
   });
 }
 

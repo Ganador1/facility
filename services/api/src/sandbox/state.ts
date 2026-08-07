@@ -15,6 +15,7 @@ export type RunBundle = {
   repo: {
     cloneUrl: string | null;
     branch: string | null;
+    expectedHeadSha: string | null;
     installationTokenRef: string | null;
   };
   packageInstallCmd: string | null;
