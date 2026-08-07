@@ -183,6 +183,15 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   assert.doesNotMatch(bake, /target "worker"/);
   assert.match(bake, /target "gateway" \{[\s\S]*target\s+= "gateway"/);
   assert.match(bake, /target "mcp" \{[\s\S]*target\s+= "mcp"/);
+  assert.match(bake, /target "service-packages" \{[\s\S]*target\s+= "build-service-packages"/);
+  for (const image of ["api", "gateway", "mcp"]) {
+    assert.match(
+      bake,
+      new RegExp(
+        `target "${image}" \\{[\\s\\S]*?contexts = \\{ build-service-packages = "target:service-packages" \\}`,
+      ),
+    );
+  }
   assert.match(bake, /target "web" \{[\s\S]*dockerfile = "apps\/web\/Dockerfile"/);
   assert.match(bake, /target "runner" \{[\s\S]*dockerfile = "runner\/Dockerfile"/);
   assert.match(bake, /target "service" \{[\s\S]*?attest\s+= \["type=provenance,disabled=true"\]/);
@@ -217,6 +226,17 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   const agentCliLock = JSON.parse(
     await readFile(join(root, "runner", "agent-clis", "package-lock.json"), "utf8"),
   );
+  const runtimeBuildPackages = await Promise.all(
+    [
+      "packages/core/package.json",
+      "packages/db/package.json",
+      "packages/harness/package.json",
+      "packages/sdk/package.json",
+      "packages/mcp/package.json",
+      "services/api/package.json",
+      "services/gateway/package.json",
+    ].map(async (path) => JSON.parse(await readFile(join(root, path), "utf8"))),
+  );
   assert.doesNotMatch(webDockerfile, /^COPY \. \.$/m);
   assert.ok(
     webDockerfile.indexOf("COPY pnpm-lock.yaml") < webDockerfile.indexOf("RUN pnpm install"),
@@ -225,6 +245,47 @@ test("Bake keeps thin target boundaries and publishes every target through one g
     webDockerfile.indexOf("RUN pnpm install") < webDockerfile.indexOf("COPY apps/web apps/web"),
   );
   assert.equal(rootPackage.packageManager, "pnpm@11.20.0");
+  const sharedServiceBuild = controlDockerfile.match(
+    /FROM deps AS build-service-packages\n([\s\S]*?)(?=\nFROM )/,
+  )?.[1];
+  assert.ok(sharedServiceBuild, "service images must share one workspace-package build stage");
+  for (const packageName of ["core", "db", "harness", "sdk"]) {
+    assert.match(sharedServiceBuild, new RegExp(`@facility/${packageName}`));
+  }
+  for (const [stage, packageName] of [
+    ["build-api", "api"],
+    ["build-gateway", "gateway"],
+    ["build-mcp", "mcp"],
+  ]) {
+    const serviceBuild = controlDockerfile.match(
+      new RegExp(`FROM build-service-packages AS ${stage}\\n([\\s\\S]*?)(?=\\nFROM )`),
+    )?.[1];
+    assert.ok(serviceBuild, `${stage} must inherit the shared workspace build`);
+    assert.match(
+      serviceBuild,
+      new RegExp(`pnpm --filter '@facility/${packageName}' run build:runtime(?:\\s|$)`),
+    );
+    for (const sharedPackage of ["core", "db", "harness", "sdk"]) {
+      assert.doesNotMatch(serviceBuild, new RegExp(`--filter '@facility/${sharedPackage}'`));
+    }
+  }
+  assert.equal(
+    controlDockerfile.match(/run build:runtime/g)?.length,
+    4,
+    "the shared stage and three service stages must omit declaration-only work",
+  );
+  assert.match(
+    webDockerfile,
+    /pnpm --filter '@facility\/sdk\.\.\.' run build:runtime && pnpm --filter '@facility\/web' build/,
+  );
+  for (const packageJson of runtimeBuildPackages) {
+    assert.match(packageJson.scripts.build, / --dts(?: |$)/);
+    assert.equal(
+      packageJson.scripts["build:runtime"],
+      packageJson.scripts.build.replace(" --dts", ""),
+      `${packageJson.name} runtime build must differ only by declaration emission`,
+    );
+  }
   for (const [dockerfile, targets] of [
     [controlDockerfile, ["api", "gateway", "mcp"]],
     [webDockerfile, ["web"]],

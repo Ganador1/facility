@@ -38,7 +38,7 @@ COPY tsconfig.base.json ./
 ENV NEXT_TELEMETRY_DISABLED=1
 # The web imports the SDK's published workspace entrypoint (`dist/index.js`). A
 # clean image has no SDK artifact, so build it before Next consumes the output.
-RUN pnpm --filter '@facility/sdk...' run build && pnpm --filter '@facility/web' build
+RUN pnpm --filter '@facility/sdk...' run build:runtime && pnpm --filter '@facility/web' build
 
 FROM runtime AS web
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3400 HOSTNAME=0.0.0.0
