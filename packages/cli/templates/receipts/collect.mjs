@@ -18,6 +18,7 @@ const MODES = new Set([
   "custom",
 ]);
 const PROVIDERS = new Set(["claude_code", "codex_cli", "byo"]);
+const MAX_RECEIPT_CHECKS = 200;
 
 export function collectReceipt(env = process.env, now = new Date()) {
   const provider = requiredChoice(env.FACILITY_RECEIPT_PROVIDER, PROVIDERS, "provider");
@@ -25,7 +26,7 @@ export function collectReceipt(env = process.env, now = new Date()) {
   const result = normalizeResult(env.FACILITY_RECEIPT_RESULT);
   const startedAt = validDate(env.FACILITY_RECEIPT_STARTED_AT) ?? now;
   const engine = parseEngineEvidence(env.FACILITY_RECEIPT_ENGINE_JSONL);
-  const checks = parseChecks(env.FACILITY_RECEIPT_CHECKS_FILE);
+  const checkEvidence = parseChecks(env.FACILITY_RECEIPT_CHECKS_FILE);
   const target = githubTarget(env.GITHUB_EVENT_PATH);
   const git = gitActivity(env.FACILITY_RECEIPT_BASE_SHA, env.GITHUB_WORKSPACE);
   const actor = env.GITHUB_ACTOR;
@@ -65,9 +66,9 @@ export function collectReceipt(env = process.env, now = new Date()) {
       ended_at: now.toISOString(),
       duration_ms: Math.max(0, now.getTime() - startedAt.getTime()),
     },
-    events: { count: engine.eventCount, checks: checks.length },
-    checks,
-    checks_truncated: false,
+    events: { count: engine.eventCount, checks: checkEvidence.total },
+    checks: checkEvidence.items,
+    checks_truncated: checkEvidence.total > checkEvidence.items.length,
   };
   const integrity = {
     algorithm: "sha256",
@@ -198,7 +199,7 @@ function mergeUsage(usage, value) {
 }
 
 function parseChecks(path) {
-  if (!path || !existsSync(path)) return [];
+  if (!path || !existsSync(path)) return { items: [], total: 0 };
   const checks = [];
   for (const line of readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean)) {
     try {
@@ -214,7 +215,7 @@ function parseChecks(path) {
       });
     } catch {}
   }
-  return checks.slice(0, 200);
+  return { items: checks.slice(0, MAX_RECEIPT_CHECKS), total: checks.length };
 }
 
 function gitActivity(baseSha, worktree) {

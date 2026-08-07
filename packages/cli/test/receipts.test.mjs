@@ -43,6 +43,8 @@ test("collects a privacy-preserving, tamper-evident agent receipt", async () => 
   assert.equal(receipt.usage.input_tokens, 10);
   assert.equal(receipt.activity.turns, 1);
   assert.equal(receipt.activity.shell_commands, 1);
+  assert.equal(receipt.events.checks, 0);
+  assert.equal(receipt.checks_truncated, false);
   assert.equal(receipt.github.actor, undefined);
   assert.match(receipt.github.actor_sha256, /^[0-9a-f]{64}$/);
   assert.equal(verifyReceipt(receipt), true);
@@ -52,4 +54,35 @@ test("collects a privacy-preserving, tamper-evident agent receipt", async () => 
     false,
   );
   assert.equal(writeReceipt(receipt, env), outputPath);
+});
+
+test("reports the full check count when receipt details are bounded", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "facility-receipt-checks-"));
+  const checksPath = join(dir, "checks.jsonl");
+  writeFileSync(
+    checksPath,
+    Array.from({ length: 205 }, (_, index) =>
+      JSON.stringify({ name: `check-${index + 1}`, status: "passed", self_reported: false }),
+    ).join("\n"),
+  );
+
+  const receipt = collectReceipt(
+    {
+      FACILITY_RECEIPT_PROVIDER: "claude_code",
+      FACILITY_RECEIPT_MODE: "builder",
+      FACILITY_RECEIPT_RESULT: "success",
+      FACILITY_RECEIPT_CHECKS_FILE: checksPath,
+      GITHUB_RUN_ID: "456",
+      GITHUB_RUN_ATTEMPT: "1",
+      GITHUB_JOB: "builder",
+    },
+    new Date("2026-08-07T00:00:00.000Z"),
+  );
+
+  assert.equal(receipt.events.checks, 205);
+  assert.equal(receipt.checks.length, 200);
+  assert.equal(receipt.checks_truncated, true);
+  assert.equal(receipt.checks[0].name, "check-1");
+  assert.equal(receipt.checks.at(-1).name, "check-200");
+  assert.equal(verifyReceipt(receipt), true);
 });
