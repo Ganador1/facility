@@ -111,6 +111,32 @@ export function loadDigests(directory) {
   return digests;
 }
 
+export function recordBakeDigests({ metadata, directory }) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new Error("Bake metadata must be an object keyed by image target");
+  }
+  const targets = Object.keys(metadata).sort();
+  const expected = [...BUILD_IMAGES].sort();
+  if (JSON.stringify(targets) !== JSON.stringify(expected)) {
+    throw new Error(
+      `Bake metadata targets ${targets.join(",") || "none"}; expected ${expected.join(",")}`,
+    );
+  }
+
+  const paths = [];
+  for (const image of BUILD_IMAGES) {
+    const result = metadata[image];
+    const digest = result?.["containerimage.digest"];
+    const descriptorDigest = result?.["containerimage.descriptor"]?.digest;
+    assertDigest(digest);
+    if (descriptorDigest !== digest) {
+      throw new Error(`Bake metadata descriptor for ${image} does not match ${digest}`);
+    }
+    paths.push(recordDigest({ image, digest, directory }));
+  }
+  return paths;
+}
+
 export async function inspectPublication({
   repository,
   owner,
@@ -352,6 +378,20 @@ async function main([command, ...args]) {
     if (args.length !== 3) throw new Error("record-digest requires image, digest, and directory");
     const path = recordDigest({ image: args[0], digest: args[1], directory: args[2] });
     console.log(path);
+    return;
+  }
+
+  if (command === "record-bake-digests") {
+    if (args.length !== 2) {
+      throw new Error("record-bake-digests requires metadata file and digest-manifest directory");
+    }
+    let metadata;
+    try {
+      metadata = JSON.parse(readFileSync(resolve(args[0]), "utf8"));
+    } catch (error) {
+      throw new Error(`cannot read Bake metadata: ${error.message}`);
+    }
+    for (const path of recordBakeDigests({ metadata, directory: args[1] })) console.log(path);
     return;
   }
 

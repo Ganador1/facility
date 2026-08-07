@@ -143,6 +143,23 @@ before their secrets exist. On the build path it also creates the repositories
 that Step 3 populates. Starting services early produces a crash-loop that is
 slower to diagnose than it is to avoid.
 
+If this state predates API/worker image deduplication, preserve its non-empty
+`worker` ECR repository through a rollback window rather than letting Terraform
+try to destroy it during the upgrade. Before the first apply of this version:
+
+```bash
+terraform -chdir="$FACILITY_TF_DIR" state rm \
+  'aws_ecr_lifecycle_policy.service["worker"]'
+terraform -chdir="$FACILITY_TF_DIR" state rm \
+  'aws_ecr_repository.service["worker"]'
+```
+
+This removes only Terraform ownership; it does not delete the legacy repository
+or its images. Apply and verify worker on the API digest, then delete that orphaned
+repository manually after the rollback window. New stacks create five unique
+artifact repositories. The legacy `container_image_tags.worker` tfvars field stays
+accepted; only an explicit `image_overrides.worker` keeps worker on separate bytes.
+
 Without a public DNS zone, clear the example's fake certificate and hosted-zone
 values as well as enabling the AWS-managed HTTPS origin:
 
@@ -194,11 +211,11 @@ Terraform keeps the pushed repositories aligned with the selected project and
 environment.
 
 The script requires the Docker Buildx plugin and builds all five artifacts in one
-parallel Bake graph. API and worker receive separate ECR tags for the same build
-result; the ECS services still keep separate commands, roles, scaling, and
-deployment lifecycles. Repeated runs reuse the local BuildKit cache and do not
-create an extra registry-cache artifact. Terraform provider and state files from
-the preceding apply are excluded from the Docker context.
+parallel Bake graph. API and worker use the same API digest from one ECR repository;
+the ECS services still keep separate commands, roles, scaling, and deployment
+lifecycles. Repeated runs reuse the local BuildKit cache and do not create an extra
+registry-cache artifact. Terraform provider and state files from the preceding
+apply are excluded from the Docker context.
 
 When `api_url` changes, update the web task's runtime `FACILITY_API_URL` and
 redeploy the existing image; it does not need to be rebuilt.
@@ -473,7 +490,7 @@ same variables:
 ```bash
 terraform -chdir="$FACILITY_TF_DIR" apply -var-file="${FACILITY_ENV}.tfvars"
 
-# Terraform protects non-empty ECR repositories. Remove all six repositories
+# Terraform protects non-empty ECR repositories. Remove all five repositories
 # and their images explicitly; destroy will reconcile them out of state.
 while IFS= read -r FACILITY_ECR_URL; do
   FACILITY_ECR_REPOSITORY="${FACILITY_ECR_URL#*/}"

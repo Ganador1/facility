@@ -159,7 +159,7 @@ variable "force_destroy_bucket" {
 }
 
 variable "container_image_tags" {
-  description = "Image tags used when image_overrides does not provide a full image URI."
+  description = "Image tags used when image_overrides does not provide a full image URI. The worker tag is retained for tfvars compatibility; the AWS fallback runs worker from the API image."
   type = object({
     api     = string
     worker  = string
@@ -179,7 +179,7 @@ variable "container_image_tags" {
 }
 
 variable "image_overrides" {
-  description = "Optional full image URI overrides keyed by api, worker, gateway, web, runner."
+  description = "Optional full image URI overrides keyed by api, worker, gateway, web, mcp, or runner. A worker override may intentionally separate it from the default API artifact."
   type        = map(string)
   default     = {}
 }

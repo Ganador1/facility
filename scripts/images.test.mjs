@@ -8,6 +8,7 @@ import {
   loadDigests,
   parseTagsJson,
   publicationPlan,
+  recordBakeDigests,
   recordDigest,
   validateRepositoryIdentity,
 } from "./images.mjs";
@@ -111,6 +112,44 @@ test("digest manifests require the complete, expected five-image set", (t) => {
   assert.throws(() => loadDigests(directory), /names worker, expected api/);
 });
 
+test("one Bake result records an exact, internally consistent digest set", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "facility-bake-digests-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const metadata = Object.fromEntries(
+    BUILD_IMAGES.map((image, index) => {
+      const imageDigest = `sha256:${String(index + 1).repeat(64)}`;
+      return [
+        image,
+        {
+          "containerimage.digest": imageDigest,
+          "containerimage.descriptor": { digest: imageDigest },
+        },
+      ];
+    }),
+  );
+
+  assert.equal(recordBakeDigests({ metadata, directory }).length, BUILD_IMAGES.length);
+  assert.deepEqual(
+    [...loadDigests(directory)],
+    BUILD_IMAGES.map((image, index) => [image, `sha256:${String(index + 1).repeat(64)}`]),
+  );
+  assert.throws(
+    () => recordBakeDigests({ metadata: { ...metadata, unexpected: {} }, directory }),
+    /expected api,gateway,mcp,runner,web/,
+  );
+  assert.throws(
+    () =>
+      recordBakeDigests({
+        metadata: {
+          ...metadata,
+          api: { ...metadata.api, "containerimage.descriptor": { digest } },
+        },
+        directory,
+      }),
+    /descriptor for api does not match/,
+  );
+});
+
 test("CI gates release images and the reusable publisher stages digests before promotion", () => {
   assert.match(imagesWorkflow, /on:\n {2}workflow_call:\n {4}inputs:\n {6}version:/);
   assert.match(imagesWorkflow, /\n {2}workflow_dispatch:\n/);
@@ -128,10 +167,19 @@ test("CI gates release images and the reusable publisher stages digests before p
   );
   assert.ok(
     buildJob.indexOf("Stamp the decided version") <
-      buildJob.indexOf("Build and push the addressable digest"),
+      buildJob.indexOf("Build and push the addressable image set"),
     "the isolated build checkout must be stamped before Docker consumes it",
   );
-  assert.match(imagesWorkflow, /push-by-digest=true,name-canonical=true,push=true/);
+  assert.doesNotMatch(buildJob, /strategy:|matrix:/);
+  assert.ok(
+    buildJob.indexOf("crazy-max/ghaction-github-runtime@") < buildJob.indexOf("docker buildx bake"),
+    "raw Buildx must receive the GitHub Actions cache runtime before Bake runs",
+  );
+  assert.match(buildJob, /docker buildx bake/);
+  assert.match(buildJob, /--file docker-bake\.publish\.hcl/);
+  assert.match(buildJob, /--metadata-file "\$metadata"/);
+  assert.match(buildJob, /node scripts\/images\.mjs record-bake-digests/);
+  assert.match(buildJob, /facility-image-digests-\$\{\{ github\.sha \}\}/);
   assert.doesNotMatch(
     buildJob,
     /build[_-]args|FACILITY_API_URL=/,

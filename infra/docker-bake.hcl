@@ -27,10 +27,7 @@ target "service" {
 target "api" {
   inherits = ["service"]
   target   = "api"
-  tags = [
-    "${ECR_REGISTRY}/${ECR_PREFIX}/api:${IMAGE_TAG}",
-    "${ECR_REGISTRY}/${ECR_PREFIX}/worker:${IMAGE_TAG}",
-  ]
+  tags     = ["${ECR_REGISTRY}/${ECR_PREFIX}/api:${IMAGE_TAG}"]
 }
 
 target "gateway" {

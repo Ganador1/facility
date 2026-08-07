@@ -135,6 +135,37 @@ test("AWS guides keep the release override and build-fallback paths synchronized
   }
 });
 
+test("AWS stores the shared API and worker artifact once without collapsing their services", () => {
+  assert.match(
+    localsTerraform,
+    /ecr_repositories = toset\(\["api", "gateway", "web", "mcp", "runner"\]\)/,
+  );
+  assert.doesNotMatch(localsTerraform, /ecr_repositories[^\n]+"worker"/);
+  assert.match(
+    localsTerraform,
+    /worker = coalesce\(lookup\(var\.image_overrides, "worker", null\), local\.artifact_images\.api\)/,
+  );
+  assert.match(localsTerraform, /worker = \{[\s\S]*image\s+= local\.images\.worker/);
+
+  for (const [guideName, markdown] of guides) {
+    assert.match(
+      markdown,
+      /state rm[\s\\\n]+\s*'aws_ecr_lifecycle_policy\.service\["worker"\]'/,
+      `${guideName} must preserve the legacy lifecycle policy through the transition`,
+    );
+    assert.match(
+      markdown,
+      /state rm[\s\\\n]+\s*'aws_ecr_repository\.service\["worker"\]'/,
+      `${guideName} must preserve the non-empty legacy worker repository`,
+    );
+    assert.match(
+      markdown,
+      /API and worker (?:run|use) the same API digest|API and worker run the same API digest/,
+      `${guideName} must explain the shared artifact`,
+    );
+  }
+});
+
 test("AWS agent caches fail closed and contain only isolated package stores", () => {
   const buildspec = codeBuildTerraform.match(/buildspec = <<-YAML\n([\s\S]*?)\n\s+YAML/)?.[1];
   assert.ok(buildspec, "the runner project must have an inline buildspec");

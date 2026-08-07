@@ -138,13 +138,13 @@ cd infra/terraform/aws
 ```
 
 The script requires the Docker Buildx plugin and runs one Bake graph. The five
-artifacts build concurrently; the API result is tagged into both the `api` and
-`worker` repositories because those services run the same bytes with different
-commands. API, gateway, and MCP also share the root Dockerfile dependency graph.
-No registry-cache artifact is created: repeated builds reuse the operator's local
-BuildKit cache, while ECR continues to scan only deployable image pushes. The
-repository Docker context excludes Terraform providers and state created by the
-preceding apply.
+artifacts build concurrently. API and worker run the same API digest with
+different commands, so the AWS fallback stores and scans those bytes once in the
+`api` repository. API, gateway, and MCP also share the root Dockerfile dependency
+graph. No registry-cache artifact is created: repeated builds reuse the operator's
+local BuildKit cache, while ECR continues to scan only deployable image pushes.
+The repository Docker context excludes Terraform providers and state created by
+the preceding apply.
 
 The graph builds `linux/amd64` by default, matching Terraform's default
 `task_cpu_architecture = "X86_64"`. To deploy on Graviton, set
@@ -157,6 +157,25 @@ redeploy the existing image; it does not need to be rebuilt.
 
 If you changed `container_image_tags` after the first apply, apply again before
 running the migrate task. Keeping the tag stable avoids that extra apply.
+
+### Upgrade note: retire the duplicate worker repository
+
+Stacks created before the API/worker deduplication have a non-empty `worker` ECR
+repository in Terraform state. Preserve it through one rollback window instead
+of asking Terraform to destroy stored images during an application upgrade. Before
+the first apply of this version, remove only these legacy addresses from state:
+
+```bash
+terraform state rm 'aws_ecr_lifecycle_policy.service["worker"]'
+terraform state rm 'aws_ecr_repository.service["worker"]'
+```
+
+This deliberately leaves the old AWS repository intact but unmanaged. Apply the
+new configuration, deploy and verify worker on the API digest, then delete the
+legacy repository manually after the rollback window. New stacks create only the
+five unique artifact repositories. The `container_image_tags.worker` input remains
+accepted for existing tfvars but is unused unless `image_overrides.worker` explicitly
+selects a separate image.
 
 ## 4. Populate Secrets Manager
 

@@ -13,7 +13,7 @@ locals {
     ManagedBy   = "terraform"
   }
 
-  ecr_repositories = toset(["api", "worker", "gateway", "web", "mcp", "runner"])
+  ecr_repositories = toset(["api", "gateway", "web", "mcp", "runner"])
 
   ports = {
     api     = 4400
@@ -25,13 +25,21 @@ locals {
     migrate = 0
   }
 
-  images = {
+  artifact_images = {
     for name in local.ecr_repositories :
     name => coalesce(
       lookup(var.image_overrides, name, null),
       "${aws_ecr_repository.service[name].repository_url}:${var.container_image_tags[name]}"
     )
   }
+
+  # Worker is a separate fault/scaling boundary that deliberately executes the
+  # API artifact with another command. A distinct override remains supported
+  # for existing operators, but the AWS fallback no longer stores or scans the
+  # same bytes in a second ECR repository.
+  images = merge(local.artifact_images, {
+    worker = coalesce(lookup(var.image_overrides, "worker", null), local.artifact_images.api)
+  })
 
   public_urls = {
     api     = var.enable_cloudfront_api_endpoint ? "https://${aws_cloudfront_distribution.api[0].domain_name}" : "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.api_hostname}"

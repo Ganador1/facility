@@ -117,7 +117,7 @@ test("AWS fallback builds the complete image set through one Bake graph", async 
   ]);
   assert.deepEqual(result.stdout.trim().split("\n"), [
     "api=123456789012.dkr.ecr.eu-west-1.amazonaws.com/facility-test/api:abc123def456",
-    "worker=123456789012.dkr.ecr.eu-west-1.amazonaws.com/facility-test/worker:abc123def456",
+    "worker=123456789012.dkr.ecr.eu-west-1.amazonaws.com/facility-test/api:abc123def456",
     "gateway=123456789012.dkr.ecr.eu-west-1.amazonaws.com/facility-test/gateway:abc123def456",
     "mcp=123456789012.dkr.ecr.eu-west-1.amazonaws.com/facility-test/mcp:abc123def456",
     "web=123456789012.dkr.ecr.eu-west-1.amazonaws.com/facility-test/web:abc123def456",
@@ -125,18 +125,26 @@ test("AWS fallback builds the complete image set through one Bake graph", async 
   ]);
 });
 
-test("Bake aliases worker to the API result and keeps all target boundaries", async () => {
+test("Bake keeps thin target boundaries and publishes every target through one graph", async () => {
   const bake = await readFile(join(root, "infra", "docker-bake.hcl"), "utf8");
+  const publish = await readFile(join(root, "infra", "docker-bake.publish.hcl"), "utf8");
   assert.match(
     bake,
     /group "default" \{[\s\S]*targets = \["api", "gateway", "mcp", "web", "runner"\]/,
   );
-  assert.match(bake, /target "api" \{[\s\S]*\/api:\$\{IMAGE_TAG\}[\s\S]*\/worker:\$\{IMAGE_TAG\}/);
+  assert.match(bake, /target "api" \{[\s\S]*\/api:\$\{IMAGE_TAG\}/);
+  assert.doesNotMatch(bake, /\/worker:\$\{IMAGE_TAG\}/);
   assert.doesNotMatch(bake, /target "worker"/);
   assert.match(bake, /target "gateway" \{[\s\S]*target\s+= "gateway"/);
   assert.match(bake, /target "mcp" \{[\s\S]*target\s+= "mcp"/);
   assert.match(bake, /target "web" \{[\s\S]*dockerfile = "apps\/web\/Dockerfile"/);
   assert.match(bake, /target "runner" \{[\s\S]*dockerfile = "runner\/Dockerfile"/);
+  for (const image of ["api", "gateway", "mcp", "web", "runner"]) {
+    assert.match(publish, new RegExp(`target "${image}" \\{`));
+    assert.match(publish, new RegExp(`/${image},push-by-digest=true`));
+    assert.match(publish, new RegExp(`scope=facility-${image}`));
+  }
+  assert.doesNotMatch(publish, /target "control"|\/control,/);
 
   const dockerignore = await readFile(join(root, ".dockerignore"), "utf8");
   assert.match(dockerignore, /^\*\*\/\.terraform$/m);

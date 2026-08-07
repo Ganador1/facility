@@ -46,8 +46,8 @@ export ECR_REGISTRY ECR_PREFIX IMAGE_TAG PLATFORM
 login
 
 # Bake runs independent targets concurrently and shares the root Dockerfile's
-# dependency graph. The API target has both api and worker tags because those
-# ECS services run the same bytes with different commands.
+# dependency graph. API and worker run the same digest from the API repository
+# with different ECS commands, so only one copy is pushed and scanned.
 (
   # Bake automatically reads a .env from its working directory. Run from the
   # env-free infra directory so application secrets are neither parsed nor
@@ -56,7 +56,11 @@ login
   docker buildx bake --allow=fs.read=.. --file "$BAKE_FILE" --push
 )
 
-# Preserve the script's stable machine-readable output contract.
-for name in api worker gateway mcp web runner; do
+# Preserve the script's stable machine-readable output contract while making
+# the worker alias explicit for callers that still expect all service roles.
+api_ref="$ECR_REGISTRY/$ECR_PREFIX/api:$IMAGE_TAG"
+printf 'api=%s\n' "$api_ref"
+printf 'worker=%s\n' "$api_ref"
+for name in gateway mcp web runner; do
   printf '%s=%s/%s/%s:%s\n' "$name" "$ECR_REGISTRY" "$ECR_PREFIX" "$name" "$IMAGE_TAG"
 done
