@@ -1,6 +1,9 @@
 # GHCR publication overlay. Merge this after docker-bake.hcl so one BuildKit
 # graph pushes addressable digests without exposing release tags before every
-# target succeeds and promotion validates the complete set.
+# target succeeds and promotion validates the complete set. Default BuildKit
+# provenance embeds per-run timestamps in an unsigned wrapper index, making an
+# identical runtime image produce a different digest on replay. Disable that
+# wrapper here so immutable tags address the reproducible runtime manifest.
 variable "PUBLISH_REGISTRY" {
   default = "ghcr.io"
 }
@@ -10,6 +13,7 @@ variable "PUBLISH_PREFIX" {
 }
 
 target "api" {
+  attest     = ["type=provenance,disabled=true"]
   tags       = []
   output     = ["type=image,name=${PUBLISH_REGISTRY}/${PUBLISH_PREFIX}/api,push-by-digest=true,name-canonical=true,push=true"]
   cache-from = ["type=gha,scope=facility-api"]
@@ -17,6 +21,7 @@ target "api" {
 }
 
 target "gateway" {
+  attest     = ["type=provenance,disabled=true"]
   tags       = []
   output     = ["type=image,name=${PUBLISH_REGISTRY}/${PUBLISH_PREFIX}/gateway,push-by-digest=true,name-canonical=true,push=true"]
   cache-from = ["type=gha,scope=facility-gateway"]
@@ -24,6 +29,7 @@ target "gateway" {
 }
 
 target "mcp" {
+  attest     = ["type=provenance,disabled=true"]
   tags       = []
   output     = ["type=image,name=${PUBLISH_REGISTRY}/${PUBLISH_PREFIX}/mcp,push-by-digest=true,name-canonical=true,push=true"]
   cache-from = ["type=gha,scope=facility-mcp"]
@@ -31,6 +37,7 @@ target "mcp" {
 }
 
 target "web" {
+  attest     = ["type=provenance,disabled=true"]
   tags       = []
   output     = ["type=image,name=${PUBLISH_REGISTRY}/${PUBLISH_PREFIX}/web,push-by-digest=true,name-canonical=true,push=true"]
   cache-from = ["type=gha,scope=facility-web"]
@@ -38,6 +45,7 @@ target "web" {
 }
 
 target "runner" {
+  attest     = ["type=provenance,disabled=true"]
   tags       = []
   output     = ["type=image,name=${PUBLISH_REGISTRY}/${PUBLISH_PREFIX}/runner,push-by-digest=true,name-canonical=true,push=true"]
   cache-from = ["type=gha,scope=facility-runner"]

@@ -141,6 +141,12 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   assert.match(bake, /target "runner" \{[\s\S]*dockerfile = "runner\/Dockerfile"/);
   for (const image of ["api", "gateway", "mcp", "web", "runner"]) {
     assert.match(publish, new RegExp(`target "${image}" \\{`));
+    assert.match(
+      publish,
+      new RegExp(
+        `target "${image}" \\{[\\s\\S]*?attest\\s+= \\["type=provenance,disabled=true"\\]`,
+      ),
+    );
     assert.match(publish, new RegExp(`/${image},push-by-digest=true`));
     assert.match(publish, new RegExp(`scope=facility-${image}`));
   }
