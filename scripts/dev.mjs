@@ -73,6 +73,25 @@ export function assertLocalDatabaseUrl(value) {
   }
 }
 
+// The bundled MinIO uses port 9000 on loopback or the compose service name.
+// Any other host/port pair is an external S3-compatible endpoint the operator runs.
+const LOCAL_S3_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]", "minio"]);
+
+// Does the effective S3 endpoint resolve to the bundled local MinIO? A blank or
+// unset endpoint keeps the local default; an unparseable value is treated as
+// external so we never auto-start MinIO against an endpoint we cannot classify.
+export function usesLocalStorage(s3Endpoint) {
+  const value = s3Endpoint?.trim();
+  if (!value) return true;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+  return LOCAL_S3_HOSTS.has(url.hostname.toLowerCase()) && url.port === "9000";
+}
+
 export async function prepareDevEnv(
   root = repoRoot,
   {
@@ -115,6 +134,8 @@ export async function prepareDevEnv(
   const exportedDatabaseUrl = environment.DATABASE_URL?.trim();
   const effectiveDatabaseUrl = exportedDatabaseUrl || envValue(content, "DATABASE_URL");
   assertLocalDatabaseUrl(effectiveDatabaseUrl);
+  // Exported env overrides .env, consistent with DATABASE_URL above.
+  const s3Endpoint = environment.S3_ENDPOINT?.trim() || envValue(content, "S3_ENDPOINT");
   if (created || filled.length > 0) {
     await writeFile(envPath, content, { mode: 0o600 });
   }
@@ -125,6 +146,8 @@ export async function prepareDevEnv(
     created,
     filled,
     databaseUrl: effectiveDatabaseUrl,
+    s3Endpoint,
+    localStorage: usesLocalStorage(s3Endpoint),
     // Next reads this from its own process env: it is spawned from apps/web
     // and never loads the repository-root .env itself.
     devOrigins:
@@ -189,16 +212,25 @@ export async function startDevelopment(root = repoRoot) {
   if (!prepared.created && prepared.filled.length === 0)
     console.log("✓ Preserved the existing .env");
 
-  console.log("→ Starting Postgres and MinIO");
   const compose = ["compose", "-f", "docker-compose.dev.yml"];
-  await run("docker", [...compose, "up", "-d", "--wait", "postgres", "minio"], {
-    cwd: root,
-    label: "Docker development infrastructure",
-  });
-  await run("docker", [...compose, "run", "--rm", "--no-deps", "createbuckets"], {
-    cwd: root,
-    label: "MinIO bucket setup",
-  });
+  if (prepared.localStorage) {
+    console.log("→ Starting Postgres and MinIO (local-storage profile)");
+    const local = [...compose, "--profile", "local-storage"];
+    await run("docker", [...local, "up", "-d", "--wait", "postgres", "minio"], {
+      cwd: root,
+      label: "Docker development infrastructure",
+    });
+    await run("docker", [...local, "run", "--rm", "--no-deps", "createbuckets"], {
+      cwd: root,
+      label: "MinIO bucket setup",
+    });
+  } else {
+    console.log(`→ Starting Postgres (external S3 endpoint ${prepared.s3Endpoint})`);
+    await run("docker", [...compose, "up", "-d", "--wait", "postgres"], {
+      cwd: root,
+      label: "Docker development infrastructure",
+    });
+  }
 
   console.log("→ Installing workspace dependencies");
   await run(pnpm, ["install"], {

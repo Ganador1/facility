@@ -39,9 +39,11 @@ with compose.
    (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`), or ECS/container
    credentials. For non-AWS S3-compatible stores, also set `S3_ENDPOINT` and
    use static `S3_ACCESS_KEY`/`S3_SECRET_KEY` unless that runtime supplies
-   AWS-compatible credentials. The development compose stack auto-creates its
-   MinIO bucket; external stores should be provisioned by your
-   infrastructure.
+   AWS-compatible credentials. The compose stack only runs the bundled MinIO and
+   auto-creates its bucket under the `local-storage` profile; a production
+   deployment points `S3_ENDPOINT` at an externally provisioned store and omits
+   the profile, so the API and gateway neither run MinIO nor wait on bucket
+   creation.
 3. Load secrets into the runtime: `SECRET_MASTER_KEY`, identity/OAuth variables, and
    the GitHub App variables when repo automation is enabled.
 4. Run the database deploy gate once, before app traffic. Set

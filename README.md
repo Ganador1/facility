@@ -101,7 +101,8 @@ pnpm dev
 
 `pnpm dev` creates `.env` when needed, fills only blank required development
 values (including `SECRET_MASTER_KEY` and the MCP signing keys), starts
-Postgres and MinIO, installs dependencies, builds shared packages, migrates and
+Postgres plus MinIO when `S3_ENDPOINT` is local (or only Postgres for an external
+S3-compatible endpoint), installs dependencies, builds shared packages, migrates and
 seeds platform essentials, then launches the API (`:4400`), worker, gateway
 (`:4410`), web app (`:3400`), and documentation site. Existing `.env` values
 are never replaced, and the command refuses a non-local `DATABASE_URL`.

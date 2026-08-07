@@ -8,6 +8,7 @@ import {
   assertSupportedNode,
   prepareDevEnv,
   setEnvIfBlank,
+  usesLocalStorage,
 } from "./dev.mjs";
 
 const example = [
@@ -40,6 +41,8 @@ test("creates a private dev env and fills its generated secret", async () => {
     created: true,
     filled: ["SECRET_MASTER_KEY", "FACILITY_OAUTH_JWKS"],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
+    s3Endpoint: undefined,
+    localStorage: true,
     devOrigins: undefined,
   });
   assert.match(content, new RegExp(`^SECRET_MASTER_KEY=${secret}$`, "m"));
@@ -72,6 +75,8 @@ test("fills only missing required values and preserves existing values", async (
     created: false,
     filled: ["DATABASE_URL", "FACILITY_OAUTH_JWKS"],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
+    s3Endpoint: undefined,
+    localStorage: true,
     devOrigins: undefined,
   });
   assert.match(content, /^SECRET_MASTER_KEY=already-configured$/m);
@@ -101,6 +106,8 @@ test("rerunning env preparation is byte-stable", async () => {
     created: false,
     filled: [],
     databaseUrl: "postgres://facility:facility@localhost:5461/facility",
+    s3Endpoint: undefined,
+    localStorage: true,
     devOrigins: undefined,
   });
   assert.equal(second, first);
@@ -151,6 +158,65 @@ test("falls back to the env file when the exported database is blank", async () 
   });
 
   assert.equal(result.databaseUrl, "postgres://facility:facility@localhost:5461/facility");
+});
+
+test("classifies local and MinIO endpoints as bundled storage", () => {
+  // Unset or blank keeps the local default.
+  assert.equal(usesLocalStorage(undefined), true);
+  assert.equal(usesLocalStorage(""), true);
+  assert.equal(usesLocalStorage("   "), true);
+  // Loopback and the compose service name are the bundled MinIO.
+  assert.equal(usesLocalStorage("http://localhost:9000"), true);
+  assert.equal(usesLocalStorage("http://127.0.0.1:9000"), true);
+  assert.equal(usesLocalStorage("https://[::1]:9000"), true);
+  assert.equal(usesLocalStorage("http://minio:9000"), true);
+  // A loopback hostname can also host LocalStack or another external store;
+  // only the bundled MinIO port selects the profile.
+  assert.equal(usesLocalStorage("http://localhost:4566"), false);
+});
+
+test("classifies external S3-compatible endpoints as external storage", () => {
+  assert.equal(usesLocalStorage("https://s3.us-east-1.amazonaws.com"), false);
+  assert.equal(usesLocalStorage("https://accountid.r2.cloudflarestorage.com"), false);
+  assert.equal(usesLocalStorage("https://minio.example.com:9000"), false);
+  // An unparseable value must not be treated as local; we cannot classify it.
+  assert.equal(usesLocalStorage("not a url"), false);
+});
+
+test("resolves the effective S3 endpoint from the env file", async () => {
+  const root = await fixture();
+  await writeFile(join(root, ".env"), `${example}S3_ENDPOINT=http://localhost:9000\n`);
+
+  const result = await prepareDevEnv(root, {
+    generateSecret: () => "local-secret",
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
+    environment: {},
+  });
+
+  assert.equal(result.s3Endpoint, "http://localhost:9000");
+  assert.equal(result.localStorage, true);
+});
+
+test("an exported S3 endpoint overrides the env file and selects external storage", async () => {
+  const root = await fixture();
+  await writeFile(join(root, ".env"), `${example}S3_ENDPOINT=http://localhost:9000\n`);
+
+  const exported = await prepareDevEnv(root, {
+    generateSecret: () => "local-secret",
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
+    environment: { S3_ENDPOINT: "https://s3.us-east-1.amazonaws.com" },
+  });
+  assert.equal(exported.s3Endpoint, "https://s3.us-east-1.amazonaws.com");
+  assert.equal(exported.localStorage, false);
+
+  // A blank exported endpoint falls back to the env file's local value.
+  const blank = await prepareDevEnv(root, {
+    generateSecret: () => "local-secret",
+    generateOauthJwks: () => '{"keys":[{"kid":"test"}]}',
+    environment: { S3_ENDPOINT: "   " },
+  });
+  assert.equal(blank.s3Endpoint, "http://localhost:9000");
+  assert.equal(blank.localStorage, true);
 });
 
 test("requires Node.js 22 or newer", () => {
