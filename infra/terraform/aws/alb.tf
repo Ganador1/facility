@@ -171,7 +171,7 @@ resource "aws_lb_listener_rule" "http_mcp" {
 }
 
 resource "aws_lb_listener_rule" "http_preview" {
-  count        = var.acm_certificate_arn == "" ? 1 : 0
+  count        = var.acm_certificate_arn == "" && !local.managed_preview_origin ? 1 : 0
   listener_arn = aws_lb_listener.http.arn
   priority     = 40
   action {
@@ -180,6 +180,27 @@ resource "aws_lb_listener_rule" "http_preview" {
   }
   condition {
     host_header { values = [var.preview_hostname] }
+  }
+}
+
+# Certificate-less managed preview traffic reaches the ALB by its AWS DNS
+# name, so Host cannot select the API target. CloudFront overwrites this token
+# before forwarding; unmarked direct traffic is never classified as preview.
+resource "aws_lb_listener_rule" "http_preview_managed" {
+  count        = var.acm_certificate_arn == "" && local.managed_preview_origin ? 1 : 0
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 40
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["api"].arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "X-Facility-Preview-Surface"
+      values           = [random_password.preview_surface[0].result]
+    }
   }
 }
 
@@ -233,7 +254,7 @@ resource "aws_lb_listener_rule" "https_mcp" {
 }
 
 resource "aws_lb_listener_rule" "https_preview" {
-  count        = var.acm_certificate_arn == "" ? 0 : 1
+  count        = var.acm_certificate_arn == "" || local.managed_preview_origin ? 0 : 1
   listener_arn = aws_lb_listener.https[0].arn
   priority     = 40
   action {
@@ -286,7 +307,7 @@ resource "aws_route53_record" "mcp" {
 }
 
 resource "aws_route53_record" "preview" {
-  count   = var.preview_route53_zone_id == "" ? 0 : 1
+  count   = var.preview_route53_zone_id == "" || local.managed_preview_origin ? 0 : 1
   zone_id = var.preview_route53_zone_id
   name    = var.preview_hostname
   type    = "A"

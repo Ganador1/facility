@@ -1,9 +1,11 @@
+import { timingSafeEqual } from "node:crypto";
 import { newId, open, seal } from "@facility/core";
 import { createDb, insertAuditEvent, previewAccessHandoffs, previewSandboxes } from "@facility/db";
 import { and, eq, gt, inArray, isNull, lt, or } from "drizzle-orm";
 import { request as upstreamRequest } from "undici";
 import { z } from "zod";
 import { ApiError } from "./errors.js";
+import { registeredSite } from "./origin-isolation.js";
 import { sandboxNamespace } from "./sandbox/cache.js";
 import { previewSandboxDriver, type SandboxDriver, SandboxLaunchError } from "./sandbox/driver.js";
 import type { AppConfig, Principal } from "./types.js";
@@ -100,19 +102,23 @@ export function assertPreviewProvisioningAvailable(config: AppConfig) {
 export function isolatedPreviewOrigin(config: AppConfig) {
   if (!config.previewUrl) return false;
   const preview = new URL(config.previewUrl);
+  const previewSite = registeredSite(preview.hostname);
+  if (!previewSite) return false;
   return [config.publicUrl, config.webUrl ?? config.publicUrl, config.mcpPublicUrl]
     .filter((value): value is string => Boolean(value))
-    .every((value) => new URL(value).hostname !== preview.hostname);
+    .every((value) => registeredSite(new URL(value).hostname) !== previewSite);
 }
 
 export function assertPreviewOriginSurface(
   config: AppConfig,
   rawHost: string | undefined,
   rawPath: string,
+  rawSurfaceToken?: string | string[],
 ) {
   if (!isolatedPreviewOrigin(config) || !config.previewUrl) return;
   const requestHost = hostname(rawHost);
   const previewHost = new URL(config.previewUrl).hostname.toLowerCase();
+  const proxyMarked = previewSurfaceTokenMatches(config.previewSurfaceToken, rawSurfaceToken);
   let path: string;
   try {
     // Fastify routes percent-encoded path segments after decoding them. Apply
@@ -123,9 +129,22 @@ export function assertPreviewOriginSurface(
     throw previewError(404, "not_found", "Route not found");
   }
   const servesPreview = /^\/(?:preview|preview-auth)\//.test(path);
-  if (requestHost === previewHost ? !servesPreview : servesPreview) {
+  const isPreviewSurface = requestHost === previewHost || proxyMarked;
+  if (isPreviewSurface !== servesPreview) {
     throw previewError(404, "not_found", "Route not found");
   }
+}
+
+function previewSurfaceTokenMatches(
+  expected: string | undefined,
+  candidate: string | string[] | undefined,
+) {
+  if (!expected || typeof candidate !== "string") return false;
+  const expectedBytes = Buffer.from(expected);
+  const candidateBytes = Buffer.from(candidate);
+  return (
+    expectedBytes.length === candidateBytes.length && timingSafeEqual(expectedBytes, candidateBytes)
+  );
 }
 
 export async function mintPreviewHandoff(

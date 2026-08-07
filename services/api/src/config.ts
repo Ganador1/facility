@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadDotenv } from "dotenv";
 import { z } from "zod";
+import { registeredSite } from "./origin-isolation.js";
 import type { AppConfig } from "./types.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -30,6 +31,10 @@ const EnvSchema = z
     PUBLIC_URL: z.string().url().default("http://localhost:4400"),
     WEB_URL: z.string().url().optional(),
     FACILITY_PREVIEW_URL: OptionalUrl,
+    FACILITY_PREVIEW_SURFACE_TOKEN: z.preprocess(
+      (value) => (typeof value === "string" && value.trim() === "" ? undefined : value),
+      z.string().min(32).max(128).optional(),
+    ),
     SANDBOX_API_URL: z.string().url().optional(),
     GATEWAY_URL: z.string().url().default("http://localhost:4410"),
     SANDBOX_GATEWAY_URL: z.string().url().optional(),
@@ -118,9 +123,10 @@ const EnvSchema = z
         });
       } else {
         const preview = new URL(env.FACILITY_PREVIEW_URL);
-        const controlHosts = [env.PUBLIC_URL, env.WEB_URL ?? env.PUBLIC_URL, env.MCP_PUBLIC_URL]
+        const previewSite = registeredSite(preview.hostname);
+        const controlSites = [env.PUBLIC_URL, env.WEB_URL ?? env.PUBLIC_URL, env.MCP_PUBLIC_URL]
           .filter((value): value is string => Boolean(value))
-          .map((value) => new URL(value).hostname);
+          .map((value) => registeredSite(new URL(value).hostname));
         if (preview.protocol !== "https:") {
           ctx.addIssue({
             code: "custom",
@@ -128,11 +134,12 @@ const EnvSchema = z
             message: "FACILITY_PREVIEW_URL must use HTTPS in production",
           });
         }
-        if (controlHosts.includes(preview.hostname)) {
+        if (!previewSite || controlSites.includes(previewSite)) {
           ctx.addIssue({
             code: "custom",
             path: ["FACILITY_PREVIEW_URL"],
-            message: "FACILITY_PREVIEW_URL must use a host separate from other Facility origins",
+            message:
+              "FACILITY_PREVIEW_URL must use a registered site separate from other Facility origins",
           });
         }
       }
@@ -181,6 +188,7 @@ export function readConfig(env = process.env): AppConfig {
     publicUrl: parsed.PUBLIC_URL,
     webUrl,
     previewUrl: parsed.FACILITY_PREVIEW_URL?.replace(/\/$/, ""),
+    previewSurfaceToken: parsed.FACILITY_PREVIEW_SURFACE_TOKEN,
     sandboxApiUrl: parsed.SANDBOX_API_URL ?? parsed.PUBLIC_URL,
     sandboxGatewayUrl: parsed.SANDBOX_GATEWAY_URL ?? parsed.GATEWAY_URL,
     gatewayUrl: parsed.GATEWAY_URL,

@@ -7,6 +7,10 @@ locals {
   name_prefix = "${var.project}-${var.environment}"
   azs         = slice(data.aws_availability_zones.available.names, 0, 2)
 
+  # The default AWS path owns its isolated HTTPS preview origin. Operators who
+  # already own a separate registered site can keep routing it through the ALB.
+  managed_preview_origin = trimspace(var.preview_hostname) == ""
+
   tags = {
     Project     = var.project
     Environment = var.environment
@@ -45,7 +49,7 @@ locals {
     api     = var.enable_cloudfront_api_endpoint ? "https://${aws_cloudfront_distribution.api[0].domain_name}" : "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.api_hostname}"
     web     = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.app_hostname}"
     mcp     = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.mcp_hostname}"
-    preview = "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.preview_hostname}"
+    preview = local.managed_preview_origin ? "https://${aws_cloudfront_distribution.preview[0].domain_name}" : "${var.acm_certificate_arn == "" ? "http" : "https"}://${var.preview_hostname}"
   }
 
   common_environment = [
@@ -74,7 +78,11 @@ locals {
     { name = "FACILITY_AWS_TASK_CPU_ARCHITECTURE", value = var.task_cpu_architecture },
   ]
 
-  api_environment = concat(local.common_environment, local.aws_sandbox_environment, [
+  preview_surface_environment = local.managed_preview_origin ? [
+    { name = "FACILITY_PREVIEW_SURFACE_TOKEN", value = random_password.preview_surface[0].result },
+  ] : []
+
+  api_environment = concat(local.common_environment, local.aws_sandbox_environment, local.preview_surface_environment, [
     { name = "PORT", value = tostring(local.ports.api) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },

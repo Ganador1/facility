@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertPreviewOriginSurface,
+  isolatedPreviewOrigin,
   mintPreviewSession,
   previewCookieName,
   previewCookieOptions,
@@ -15,6 +16,7 @@ const config: AppConfig = {
   publicUrl: "https://api.example.com",
   webUrl: "https://app.example.com",
   previewUrl: "https://facility-previews.example.net",
+  previewSurfaceToken: "p".repeat(64),
   sandboxApiUrl: "https://api.example.com",
   sandboxGatewayUrl: "https://gateway.example.com",
   gatewayUrl: "https://gateway.example.com",
@@ -94,5 +96,65 @@ describe("isolated preview access", () => {
       assertPreviewOriginSurface(config, "internal-api", "/preview/sbx_1/"),
     ).toThrowError(expect.objectContaining({ code: "not_found", statusCode: 404 }));
     expect(() => assertPreviewOriginSurface(config, "internal-api", "/health")).not.toThrow();
+  });
+
+  it("accepts only the value-matched proxy marker as the preview surface", () => {
+    const token = config.previewSurfaceToken as string;
+    expect(() =>
+      assertPreviewOriginSurface(config, "api.example.com", "/preview/sbx_1/", token),
+    ).not.toThrow();
+    expect(() =>
+      assertPreviewOriginSurface(
+        config,
+        "api.example.com",
+        "/preview-auth/sbx_1?handoff=sealed",
+        token,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertPreviewOriginSurface(config, "api.example.com", "/%70review/sbx_1/", token),
+    ).not.toThrow();
+    expect(() =>
+      assertPreviewOriginSurface(config, "api.example.com", "/health", token),
+    ).toThrowError(expect.objectContaining({ code: "not_found", statusCode: 404 }));
+
+    for (const candidate of [undefined, "wrong", "p".repeat(63), [token]]) {
+      expect(() =>
+        assertPreviewOriginSurface(config, "api.example.com", "/preview/sbx_1/", candidate),
+      ).toThrowError(expect.objectContaining({ code: "not_found", statusCode: 404 }));
+    }
+  });
+
+  it("ignores marker headers when no trusted marker is configured", () => {
+    const hostOnlyConfig = { ...config, previewSurfaceToken: undefined };
+    expect(() =>
+      assertPreviewOriginSurface(
+        hostOnlyConfig,
+        "api.example.com",
+        "/preview/sbx_1/",
+        config.previewSurfaceToken,
+      ),
+    ).toThrowError(expect.objectContaining({ code: "not_found", statusCode: 404 }));
+    expect(() =>
+      assertPreviewOriginSurface(
+        hostOnlyConfig,
+        "facility-previews.example.net",
+        "/preview/sbx_1/",
+        config.previewSurfaceToken,
+      ),
+    ).not.toThrow();
+  });
+
+  it("requires separation at the registered-site boundary", () => {
+    expect(isolatedPreviewOrigin({ ...config, previewUrl: "https://previews.example.com" })).toBe(
+      false,
+    );
+    expect(
+      isolatedPreviewOrigin({
+        ...config,
+        publicUrl: "https://d111111abcdef8.cloudfront.net",
+        previewUrl: "https://d222222abcdef8.cloudfront.net",
+      }),
+    ).toBe(true);
   });
 });

@@ -11,10 +11,11 @@ Topology:
 - `app_hostname` routes to the `web` ECS service through the public ALB.
 - `api_hostname` routes to the `api` ECS service through the public ALB.
 - `mcp_hostname` routes to the audience-bound MCP resource server.
-- `preview_hostname` routes only protected preview content to the existing API
-  tasks. Use a separately registered domain and certificate SAN, not a sibling
-  of the app/API hostnames; set `preview_route53_zone_id` when Terraform should
-  create that zone's alias record.
+- Protected previews use a dedicated AWS-assigned CloudFront HTTPS origin by
+  default and still route to the existing API tasks. No preview DNS zone or
+  certificate is required. As an advanced override, set `preview_hostname` to
+  a separately registered site covered by the ALB certificate, and set
+  `preview_route53_zone_id` when Terraform should create its alias record.
 - `gateway` has no public ALB route. It is reachable only inside the VPC through
   Cloud Map at the `gateway_internal_url` output.
 - Postgres accepts `5432` only from the ECS service security group.
@@ -41,11 +42,15 @@ Edit `playground.tfvars`:
 
 - Set `aws_region` and change the copied `environment = "playground"` value if
   this is not a playground deployment; a filename does not set the variable.
-- Set `app_hostname`, `api_hostname`, `mcp_hostname`, and the separately
-  registered `preview_hostname`.
+- Set `app_hostname`, `api_hostname`, and `mcp_hostname`. Leave
+  `preview_hostname = ""` for the module-owned HTTPS preview origin. Set it only
+  when you already operate a separately registered preview site.
 - Set `acm_certificate_arn` for HTTPS, or leave it empty for HTTP-only testing.
   When set, the ALB redirects every port 80 request to the same host, path, and
   query on HTTPS; only certificate-less deployments forward HTTP to services.
+  In certificate-less validation stacks the preview viewer edge remains HTTPS,
+  but CloudFront reaches the ALB over plaintext HTTP. Configure the certificate
+  for production transport confidentiality.
 - Set `route53_zone_id` if Terraform should create alias records.
 - Set `enable_cloudfront_api_endpoint = true` to get an AWS-managed HTTPS API
   and webhook URL without a public DNS zone. This is intended for validation;
@@ -109,6 +114,7 @@ Record these outputs:
 - `secret_arns`
 - `rds_endpoint`
 - `rds_master_user_secret_arn`
+- `preview_url`
 - `ecs_cluster_name`
 - `codebuild_runner_project_name`
 - `migrate_task_definition_arn`

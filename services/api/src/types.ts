@@ -21,9 +21,13 @@ export type AppConfig = {
   publicUrl: string;
   webUrl?: string;
   // Browser origin used only for proxied preview application content. In
-  // production this must be HTTPS on a host separate from every control-plane
-  // hostname so untrusted preview JavaScript never receives Facility cookies.
+  // production this must be HTTPS on a registered site separate from every
+  // control-plane site so untrusted JavaScript cannot toss Facility cookies.
   previewUrl?: string;
+  // Optional value added by a trusted preview reverse proxy. A value match can
+  // classify preview-surface requests even when that proxy replaces Host with
+  // its origin hostname.
+  previewSurfaceToken?: string;
   // URLs a sandbox uses to reach back — distinct from publicUrl because a
   // container cannot resolve the host's "localhost". Default to the public
   // URLs; override (e.g. host.docker.internal) for the local docker driver.

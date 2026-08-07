@@ -44,8 +44,9 @@ variable "mcp_hostname" {
 }
 
 variable "preview_hostname" {
-  description = "Dedicated hostname for untrusted preview application content. Use a separately registered domain, not a sibling of app_hostname."
+  description = "Optional custom hostname for untrusted preview content. Empty uses an AWS-managed, cookie-isolated CloudFront origin."
   type        = string
+  default     = ""
 }
 
 variable "route53_zone_id" {

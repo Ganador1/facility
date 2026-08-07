@@ -46,9 +46,11 @@ describe("API configuration", () => {
         NODE_ENV: "production",
         PUBLIC_URL: "https://api.example.com",
         WEB_URL: "https://app.example.com",
-        FACILITY_PREVIEW_URL: "https://app.example.com/previews",
+        FACILITY_PREVIEW_URL: "https://previews.example.com",
       }),
-    ).toThrow("FACILITY_PREVIEW_URL must use a host separate from other Facility origins");
+    ).toThrow(
+      "FACILITY_PREVIEW_URL must use a registered site separate from other Facility origins",
+    );
     expect(() =>
       readConfig({
         ...validEnv,
@@ -57,7 +59,19 @@ describe("API configuration", () => {
         MCP_PUBLIC_URL: "https://facility-previews.example.net",
         FACILITY_PREVIEW_URL: "https://facility-previews.example.net",
       }),
-    ).toThrow("FACILITY_PREVIEW_URL must use a host separate from other Facility origins");
+    ).toThrow(
+      "FACILITY_PREVIEW_URL must use a registered site separate from other Facility origins",
+    );
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        PUBLIC_URL: "https://api.example.com",
+        FACILITY_PREVIEW_URL: "https://127.0.0.1",
+      }),
+    ).toThrow(
+      "FACILITY_PREVIEW_URL must use a registered site separate from other Facility origins",
+    );
     expect(
       readConfig({
         ...validEnv,
@@ -67,6 +81,15 @@ describe("API configuration", () => {
         FACILITY_PREVIEW_URL: "https://facility-previews.example.net/",
       }),
     ).toMatchObject({ previewUrl: "https://facility-previews.example.net" });
+    expect(
+      readConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        PUBLIC_URL: "https://d111111abcdef8.cloudfront.net",
+        WEB_URL: "https://app.example.com",
+        FACILITY_PREVIEW_URL: "https://d222222abcdef8.cloudfront.net",
+      }),
+    ).toMatchObject({ previewUrl: "https://d222222abcdef8.cloudfront.net" });
     expect(() =>
       readConfig({
         ...validEnv,
@@ -75,6 +98,20 @@ describe("API configuration", () => {
     ).toThrow(
       "FACILITY_PREVIEW_URL must be an origin without credentials, path, query, or fragment",
     );
+  });
+
+  it("accepts only a bounded preview proxy surface token", () => {
+    const token = "p".repeat(64);
+    expect(readConfig({ ...validEnv, FACILITY_PREVIEW_SURFACE_TOKEN: token })).toMatchObject({
+      previewSurfaceToken: token,
+    });
+    expect(
+      readConfig({ ...validEnv, FACILITY_PREVIEW_SURFACE_TOKEN: "" }).previewSurfaceToken,
+    ).toBeUndefined();
+    expect(() => readConfig({ ...validEnv, FACILITY_PREVIEW_SURFACE_TOKEN: "short" })).toThrow();
+    expect(() =>
+      readConfig({ ...validEnv, FACILITY_PREVIEW_SURFACE_TOKEN: "p".repeat(129) }),
+    ).toThrow();
   });
 
   it("requires direct GitHub client credentials as a pair", () => {
