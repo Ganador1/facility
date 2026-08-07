@@ -61,6 +61,14 @@ export const AuditEventSchema = z.object({
   ts: z.string().optional(),
 });
 
+function persistedJson(value: unknown): unknown {
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new TypeError("Hash-chain events must be JSON-serializable");
+  }
+  return JSON.parse(encoded);
+}
+
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(stableStringify).join(",")}]`;
@@ -71,11 +79,15 @@ function stableStringify(value: unknown): string {
       .map(([key, inner]) => `${JSON.stringify(key)}:${stableStringify(inner)}`)
       .join(",")}}`;
   }
-  return JSON.stringify(value);
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) {
+    throw new TypeError("Hash-chain events must be JSON-serializable");
+  }
+  return encoded;
 }
 
 export function hashChain(prevHash: string | null, event: unknown): string {
   return createHash("sha256")
-    .update(`${prevHash ?? ""}:${stableStringify(event)}`)
+    .update(`${prevHash ?? ""}:${stableStringify(persistedJson(event))}`)
     .digest("hex");
 }
