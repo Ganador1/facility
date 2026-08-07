@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { harnessFragmentForBundle } from "../src/harness.js";
 import {
+  boundedResumeFallbackScope,
   platformDeliveryFailure,
   renderRunContract,
   resolveCheckCmds,
   resolvePackageInstallCmd,
   resolveProvisionCmd,
+  resolveProvisioningCommands,
   resolveRepoEngineConfig,
   runSafePermissions,
 } from "../src/sandbox/orchestrator.js";
@@ -118,6 +121,38 @@ describe("platform run repository setup", () => {
     ).toBe("make bootstrap");
   });
 
+  it("gates repository setup with an explicit provisioning depth", () => {
+    const answers = {
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    };
+    expect(resolveProvisioningCommands({ setup: {} }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "full" } }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "deps_only" } }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: null,
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "deps_only" } }, {})).toEqual({
+      packageInstallCmd: null,
+      provisionCmd: null,
+    });
+    expect(resolveProvisioningCommands({ setup: { provisioning: "none" } }, answers)).toEqual({
+      packageInstallCmd: null,
+      provisionCmd: null,
+    });
+    // Invalid persisted state stays on the legacy full lifecycle.
+    expect(resolveProvisioningCommands({ setup: { provisioning: "skip" } }, answers)).toEqual({
+      packageInstallCmd: "pnpm install --frozen-lockfile",
+      provisionCmd: "pnpm run local:setup:ui",
+    });
+  });
+
   it("renders repository setup and gates into platform contracts", () => {
     expect(
       renderRunContract("Provision: {{PROVISION_CMD}}\nChecks: {{CHECKS_INLINE}}", "pnpm install", [
@@ -155,13 +190,51 @@ describe("runSafePermissions — run-key permission ceiling", () => {
     expect(runSafePermissions(["hitl:decide", "hitl:write"])).toEqual(["hitl:write"]);
   });
 
-  it("falls back to the harness floor when nothing run-safe is declared", () => {
-    expect(runSafePermissions([])).toEqual(["kb:read", "kb:write", "tasks:read", "tasks:write"]);
-    expect(runSafePermissions(["members:write"])).toEqual([
+  it("does not grant undeclared KB access to a non-harness agent", () => {
+    expect(runSafePermissions([])).toEqual([]);
+    expect(runSafePermissions(["members:write"])).toEqual([]);
+  });
+
+  it("keeps the legacy floor only for an explicitly harness-enabled agent", () => {
+    expect(runSafePermissions([], true)).toEqual([
       "kb:read",
       "kb:write",
       "tasks:read",
       "tasks:write",
     ]);
+  });
+});
+
+describe("harness and resume bundle boundaries", () => {
+  const space = {
+    config: {},
+    charterMd: "# Charter\n",
+    activeMd: "## Objective\n",
+  } as never;
+
+  it("injects mandatory KB files only for an agent with a harness item", () => {
+    expect(
+      harnessFragmentForBundle({
+        space,
+        harnessItemId: null,
+        runId: "run_without_harness",
+        mode: "builder",
+      }),
+    ).toBeUndefined();
+    expect(
+      harnessFragmentForBundle({
+        space,
+        harnessItemId: "item_product_chain",
+        runId: "run_with_harness",
+        mode: "project-owner",
+      })?.files,
+    ).toHaveProperty("harness/SESSION.md");
+  });
+
+  it("bounds degraded-resume context without blocking the resume", () => {
+    expect(
+      boundedResumeFallbackScope({ approvedPlan: "Implement issue 557", issue: { number: 557 } }),
+    ).toEqual({ approvedPlan: "Implement issue 557", issue: { number: 557 } });
+    expect(boundedResumeFallbackScope({ approvedPlan: "x".repeat(33 * 1024) })).toBeUndefined();
   });
 });

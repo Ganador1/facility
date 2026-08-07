@@ -80,6 +80,7 @@ import type {
   ResumeRunRequest,
   Role,
   Run,
+  RunDelivery,
   RunEvent,
   RunTranscript,
   RunWithProject,
@@ -547,6 +548,14 @@ export class FacilityClient {
     return this.send<undefined, RunTranscript>("GET", `/v1/runs/${runId}/transcript`, {
       responseType: "text",
     });
+  }
+
+  runDelivery(runId: string): Promise<RunDelivery> {
+    return this.get(`/v1/runs/${runId}/delivery`);
+  }
+
+  retryRunDelivery(runId: string, options?: FacilityWriteOptions): Promise<RunDelivery> {
+    return this.post(`/v1/runs/${runId}/delivery/retry`, undefined, options);
   }
 
   cancelRun(runId: string, options?: FacilityWriteOptions): Promise<Run> {

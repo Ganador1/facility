@@ -18,6 +18,11 @@ output "mcp_url" {
   value       = local.public_urls.mcp
 }
 
+output "preview_url" {
+  description = "Isolated browser origin for protected preview applications."
+  value       = local.public_urls.preview
+}
+
 output "github_webhook_url" {
   description = "Public GitHub App webhook URL."
   value       = "${local.public_urls.api}/webhooks/github"
@@ -31,6 +36,16 @@ output "gateway_internal_url" {
 output "ecr_repository_urls" {
   description = "ECR repository URLs for build-images.sh."
   value       = { for name, repo in aws_ecr_repository.service : name => repo.repository_url }
+}
+
+output "aws_region" {
+  description = "AWS region used by the digest-pinned deploy command."
+  value       = var.aws_region
+}
+
+output "task_cpu_architecture" {
+  description = "CPU architecture that release image manifests must match."
+  value       = var.task_cpu_architecture
 }
 
 output "secret_arns" {
@@ -61,6 +76,11 @@ output "codebuild_runner_project_name" {
 output "migrate_task_definition_arn" {
   description = "One-shot migration task definition. Run manually; Terraform does not auto-run migrations."
   value       = aws_ecs_task_definition.migrate.arn
+}
+
+output "service_task_definition_arns" {
+  description = "Terraform-rendered service templates used to register digest-pinned release revisions."
+  value       = { for name, task in aws_ecs_task_definition.service : name => task.arn }
 }
 
 output "private_subnet_ids" {

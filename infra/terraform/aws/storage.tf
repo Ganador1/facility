@@ -69,6 +69,25 @@ resource "aws_s3_bucket_lifecycle_configuration" "objects" {
       noncurrent_days = var.envelope_retention_days
     }
   }
+
+  # CodeBuild overwrites one dependency-store cache per Facility project. Keep
+  # active caches warm for a month and discard superseded versions quickly.
+  rule {
+    id     = "expire-codebuild-caches"
+    status = "Enabled"
+
+    filter {
+      prefix = "codebuild-cache/"
+    }
+
+    expiration {
+      days = 30
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 7
+    }
+  }
 }
 
 resource "aws_ecr_repository" "service" {

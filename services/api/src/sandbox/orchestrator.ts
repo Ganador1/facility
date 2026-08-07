@@ -30,6 +30,7 @@ import {
   registryVersions,
   repos,
   roles,
+  runDeliveries,
   runEvents,
   runs,
   sandboxProfiles,
@@ -53,9 +54,15 @@ import {
   syncSecurityFindings,
 } from "../github/security-findings.js";
 import { harnessFragmentForBundle, validateProjectKb } from "../harness.js";
-import { assertPreviewProvisioningAvailable, createPreviewRecord } from "../previews.js";
+import {
+  assertPreviewProvisioningAvailable,
+  createPreviewRecord,
+  previewAccessUrl,
+} from "../previews.js";
 import type { AppConfig } from "../types.js";
-import { raisePlatformIssue } from "../watchtower/issues.js";
+import { raisePlatformIssue, resolvePlatformIssue } from "../watchtower/issues.js";
+import { sandboxCachePartition, sandboxNamespace } from "./cache.js";
+import { nestedDockerEnabled, provisioningDepth } from "./capabilities.js";
 import { DockerSandboxDriver } from "./docker.js";
 import type { LaunchSpec, SandboxDriver, SandboxDriverName } from "./driver.js";
 import { sandboxDriver } from "./driver.js";
@@ -79,6 +86,8 @@ type FinishRunDeps = {
 type DispatchRunDeps = {
   sandboxDriver?: (name: SandboxDriverName) => Promise<SandboxDriver>;
 };
+
+const RESUME_FALLBACK_SCOPE_MAX_BYTES = 32 * 1024;
 
 export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: DispatchRunDeps = {}) {
   if (!job.runId || !job.orgId) throw new Error("runs.dispatch requires runId and orgId");
@@ -124,7 +133,12 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
     // agent's permissions actually changes what its run can do, and a run key
     // can never carry org-admin/destructive scopes regardless of the agent def.
     // Pinned to the run's project; revoked when the run ends.
-    const harnessRoleId = await ensureRunAgentRole(db, run.orgId, agentPermissions);
+    const harnessRoleId = await ensureRunAgentRole(
+      db,
+      run.orgId,
+      agentPermissions,
+      Boolean(bundle.harness),
+    );
     const platformKey = await generateApiKey("fak");
     await db.insert(apiKeys).values({
       id: platformKey.id,
@@ -146,14 +160,22 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
 
     const runnerToken = `frt_${crypto.randomUUID().replaceAll("-", "")}${crypto.randomUUID().replaceAll("-", "")}`;
     const driverName = normalizeDriver(profile.driver);
+    const nestedDocker = nestedDockerEnabled(profile.setup);
+    const provisioning = provisioningDepth(profile.setup);
     const driver = await (deps.sandboxDriver ?? sandboxDriver)(driverName);
     const launchSpec: LaunchSpec = {
       runId: run.id,
+      namespace: sandboxNamespace(config),
+      kind: "run",
+      cachePartition: sandboxCachePartition(config.secretMasterKey, run.orgId, run.projectId),
       image: profile.image,
       env: {
         FACILITY_API_URL: config.sandboxApiUrl,
         RUN_ID: run.id,
         RUNNER_TOKEN: runnerToken,
+        ...(driverName === "aws"
+          ? { FACILITY_SANDBOX_NESTED_DOCKER: nestedDocker ? "1" : "0" }
+          : {}),
       },
       cpu: resourceNumber(profile.resources, "cpu", 2),
       memoryMb: resourceNumber(profile.resources, "memory_mb", 4096),
@@ -192,7 +214,15 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
       return;
     }
     await appendRunEvents(db, run.orgId, run.id, [
-      { type: "sandbox", data: { driver: driver.name, ref: launched.ref } },
+      {
+        type: "sandbox",
+        data: {
+          driver: driver.name,
+          ref: launched.ref,
+          provisioning,
+          ...(driverName === "aws" ? { nested_docker: nestedDocker } : {}),
+        },
+      },
     ]);
     await updateGithubRunProgress(db, run.id, "provisioning", { config }).catch(() => undefined);
   } catch (error) {
@@ -261,58 +291,78 @@ export async function finishRun(
       error = `kb_checkpoint_failed:${checkpoint.errors.map((e) => e.code).join(",")}`;
     }
   }
+  const persistedGh =
+    input.git?.branch && isBuilderMode(run.mode)
+      ? {
+          ...objectOrEmpty(run.gh),
+          branch: input.git.branch,
+          ...(input.git.headSha ? { headSha: input.git.headSha } : {}),
+        }
+      : run.gh;
+  let deliveryPlan: Awaited<ReturnType<typeof prepareRunDelivery>> | null = null;
+  let deliveryPreparationError: string | null = null;
+  if (status === "succeeded" && input.git?.branch && isBuilderMode(run.mode)) {
+    try {
+      deliveryPlan = await prepareRunDelivery(db, { ...run, gh: persistedGh }, input.git);
+    } catch (prepareError) {
+      deliveryPreparationError = errorMessage(prepareError);
+      status = "failed";
+      error = `delivery_repo_unresolvable:${deliveryPreparationError}`;
+    }
+  }
   const sandbox = readSandbox(run.sandbox);
   const aggregate = await gatewayAggregate(db, run.id);
   let receipt = await canonicalRunReceipt(db, run, input.receipt, aggregate, status);
-  const claimed = (
-    await db
-      .update(runs)
-      .set({
-        status,
-        receipt,
-        error,
-        engineSessionId: input.engineSessionId,
-        endedAt: new Date(),
-        sandbox: { ...sandbox, finishedAt: new Date().toISOString() },
-        updatedAt: new Date(),
-      })
-      // Claim the terminal transition atomically — if a concurrent finish/cancel
-      // already moved the run to a terminal state, this updates nothing and we
-      // skip the (idempotent-but-wasteful) cleanup.
-      .where(and(eq(runs.id, run.id), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
-      .returning()
-  )[0];
+  const claimed = await db.transaction(async (tx) => {
+    const terminal = (
+      await tx
+        .update(runs)
+        .set({
+          status,
+          receipt,
+          error,
+          gh: persistedGh,
+          engineSessionId: input.engineSessionId,
+          endedAt: new Date(),
+          sandbox: { ...sandbox, finishedAt: new Date().toISOString() },
+          updatedAt: new Date(),
+        })
+        // The terminal status and durable delivery intent are one commit. A
+        // process crash can therefore never strand a successfully pushed
+        // branch without the metadata needed to publish its pull request.
+        .where(and(eq(runs.id, run.id), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
+        .returning()
+    )[0];
+    if (!terminal) return null;
+    if (status === "succeeded" && deliveryPlan) {
+      await tx.insert(runDeliveries).values(deliveryPlan);
+    }
+    return terminal;
+  });
   if (!claimed) return run;
   if (sandbox.driver && sandbox.ref) {
     const driver = await sandboxDriver(sandbox.driver);
     await driver.destroy(sandbox.ref).catch(() => undefined);
   }
   await revokeRunKeys(db, sandbox);
-  if (status === "succeeded" && input.git?.branch && isBuilderMode(run.mode)) {
-    try {
-      await openRunPullRequest(db, claimed, input.git, deps);
-    } catch (prError) {
-      const message = errorMessage(prError);
-      status = "failed";
-      error = `pr_open_failed:${message}`;
-      receipt = await canonicalRunReceipt(db, run, input.receipt, aggregate, status);
-      await db
-        .update(runs)
-        .set({ status, receipt, error, updatedAt: new Date() })
-        .where(and(eq(runs.orgId, run.orgId), eq(runs.id, run.id)));
-      await appendRunEvents(db, run.orgId, run.id, [
-        { type: "artifact_error", data: { kind: "pr_open_failed", error: message } },
-      ]);
-      await raisePlatformIssue(db, {
-        orgId: run.orgId,
-        projectId: run.projectId,
-        kind: "pr_open_failed",
-        severity: "error",
-        fingerprint: `pr_open_failed:${run.id}`,
-        title: "Failed to open run pull request",
-        bodyMd: `Run ${run.id} pushed ${input.git?.branch}, but delivery failed because Facility could not open a pull request.\n\n${message}`,
-      });
-    }
+  if (status === "succeeded" && deliveryPlan) {
+    await deps?.enqueue?.("deliveries.deliver", { runId: run.id }).catch(() => undefined);
+  } else if (deliveryPreparationError) {
+    await appendRunEvents(db, run.orgId, run.id, [
+      {
+        type: "artifact_error",
+        data: { kind: "delivery_repo_unresolvable", error: deliveryPreparationError },
+      },
+    ]);
+    await raisePlatformIssue(db, {
+      orgId: run.orgId,
+      projectId: run.projectId,
+      kind: "delivery_repo_unresolvable",
+      severity: "error",
+      fingerprint: `delivery_repo_unresolvable:${run.id}`,
+      title: "Run delivery repository is unavailable",
+      bodyMd: `Run ${run.id} pushed ${input.git?.branch}, but Facility could not bind the delivery to its tenant-scoped repository.\n\n${deliveryPreparationError}`,
+    });
   }
   if (
     status === "succeeded" &&
@@ -794,7 +844,7 @@ async function repoForGithubRun(db: ReturnType<typeof createDb>["db"], run: RunR
   )[0];
 }
 
-async function openRunPullRequest(
+async function prepareRunDelivery(
   db: ReturnType<typeof createDb>["db"],
   run: RunRow,
   git: {
@@ -805,9 +855,16 @@ async function openRunPullRequest(
     pullRequestTitle?: string;
     pullRequestBody?: string;
   },
-  deps?: FinishRunDeps,
 ) {
-  if (!git.branch || git.pushError) return;
+  if (
+    !git.branch ||
+    !git.headSha ||
+    !git.pullRequestTitle ||
+    !git.pullRequestBody ||
+    git.pushError
+  ) {
+    throw new Error("delivery_metadata_invalid");
+  }
   // Resolve the repo the run actually worked on: the trigger recorded it in
   // run.gh (owner/repo). Fall back to the project's oldest repo only for runs
   // that carry no gh ref — never an arbitrary limit(1) pick (nondeterministic,
@@ -829,9 +886,6 @@ async function openRunPullRequest(
       .orderBy(repos.createdAt)
       .limit(1)
   )[0];
-  // From here on, a succeeded run HAS pushed a branch — failing to open its PR
-  // must be loud (artifact_error + platform issue via the caller's catch), not a
-  // silent early return that strands the branch.
   if (!repo?.installationId) throw new Error("run_repo_missing_installation");
   const installation = (
     await db
@@ -846,17 +900,6 @@ async function openRunPullRequest(
       .limit(1)
   )[0];
   if (!installation) throw new Error("run_installation_missing");
-  if (installation.suspendedAt) throw new Error("run_installation_suspended");
-  const config = deps?.config;
-  const factory =
-    deps?.githubClientFactory ??
-    (config?.githubAppId && config.githubAppPrivateKey ? createGithubClientFactory(config) : null);
-  if (!factory) throw new Error("github_app_unconfigured");
-  const client = new FacilityGithubClient(await factory(installation.installationId), {
-    owner: repo.owner,
-    repo: repo.name,
-    defaultBranch: repo.defaultBranch,
-  });
   const issueNumber = numberOrUndefined(gh.issueNumber);
   const mirroredIssue = issueNumber
     ? (
@@ -875,15 +918,246 @@ async function openRunPullRequest(
         repo.name,
       )
     : (git.pullRequestBody as string);
-  const pr = await client.createPullRequest({
-    head: git.branch,
-    base: repo.defaultBranch,
-    title: git.pullRequestTitle as string,
+  return {
+    runId: run.id,
+    orgId: run.orgId,
+    projectId: run.projectId,
+    repoId: repo.id,
+    owner: repo.owner,
+    repoName: repo.name,
+    headBranch: git.branch,
+    expectedHeadSha: git.headSha,
+    baseBranch: repo.defaultBranch,
+    title: git.pullRequestTitle,
     body: pullRequestBody,
-    draft: true,
+    issueNumber,
+    // Use the application clock that will immediately evaluate eligibility.
+    // A PostgreSQL default has microsecond precision, while JavaScript Date is
+    // millisecond-only and can otherwise make a new row briefly look future-dated.
+    nextAttemptAt: new Date(),
+  } satisfies typeof runDeliveries.$inferInsert;
+}
+
+export class RunDeliveryBlockedError extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+    this.name = "RunDeliveryBlockedError";
+  }
+}
+
+export class RunDeliveryLeaseLostError extends Error {
+  constructor() {
+    super("run_delivery_lease_lost");
+    this.name = "RunDeliveryLeaseLostError";
+  }
+}
+
+export async function publishRunDelivery(
+  db: ReturnType<typeof createDb>["db"],
+  delivery: typeof runDeliveries.$inferSelect,
+  deps: FinishRunDeps & { config: AppConfig },
+) {
+  const run = (
+    await db
+      .select()
+      .from(runs)
+      .where(
+        and(
+          eq(runs.id, delivery.runId),
+          eq(runs.orgId, delivery.orgId),
+          eq(runs.projectId, delivery.projectId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (run?.status !== "succeeded") {
+    throw new RunDeliveryBlockedError("run_scope_or_status_mismatch");
+  }
+  const repo = (
+    await db
+      .select()
+      .from(repos)
+      .where(
+        and(
+          eq(repos.id, delivery.repoId),
+          eq(repos.orgId, delivery.orgId),
+          eq(repos.projectId, delivery.projectId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!repo) throw new RunDeliveryBlockedError("repo_scope_mismatch");
+  if (
+    repo.owner !== delivery.owner ||
+    repo.name !== delivery.repoName ||
+    repo.defaultBranch !== delivery.baseBranch
+  ) {
+    throw new RunDeliveryBlockedError("repo_binding_mismatch");
+  }
+  if (!repo.installationId) throw new RunDeliveryBlockedError("run_repo_missing_installation");
+  const installation = (
+    await db
+      .select()
+      .from(githubInstallations)
+      .where(
+        and(
+          eq(githubInstallations.orgId, delivery.orgId),
+          eq(githubInstallations.id, repo.installationId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!installation) throw new RunDeliveryBlockedError("run_installation_missing");
+  if (installation.suspendedAt) {
+    throw new RunDeliveryBlockedError("run_installation_suspended");
+  }
+  const factory =
+    deps.githubClientFactory ??
+    (deps.config.githubAppId && deps.config.githubAppPrivateKey
+      ? createGithubClientFactory(deps.config)
+      : null);
+  if (!factory) throw new Error("github_app_unconfigured");
+  const client = new FacilityGithubClient(await factory(installation.installationId), {
+    owner: repo.owner,
+    repo: repo.name,
+    defaultBranch: repo.defaultBranch,
   });
-  const nextGh = { ...gh, branch: git.branch, pr: { number: pr.number, url: pr.url } };
-  await db.update(runs).set({ gh: nextGh, updatedAt: new Date() }).where(eq(runs.id, run.id));
+  let remoteHead: string;
+  try {
+    remoteHead = await client.getRef(delivery.headBranch);
+  } catch (refError) {
+    if (githubStatus(refError) === 404) {
+      throw new RunDeliveryBlockedError("head_branch_missing");
+    }
+    throw refError;
+  }
+  if (remoteHead !== delivery.expectedHeadSha) {
+    throw new RunDeliveryBlockedError("head_sha_mismatch");
+  }
+
+  const gh = objectOrEmpty(run.gh);
+  const storedPrNumber = numberOrUndefined(objectOrEmpty(gh.pr).number);
+  let pr: { number: number; url: string; headRef: string; headSha: string; baseRef: string };
+  if (storedPrNumber) {
+    pr = await client.getPullRequestDeliveryRef(storedPrNumber);
+    assertDeliveryPullRequest(pr, delivery);
+  } else {
+    const open = await client.listOpenPullRequestsForHead(delivery.headBranch, delivery.baseBranch);
+    const exact = open.find(
+      (candidate) =>
+        candidate.headRef === delivery.headBranch &&
+        candidate.baseRef === delivery.baseBranch &&
+        candidate.headSha === delivery.expectedHeadSha,
+    );
+    const drifted = open.find(
+      (candidate) =>
+        candidate.headRef === delivery.headBranch && candidate.baseRef === delivery.baseBranch,
+    );
+    if (exact) pr = exact;
+    else if (drifted) throw new RunDeliveryBlockedError("existing_pr_head_sha_mismatch");
+    else {
+      try {
+        const created = await client.createPullRequest({
+          head: delivery.headBranch,
+          base: delivery.baseBranch,
+          title: delivery.title,
+          body: delivery.body,
+          draft: true,
+        });
+        pr = await client.getPullRequestDeliveryRef(created.number);
+        assertDeliveryPullRequest(pr, delivery);
+      } catch (createError) {
+        if (githubStatus(createError) !== 422) throw createError;
+        const afterConflict = await client.listOpenPullRequestsForHead(
+          delivery.headBranch,
+          delivery.baseBranch,
+        );
+        const adopted = afterConflict.find(
+          (candidate) =>
+            candidate.headRef === delivery.headBranch &&
+            candidate.baseRef === delivery.baseBranch &&
+            candidate.headSha === delivery.expectedHeadSha,
+        );
+        if (!adopted) throw new RunDeliveryBlockedError("github_pr_validation_failed");
+        pr = adopted;
+      }
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    const fresh = (
+      await tx
+        .select({ gh: runs.gh })
+        .from(runs)
+        .where(
+          and(
+            eq(runs.id, delivery.runId),
+            eq(runs.orgId, delivery.orgId),
+            eq(runs.projectId, delivery.projectId),
+          ),
+        )
+        .for("update")
+        .limit(1)
+    )[0];
+    if (!fresh) throw new RunDeliveryBlockedError("run_scope_mismatch");
+    const finalized = await tx
+      .update(runDeliveries)
+      .set({
+        status: "delivered",
+        prNumber: pr.number,
+        prUrl: pr.url,
+        blockedReason: null,
+        error: null,
+        deliveredAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(runDeliveries.runId, delivery.runId),
+          eq(runDeliveries.orgId, delivery.orgId),
+          eq(runDeliveries.projectId, delivery.projectId),
+          eq(runDeliveries.status, "delivering"),
+          eq(runDeliveries.updatedAt, delivery.updatedAt),
+        ),
+      )
+      .returning({ runId: runDeliveries.runId });
+    if (!finalized.length) throw new RunDeliveryLeaseLostError();
+    await tx
+      .update(runs)
+      .set({
+        gh: {
+          ...objectOrEmpty(fresh.gh),
+          branch: delivery.headBranch,
+          headSha: delivery.expectedHeadSha,
+          pr: { number: pr.number, url: pr.url },
+        },
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(runs.id, delivery.runId),
+          eq(runs.orgId, delivery.orgId),
+          eq(runs.projectId, delivery.projectId),
+        ),
+      );
+    await tx
+      .insert(outcomes)
+      .values({
+        id: newId("evt"),
+        orgId: delivery.orgId,
+        projectId: delivery.projectId,
+        runId: delivery.runId,
+        repo: `${repo.owner}/${repo.name}`,
+        prNumber: pr.number,
+        agentLane: run.engine,
+        openedAt: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [outcomes.orgId, outcomes.repo, outcomes.prNumber],
+        set: { runId: delivery.runId, updatedAt: new Date() },
+      });
+  });
+
   const githubLogin = githubLoginForRun(run);
   let assignmentSkipReason: string | null = null;
   if (githubLogin) {
@@ -900,30 +1174,20 @@ async function openRunPullRequest(
     }
   }
   if (assignmentSkipReason) {
-    await recordGithubAssignmentSkipped(db, run, pr.number, githubLogin, assignmentSkipReason);
+    await recordGithubAssignmentSkipped(
+      db,
+      run,
+      pr.number,
+      githubLogin,
+      assignmentSkipReason,
+    ).catch(() => undefined);
   }
-  await db
-    .insert(outcomes)
-    .values({
-      id: newId("evt"),
-      orgId: run.orgId,
-      projectId: run.projectId,
-      runId: run.id,
-      repo: `${repo.owner}/${repo.name}`,
-      prNumber: pr.number,
-      agentLane: run.engine,
-      openedAt: new Date(),
-    })
-    .onConflictDoUpdate({
-      target: [outcomes.orgId, outcomes.repo, outcomes.prNumber],
-      set: { runId: run.id, updatedAt: new Date() },
-    });
-  if (issueNumber) {
+  if (delivery.issueNumber) {
     // New platform-lane runs have a live progress comment that is updated at
     // the terminal transition. Keep a short fallback for older/manual runs.
     if (!progressCommentId(run.gh)) {
       await client
-        .createIssueComment(issueNumber, `Facility opened PR #${pr.number}: ${pr.url}`)
+        .createIssueComment(delivery.issueNumber, `Facility opened PR #${pr.number}: ${pr.url}`)
         .catch(() => undefined);
     }
   }
@@ -933,22 +1197,61 @@ async function openRunPullRequest(
     actor: { type: "agent", id: run.id },
     action: "github.pr.created",
     target: { type: "run", id: run.id },
-    payload: { runId: run.id, branch: git.branch, pr, draft: true },
+    payload: { runId: run.id, branch: delivery.headBranch, pr, draft: true },
+  }).catch(() => undefined);
+  await requestConfiguredPreview(
+    db,
+    run,
+    repo,
+    pr.number,
+    delivery.expectedHeadSha,
+    client,
+    deps,
+  ).catch(async (error) => {
+    const message = errorMessage(error);
+    await raisePlatformIssue(db, {
+      orgId: run.orgId,
+      projectId: run.projectId,
+      kind: "preview_request_failed",
+      severity: "error",
+      fingerprint: `preview_request_failed:${run.id}`,
+      title: "Failed to request the configured protected preview",
+      bodyMd: `Run ${run.id} delivered PR #${pr.number}, but Facility could not request its SSO-protected preview.\n\n${message}`,
+    }).catch(() => undefined);
   });
-  await requestConfiguredPreview(db, run, repo, pr.number, git.headSha, client, deps).catch(
-    async (error) => {
-      const message = errorMessage(error);
-      await raisePlatformIssue(db, {
-        orgId: run.orgId,
-        projectId: run.projectId,
-        kind: "preview_request_failed",
-        severity: "error",
-        fingerprint: `preview_request_failed:${run.id}`,
-        title: "Failed to request the configured protected preview",
-        bodyMd: `Run ${run.id} delivered PR #${pr.number}, but Facility could not request its SSO-protected preview.\n\n${message}`,
-      });
-    },
-  );
+  await updateGithubRunProgress(db, run.id, "succeeded", deps).catch(() => undefined);
+  await resolvePlatformIssue(
+    db,
+    run.orgId,
+    `pr_delivery_pending:${run.id}`,
+    `Pull request #${pr.number} was delivered successfully`,
+    { projectId: run.projectId },
+  ).catch(() => undefined);
+  return pr;
+}
+
+function assertDeliveryPullRequest(
+  pr: { headRef: string; headSha: string; baseRef: string },
+  delivery: typeof runDeliveries.$inferSelect,
+) {
+  const mismatch = runDeliveryRefMismatch(pr, delivery);
+  if (mismatch) throw new RunDeliveryBlockedError(mismatch);
+}
+
+export function runDeliveryRefMismatch(
+  actual: { headRef: string; headSha: string; baseRef: string },
+  expected: { headBranch: string; expectedHeadSha: string; baseBranch: string },
+) {
+  if (actual.headRef !== expected.headBranch || actual.baseRef !== expected.baseBranch) {
+    return "pull_request_ref_mismatch";
+  }
+  if (actual.headSha !== expected.expectedHeadSha) return "pull_request_head_sha_mismatch";
+  return null;
+}
+
+function githubStatus(error: unknown) {
+  const status = objectOrEmpty(error).status;
+  return typeof status === "number" ? status : undefined;
 }
 
 export function pullRequestBodyForIssue(
@@ -1071,7 +1374,7 @@ async function requestConfiguredPreview(
   });
   if (!created) throw new Error("preview_record_create_failed");
   await deps.enqueue("previews.provision", { previewId: created.id });
-  const previewUrl = `${config.publicUrl.replace(/\/$/, "")}/preview/${created.id}/`;
+  const previewUrl = previewAccessUrl(config, created.projectId, created.id);
   await github
     .createIssueComment(
       prNumber,
@@ -1130,7 +1433,7 @@ const RUN_SAFE_RESOURCES = new Set([
 ]);
 
 /** Intersect an agent def's declared permissions with the run-safe ceiling. */
-export function runSafePermissions(agentPermissions: string[]): string[] {
+export function runSafePermissions(agentPermissions: string[], harnessEnabled = false): string[] {
   const safe = new Set<string>();
   for (const perm of agentPermissions) {
     if (perm === "*") continue; // wildcard is never run-mintable
@@ -1142,9 +1445,10 @@ export function runSafePermissions(agentPermissions: string[]): string[] {
     if (resource === "hitl" && !["read", "write"].includes(action)) continue;
     safe.add(perm);
   }
-  // Back-compat / safety floor: an agent with no run-safe permissions still gets
-  // the harness minimum so a mis-seeded PO/learning agent isn't silently inert.
-  if (safe.size === 0) return [...HARNESS_AGENT_PERMS];
+  // Back-compat floor only for an explicitly harness-enabled agent. A builder
+  // or custom agent with no declared permissions must not silently receive KB
+  // read/write access merely because the project has a KB space.
+  if (safe.size === 0 && harnessEnabled) return [...HARNESS_AGENT_PERMS];
   return [...safe].sort();
 }
 
@@ -1158,8 +1462,9 @@ async function ensureRunAgentRole(
   db: ReturnType<typeof createDb>["db"],
   orgId: string,
   agentPermissions: string[],
+  harnessEnabled: boolean,
 ): Promise<string> {
-  const permissions = runSafePermissions(agentPermissions);
+  const permissions = runSafePermissions(agentPermissions, harnessEnabled);
   const fingerprint = permissions.join(",") || "none";
   const name = `run-agent:${fingerprint}`;
   const existing = (
@@ -1217,7 +1522,7 @@ export async function reconcileSandboxes(
     // the orphaned-key sweep — still runs instead of the whole tick throwing.
     try {
       const docker = new DockerSandboxDriver();
-      for (const container of await docker.listFacilityContainers()) {
+      for (const container of await docker.listFacilityContainers(sandboxNamespace(config))) {
         const run = (await db.select().from(runs).where(eq(runs.id, container.runId)).limit(1))[0];
         const sandbox = readSandbox(run?.sandbox);
         if (!run || terminalStatus(run.status) || sandbox.ref !== container.ref) {
@@ -1385,13 +1690,19 @@ async function buildRunBundle(
       .limit(1)
   )[0];
   const timeoutMin = resourceNumber(profile.resources, "timeout_min", 60);
-  const packageInstallCmd = resolvePackageInstallCmd(profile, repo?.renderAnswers);
-  const provisionCmd = resolveProvisionCmd(profile, repo?.renderAnswers);
+  const { packageInstallCmd, provisionCmd } = resolveProvisioningCommands(
+    profile,
+    repo?.renderAnswers,
+  );
   const checkCmds = resolveCheckCmds(profile, repo?.renderAnswers, project?.settings);
   const provisionSummary = [packageInstallCmd, provisionCmd].filter(Boolean).join(" && ") || null;
   const contract = renderRunContract(rawContract, provisionSummary, checkCmds);
   const githubBranch = typeof runGh.branch === "string" ? runGh.branch : null;
   const checkoutBranch = githubPullRequestMode(run.mode) && githubBranch ? githubBranch : null;
+  const expectedHeadSha = repairExpectedHeadSha(run.mode, run.trigger);
+  if (run.mode.replace(/^codex-/, "").replace(/-/g, "_") === "ci_doctor" && !expectedHeadSha) {
+    throw new Error("ci_doctor_admitted_head_missing");
+  }
   // Point the agent CLIs directly at the gateway service. Anthropic's SDK
   // appends /v1/messages, while Codex appends /responses to a provider base
   // URL that must already include /v1.
@@ -1407,9 +1718,10 @@ async function buildRunBundle(
       ? {
           cloneUrl: `https://github.com/${repo.owner}/${repo.name}.git`,
           branch: checkoutBranch ?? repo.defaultBranch,
+          expectedHeadSha,
           installationTokenRef: repo.installationId,
         }
-      : { cloneUrl: null, branch: null, installationTokenRef: null },
+      : { cloneUrl: null, branch: null, expectedHeadSha: null, installationTokenRef: null },
     packageInstallCmd,
     provisionCmd,
     // Acceptance gates: a sandbox profile's setup.check_cmds is an explicit
@@ -1424,7 +1736,12 @@ async function buildRunBundle(
     },
     scope: objectOrEmpty(run.trigger),
     timeoutMin,
-    harness: harnessFragmentForBundle({ space, config, runId: run.id, mode: run.mode }),
+    harness: harnessFragmentForBundle({
+      space,
+      harnessItemId: agent.harnessItemId,
+      runId: run.id,
+      mode: run.mode,
+    }),
   };
   const resume = await resumeForRun(db, run);
   if (resume) bundle.resume = resume;
@@ -1442,6 +1759,7 @@ async function resumeForRun(db: ReturnType<typeof createDb>["db"], run: RunRow) 
       sessionId: parent.engineSessionId,
       sessionStateFrom: parent.id,
       prompt: resumePrompt(trigger),
+      ...resumeFallbackScope(parent.trigger),
       ...resumeBranch(parent),
     };
   }
@@ -1472,6 +1790,7 @@ async function resumeForRun(db: ReturnType<typeof createDb>["db"], run: RunRow) 
       sessionId: conversation.engineSessionId,
       sessionStateFrom: parent.id,
       prompt: resumePrompt(trigger),
+      ...resumeFallbackScope(parent.trigger),
       ...resumeBranch(parent),
     };
   }
@@ -1503,6 +1822,22 @@ async function loadResumeParent(
 function resumePrompt(trigger: Record<string, unknown>) {
   const message = trigger.message;
   return typeof message === "string" && message.trim() ? message : "Continue where you left off.";
+}
+
+export function boundedResumeFallbackScope(value: unknown): Record<string, unknown> | undefined {
+  const scope = objectOrEmpty(value);
+  try {
+    return Buffer.byteLength(JSON.stringify(scope)) <= RESUME_FALLBACK_SCOPE_MAX_BYTES
+      ? scope
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resumeFallbackScope(value: unknown) {
+  const fallbackScope = boundedResumeFallbackScope(value);
+  return fallbackScope ? { fallbackScope } : {};
 }
 
 function resumeBranch(parent: RunRow) {
@@ -1945,6 +2280,16 @@ function repairPullRequestMode(mode: string) {
   return ["address_review", "ci_doctor"].includes(mode.replace(/^codex-/, "").replace(/-/g, "_"));
 }
 
+export function repairExpectedHeadSha(mode: string, trigger: unknown) {
+  if (!repairPullRequestMode(mode)) return null;
+  const runTrigger = objectOrEmpty(trigger);
+  return (
+    stringValue(objectOrEmpty(runTrigger.ciDoctor).admittedHeadSha) ||
+    stringValue(objectOrEmpty(runTrigger.pullRequest).headSha) ||
+    null
+  );
+}
+
 function readOnlyRepositoryMode(mode: string) {
   return ["architect", "review", "security_sweep"].includes(
     mode.replace(/^codex-/, "").replace(/-/g, "_"),
@@ -1997,7 +2342,7 @@ function nonnegativeInt(value: unknown) {
 
 function receiptCheck(value: unknown) {
   const data = objectOrEmpty(value);
-  const rawStatus = typeof data.status === "string" ? data.status : "unknown";
+  const rawStatus = typeof data.status === "string" ? data.status.trim().toLowerCase() : "unknown";
   const status = ["passed", "failed", "skipped"].includes(rawStatus) ? rawStatus : "unknown";
   const rawName = typeof data.command === "string" ? data.command : data.name;
   return {
@@ -2096,6 +2441,17 @@ export function resolvePackageInstallCmd(profile: { setup: unknown }, renderAnsw
     stringField(renderAnswers, "packageInstallCmd") ??
     stringField(renderAnswers, "package_install_cmd")
   );
+}
+
+export function resolveProvisioningCommands(
+  profile: { setup: unknown },
+  renderAnswers: unknown,
+): { packageInstallCmd: string | null; provisionCmd: string | null } {
+  const depth = provisioningDepth(profile.setup);
+  return {
+    packageInstallCmd: depth === "none" ? null : resolvePackageInstallCmd(profile, renderAnswers),
+    provisionCmd: depth === "full" ? resolveProvisionCmd(profile, renderAnswers) : null,
+  };
 }
 
 // Seed contracts are also used by the repository lane, where these placeholders

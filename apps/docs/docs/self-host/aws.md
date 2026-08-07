@@ -27,6 +27,20 @@ containers, devices, added capabilities, daemon administration, and host binds
 outside `/work` (plus its own restricted socket). The lifecycle runner keeps its
 run token under a different UID, and link-local metadata egress is blocked.
 
+Set a stable `facility_instance_id` in the Terraform variables for every
+long-lived stack. The API and worker use the same value when identifying owned
+sandboxes, so a later PostgreSQL endpoint move does not change that boundary.
+Commercial OIDC deployments must use the instance id registered with the
+identity broker.
+
+Agent dependency downloads use CodeBuild's S3 cache because AWS local caches
+are unavailable for VPC builds. Facility derives an unguessable partition from
+the organization and project, then supplies a separate S3 prefix for that run.
+The CodeBuild project itself defaults to `NO_CACHE`, so an omitted override
+cannot fall back to a cache shared across tenants. Only the pnpm
+content-addressed store and npm `_cacache` are retained; workspaces, credentials,
+browser executables, Supabase state, and Docker data are excluded.
+
 Preview services stay on Fargate because the authenticated Facility proxy needs
 to reach their private port. They use a dedicated task role with no permissions
 and a narrowly scoped execution role for image pull and CloudWatch logs. The API
@@ -71,6 +85,7 @@ export FACILITY_AWS_REGION=us-east-1
 export FACILITY_ENV="prod"
 export FACILITY_IMAGE_TAG="$(git rev-parse --short HEAD)"
 export FACILITY_TF_DIR=infra/terraform/aws
+export FACILITY_RELEASE_MANIFEST="$PWD/.tmp/facility-aws-release-$(git rev-parse HEAD).json"
 ```
 
 ## 1. Write the variables file, with services at zero
@@ -89,32 +104,17 @@ To limit direct GitHub login to active members of one organization, set
 Facility's invitation and App-installation checks without an additional
 organization restriction.
 
-Choose the image source now, before the first apply, so every task definition —
-including the one-shot migrate task — is registered with the image it will
-actually run. Release tags publish images as `:<version>` (for example,
-`v0.3.0` publishes `:0.3.0`). GitHub creates each GHCR package private;
-repository visibility does not make it public. Use the release path only after
-a maintainer has made all six packages public and you have verified that each
-chosen image tag is anonymously pullable. Then add the overrides, replacing
-`<version>` with the release version without its leading `v`:
+The automated AWS release path deliberately deploys only from the ECR
+repositories owned by this module. Leave service `image_overrides` empty and set
+every `container_image_tags` entry to `FACILITY_IMAGE_TAG` before applying.
+Public GHCR artifacts remain useful for other providers, but they are not a
+direct input to `deploy:aws`: an AWS release must first exist in this stack's ECR
+and have the exact manifest produced in Step 3. This preserves an in-account
+digest existence check and one supported AWS release path.
 
-```hcl
-image_overrides = {
-  api     = "ghcr.io/theam/facility/api:<version>"
-  worker  = "ghcr.io/theam/facility/worker:<version>"
-  gateway = "ghcr.io/theam/facility/gateway:<version>"
-  web     = "ghcr.io/theam/facility/web:<version>"
-  mcp     = "ghcr.io/theam/facility/mcp:<version>"
-  runner  = "ghcr.io/theam/facility/runner:<version>"
-}
-```
-
-Release images are `linux/amd64`, matching the module's default
-`task_cpu_architecture`. If any package or tag is absent or private, or if you
-are deploying on Graviton, from a non-release commit, or from a private fork,
-leave `image_overrides` empty and use the build fallback in Step 3. For that
-path, set every `container_image_tags` entry to `FACILITY_IMAGE_TAG` before
-applying.
+`image_overrides` remains an advanced task-template escape hatch. This runbook
+uses it only to pin the privileged runner to the exact ECR digest after the first
+build.
 
 Start with — deliberately — no running services:
 
@@ -135,6 +135,23 @@ before their secrets exist. On the build path it also creates the repositories
 that Step 3 populates. Starting services early produces a crash-loop that is
 slower to diagnose than it is to avoid.
 
+If this state predates API/worker image deduplication, preserve its non-empty
+`worker` ECR repository through a rollback window rather than letting Terraform
+try to destroy it during the upgrade. Before the first apply of this version:
+
+```bash
+terraform -chdir="$FACILITY_TF_DIR" state rm \
+  'aws_ecr_lifecycle_policy.service["worker"]'
+terraform -chdir="$FACILITY_TF_DIR" state rm \
+  'aws_ecr_repository.service["worker"]'
+```
+
+This removes only Terraform ownership; it does not delete the legacy repository
+or its images. Apply and verify worker on the API digest, then delete that orphaned
+repository manually after the rollback window. New stacks create five unique
+artifact repositories. The legacy `container_image_tags.worker` tfvars field stays
+accepted; only an explicit `image_overrides.worker` keeps worker on separate bytes.
+
 Without a public DNS zone, clear the example's fake certificate and hosted-zone
 values as well as enabling the AWS-managed HTTPS origin:
 
@@ -144,9 +161,21 @@ route53_zone_id               = ""
 enable_cloudfront_api_endpoint = true
 ```
 
+The CloudFront validation endpoint and an ALB certificate are mutually
+exclusive because CloudFront uses the certificate-less HTTP listener as its
+origin. Terraform rejects enabling both.
+
 For production, leave the CloudFront validation endpoint disabled, point
 `api_hostname` at the ALB with a real certificate, and set `route53_zone_id`
-only when Terraform should create the alias record.
+only when Terraform should create the alias record. With an ACM certificate,
+the port 80 listener preserves the host, path, and query while redirecting every
+request to HTTPS; it never forwards plaintext traffic to a Facility service.
+Certificate-less testing retains direct HTTP forwarding.
+
+Protected previews also require `preview_hostname` on a separately registered
+site, covered by the same ACM certificate. Set `preview_route53_zone_id` when
+Terraform should create its alias; otherwise create the DNS record externally.
+Production tasks reject a missing, HTTP, or control-plane-hosted preview URL.
 
 No secret values belong in tfvars. The file is gitignored; keep it that way.
 
@@ -157,13 +186,12 @@ terraform -chdir="$FACILITY_TF_DIR" init
 terraform -chdir="$FACILITY_TF_DIR" apply -var-file="${FACILITY_ENV}.tfvars"
 ```
 
-## 3. Build and push images when needed
+## 3. Build and push release images
 
-If you configured and verified public `image_overrides` before the first apply,
-skip this step. The overridden `web` image must have been built with
-`FACILITY_API_URL` set to this deployment's `api_url`; its same-origin proxy
-destination is part of the compiled Next.js build. Otherwise build the images
-into the ECR repositories that the module created.
+This step is required because it creates the exact ECR manifest consumed by the
+release gate. The web image reads `FACILITY_API_URL` at runtime, so the same
+artifact works for every deployment. Set it to the deployment's bare HTTP(S)
+`api_url` origin, with no credentials, path, query, or fragment.
 
 The build script defaults to a playground prefix, so `ECR_PREFIX` is mandatory:
 
@@ -171,8 +199,8 @@ The build script defaults to a playground prefix, so `ECR_PREFIX` is mandatory:
 AWS_REGION="$FACILITY_AWS_REGION" \
 ECR_PREFIX="$(terraform -chdir="$FACILITY_TF_DIR" output -raw ecs_cluster_name)" \
 IMAGE_TAG="$FACILITY_IMAGE_TAG" \
-FACILITY_API_URL="$(terraform -chdir="$FACILITY_TF_DIR" output -raw api_url)" \
 CPU_ARCHITECTURE=X86_64 \
+MANIFEST_PATH="$FACILITY_RELEASE_MANIFEST" \
 ./infra/build-images.sh
 ```
 
@@ -181,9 +209,37 @@ that what is deployed is identifiable from a commit. Deriving `ECR_PREFIX` from
 Terraform keeps the pushed repositories aligned with the selected project and
 environment.
 
-Rebuild and redeploy the `web` image whenever `api_url` changes. Changing only
-the runtime ECS environment variable does not alter the rewrite destination in
-an already-built image.
+The script requires the Docker Buildx plugin and builds all five artifacts in one
+parallel Bake graph. API and worker use the same API digest from one ECR repository;
+the ECS services still keep separate commands, roles, scaling, and deployment
+lifecycles. Repeated runs reuse the local BuildKit cache and do not create an extra
+registry-cache artifact. Terraform provider and state files from the preceding
+apply are excluded from the Docker context.
+
+The script writes a mode-`0600` release manifest at
+`FACILITY_RELEASE_MANIFEST`. It contains the full source SHA, platform, and exact
+ECR digest for all six runtime roles. Deployment never resolves the build tags.
+
+The script rejects a dirty Git worktree so that this SHA identifies the bytes it
+labels. Commit or stash release inputs first; reserve
+`FACILITY_ALLOW_DIRTY_BUILD=1` for explicitly non-production experiments.
+
+The privileged CodeBuild runner is intentionally not changed by the fast deploy
+command. Copy this exact value into `image_overrides.runner` in the tfvars file,
+then apply again with all service counts still at zero:
+
+```bash
+jq -r '.images.runner' "$FACILITY_RELEASE_MANIFEST"
+terraform -chdir="$FACILITY_TF_DIR" apply -var-file="${FACILITY_ENV}.tfvars"
+```
+
+That apply is needed only when runner bytes change. It keeps the sandbox host a
+reviewed Terraform change while ordinary API/web releases remain on the fast
+path. The deploy command fails closed if the CodeBuild project and manifest
+runner digests differ.
+
+When `api_url` changes, update the web task's runtime `FACILITY_API_URL` and
+redeploy the existing image; it does not need to be rebuilt.
 
 ## 4. Populate the secret containers
 
@@ -289,11 +345,22 @@ On later deployments, reuse `secret_master_key` and `facility_oauth_jwks`;
 regenerating them breaks stored ciphertext and outstanding OAuth tokens. Never
 print secret values or commit `.env`, tfvars, state, or private-key files.
 
-## 5. Migrate and seed, before any service starts
+## 5. Stage the digest-pinned release and database gate
 
-The `migrate` task applies migrations **and** seeds the bundled roles, action
-types and default sandbox profile that the next step and `facility doctor`
-depend on. It is idempotent.
+One command now replaces the manual register/run/wait/update sequence. It checks
+that every digest exists in this stack's ECR, waits for each ECR basic or enhanced
+scan to complete, and rejects any image with a HIGH or CRITICAL finding. It then verifies
+architecture and the Terraform-owned runner, registers task revisions from the
+exact Terraform templates, and runs the database deploy task. The deploying AWS
+principal therefore needs `ecr:DescribeImages` and
+`ecr:DescribeImageScanFindings`; only an exit-`0` database gate can advance to the
+five parallel service pointer updates.
+
+The wait budget is 12 minutes by default. Pass `--command-timeout-ms <milliseconds>`
+(up to 3600000) when this stack's measured rollout time needs a larger bound.
+
+For first bootstrap, the pointers are staged while all desired counts are zero.
+The command reports `status=staged`, never a false healthy deployment:
 
 ```bash
 FACILITY_CLUSTER="$(terraform -chdir="$FACILITY_TF_DIR" output -raw ecs_cluster_name)"
@@ -316,17 +383,19 @@ facility_wait_for_task() {
   fi
 }
 
-FACILITY_TASK="$(aws ecs run-task --region "$FACILITY_AWS_REGION" \
-  --cluster "$FACILITY_CLUSTER" --launch-type FARGATE \
-  --task-definition "$FACILITY_MIGRATE_DEF" \
-  --network-configuration "$FACILITY_NETWORK" \
-  --query 'tasks[0].taskArn' --output text)"
-
-facility_wait_for_task "$FACILITY_TASK"
+pnpm deploy:aws \
+  --manifest "$FACILITY_RELEASE_MANIFEST" \
+  --terraform-dir "$FACILITY_TF_DIR" \
+  --allow-zero-desired
 ```
 
-If the helper returns nonzero, do not continue. Read the named CloudWatch log
-group before retrying, and do not start any service.
+If the command returns nonzero, do not continue. Exit `10` is a lock timeout and
+is retried once automatically; `11` identifies a changed applied migration;
+`12` identifies migration SQL that rolled back. No service is changed for any
+database failure. Exit `21` means an unhealthy application rollout was fully
+restored; `22` requires intervention because restoration was incomplete.
+Successful stdout is newline-delimited `facility.aws.deploy` timing and revision
+evidence. Database phase detail remains in `/facility/<environment>/migrate`.
 
 ## 6. Bind the instance to your GitHub organization
 
@@ -367,6 +436,10 @@ account login, and `--github-account-type user`. Then read the log stream:
 `{"ok":true,"created":true,...}` on the first run and `"created":false` on
 any later one. The command takes an advisory lock, is idempotent for the same
 binding, and refuses to modify a database already bound to a different instance.
+In the API image, the `facility` wrapper then reruns the same idempotent database
+deployment entry point before the task exits. That second reconciliation is
+intentional: the first migration task ran before the organization existed, while
+sandbox profiles, action types, and bundled contracts are organization-scoped.
 
 That refusal is also the one failure worth recognising in advance:
 `bootstrap_failed: Database already contains a different Facility instance`
@@ -404,7 +477,12 @@ node packages/cli/bin/facility.mjs doctor --platform
 
 Do not send traffic until it reports no `FAIL`. It verifies migrations, object
 storage, seed essentials, the `sandbox_runner` profile, the production
-`auth_config`, and the audit hash chain.
+`auth_config`, the GitHub App private key, and the audit hash chain. On AWS it
+also makes one read-only CodeBuild call to verify that the configured project is
+reachable through the task role, has a runner image, and keeps its shared cache
+disabled. Transient AWS service errors are warnings; missing configuration,
+credentials, permission, project, image, isolated cache location, or fail-closed
+cache setting fail readiness.
 
 Add provider credentials under **Settings → Providers** rather than enabling
 the gateway's development fallback or placing a provider secret in command-line
@@ -432,6 +510,37 @@ App against it.
 
 ## Repeated deployments and teardown
 
+Build the new manifest, apply Terraform first when configuration or the runner
+digest changed, then run the same deploy command without the bootstrap flag:
+
+```bash
+AWS_REGION="$FACILITY_AWS_REGION" \
+ECR_PREFIX="$(terraform -chdir="$FACILITY_TF_DIR" output -raw ecs_cluster_name)" \
+IMAGE_TAG="$(git rev-parse --short HEAD)" \
+MANIFEST_PATH="$FACILITY_RELEASE_MANIFEST" \
+./infra/build-images.sh
+
+pnpm deploy:aws \
+  --manifest "$FACILITY_RELEASE_MANIFEST" \
+  --terraform-dir "$FACILITY_TF_DIR"
+```
+
+Terraform owns task templates, desired counts, and durable infrastructure. The
+deploy command owns only the live digest-pinned task revisions and service
+pointers. It rejects a concurrent ECS rollout, runs the migration/reconciliation
+gate, updates all five services in parallel, waits for stability, and verifies
+the final task-definition images. New migrations are CI-gated to additive
+expand changes so the prior application remains valid during automatic service
+rollback; destructive contract migrations require a later, explicitly designed
+release procedure.
+
+Run only one deploy command per Facility environment at a time. The command
+rechecks all five pointers after migration and rejects observed drift, but it is
+not a distributed lock across ECS services. Configure any CI wrapper with one
+non-cancelling concurrency group per environment, and never race it from a
+laptop. A Terraform template change also becomes live only after this deploy
+command copies the newly applied template into a digest-pinned revision.
+
 For validation stacks, `target_deregistration_delay_seconds = 15` avoids waiting
 the production default of five minutes for every replaced API target. Keep the
 default `300` in production unless in-flight requests are safely bounded below
@@ -445,7 +554,7 @@ same variables:
 ```bash
 terraform -chdir="$FACILITY_TF_DIR" apply -var-file="${FACILITY_ENV}.tfvars"
 
-# Terraform protects non-empty ECR repositories. Remove all six repositories
+# Terraform protects non-empty ECR repositories. Remove all five repositories
 # and their images explicitly; destroy will reconcile them out of state.
 while IFS= read -r FACILITY_ECR_URL; do
   FACILITY_ECR_REPOSITORY="${FACILITY_ECR_URL#*/}"

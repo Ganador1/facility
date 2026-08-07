@@ -29,6 +29,7 @@ const EnvSchema = z
     PORT: z.coerce.number().int().positive().default(4400),
     PUBLIC_URL: z.string().url().default("http://localhost:4400"),
     WEB_URL: z.string().url().optional(),
+    FACILITY_PREVIEW_URL: OptionalUrl,
     SANDBOX_API_URL: z.string().url().optional(),
     GATEWAY_URL: z.string().url().default("http://localhost:4410"),
     SANDBOX_GATEWAY_URL: z.string().url().optional(),
@@ -62,6 +63,8 @@ const EnvSchema = z
     S3_SECRET_KEY: z.string().optional(),
     S3_BUCKET: z.string().optional(),
     AWS_REGION: z.string().optional(),
+    FACILITY_AWS_CODEBUILD_PROJECT: z.string().trim().min(1).optional(),
+    FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION: z.string().trim().min(1).optional(),
     PACKAGE_REGISTRY_TOKEN: z.string().trim().min(1).optional(),
     GITHUB_APP_ID: z.string().optional(),
     GITHUB_APP_PRIVATE_KEY: z.string().optional(),
@@ -88,6 +91,51 @@ const EnvSchema = z
         path: ["FACILITY_INSECURE_DEV"],
         message: "FACILITY_INSECURE_DEV is refused in production",
       });
+    }
+    if (env.FACILITY_PREVIEW_URL) {
+      const preview = new URL(env.FACILITY_PREVIEW_URL);
+      if (
+        preview.username ||
+        preview.password ||
+        preview.pathname !== "/" ||
+        preview.search ||
+        preview.hash
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["FACILITY_PREVIEW_URL"],
+          message:
+            "FACILITY_PREVIEW_URL must be an origin without credentials, path, query, or fragment",
+        });
+      }
+    }
+    if (env.NODE_ENV === "production") {
+      if (!env.FACILITY_PREVIEW_URL) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["FACILITY_PREVIEW_URL"],
+          message: "FACILITY_PREVIEW_URL is required in production",
+        });
+      } else {
+        const preview = new URL(env.FACILITY_PREVIEW_URL);
+        const controlHosts = [env.PUBLIC_URL, env.WEB_URL ?? env.PUBLIC_URL, env.MCP_PUBLIC_URL]
+          .filter((value): value is string => Boolean(value))
+          .map((value) => new URL(value).hostname);
+        if (preview.protocol !== "https:") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["FACILITY_PREVIEW_URL"],
+            message: "FACILITY_PREVIEW_URL must use HTTPS in production",
+          });
+        }
+        if (controlHosts.includes(preview.hostname)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["FACILITY_PREVIEW_URL"],
+            message: "FACILITY_PREVIEW_URL must use a host separate from other Facility origins",
+          });
+        }
+      }
     }
     if (
       env.AUTH_IDENTITY_PROVIDER === "github" &&
@@ -132,6 +180,7 @@ export function readConfig(env = process.env): AppConfig {
     port: parsed.PORT,
     publicUrl: parsed.PUBLIC_URL,
     webUrl,
+    previewUrl: parsed.FACILITY_PREVIEW_URL?.replace(/\/$/, ""),
     sandboxApiUrl: parsed.SANDBOX_API_URL ?? parsed.PUBLIC_URL,
     sandboxGatewayUrl: parsed.SANDBOX_GATEWAY_URL ?? parsed.GATEWAY_URL,
     gatewayUrl: parsed.GATEWAY_URL,
@@ -158,6 +207,8 @@ export function readConfig(env = process.env): AppConfig {
     s3SecretKey: parsed.S3_SECRET_KEY,
     s3Bucket: parsed.S3_BUCKET,
     awsRegion: parsed.AWS_REGION,
+    awsCodeBuildProject: parsed.FACILITY_AWS_CODEBUILD_PROJECT,
+    awsCodeBuildCacheBaseLocation: parsed.FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION,
     packageRegistryToken: parsed.PACKAGE_REGISTRY_TOKEN,
     githubAppId: parsed.GITHUB_APP_ID,
     githubAppPrivateKey: parsed.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, "\n"),

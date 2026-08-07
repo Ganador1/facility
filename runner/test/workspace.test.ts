@@ -19,6 +19,7 @@ import {
   composedPrompt,
   deliveryReleaseImpact,
   deliveryStatusEvent,
+  emitEngineEventsBestEffort,
   engineEnv,
   exitCode,
   githubRequest,
@@ -35,6 +36,8 @@ import {
   readAgentUpdateMetadata,
   readSecurityReport,
   requiresAgentProgress,
+  resumeRecoveryPrompt,
+  runnerReceiptActivity,
   runPackageInstall,
   semanticDeliveryBranch,
   terminateChild,
@@ -50,7 +53,7 @@ function bundle(overrides: Partial<RunBundle> = {}): RunBundle {
     contract: "Do the work.",
     skills: [],
     engineConfig: {},
-    repo: { cloneUrl: null, branch: null, installationTokenRef: null },
+    repo: { cloneUrl: null, branch: null, expectedHeadSha: null, installationTokenRef: null },
     harness: null,
     packageInstallCmd: null,
     provisionCmd: null,
@@ -198,7 +201,12 @@ describe("workspace preparation", () => {
 
     await prepareWorkspace(
       bundle({
-        repo: { cloneUrl: `file://${source}`, branch: "main", installationTokenRef: null },
+        repo: {
+          cloneUrl: `file://${source}`,
+          branch: "main",
+          expectedHeadSha: null,
+          installationTokenRef: null,
+        },
         skills: [{ name: "team-practice", content: "# Facility catalog practice" }],
       }),
       "virtual-key",
@@ -217,6 +225,50 @@ describe("workspace preparation", () => {
     await expect(
       readFile(join(root, "repo", ".agents", "skills", "team-practice", "SKILL.md"), "utf8"),
     ).resolves.toContain("Facility catalog practice");
+  });
+
+  it("rejects a repair clone whose head differs from deterministic admission", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-runner-stale-head-"));
+    const source = await mkdtemp(join(tmpdir(), "facility-stale-repo-"));
+    await writeFile(join(source, "README.md"), "# Current head\n");
+    execFileSync("git", ["init", "--initial-branch=feature/repair"], { cwd: source });
+    execFileSync("git", ["add", "."], { cwd: source });
+    execFileSync(
+      "git",
+      [
+        "-c",
+        "user.name=Facility Test",
+        "-c",
+        "user.email=test@facility.local",
+        "commit",
+        "-m",
+        "test: seed stale repair fixture",
+      ],
+      { cwd: source },
+    );
+
+    await expect(
+      prepareWorkspace(
+        bundle({
+          mode: "ci_doctor",
+          repo: {
+            cloneUrl: `file://${source}`,
+            branch: "feature/repair",
+            expectedHeadSha: "a".repeat(40),
+            installationTokenRef: null,
+          },
+        }),
+        "virtual-key",
+        {
+          platformKey: null,
+          platformApiUrl: "https://api.test",
+          projectId: "proj_test",
+          repoToken: null,
+        },
+        root,
+      ),
+    ).rejects.toThrow("repository_head_sha_mismatch");
+    await expect(lstat(join(root, "repo", ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("keeps runner release classification aligned with the root policy", async () => {
@@ -356,6 +408,7 @@ describe("workspace preparation", () => {
           repo: {
             cloneUrl: "https://github.com/acme/widget.git",
             branch: "main",
+            expectedHeadSha: null,
             installationTokenRef: "installation",
           },
         }),
@@ -786,7 +839,12 @@ describe("workspace preparation", () => {
 
     await prepareWorkspace(
       bundle({
-        repo: { cloneUrl: origin, branch: "main", installationTokenRef: null },
+        repo: {
+          cloneUrl: origin,
+          branch: "main",
+          expectedHeadSha: null,
+          installationTokenRef: null,
+        },
         skills: [{ name: "validation evidence", content: "# Validation evidence" }],
         harness: {
           files: {
@@ -857,6 +915,74 @@ describe("workspace preparation", () => {
       restoreEnv("OPENAI_API_KEY", previousEnv.openai);
       restoreEnv("FACILITY_PLATFORM_KEY", previousEnv.platform);
     }
+  });
+});
+
+describe("runner receipt activity", () => {
+  it("counts repository changes for delivery and repair modes without runtime artifacts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "facility-receipt-"));
+    const repo = join(root, "repo");
+    try {
+      await mkdir(join(repo, "src"), { recursive: true });
+      await mkdir(join(repo, ".agent-sdlc"), { recursive: true });
+      await mkdir(join(repo, "harness"), { recursive: true });
+      execFileSync("git", ["init", "--initial-branch=main"], { cwd: repo });
+      execFileSync("git", ["config", "user.email", "facility@example.invalid"], { cwd: repo });
+      execFileSync("git", ["config", "user.name", "Facility Test"], { cwd: repo });
+      await writeFile(join(repo, "src", "changed.ts"), "export const value = 1;\n");
+      await writeFile(join(repo, "src", "deleted.ts"), "export const removed = true;\n");
+      await writeFile(join(repo, ".agent-sdlc", "delivery.json"), "{}\n");
+      await writeFile(join(repo, "harness", "SESSION.md"), "# Original\n");
+      execFileSync("git", ["add", "-A"], { cwd: repo });
+      execFileSync("git", ["commit", "-m", "test: initialize receipt fixture"], { cwd: repo });
+      execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repo });
+
+      await writeFile(join(repo, "src", "changed.ts"), "export const value = 2;\n");
+      await rm(join(repo, "src", "deleted.ts"));
+      await writeFile(join(repo, "src", "added.ts"), "export const added = true;\n");
+      await writeFile(join(repo, ".agent-sdlc", "delivery.json"), '{"branch":"feature/task"}\n');
+      await writeFile(join(repo, "harness", "SESSION.md"), "# Injected\n");
+      await mkdir(join(repo, ".claude", "skills", "receipt_skill"), { recursive: true });
+      await writeFile(
+        join(repo, ".claude", "skills", "receipt_skill", "SKILL.md"),
+        "# Injected skill\n",
+      );
+      await mkdir(join(repo, "node_modules", "runtime-only"), { recursive: true });
+      await writeFile(join(repo, "node_modules", "runtime-only", "index.js"), "generated\n");
+
+      const repoBundle = bundle({
+        repo: {
+          cloneUrl: "https://github.com/acme/widget.git",
+          branch: "main",
+          expectedHeadSha: null,
+          installationTokenRef: "installation",
+        },
+        skills: [{ name: "receipt skill", content: "# Receipt skill" }],
+        harness: { files: { "harness/SESSION.md": "# Injected" } },
+      });
+      for (const mode of ["builder", "codex-builder", "address-review", "ci-doctor"]) {
+        await expect(
+          runnerReceiptActivity({ ...repoBundle, mode }, "succeeded", root),
+        ).resolves.toMatchObject({ file_changes: 3 });
+      }
+      await expect(runnerReceiptActivity(repoBundle, "failed", root)).resolves.toMatchObject({
+        file_changes: 3,
+        errors: 1,
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "architect",
+    "review",
+    "security-sweep",
+    "custom",
+  ])("keeps %s receipt file changes at zero", async (mode) => {
+    await expect(runnerReceiptActivity(bundle({ mode }), "succeeded")).resolves.toMatchObject({
+      file_changes: 0,
+    });
   });
 });
 
@@ -1042,6 +1168,38 @@ describe("Claude resume controls", () => {
     ]);
     expect(buildClaudeCodeArgs(runBundle, false)).not.toContain("--resume");
     expect(buildClaudeCodeArgs(runBundle, false)).toContain(composedPrompt(runBundle));
+  });
+
+  it("recovers the governed parent objective when session state is missing", () => {
+    const runBundle = bundle({
+      engine: "claude_code",
+      scope: { type: "resume", message: "Continue the implementation" },
+      resume: {
+        sessionId: "sess_123",
+        sessionStateFrom: "run_parent",
+        prompt: "Continue the implementation",
+        fallbackScope: {
+          approvedPlan: "Deduplicate the helpers described in issue 557",
+          issue: { number: 557 },
+        },
+      },
+    });
+
+    const prompt = resumeRecoveryPrompt(runBundle);
+    expect(prompt).toContain("Deduplicate the helpers described in issue 557");
+    expect(prompt).toContain("prior Claude session state from run run_parent was unavailable");
+    expect(prompt).toContain("## Resume instruction\nContinue the implementation");
+    expect(buildClaudeCodeArgs(runBundle, false)).not.toContain("--resume");
+  });
+
+  it("keeps live engine-event transport failures off the execution boundary", async () => {
+    const event = [{ type: "assistant", data: { text: "work completed" } }];
+    await expect(
+      emitEngineEventsBestEffort(event, async () => {
+        throw new Error("transient network failure");
+      }),
+    ).resolves.toBe(false);
+    await expect(emitEngineEventsBestEffort(event, async () => undefined)).resolves.toBe(true);
   });
 
   it("branches steer and interrupt control messages", async () => {

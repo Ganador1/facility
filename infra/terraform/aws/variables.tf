@@ -43,8 +43,19 @@ variable "mcp_hostname" {
   type        = string
 }
 
+variable "preview_hostname" {
+  description = "Dedicated hostname for untrusted preview application content. Use a separately registered domain, not a sibling of app_hostname."
+  type        = string
+}
+
 variable "route53_zone_id" {
   description = "Optional Route53 hosted zone ID. When set, app/api alias records are created."
+  type        = string
+  default     = ""
+}
+
+variable "preview_route53_zone_id" {
+  description = "Optional Route53 hosted zone ID for preview_hostname. Keep this separate from the control-plane zone."
   type        = string
   default     = ""
 }
@@ -148,7 +159,7 @@ variable "force_destroy_bucket" {
 }
 
 variable "container_image_tags" {
-  description = "Image tags used when image_overrides does not provide a full image URI."
+  description = "Image tags used when image_overrides does not provide a full image URI. The worker tag is retained for tfvars compatibility; the AWS fallback runs worker from the API image."
   type = object({
     api     = string
     worker  = string
@@ -168,7 +179,7 @@ variable "container_image_tags" {
 }
 
 variable "image_overrides" {
-  description = "Optional full image URI overrides keyed by api, worker, gateway, web, runner."
+  description = "Advanced full image template overrides keyed by api, worker, gateway, web, mcp, or runner. The automated AWS release path replaces service images from its ECR-only manifest; use runner to pin the Terraform-owned CodeBuild image."
   type        = map(string)
   default     = {}
 }

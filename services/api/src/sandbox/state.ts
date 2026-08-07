@@ -15,6 +15,7 @@ export type RunBundle = {
   repo: {
     cloneUrl: string | null;
     branch: string | null;
+    expectedHeadSha: string | null;
     installationTokenRef: string | null;
   };
   packageInstallCmd: string | null;
@@ -29,6 +30,7 @@ export type RunBundle = {
     sessionStateFrom: string;
     prompt: string;
     branch?: string;
+    fallbackScope?: Record<string, unknown>;
   };
 };
 

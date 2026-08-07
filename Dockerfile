@@ -4,7 +4,7 @@
 #
 #   docker build --target api     -t facility/api .
 #   docker build --target gateway -t facility/gateway .
-FROM node:22-bookworm-slim AS base
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:$PATH
 RUN apt-get update \
@@ -85,8 +85,18 @@ COPY --from=build-api /app/packages/cli /app/cli
 # Operator commands read as `facility …` inside the image, the way they read
 # everywhere else, instead of as a path into it. A wrapper rather than a symlink
 # because the checked-in bin is not executable, and an ECS command override runs
-# without a shell to resolve it.
-RUN printf '#!/bin/sh\nexec node /app/cli/bin/facility.mjs "$@"\n' > /usr/local/bin/facility \
+# without a shell to resolve it. Bootstrap is followed in the same one-shot task
+# by idempotent reconciliation: the initial deploy necessarily seeded while no
+# organization existed, so its org-scoped profiles/contracts did not exist yet.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'if [ "${1:-}" = "instance" ] && [ "${2:-}" = "bootstrap" ] && [ "${3:-}" != "--help" ]; then' \
+    '  node /app/cli/bin/facility.mjs "$@"' \
+    '  FACILITY_SEED_DEMO=0 exec node /app/node_modules/@facility/db/dist/bin/deploy.js' \
+    'fi' \
+    'exec node /app/cli/bin/facility.mjs "$@"' \
+    > /usr/local/bin/facility \
   && chmod +x /usr/local/bin/facility
 # Regression guard for the deployed operator path. Exec form on purpose: it
 # resolves `facility` the way the container runtime does for an ECS command

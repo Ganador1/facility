@@ -16,6 +16,7 @@ import { and, eq, isNotNull } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import { sandboxNamespace } from "../src/sandbox/cache.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
 import { dispatchRun } from "../src/sandbox/orchestrator.js";
 import type { AppConfig } from "../src/types.js";
@@ -23,6 +24,7 @@ import type { AppConfig } from "../src/types.js";
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_sbx";
 const masterKey = Buffer.alloc(32, 7).toString("base64");
+const dockerNamespace = sandboxNamespace({ databaseUrl, secretMasterKey: masterKey });
 
 describe("sandbox docker e2e", () => {
   if (process.env.FACILITY_E2E_DOCKER !== "1") {
@@ -189,8 +191,29 @@ describe("sandbox docker e2e", () => {
       .orderBy(runEvents.seq);
     const types = events.map((event) => event.type);
     expect(types).toEqual(
-      expect.arrayContaining(["hello", "shell", "assistant", "steer", "check"]),
+      expect.arrayContaining(["hello", "phase", "shell", "assistant", "steer", "check"]),
     );
+    const phaseEvents = events
+      .filter((event) => event.type === "phase")
+      .map((event) => event.data as Record<string, unknown>);
+    expect(phaseEvents.map((event) => event.name)).toEqual([
+      "bootstrap",
+      "workspace",
+      "runner_runtime",
+      "package_install",
+      "provision",
+      "agent",
+      "result_capture",
+      "acceptance",
+      "delivery",
+    ]);
+    for (const event of phaseEvents) {
+      expect(event.status).toMatch(/^(completed|skipped)$/);
+      expect(event.duration_ms).toEqual(expect.any(Number));
+      expect(event.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(event).not.toHaveProperty("command");
+      expect(event).not.toHaveProperty("output");
+    }
     // Revocation trails the terminal status (it runs in the orchestrator's
     // cleanup, not the status transition) — poll instead of racing it.
     await waitFor(async () => {
@@ -264,7 +287,7 @@ async function waitFor(predicate: () => Promise<boolean>, timeoutMs: number) {
 }
 
 async function containersFor(runId: string) {
-  return (await new DockerSandboxDriver().listFacilityContainers()).filter(
+  return (await new DockerSandboxDriver().listFacilityContainers(dockerNamespace)).filter(
     (container) => container.runId === runId,
   );
 }

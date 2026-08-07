@@ -6,6 +6,11 @@
 **/.turbo
 **/.docusaurus
 **/build
+# Terraform providers are hundreds of megabytes after `terraform init`, and
+# state can contain secrets. Neither belongs in any application image context.
+**/.terraform
+**/*.tfstate
+**/*.tfstate.*
 .claude
 .git
 **/.pnpm-store

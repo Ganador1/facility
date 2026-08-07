@@ -1,6 +1,14 @@
 import { App } from "@octokit/app";
 import { Octokit as RestOctokit } from "@octokit/rest";
 import type { AppConfig } from "../types.js";
+import type {
+  AddressReviewPullRequest,
+  AddressReviewSubmittedReview,
+} from "./address-review-policy.js";
+import type { CiDoctorCheck, CiDoctorPullRequest } from "./ci-doctor-policy.js";
+
+const GITHUB_EVIDENCE_PAGE_SIZE = 100;
+const GITHUB_EVIDENCE_MAX_ITEMS = 1_000;
 
 export type Octokit = {
   graphql?: <T>(query: string, variables?: Record<string, unknown>) => Promise<T>;
@@ -48,10 +56,23 @@ export type Octokit = {
       create: (
         args: Record<string, unknown>,
       ) => Promise<{ data: { number: number; html_url: string } }>;
+      list?: (args: Record<string, unknown>) => Promise<{
+        data: Array<{
+          number: number;
+          html_url: string;
+          head?: { ref?: string; sha?: string };
+          base?: { ref?: string };
+        }>;
+      }>;
       update: (args: Record<string, unknown>) => Promise<{ data: unknown }>;
       listReviews?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
       listReviewComments?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
+      getReview?: (args: Record<string, unknown>) => Promise<{ data: unknown }>;
+      listCommentsForReview?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
       listCommits?: (args: Record<string, unknown>) => Promise<{ data: unknown[] }>;
+      listFiles?: (args: Record<string, unknown>) => Promise<{
+        data: Array<{ filename?: string }>;
+      }>;
       get?: (args: Record<string, unknown>) => Promise<{
         data: {
           number: number;
@@ -64,32 +85,33 @@ export type Octokit = {
           merged_at?: string | null;
           html_url: string;
           node_id?: string;
-          head?: { sha?: string };
-          user?: { login?: string } | null;
+          head?: { ref?: string; sha?: string; repo?: { full_name?: string } | null };
+          base?: { ref?: string; repo?: { full_name?: string } | null };
+          user?: { login?: string; type?: string } | null;
         };
       }>;
     };
     actions?: {
-      listJobsForWorkflowRun: (args: Record<string, unknown>) => Promise<{
+      listWorkflowRunsForRepo?: (args: Record<string, unknown>) => Promise<{
         data: {
-          jobs?: Array<{
-            id: number;
-            name: string;
+          workflow_runs?: Array<{ id?: number; name?: string | null }>;
+        };
+      }>;
+    };
+    checks?: {
+      listForRef?: (args: Record<string, unknown>) => Promise<{
+        data: {
+          check_runs?: Array<{
+            id?: number;
+            name?: string | null;
             status?: string | null;
             conclusion?: string | null;
-            html_url?: string | null;
-            steps?: Array<{
-              number?: number;
-              name?: string;
-              status?: string | null;
-              conclusion?: string | null;
-            }>;
+            details_url?: string | null;
+            output?: { title?: string | null; summary?: string | null } | null;
+            app?: { slug?: string | null } | null;
           }>;
         };
       }>;
-      downloadJobLogsForWorkflowRunJob?: (
-        args: Record<string, unknown>,
-      ) => Promise<{ data: unknown }>;
     };
     issues: {
       create: (
@@ -220,6 +242,12 @@ export type GithubPullRequestSnapshot = {
   updatedAt: string | null;
   closedAt: string | null;
   mergedAt: string | null;
+};
+
+export type GithubCiDoctorEvidence = {
+  pullRequest: CiDoctorPullRequest;
+  checks: CiDoctorCheck[];
+  doctorRunIds: number[];
 };
 
 export type GithubPullRequestPage = {
@@ -367,6 +395,65 @@ export class FacilityGithubClient {
     return { number: response.data.number, url: response.data.html_url };
   }
 
+  async listOpenPullRequestsForHead(
+    head: string,
+    base: string,
+  ): Promise<
+    Array<{ number: number; url: string; headRef: string; headSha: string; baseRef: string }>
+  > {
+    if (!this.octokit.rest.pulls.list) {
+      throw new Error("GitHub pull-request lookup is unavailable");
+    }
+    const response = await this.octokit.rest.pulls.list({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      state: "open",
+      head: `${this.repo.owner}:${head}`,
+      base,
+      per_page: 100,
+    });
+    return response.data.flatMap((pull) => {
+      if (!pull.head?.ref || !pull.head.sha || !pull.base?.ref) return [];
+      return [
+        {
+          number: pull.number,
+          url: pull.html_url,
+          headRef: pull.head.ref,
+          headSha: pull.head.sha,
+          baseRef: pull.base.ref,
+        },
+      ];
+    });
+  }
+
+  async getPullRequestDeliveryRef(number: number): Promise<{
+    number: number;
+    url: string;
+    headRef: string;
+    headSha: string;
+    baseRef: string;
+  }> {
+    if (!this.octokit.rest.pulls.get) {
+      throw new Error("GitHub pull-request lookup is unavailable");
+    }
+    const response = await this.octokit.rest.pulls.get({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      pull_number: number,
+    });
+    const { head, base } = response.data;
+    if (!head?.ref || !head.sha || !base?.ref) {
+      throw new Error("GitHub pull-request delivery ref is unavailable");
+    }
+    return {
+      number: response.data.number,
+      url: response.data.html_url,
+      headRef: head.ref,
+      headSha: head.sha,
+      baseRef: base.ref,
+    };
+  }
+
   async markPullRequestReadyForReview(number: number, expectedHeadSha: string): Promise<boolean> {
     if (!this.octokit.rest.pulls.get || !this.octokit.graphql) {
       throw new Error("GitHub draft pull-request transitions are unavailable");
@@ -390,51 +477,88 @@ export class FacilityGithubClient {
     return true;
   }
 
-  async getWorkflowFailureContext(runId: number) {
-    const actions = this.octokit.rest.actions;
-    if (!actions?.listJobsForWorkflowRun) return { jobs: [] };
-    const response = await actions.listJobsForWorkflowRun({
-      owner: this.repo.owner,
-      repo: this.repo.repo,
-      run_id: runId,
-      filter: "latest",
-      per_page: 100,
-    });
-    const failed = (response.data.jobs ?? []).filter((job) =>
-      ["failure", "timed_out", "cancelled", "action_required"].includes(job.conclusion ?? ""),
-    );
-    const jobs = await Promise.all(
-      failed.slice(0, 5).map(async (job) => {
-        let logTail: string | null = null;
-        if (actions.downloadJobLogsForWorkflowRunJob) {
-          try {
-            const logs = await actions.downloadJobLogsForWorkflowRunJob({
-              owner: this.repo.owner,
-              repo: this.repo.repo,
-              job_id: job.id,
-            });
-            logTail = workflowLogText(logs.data).slice(-16_000) || null;
-          } catch {
-            // Failed steps still give the repair agent a deterministic target.
-          }
-        }
-        return {
-          id: job.id,
-          name: job.name,
-          conclusion: job.conclusion ?? "failure",
-          url: job.html_url ?? null,
-          failedSteps: (job.steps ?? [])
-            .filter((step) => step.conclusion && step.conclusion !== "success")
-            .map((step) => ({
-              number: step.number ?? null,
-              name: step.name ?? "unknown step",
-              conclusion: step.conclusion ?? null,
-            })),
-          logTail,
-        };
+  async getCiDoctorEvidence(pullNumber: number, headSha: string): Promise<GithubCiDoctorEvidence> {
+    const { pulls, checks, actions } = this.octokit.rest;
+    const getPull = pulls.get;
+    const listFiles = pulls.listFiles;
+    const listChecks = checks?.listForRef;
+    const listWorkflowRuns = actions?.listWorkflowRunsForRepo;
+    if (!getPull || !listFiles || !listChecks || !listWorkflowRuns) {
+      throw new Error("GitHub CI-doctor evidence endpoints are unavailable");
+    }
+    const [pull, changedFiles, checkRuns, workflowRuns] = await Promise.all([
+      getPull({
+        owner: this.repo.owner,
+        repo: this.repo.repo,
+        pull_number: pullNumber,
       }),
-    );
-    return { jobs };
+      boundedGithubPages("pull-request files", (page) =>
+        listFiles({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          pull_number: pullNumber,
+          per_page: GITHUB_EVIDENCE_PAGE_SIZE,
+          page,
+        }).then((response) => response.data),
+      ),
+      boundedGithubPages("check runs", (page) =>
+        listChecks({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          ref: headSha,
+          filter: "latest",
+          per_page: GITHUB_EVIDENCE_PAGE_SIZE,
+          page,
+        }).then((response) => response.data.check_runs ?? []),
+      ),
+      boundedGithubPages("workflow runs", (page) =>
+        listWorkflowRuns({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          head_sha: headSha,
+          per_page: GITHUB_EVIDENCE_PAGE_SIZE,
+          page,
+        }).then((response) => response.data.workflow_runs ?? []),
+      ),
+    ]);
+    const head = pull.data.head;
+    const base = pull.data.base;
+    const headRepo = head?.repo?.full_name;
+    const baseRepo = base?.repo?.full_name;
+    if (!head?.ref || !head.sha || !headRepo || !base?.ref || !baseRepo || !pull.data.html_url) {
+      throw new Error("GitHub pull-request CI-doctor evidence is incomplete");
+    }
+    return {
+      pullRequest: {
+        number: pull.data.number,
+        state: pull.data.state,
+        draft: pull.data.draft === true,
+        url: pull.data.html_url,
+        head: { ref: head.ref, sha: head.sha, repo: { fullName: headRepo } },
+        base: { ref: base.ref, repo: { fullName: baseRepo } },
+        changedFiles: changedFiles.flatMap((file) =>
+          typeof file.filename === "string" ? [file.filename] : [],
+        ),
+      },
+      checks: checkRuns.map((check) => ({
+        id: check.id,
+        name: check.name ?? null,
+        status: check.status ?? null,
+        conclusion: check.conclusion ?? null,
+        detailsUrl: check.details_url ?? null,
+        output: check.output
+          ? { title: check.output.title ?? null, summary: check.output.summary ?? null }
+          : null,
+        app: check.app ? { slug: check.app.slug ?? null } : null,
+      })),
+      doctorRunIds: workflowRuns.flatMap((run) => {
+        const name = String(run.name ?? "").toLowerCase();
+        return typeof run.id === "number" &&
+          (name.includes("facility-doctor") || name.includes("ci-doctor"))
+          ? [run.id]
+          : [];
+      }),
+    };
   }
 
   async listPullRequestSnapshots(params: {
@@ -738,13 +862,116 @@ export class FacilityGithubClient {
     };
   }
 
-  async userCanWrite(username: string): Promise<boolean> {
-    const response = await this.octokit.rest.repos.getCollaboratorPermissionLevel({
+  async getAddressReviewPullRequest(number: number): Promise<AddressReviewPullRequest> {
+    if (!this.octokit.rest.pulls.get) throw new Error("GitHub PR reads are unavailable");
+    const response = await this.octokit.rest.pulls.get({
       owner: this.repo.owner,
       repo: this.repo.repo,
-      username,
+      pull_number: number,
     });
-    return ["admin", "maintain", "write"].includes(response.data.permission);
+    const pullRequest = response.data;
+    const author = pullRequest.user;
+    const head = pullRequest.head;
+    const base = pullRequest.base;
+    if (
+      !author?.login ||
+      !author.type ||
+      !head?.ref ||
+      !head.sha ||
+      !head.repo?.full_name ||
+      !base?.ref ||
+      !base.repo?.full_name ||
+      !pullRequest.html_url
+    ) {
+      throw new Error("GitHub address-review pull-request evidence is incomplete");
+    }
+    return {
+      number: pullRequest.number,
+      state: pullRequest.state === "open" ? "open" : "closed",
+      draft: pullRequest.draft === true,
+      url: pullRequest.html_url,
+      author: { login: author.login, type: author.type },
+      head: {
+        ref: head.ref,
+        sha: head.sha,
+        repo: head.repo.full_name,
+      },
+      base: { ref: base.ref, repo: base.repo.full_name },
+    };
+  }
+
+  async getAddressReviewSubmittedReview(
+    pullNumber: number,
+    reviewId: number,
+  ): Promise<AddressReviewSubmittedReview> {
+    const getReview = this.octokit.rest.pulls.getReview;
+    const listComments = this.octokit.rest.pulls.listCommentsForReview;
+    if (!getReview || !listComments) {
+      throw new Error("GitHub submitted-review evidence endpoints are unavailable");
+    }
+    const [reviewResponse, comments] = await Promise.all([
+      getReview({
+        owner: this.repo.owner,
+        repo: this.repo.repo,
+        pull_number: pullNumber,
+        review_id: reviewId,
+      }),
+      boundedGithubPages("submitted-review comments", (page) =>
+        listComments({
+          owner: this.repo.owner,
+          repo: this.repo.repo,
+          pull_number: pullNumber,
+          review_id: reviewId,
+          per_page: GITHUB_EVIDENCE_PAGE_SIZE,
+          page,
+        }).then((response) => response.data),
+      ),
+    ]);
+    const review = objectRecord(reviewResponse.data);
+    const author = objectRecord(review.user);
+    const id = Number(review.id);
+    const state = typeof review.state === "string" ? review.state.toLowerCase() : "";
+    const commitSha = typeof review.commit_id === "string" ? review.commit_id : "";
+    const authorLogin = typeof author.login === "string" ? author.login : "";
+    if (!Number.isInteger(id) || id !== reviewId || !state || !commitSha || !authorLogin) {
+      throw new Error("GitHub submitted-review evidence is incomplete");
+    }
+    return {
+      id,
+      state,
+      commitSha,
+      author: authorLogin,
+      body: boundedText(review.body),
+      submittedAt: typeof review.submitted_at === "string" ? review.submitted_at : null,
+      comments: comments.map((value) => {
+        const comment = objectRecord(value);
+        return {
+          id: numberOrNull(comment.id),
+          path: stringOrNull(comment.path),
+          line: numberOrNull(comment.line ?? comment.original_line),
+          body: boundedText(comment.body),
+          diffHunk: boundedText(comment.diff_hunk),
+          url: stringOrNull(comment.html_url),
+        };
+      }),
+    };
+  }
+
+  async userCanWrite(username: string): Promise<boolean> {
+    try {
+      const response = await this.octokit.rest.repos.getCollaboratorPermissionLevel({
+        owner: this.repo.owner,
+        repo: this.repo.repo,
+        username,
+      });
+      return ["admin", "maintain", "write"].includes(response.data.permission);
+    } catch (error) {
+      // GitHub returns 404 for users who are not collaborators. Treat that as
+      // a deterministic denial while preserving rate-limit and service errors
+      // so the durable webhook job can retry them.
+      if (statusCode(error) === 404) return false;
+      throw error;
+    }
   }
 
   private refuseDefaultBranch(ref: string) {
@@ -806,11 +1033,16 @@ export class FacilityGithubClient {
   }
 }
 
-function workflowLogText(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
-  if (value instanceof ArrayBuffer) return Buffer.from(value).toString("utf8");
-  return "";
+async function boundedGithubPages<T>(label: string, load: (page: number) => Promise<T[]>) {
+  const values: T[] = [];
+  for (let page = 1; ; page += 1) {
+    const rows = await load(page);
+    if (values.length >= GITHUB_EVIDENCE_MAX_ITEMS && rows.length > 0) {
+      throw new Error(`GitHub ${label} exceed the governed evidence limit`);
+    }
+    values.push(...rows);
+    if (rows.length < GITHUB_EVIDENCE_PAGE_SIZE) return values;
+  }
 }
 
 type ClosingIssueNode = {
@@ -1016,6 +1248,14 @@ function objectRecord(value: unknown): Record<string, unknown> {
 function boundedText(value: unknown) {
   if (typeof value !== "string") return null;
   return value.length > 2_000 ? `${value.slice(0, 2_000)}…` : value;
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function statusCode(error: unknown) {

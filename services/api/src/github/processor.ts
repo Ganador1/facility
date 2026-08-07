@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { newId } from "@facility/core";
 import {
   agentDefs,
@@ -12,6 +13,7 @@ import {
   previewSandboxes,
   projects,
   repos,
+  runDeliveries,
   runEvents,
   runs,
 } from "@facility/db";
@@ -19,6 +21,8 @@ import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { applyFacilitySignal } from "../integrations/signals.js";
 import type { AppConfig } from "../types.js";
 import { resolvePlatformIssue } from "../watchtower/issues.js";
+import { decideAddressReviewAdmission, isTrustedReviewBot } from "./address-review-policy.js";
+import { type CiDoctorDecision, decideCiDoctorAction } from "./ci-doctor-policy.js";
 import {
   createGithubClientFactory,
   FacilityGithubClient,
@@ -63,17 +67,23 @@ type WebhookPayload = TriggerPayload & {
     body?: string | null;
     draft?: boolean;
     state?: string;
-    user?: { login?: string | null } | null;
+    user?: { login?: string | null; type?: string | null } | null;
     html_url?: string;
     merged?: boolean;
-    base?: { ref?: string };
-    head?: { ref?: string; sha?: string };
+    base?: { ref?: string; repo?: { full_name?: string } | null };
+    head?: { ref?: string; sha?: string; repo?: { full_name?: string } | null };
     created_at?: string;
     updated_at?: string;
     closed_at?: string;
     merged_at?: string;
   };
-  review?: { id?: number; body?: string | null; state?: string; user?: { login?: string } };
+  review?: {
+    id?: number;
+    body?: string | null;
+    state?: string;
+    commit_id?: string;
+    user?: { login?: string };
+  };
   workflow_run?: {
     id?: number;
     name?: string;
@@ -82,16 +92,6 @@ type WebhookPayload = TriggerPayload & {
     head_branch?: string;
     head_sha?: string;
     pull_requests?: Array<{ number?: number; head?: { ref?: string }; base?: { ref?: string } }>;
-    failureContext?: {
-      jobs: Array<{
-        id: number;
-        name: string;
-        conclusion: string;
-        url: string | null;
-        failedSteps: Array<{ number: number | null; name: string; conclusion: string | null }>;
-        logTail: string | null;
-      }>;
-    };
   };
   deployment_status?: {
     id?: number;
@@ -200,6 +200,8 @@ export async function processGithubWebhook(
         payload,
         factory ?? createGithubClientFactory(config),
         enqueue,
+        undefined,
+        config.githubAppSlug,
       );
     } else if (event.eventType === "workflow_run") {
       await processWorkflowRun(
@@ -226,6 +228,14 @@ export async function processGithubWebhook(
     } else if (event.eventType === "check_run" || event.eventType === "check_suite") {
       if (event.eventType === "check_run") {
         await processOperationalSignal(db, event.orgId, "check_run", payload);
+        await processCiDoctorCheckRun(
+          db,
+          event.orgId,
+          event.id,
+          payload,
+          factory ?? createGithubClientFactory(config),
+          enqueue,
+        );
       }
       if (isTerminalPullRequestSignal(event.eventType, payload)) {
         await refreshPullRequestsBestEffort(
@@ -629,9 +639,52 @@ async function processWorkflowRun(
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
 ) {
   if (payload.action !== "completed") return;
-  const workflowRun = payload.workflow_run;
-  if (workflowRun?.conclusion !== "failure") return;
   await processGithubAgentEvent(db, orgId, eventId, "workflow_run", payload, factory, enqueue);
+}
+
+async function processCiDoctorCheckRun(
+  db: FacilityDb,
+  orgId: string,
+  eventId: string,
+  payload: WebhookPayload,
+  factory: GithubClientFactory,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+) {
+  const check = payload.check_run;
+  const branch = check?.check_suite?.head_branch;
+  const headSha = check?.head_sha ?? check?.check_suite?.head_sha;
+  if ((payload.action !== "completed" && check?.status !== "completed") || !branch || !headSha) {
+    return;
+  }
+  const pullRequests = [
+    ...(check.pull_requests ?? []),
+    ...(check.check_suite?.pull_requests ?? []),
+  ];
+  await processGithubAgentEvent(
+    db,
+    orgId,
+    eventId,
+    "workflow_run",
+    {
+      ...payload,
+      action: "completed",
+      workflow_run: {
+        id: check.id,
+        name: check.name,
+        conclusion: check.conclusion ?? undefined,
+        html_url: check.html_url,
+        head_branch: branch,
+        head_sha: headSha,
+        pull_requests: pullRequests.map((pull) => ({
+          number: pull.number,
+          head: { ref: branch },
+        })),
+      },
+    },
+    factory,
+    enqueue,
+    "ci-doctor",
+  );
 }
 
 type GithubAgentEvent = "pull_request" | "pull_request_review" | "workflow_run";
@@ -644,6 +697,8 @@ async function processGithubAgentEvent(
   payload: WebhookPayload,
   factory: GithubClientFactory,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+  preferredAgentName?: string,
+  githubAppSlug?: string,
 ) {
   const owner = payload.repository?.owner?.login;
   const name = payload.repository?.name;
@@ -667,8 +722,10 @@ async function processGithubAgentEvent(
         eq(agentDefs.enabled, true),
       ),
     );
-  const agent = agents.find((candidate) =>
-    githubEventMatches(candidate.triggers, eventType, payload),
+  const agent = agents.find(
+    (candidate) =>
+      (!preferredAgentName || candidate.name === preferredAgentName) &&
+      githubEventMatches(candidate.triggers, eventType, payload),
   );
   if (!agent) return;
   // Event-driven repository agents are opt-in just like slash commands. The
@@ -706,59 +763,190 @@ async function processGithubAgentEvent(
   }
   const pullNumber = pullRequest.number;
   const branch = pullRequest.head;
-  const deliveryContext = branch ? await githubDeliveryContext(db, repo, branch) : null;
-  if (eventType === "workflow_run") {
-    if (!pullNumber || !branch || !pullRequest.headSha || !deliveryContext) return;
-    await auditGithub(db, repo.orgId, "github.workflow.failed", repo, {
-      workflow: payload.workflow_run?.name,
-      url: payload.workflow_run?.html_url,
-      pullNumber,
-      branch,
-      headSha: pullRequest.headSha,
+  let deliveryContext = branch ? await githubDeliveryContext(db, repo, branch) : null;
+  let reviewContext: unknown = payload.review ?? null;
+  let ciDoctorContext: Record<string, unknown> | null = null;
+  const isCiDoctor = agent.name.replace(/-/g, "_") === "ci_doctor";
+  const isAddressReview = agent.name.replace(/-/g, "_") === "address_review";
+  if (eventType === "pull_request_review" && isAddressReview) {
+    const reviewer = payload.review?.user?.login;
+    const sender = payload.sender?.login;
+    if (!pullNumber) return;
+    const client = new FacilityGithubClient(await factory(installationId), {
+      owner,
+      repo: name,
+      defaultBranch: repo.defaultBranch,
     });
-    const eligibility = await ciRepairEligibility(db, repo, branch, pullRequest.headSha);
-    if (!eligibility.allowed) {
-      if (eligibility.reason === "attempts_exhausted") {
-        if (await ciRepairExhaustionReported(db, repo, branch, pullRequest.headSha)) return;
-        const client = new FacilityGithubClient(await factory(installationId), {
-          owner,
-          repo: name,
-          defaultBranch: repo.defaultBranch,
-        });
-        await client
-          .createIssueComment(
-            pullNumber,
-            `Facility stopped automatic CI repair after ${eligibility.maxAttempts} attempts. The draft PR and failing GitHub checks remain available for human iteration.`,
-          )
-          .catch(() => undefined);
-        await auditGithub(db, orgId, "github.ci_repair.exhausted", repo, {
-          pullNumber,
-          branch,
-          headSha: pullRequest.headSha,
-          attempts: eligibility.attempts,
-          maxAttempts: eligibility.maxAttempts,
-        });
-      }
+    const reviewId = payload.review?.id;
+    if (!reviewId) return;
+    const [livePullRequest, liveReview] = await Promise.all([
+      client.getAddressReviewPullRequest(pullNumber),
+      client.getAddressReviewSubmittedReview(pullNumber, reviewId),
+    ]);
+    const delivery = await addressReviewDeliveryLineage(db, repo, {
+      pullNumber: livePullRequest.number,
+      headBranch: livePullRequest.head.ref,
+      headSha: livePullRequest.head.sha,
+    });
+    const installationMatches = await repoInstallationMatches(db, repo, installationId);
+    const reviewerCanWrite = liveReview.author
+      ? isTrustedReviewBot(liveReview.author) || (await client.userCanWrite(liveReview.author))
+      : false;
+    const admission = decideAddressReviewAdmission({
+      repository: `${owner}/${name}`,
+      defaultBranch: repo.defaultBranch,
+      facilityAppSlug: githubAppSlug,
+      event: {
+        pullNumber,
+        headRef: branch,
+        headSha: pullRequest.headSha,
+        reviewId: payload.review?.id,
+        reviewState: payload.review?.state,
+        reviewCommitSha: payload.review?.commit_id,
+        reviewer,
+        sender,
+      },
+      pullRequest: livePullRequest,
+      review: liveReview,
+      reviewerCanWrite,
+      installationMatches,
+      facilityDelivered: Boolean(delivery),
+      deliveryBaseBranch: delivery?.baseBranch,
+      headShaAuthorized: delivery?.headShaAuthorized ?? false,
+    });
+    if (!admission.admitted) {
+      await auditGithub(db, orgId, "github.review_repair.denied", repo, {
+        pullNumber,
+        reason: admission.reason,
+      });
       return;
     }
-    const workflowRun = payload.workflow_run;
-    const workflowRunId = workflowRun?.id;
-    if (workflowRun && workflowRunId) {
-      const client = new FacilityGithubClient(await factory(installationId), {
-        owner,
-        repo: name,
-        defaultBranch: repo.defaultBranch,
+    pullRequest = {
+      number: livePullRequest.number,
+      title: payload.pull_request?.title ?? null,
+      body: payload.pull_request?.body ?? null,
+      url: livePullRequest.url,
+      head: livePullRequest.head.ref,
+      headSha: livePullRequest.head.sha,
+      base: livePullRequest.base.ref,
+    };
+    deliveryContext = await githubDeliveryContext(db, repo, livePullRequest.head.ref);
+    reviewContext = liveReview;
+  } else if (eventType === "workflow_run" && !isCiDoctor) {
+    // Generic workflow agents retain their old failure-only behavior and never
+    // inherit CI-doctor's privileged deterministic repair semantics.
+    if (payload.workflow_run?.conclusion !== "failure") return;
+  } else if (eventType === "workflow_run") {
+    if (!pullNumber || !branch || !pullRequest.headSha || !deliveryContext) return;
+    const client = new FacilityGithubClient(await factory(installationId), {
+      owner,
+      repo: name,
+      defaultBranch: repo.defaultBranch,
+    });
+    // GitHub is the freshness boundary. Missing, malformed, or rate-limited
+    // evidence throws so pg-boss retries the inbound event; it never admits a
+    // repair from the stale mirror or from one workflow's partial failure view.
+    const evidence = await client.getCiDoctorEvidence(pullNumber, pullRequest.headSha);
+    const preliminary = decideCiDoctorAction({
+      eventHeadSha: pullRequest.headSha,
+      eventBranch: branch,
+      pullRequest: evidence.pullRequest,
+      checks: evidence.checks,
+      doctorRunIds: evidence.doctorRunIds,
+      attemptsForFingerprint: 0,
+      attemptsOnBranch: 0,
+      attemptedAtHead: false,
+      triageSeen: false,
+      maxAttemptsForFingerprint: Number.MAX_SAFE_INTEGER,
+      maxAttemptsOnBranch: Number.MAX_SAFE_INTEGER,
+    });
+    if (preliminary.action === "none") return;
+    const history = await ciDoctorHistory(
+      db,
+      repo,
+      branch,
+      pullRequest.headSha,
+      preliminary.failure.fingerprint,
+    );
+    const decision = decideCiDoctorAction({
+      eventHeadSha: pullRequest.headSha,
+      eventBranch: branch,
+      pullRequest: evidence.pullRequest,
+      checks: evidence.checks,
+      doctorRunIds: evidence.doctorRunIds,
+      ...history,
+    });
+    if (decision.action === "triage") {
+      await client.createIssueComment(pullNumber, renderCiDoctorTriage(decision));
+      await auditGithub(db, orgId, "github.ci_repair.triaged", repo, {
+        pullNumber,
+        branch,
+        headSha: pullRequest.headSha,
+        fingerprint: decision.failure.fingerprint,
+        category: decision.failure.category,
+        reason: decision.reason,
       });
-      workflowRun.failureContext = await client
-        .getWorkflowFailureContext(workflowRunId)
-        .catch(() => ({ jobs: [] }));
+      return;
     }
+    if (decision.action === "none") {
+      if (!["fingerprint_limit", "branch_limit"].includes(decision.code)) return;
+      const fingerprint = preliminary.failure.fingerprint;
+      if (
+        await ciRepairNoticeReported(db, repo, "github.ci_repair.exhausted", branch, fingerprint)
+      ) {
+        return;
+      }
+      const limit =
+        decision.code === "fingerprint_limit"
+          ? `${history.maxAttemptsForFingerprint} attempts for this failure`
+          : `${history.maxAttemptsOnBranch} attempts on this branch`;
+      await client.createIssueComment(
+        pullNumber,
+        `Facility stopped automatic CI repair after ${limit}. The draft PR and failing GitHub checks remain available for human iteration.`,
+      );
+      await auditGithub(db, orgId, "github.ci_repair.exhausted", repo, {
+        pullNumber,
+        branch,
+        headSha: pullRequest.headSha,
+        fingerprint,
+        attemptsForFingerprint: history.attemptsForFingerprint,
+        attemptsOnBranch: history.attemptsOnBranch,
+        maxAttemptsForFingerprint: history.maxAttemptsForFingerprint,
+        maxAttemptsOnBranch: history.maxAttemptsOnBranch,
+      });
+      return;
+    }
+    pullRequest = {
+      number: evidence.pullRequest.number,
+      title: null,
+      body: null,
+      url: evidence.pullRequest.url,
+      head: evidence.pullRequest.head.ref,
+      headSha: evidence.pullRequest.head.sha,
+      base: evidence.pullRequest.base.ref,
+    };
+    ciDoctorContext = {
+      schema: "facility.doctor.context.v2",
+      failure: decision.failure,
+      fingerprint: decision.failure.fingerprint,
+      admittedHeadSha: evidence.pullRequest.head.sha,
+      attempt: decision.attemptsForFingerprint + 1,
+      attemptsOnBranch: decision.attemptsOnBranch,
+      maxAttempts: history.maxAttemptsForFingerprint,
+      maxAttemptsOnBranch: history.maxAttemptsOnBranch,
+    };
   }
   const values = {
     id: newId("run"),
     orgId,
     projectId: repo.projectId,
     agentDefId: agent.id,
+    githubDeliveryId: eventId,
+    ...(ciDoctorContext
+      ? {
+          ciRepairKey: ciRepairAdmissionKey(repo.id, branch ?? "", pullRequest.headSha ?? ""),
+        }
+      : {}),
     mode: agent.name.replace(/-/g, "_"),
     engine: agent.engine,
     trigger: {
@@ -768,8 +956,9 @@ async function processGithubAgentEvent(
       delivery: eventId,
       repository: { owner, name, defaultBranch: repo.defaultBranch },
       pullRequest,
-      review: payload.review ?? null,
-      workflowRun: payload.workflow_run ?? null,
+      review: reviewContext,
+      workflowRun: sanitizedWorkflowRun(payload.workflow_run),
+      ...(ciDoctorContext ? { ciDoctor: ciDoctorContext } : {}),
       deliveryContext,
     },
     gh: {
@@ -783,10 +972,7 @@ async function processGithubAgentEvent(
       id: payload.sender?.login ?? `${eventType}-webhook`,
     },
   };
-  const inserted =
-    eventType === "workflow_run"
-      ? await db.insert(runs).values(values).onConflictDoNothing().returning()
-      : await db.insert(runs).values(values).returning();
+  const inserted = await db.insert(runs).values(values).onConflictDoNothing().returning();
   const run = inserted[0];
   if (!run) return;
   await db.insert(runEvents).values({
@@ -851,6 +1037,91 @@ async function processGithubAgentEvent(
     action: payload.action,
   });
   await enqueue?.("runs.dispatch", { runId: run.id, orgId });
+}
+
+async function repoInstallationMatches(
+  db: FacilityDb,
+  repo: typeof repos.$inferSelect,
+  installationId: number,
+) {
+  if (!repo.installationId) return false;
+  const installation = (
+    await db
+      .select({ id: githubInstallations.id })
+      .from(githubInstallations)
+      .where(
+        and(
+          eq(githubInstallations.id, repo.installationId),
+          eq(githubInstallations.orgId, repo.orgId),
+          eq(githubInstallations.installationId, installationId),
+        ),
+      )
+      .limit(1)
+  )[0];
+  return Boolean(installation);
+}
+
+async function addressReviewDeliveryLineage(
+  db: FacilityDb,
+  repo: typeof repos.$inferSelect,
+  input: { pullNumber: number; headBranch: string; headSha: string },
+) {
+  const delivery = (
+    await db
+      .select({
+        runId: runDeliveries.runId,
+        baseBranch: runDeliveries.baseBranch,
+        expectedHeadSha: runDeliveries.expectedHeadSha,
+      })
+      .from(runDeliveries)
+      .innerJoin(
+        runs,
+        and(
+          eq(runs.id, runDeliveries.runId),
+          eq(runs.orgId, runDeliveries.orgId),
+          eq(runs.projectId, runDeliveries.projectId),
+          eq(runs.status, "succeeded"),
+          inArray(runs.mode, ["builder", "codex_builder", "codex-builder"]),
+        ),
+      )
+      .where(
+        and(
+          eq(runDeliveries.orgId, repo.orgId),
+          eq(runDeliveries.projectId, repo.projectId),
+          eq(runDeliveries.repoId, repo.id),
+          eq(runDeliveries.owner, repo.owner),
+          eq(runDeliveries.repoName, repo.name),
+          eq(runDeliveries.status, "delivered"),
+          eq(runDeliveries.prNumber, input.pullNumber),
+          eq(runDeliveries.headBranch, input.headBranch),
+        ),
+      )
+      .limit(1)
+  )[0];
+  if (!delivery) return null;
+  if (delivery.expectedHeadSha === input.headSha) {
+    return { ...delivery, headShaAuthorized: true };
+  }
+  const repair = (
+    await db
+      .select({ id: runs.id })
+      .from(runs)
+      .where(
+        and(
+          eq(runs.orgId, repo.orgId),
+          eq(runs.projectId, repo.projectId),
+          eq(runs.status, "succeeded"),
+          inArray(runs.mode, ["address_review", "address-review", "ci_doctor", "ci-doctor"]),
+          sql`${runs.gh}->>'owner' = ${repo.owner}`,
+          sql`${runs.gh}->>'repo' = ${repo.name}`,
+          sql`${runs.gh}->>'branch' = ${input.headBranch}`,
+          sql`${runs.gh}->>'headSha' = ${input.headSha}`,
+          sql`${runs.trigger}#>>'{deliveryContext,producingRunId}' = ${delivery.runId}`,
+        ),
+      )
+      .limit(1)
+  )[0];
+  return { ...delivery, headShaAuthorized: Boolean(repair) };
 }
 
 async function githubDeliveryContext(
@@ -922,7 +1193,10 @@ async function githubDeliveryContext(
         runId: followUp.id,
         mode: followUp.mode,
         review: objectValue(followUpTrigger.review),
-        workflowRun: objectValue(followUpTrigger.workflowRun),
+        // Historical CI-doctor runs may predate deterministic admission and
+        // contain downloaded job log tails. Never rehydrate those raw logs
+        // into a new model scope.
+        workflowRun: sanitizedStoredWorkflowRun(followUpTrigger.workflowRun),
         receipt: {
           result: typeof followUpReceipt.result === "string" ? followUpReceipt.result : null,
           checks: Array.isArray(followUpReceipt.checks) ? followUpReceipt.checks : [],
@@ -936,11 +1210,12 @@ async function githubDeliveryContext(
   };
 }
 
-async function ciRepairEligibility(
+async function ciDoctorHistory(
   db: FacilityDb,
   repo: typeof repos.$inferSelect,
   branch: string,
   headSha: string,
+  fingerprint: string,
 ) {
   const project = (
     await db
@@ -950,7 +1225,7 @@ async function ciRepairEligibility(
       .limit(1)
   )[0];
   const configured = objectValue(project?.settings).ci_repair_max_attempts;
-  const maxAttempts =
+  const maxAttemptsOnBranch =
     typeof configured === "number" && Number.isInteger(configured) && configured >= 1
       ? Math.min(configured, 10)
       : 3;
@@ -968,33 +1243,46 @@ async function ciRepairEligibility(
         sql`${runs.trigger}->>'event' = 'workflow_run'`,
       ),
     );
-  const duplicate = repairRuns.some(
+  const attemptedAtHead = repairRuns.some(
     (run) => objectValue(objectValue(run.trigger).pullRequest).headSha === headSha,
   );
-  if (duplicate) {
-    return {
-      allowed: false,
-      reason: "duplicate_head_sha" as const,
-      attempts: repairRuns.length,
-      maxAttempts,
-    };
-  }
-  if (repairRuns.length >= maxAttempts) {
-    return {
-      allowed: false,
-      reason: "attempts_exhausted" as const,
-      attempts: repairRuns.length,
-      maxAttempts,
-    };
-  }
-  return { allowed: true, reason: "eligible" as const, attempts: repairRuns.length, maxAttempts };
+  const attemptsForFingerprint = repairRuns.filter(
+    (run) => objectValue(objectValue(run.trigger).ciDoctor).fingerprint === fingerprint,
+  ).length;
+  return {
+    attemptsForFingerprint,
+    attemptsOnBranch: repairRuns.length,
+    attemptedAtHead,
+    triageSeen: await ciRepairNoticeReported(
+      db,
+      repo,
+      "github.ci_repair.triaged",
+      branch,
+      fingerprint,
+    ),
+    maxAttemptsForFingerprint: Math.min(2, maxAttemptsOnBranch),
+    maxAttemptsOnBranch,
+  };
 }
 
-async function ciRepairExhaustionReported(
+function ciRepairAdmissionKey(repoId: string, branch: string, headSha: string) {
+  return createHash("sha256")
+    .update("facility/ci-repair-admission/v1")
+    .update("\0")
+    .update(repoId)
+    .update("\0")
+    .update(branch)
+    .update("\0")
+    .update(headSha)
+    .digest("hex");
+}
+
+async function ciRepairNoticeReported(
   db: FacilityDb,
   repo: typeof repos.$inferSelect,
+  action: "github.ci_repair.exhausted" | "github.ci_repair.triaged",
   branch: string,
-  headSha: string,
+  fingerprint: string,
 ) {
   const reported = (
     await db
@@ -1004,15 +1292,61 @@ async function ciRepairExhaustionReported(
         and(
           eq(auditEvents.orgId, repo.orgId),
           eq(auditEvents.projectId, repo.projectId),
-          eq(auditEvents.action, "github.ci_repair.exhausted"),
+          eq(auditEvents.action, action),
           sql`${auditEvents.target}->>'id' = ${repo.id}`,
           sql`${auditEvents.payload}->>'branch' = ${branch}`,
-          sql`${auditEvents.payload}->>'headSha' = ${headSha}`,
+          sql`${auditEvents.payload}->>'fingerprint' = ${fingerprint}`,
         ),
       )
       .limit(1)
   )[0];
   return Boolean(reported);
+}
+
+function renderCiDoctorTriage(decision: Extract<CiDoctorDecision, { action: "triage" }>) {
+  return [
+    "### Facility CI Doctor triage",
+    "",
+    `- Failing check: ${decision.failure.check}`,
+    `- Category: ${decision.failure.category.replaceAll("_", " ")}`,
+    `- Reason: ${decision.reason}.`,
+    "",
+    "A human must review this failure; no repair agent was started.",
+  ].join("\n");
+}
+
+function sanitizedWorkflowRun(workflowRun: WebhookPayload["workflow_run"]) {
+  return sanitizedStoredWorkflowRun(workflowRun);
+}
+
+function sanitizedStoredWorkflowRun(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const workflowRun = value as Record<string, unknown>;
+  return {
+    id: typeof workflowRun.id === "number" ? workflowRun.id : null,
+    name: String(workflowRun.name ?? "unknown")
+      .replace(/[\r\n\t]+/g, " ")
+      .slice(0, 160),
+    conclusion: typeof workflowRun.conclusion === "string" ? workflowRun.conclusion : null,
+    url:
+      typeof workflowRun.html_url === "string"
+        ? workflowRun.html_url
+        : typeof workflowRun.url === "string"
+          ? workflowRun.url
+          : null,
+    headBranch:
+      typeof workflowRun.head_branch === "string"
+        ? workflowRun.head_branch
+        : typeof workflowRun.headBranch === "string"
+          ? workflowRun.headBranch
+          : null,
+    headSha:
+      typeof workflowRun.head_sha === "string"
+        ? workflowRun.head_sha
+        : typeof workflowRun.headSha === "string"
+          ? workflowRun.headSha
+          : null,
+  };
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -1035,7 +1369,7 @@ export function githubEventMatches(
     return (
       eventType === "pull_request" &&
       trigger.action === "ready_for_review" &&
-      payload.action === "opened" &&
+      ["opened", "reopened", "synchronize"].includes(payload.action ?? "") &&
       payload.pull_request?.draft !== true
     );
   });

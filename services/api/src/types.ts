@@ -20,6 +20,10 @@ export type AppConfig = {
   port: number;
   publicUrl: string;
   webUrl?: string;
+  // Browser origin used only for proxied preview application content. In
+  // production this must be HTTPS on a host separate from every control-plane
+  // hostname so untrusted preview JavaScript never receives Facility cookies.
+  previewUrl?: string;
   // URLs a sandbox uses to reach back — distinct from publicUrl because a
   // container cannot resolve the host's "localhost". Default to the public
   // URLs; override (e.g. host.docker.internal) for the local docker driver.
@@ -53,6 +57,8 @@ export type AppConfig = {
   s3SecretKey?: string;
   s3Bucket?: string;
   awsRegion?: string;
+  awsCodeBuildProject?: string;
+  awsCodeBuildCacheBaseLocation?: string;
   packageRegistryToken?: string;
   githubAppId?: string;
   githubAppPrivateKey?: string;

@@ -499,10 +499,14 @@ export async function registerProvidersBudgetsSpendRoutes(
         to?: string;
         groupBy?: "model" | "agent" | "task" | "day";
       } & PageQueryValue;
-      const toDate = q.to ? new Date(q.to) : new Date();
-      const fromDate = q.from ? new Date(q.from) : new Date(toDate.getTime() - 30 * 86_400_000);
-      const from = fromDate.toISOString();
-      const to = toDate.toISOString();
+      // Normalize explicit values exactly as before; only implicit bounds move
+      // to the database clock.
+      const from = q.from ? new Date(q.from).toISOString() : null;
+      const to = q.to ? new Date(q.to).toISOString() : null;
+      // Defaults must use the database clock because created_at defaults do.
+      // PostgreSQL keeps microseconds that JavaScript Date would truncate.
+      const upperBound = sql`coalesce(${to}::timestamptz, current_timestamp)`;
+      const lowerBound = sql`coalesce(${from}::timestamptz, ${upperBound} - interval '720 hours')`;
       await assertProjectInOrg(p, q.projectId);
       const projectId = p.projectId ?? q.projectId;
       const groupExpr =
@@ -515,10 +519,10 @@ export async function registerProvidersBudgetsSpendRoutes(
               : sql`model`;
       const result = projectId
         ? await db.execute(
-            sql`SELECT ${groupExpr} AS bucket, floor(coalesce(sum(cost_cents), 0) + 0.5)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND project_id = ${projectId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1 LIMIT ${q.limit} OFFSET ${q.offset}`,
+            sql`SELECT ${groupExpr} AS bucket, floor(coalesce(sum(cost_cents), 0) + 0.5)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND project_id = ${projectId} AND created_at >= ${lowerBound} AND created_at <= ${upperBound} GROUP BY 1 ORDER BY 1 LIMIT ${q.limit} OFFSET ${q.offset}`,
           )
         : await db.execute(
-            sql`SELECT ${groupExpr} AS bucket, floor(coalesce(sum(cost_cents), 0) + 0.5)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND created_at >= ${from}::timestamptz AND created_at <= ${to}::timestamptz GROUP BY 1 ORDER BY 1 LIMIT ${q.limit} OFFSET ${q.offset}`,
+            sql`SELECT ${groupExpr} AS bucket, floor(coalesce(sum(cost_cents), 0) + 0.5)::int AS cost_cents FROM llm_requests WHERE org_id = ${p.orgId} AND created_at >= ${lowerBound} AND created_at <= ${upperBound} GROUP BY 1 ORDER BY 1 LIMIT ${q.limit} OFFSET ${q.offset}`,
           );
       return Array.from(result as Iterable<Record<string, unknown>>);
     },

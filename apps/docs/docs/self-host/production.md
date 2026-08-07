@@ -13,7 +13,7 @@ with compose.
 ## Requirements
 
 - **Postgres 16+** (managed recommended). One database; the platform runs its
-  own migrations at deploy (`@facility/db migrate`). The gateway holds a
+  own schema and system-data reconciliation at deploy (`@facility/db deploy`). The gateway holds a
   `LISTEN` connection for cache invalidation — the api `NOTIFY`s
   `facility_key_revoked` (revoked keys) and `facility_provider_changed` (rotated
   provider credentials) so the gateway evicts immediately instead of waiting out
@@ -39,30 +39,36 @@ with compose.
    (`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`), or ECS/container
    credentials. For non-AWS S3-compatible stores, also set `S3_ENDPOINT` and
    use static `S3_ACCESS_KEY`/`S3_SECRET_KEY` unless that runtime supplies
-   AWS-compatible credentials. The development compose stack auto-creates its
-   MinIO bucket; external stores should be provisioned by your
-   infrastructure.
+   AWS-compatible credentials. The compose stack only runs the bundled MinIO and
+   auto-creates its bucket under the `local-storage` profile; a production
+   deployment points `S3_ENDPOINT` at an externally provisioned store and omits
+   the profile, so the API and gateway neither run MinIO nor wait on bucket
+   creation.
 3. Load secrets into the runtime: `SECRET_MASTER_KEY`, identity/OAuth variables, and
    the GitHub App variables when repo automation is enabled.
-4. Run migrations once, before app traffic:
+4. Run the database deploy gate once, before app traffic. Set
+   `FACILITY_RUNNER_IMAGE` first (build/push the runner image from `runner/`) so
+   the reconciled default profile can run platform-lane agents. The command
+   holds one bounded advisory-lock session across migrations and bundled roles,
+   action types, registry essentials, and sandbox profiles:
 
    ```bash
-   pnpm --filter @facility/db migrate
+   FACILITY_RUNNER_IMAGE=<your-runner-image> FACILITY_SEED_DEMO=0 pnpm --filter @facility/db deploy
    ```
 
-5. Seed bundled roles, action types, registry essentials, and the default
-   sandbox profile. Set `FACILITY_RUNNER_IMAGE` first (build/push the runner
-   image from `runner/`) so the default profile can run platform-lane agents —
-   otherwise `facility doctor` flags `sandbox_runner` and platform-lane runs
-   never start:
+   In a production image the equivalent entry point is
+   `node node_modules/@facility/db/dist/bin/deploy.js`. The task emits JSON phase
+   timings. Exit `10` means lock timeout and is safe to retry; `11` means an
+   already-applied migration changed and requires operator correction; `12`
+   means a migration failed and its transaction was rolled back. Existing
+   filename-only ledgers adopt SHA-256 checksums on their first upgraded run.
+   Checksums cover the migration's exact UTF-8 bytes, including whitespace and
+   line endings; correct drift by restoring the shipped file, never by editing
+   the ledger.
 
-   ```bash
-   FACILITY_RUNNER_IMAGE=<your-runner-image> FACILITY_SEED_DEMO=0 pnpm --filter @facility/db seed
-   ```
-
-6. Start or roll the services in this order: `api`, `worker`, `gateway`, `mcp`,
+5. Start or roll the services in this order: `api`, `worker`, `gateway`, `mcp`,
    then optional `web`.
-7. Bootstrap the first owner and issue an API key. On an empty installation,
+6. Bootstrap the first owner and issue an API key. On an empty installation,
    run `facility instance bootstrap`, then open `https://<web-host>/api/auth/login`; the configured GitHub user
    signs into the organization already created by bootstrap. With the optional web
    app, issue the key in settings. Without it, reopen

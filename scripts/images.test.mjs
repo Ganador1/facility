@@ -8,6 +8,7 @@ import {
   loadDigests,
   parseTagsJson,
   publicationPlan,
+  recordBakeDigests,
   recordDigest,
   validateRepositoryIdentity,
 } from "./images.mjs";
@@ -111,6 +112,44 @@ test("digest manifests require the complete, expected five-image set", (t) => {
   assert.throws(() => loadDigests(directory), /names worker, expected api/);
 });
 
+test("one Bake result records an exact, internally consistent digest set", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "facility-bake-digests-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const metadata = Object.fromEntries(
+    BUILD_IMAGES.map((image, index) => {
+      const imageDigest = `sha256:${String(index + 1).repeat(64)}`;
+      return [
+        image,
+        {
+          "containerimage.digest": imageDigest,
+          "containerimage.descriptor": { digest: imageDigest },
+        },
+      ];
+    }),
+  );
+
+  assert.equal(recordBakeDigests({ metadata, directory }).length, BUILD_IMAGES.length);
+  assert.deepEqual(
+    [...loadDigests(directory)],
+    BUILD_IMAGES.map((image, index) => [image, `sha256:${String(index + 1).repeat(64)}`]),
+  );
+  assert.throws(
+    () => recordBakeDigests({ metadata: { ...metadata, unexpected: {} }, directory }),
+    /expected api,gateway,mcp,runner,web/,
+  );
+  assert.throws(
+    () =>
+      recordBakeDigests({
+        metadata: {
+          ...metadata,
+          api: { ...metadata.api, "containerimage.descriptor": { digest } },
+        },
+        directory,
+      }),
+    /descriptor for api does not match/,
+  );
+});
+
 test("CI gates release images and the reusable publisher stages digests before promotion", () => {
   assert.match(imagesWorkflow, /on:\n {2}workflow_call:\n {4}inputs:\n {6}version:/);
   assert.match(imagesWorkflow, /\n {2}workflow_dispatch:\n/);
@@ -128,21 +167,41 @@ test("CI gates release images and the reusable publisher stages digests before p
   );
   assert.ok(
     buildJob.indexOf("Stamp the decided version") <
-      buildJob.indexOf("Build and push the addressable digest"),
+      buildJob.indexOf("Build and push the addressable image set"),
     "the isolated build checkout must be stamped before Docker consumes it",
   );
-  assert.match(imagesWorkflow, /push-by-digest=true,name-canonical=true,push=true/);
-  assert.match(
-    buildJob,
-    /- image: web[\s\S]*?build_args: FACILITY_API_URL=https:\/\/api\.facility\.tam-os\.com/,
-    "the release web image must receive the API URL compiled into its rewrites",
+  assert.doesNotMatch(buildJob, /strategy:|matrix:/);
+  assert.ok(
+    buildJob.indexOf("crazy-max/ghaction-github-runtime@") < buildJob.indexOf("docker buildx bake"),
+    "raw Buildx must receive the GitHub Actions cache runtime before Bake runs",
   );
-  assert.match(
+  assert.match(buildJob, /docker buildx bake/);
+  assert.match(buildJob, /--file docker-bake\.publish\.hcl/);
+  assert.match(buildJob, /--metadata-file "\$metadata"/);
+  assert.match(buildJob, /node scripts\/images\.mjs record-bake-digests/);
+  assert.match(buildJob, /facility-image-digests-\$\{\{ github\.sha \}\}/);
+  assert.doesNotMatch(
     buildJob,
-    /build-args: \$\{\{ matrix\.build_args \}\}/,
-    "the matrix build arguments must reach docker/build-push-action",
+    /build[_-]args|FACILITY_API_URL=/,
+    "the release web image must remain portable across runtime API origins",
   );
-  assert.match(imagesWorkflow, /promote:\n {4}needs: \[plan, build\]/);
+  const scanJob = imagesWorkflow.split("\n  promote:")[0].split("\n  scan:")[1];
+  assert.ok(scanJob, "images workflow must scan the addressable digest set");
+  assert.match(scanJob, /needs: build/);
+  assert.doesNotMatch(scanJob, /anchore\/scan-action|raw\.githubusercontent\.com/);
+  assert.match(scanJob, /GRYPE_VERSION: 0\.110\.0/);
+  assert.match(scanJob, /GRYPE_SHA256: [0-9a-f]{64}/);
+  assert.match(scanJob, /sha256sum --check --strict/);
+  assert.match(scanJob, /"\$GRYPE" db update/);
+  assert.match(scanJob, /GRYPE_DB_AUTO_UPDATE: "false"/);
+  assert.match(scanJob, /GRYPE_CHECK_FOR_APP_UPDATE: "false"/);
+  assert.match(scanJob, /for image in api gateway mcp web runner/);
+  assert.match(scanJob, /registry:\$IMAGE_PREFIX\/\$image@\$digest/);
+  assert.match(scanJob, /--fail-on high --only-fixed/);
+  assert.match(scanJob, /scan_failed=1/);
+  assert.match(scanJob, /exit "\$scan_failed"/);
+  assert.doesNotMatch(scanJob, /matrix:/);
+  assert.match(imagesWorkflow, /promote:\n {4}needs: \[plan, build, scan\]/);
   assert.match(imagesWorkflow, /node scripts\/images\.mjs promote/);
   assert.match(
     ciWorkflow,

@@ -380,7 +380,28 @@ test("init installs the method end to end", async (t) => {
     "security sweep must upload its hidden audit context",
   );
   assert.ok(doctorWf.includes("- facility-review"), "doctor watch list must include facility-review");
+  assert.ok(
+    !doctorWf.includes("workflow_run.conclusion == 'failure'"),
+    "doctor must evaluate the complete rollup after every watched completion",
+  );
+  assert.ok(
+    doctorWf.includes("ref: ${{ needs.resolve.outputs.head_sha }}"),
+    "doctor must check out the exact approved head SHA",
+  );
+  assert.ok(
+    doctorWf.includes("FACILITY_BOT_LOGIN: ${{ vars.FACILITY_BOT_LOGIN }}"),
+    "doctor must authorize only the configured Facility App bot",
+  );
+  assert.ok(
+    doctorWf.includes('test "$(git rev-parse HEAD)" = "$HEAD_SHA"'),
+    "doctor must verify the exact checkout before attaching the PR branch",
+  );
   assert.ok(!/\{\{[A-Z0-9_]+\}\}/.test(doctorWf), "unrendered placeholder in doctor workflow");
+  const doctorContract = readFileSync(join(dir, ".github/facility/doctor.md"), "utf8");
+  assert.ok(
+    doctorContract.includes("`Scope` JSON"),
+    "doctor contract must support the platform lane's injected scope",
+  );
 
   // Manifest reflects the choices.
   const manifest = JSON.parse(readFileSync(join(dir, ".facility.json"), "utf8"));

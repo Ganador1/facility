@@ -11,13 +11,20 @@ Topology:
 - `app_hostname` routes to the `web` ECS service through the public ALB.
 - `api_hostname` routes to the `api` ECS service through the public ALB.
 - `mcp_hostname` routes to the audience-bound MCP resource server.
+- `preview_hostname` routes only protected preview content to the existing API
+  tasks. Use a separately registered domain and certificate SAN, not a sibling
+  of the app/API hostnames; set `preview_route53_zone_id` when Terraform should
+  create that zone's alias record.
 - `gateway` has no public ALB route. It is reachable only inside the VPC through
   Cloud Map at the `gateway_internal_url` output.
 - Postgres accepts `5432` only from the ECS service security group.
 - CodeBuild sandboxes run in private subnets and can reach the internal gateway.
   Their least-privilege service role has no Secrets Manager access. Runs always
   use the runner image fixed on the CodeBuild project; database-backed sandbox
-  profiles cannot override that AWS-trusted image.
+  profiles cannot override that AWS-trusted image. Each Facility project gets
+  an unguessable S3 prefix for its pnpm/npm dependency cache; the CodeBuild
+  project's default is `NO_CACHE`, so a missing run override cannot share cache
+  content across tenants.
 - Private preview services use per-image Fargate task definitions, a no-permission
   task role, and a dedicated execution role. Only Facility services can reach
   their private ports through the sandbox security group.
@@ -34,15 +41,22 @@ Edit `playground.tfvars`:
 
 - Set `aws_region` and change the copied `environment = "playground"` value if
   this is not a playground deployment; a filename does not set the variable.
-- Set `app_hostname`, `api_hostname`, and `mcp_hostname`.
+- Set `app_hostname`, `api_hostname`, `mcp_hostname`, and the separately
+  registered `preview_hostname`.
 - Set `acm_certificate_arn` for HTTPS, or leave it empty for HTTP-only testing.
+  When set, the ALB redirects every port 80 request to the same host, path, and
+  query on HTTPS; only certificate-less deployments forward HTTP to services.
 - Set `route53_zone_id` if Terraform should create alias records.
 - Set `enable_cloudfront_api_endpoint = true` to get an AWS-managed HTTPS API
   and webhook URL without a public DNS zone. This is intended for validation;
-  use your own hostname and ACM certificate for production.
-- Choose the image source below before the first apply.
+  it requires `acm_certificate_arn = ""`. Use your own hostname and ACM
+  certificate for production; Terraform rejects enabling both modes.
+- Use the module-owned ECR release path below.
 - Select direct `github` authentication for self-hosting or `oidc` for a SaaS
   broker. MCP OAuth is always issued by the dedicated Facility instance.
+- Set a stable `facility_instance_id` so API and worker retain one sandbox
+  ownership namespace across PostgreSQL endpoint moves. For commercial OIDC it
+  must match the instance id registered with the identity broker.
 - Set `github_oauth_allowed_organization` to a GitHub organization login when
   direct login must require active membership; leave it empty for no additional
   organization restriction.
@@ -50,30 +64,17 @@ Edit `playground.tfvars`:
   private package token; leave it false for public-package repositories.
 - Tune `envelope_retention_days` for your data-retention policy.
 
-Release tags publish images as `:<version>` (for example, `v0.3.0` publishes
-`:0.3.0`). GitHub creates each GHCR package private; repository visibility does
-not make it public. Use the release path only after a maintainer has made all
-six packages public and you have verified that each chosen image tag is
-anonymously pullable. Then add the overrides before the first apply, replacing
-`<version>` with the release version without its leading `v`:
+The automated AWS release path deliberately deploys only from the ECR
+repositories owned by this module. Leave service `image_overrides` empty and set
+every `container_image_tags` entry to the commit tag that Step 3 will push before
+the first apply. Public GHCR artifacts remain useful for other providers, but
+they are not a direct input to `deploy:aws`: an AWS release must first exist in
+this stack's ECR and have the exact manifest produced in Step 3. This preserves
+an in-account digest existence check and one supported AWS release path.
 
-```hcl
-image_overrides = {
-  api     = "ghcr.io/theam/facility/api:<version>"
-  worker  = "ghcr.io/theam/facility/worker:<version>"
-  gateway = "ghcr.io/theam/facility/gateway:<version>"
-  web     = "ghcr.io/theam/facility/web:<version>"
-  mcp     = "ghcr.io/theam/facility/mcp:<version>"
-  runner  = "ghcr.io/theam/facility/runner:<version>"
-}
-```
-
-Release images are `linux/amd64`, matching the module's default
-`task_cpu_architecture`. If any package or tag is absent or private, or if you
-are deploying on Graviton, from a non-release commit, or from a private fork,
-leave `image_overrides` empty and use the build fallback in Step 3. On that
-path, set every `container_image_tags` entry to the commit tag you will push
-before the first apply.
+`image_overrides` remains an advanced task-template escape hatch. The documented
+flow uses it only to pin the privileged runner to the exact ECR digest after the
+first build.
 
 For the first apply, set every service count to zero. Secret values do not exist
 yet, and on the build path neither do the images. `mcp_desired_count` otherwise
@@ -103,48 +104,91 @@ terraform apply -var-file=playground.tfvars
 Record these outputs:
 
 - `ecr_repository_urls`
+- `aws_region`
+- `task_cpu_architecture`
 - `secret_arns`
 - `rds_endpoint`
 - `rds_master_user_secret_arn`
 - `ecs_cluster_name`
 - `codebuild_runner_project_name`
 - `migrate_task_definition_arn`
+- `service_task_definition_arns`
 - `private_subnet_ids`
 - `service_security_group_id`
 
-## 3. Build and push images when needed
+## 3. Build and push release images
 
-If you configured and verified public `image_overrides` before the first apply,
-skip this step. The overridden `web` image must have been built with
-`FACILITY_API_URL` set to this deployment's `api_url`; unlike the other images,
-its same-origin proxy destination is compiled into the Next.js build. Otherwise,
-from the module directory used above, build from the repository root and return
-afterward:
+This step is required because it creates the exact ECR manifest consumed by the
+release gate. The web image reads `FACILITY_API_URL` when it runs, so one artifact
+works for every deployment. Set it to a bare HTTP(S) origin with no credentials,
+path, query, or fragment. From the module directory used above, build from the
+repository root and return afterward:
 
 ```bash
 cd ../../..
 AWS_REGION=us-east-1 \
 ECR_PREFIX="$(terraform -chdir=infra/terraform/aws output -raw ecs_cluster_name)" \
 IMAGE_TAG=$(git rev-parse --short HEAD) \
-FACILITY_API_URL="$(terraform -chdir=infra/terraform/aws output -raw api_url)" \
 ./infra/build-images.sh
 cd infra/terraform/aws
 ```
 
-The script expects Dockerfiles for `api`, `worker`, `gateway`, `web`, `mcp`, and
-`runner`. Override paths or image URIs with environment variables documented in
-the script when a service image is built elsewhere. It builds `linux/amd64` by
-default, matching Terraform's default `task_cpu_architecture = "X86_64"`. To
-deploy on Graviton, set `CPU_ARCHITECTURE=ARM64` while building and set
-`task_cpu_architecture = "ARM64"` in Terraform. The build exits early if an
-explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
+The script requires the Docker Buildx plugin and runs one Bake graph. The five
+artifacts build concurrently. API and worker run the same API digest with
+different commands, so the AWS fallback stores and scans those bytes once in the
+`api` repository. API, gateway, and MCP also share the root Dockerfile dependency
+graph. No registry-cache artifact is created: repeated builds reuse the operator's
+local BuildKit cache, while ECR continues to scan only deployable image pushes.
+The repository Docker context excludes Terraform providers and state created by
+the preceding apply.
 
-Rebuild and redeploy the `web` image whenever `api_url` changes. Supplying only
-the runtime ECS environment variable does not update Next.js rewrite rules that
-were compiled into an existing image.
+The graph builds `linux/amd64` by default, matching Terraform's default
+`task_cpu_architecture = "X86_64"`. To deploy on Graviton, set
+`CPU_ARCHITECTURE=ARM64` while building and set `task_cpu_architecture = "ARM64"`
+in Terraform. The build exits before registry login if Buildx is unavailable or
+an explicit `PLATFORM` conflicts with `CPU_ARCHITECTURE`.
 
-If you changed `container_image_tags` after the first apply, apply again before
-running the migrate task. Keeping the tag stable avoids that extra apply.
+The last output line is `manifest=<absolute path>`. That mode-`0600` JSON file
+maps all six runtime roles to exact ECR digests and records the full source SHA
+and platform. Keep the path for the deploy command; tags are build handles, not
+the deployment identity.
+
+The script rejects a dirty Git worktree so that this SHA identifies the bytes it
+labels. Commit or stash release inputs first; reserve
+`FACILITY_ALLOW_DIRTY_BUILD=1` for explicitly non-production experiments.
+
+The privileged CodeBuild runner remains Terraform-owned. Copy the manifest's
+exact `images.runner` digest reference into `image_overrides.runner` and apply
+the same tfvars before deploying. Most application releases reproduce the same
+runner digest and need no runner apply. When runner bytes change, the explicit
+apply is a deliberate security boundary; the deploy command verifies the
+CodeBuild project but never mutates it.
+
+When `api_url` changes, update the web task's runtime `FACILITY_API_URL` and
+redeploy the existing image; it does not need to be rebuilt.
+
+Apply Terraform before the release command whenever a task template, service
+configuration, or runner digest changed. Ordinary application-image changes do
+not put Terraform on the hot path.
+
+### Upgrade note: retire the duplicate worker repository
+
+Stacks created before the API/worker deduplication have a non-empty `worker` ECR
+repository in Terraform state. Preserve it through one rollback window instead
+of asking Terraform to destroy stored images during an application upgrade. Before
+the first apply of this version, remove only these legacy addresses from state:
+
+```bash
+terraform state rm 'aws_ecr_lifecycle_policy.service["worker"]'
+terraform state rm 'aws_ecr_repository.service["worker"]'
+```
+
+This deliberately leaves the old AWS repository intact but unmanaged. Apply the
+new configuration, deploy and verify worker on the API digest, then delete the
+legacy repository manually after the rollback window. New stacks create only the
+five unique artifact repositories. The `container_image_tags.worker` input remains
+accepted for existing tfvars but is unused unless `image_overrides.worker` explicitly
+selects a separate image.
 
 ## 4. Populate Secrets Manager
 
@@ -189,24 +233,43 @@ The RDS master password is in `rds_master_user_secret_arn`; use the runbook's
 captured pipeline to URL-encode it into `database_url` without writing the
 plaintext to the terminal.
 
-## 5. Run the migrate + seed task once
+## 5. Stage or deploy the release
 
-The `migrate` task runs database migrations **and** seeds the bundled essentials
-(roles, action types, default sandbox profile) that administrative bootstrap and
-`facility doctor` require — seeding is idempotent. Run it only after the
-`database_url` secret and images are populated:
+The release command validates every image against this stack's ECR repositories
+and architecture, waits for each ECR basic or enhanced scan to complete, and rejects any
+image with a HIGH or CRITICAL finding. The deploying AWS principal needs
+`ecr:DescribeImages` and `ecr:DescribeImageScanFindings`. It then verifies the
+Terraform-owned CodeBuild runner digest, copies the freshly rendered Terraform
+task templates, and replaces only their main container images. It runs the
+one-shot database deploy task and waits for exit `0` before changing any service.
+The five service updates run in parallel; a failed rollout restores all five prior task definitions
+but never rolls back the database.
+
+The wait budget is 12 minutes by default. Pass `--command-timeout-ms <milliseconds>`
+(up to 3600000) when this stack's measured rollout time needs a larger bound.
+
+For the first deployment, while all desired counts are deliberately zero:
 
 ```bash
-aws ecs run-task \
-  --cluster "$(terraform output -raw ecs_cluster_name)" \
-  --launch-type FARGATE \
-  --task-definition "$(terraform output -raw migrate_task_definition_arn)" \
-  --network-configuration "awsvpcConfiguration={subnets=$(terraform output -json private_subnet_ids),securityGroups=[$(terraform output -raw service_security_group_id)],assignPublicIp=DISABLED}"
+pnpm --dir ../../.. deploy:aws \
+  --manifest /absolute/path/from-build-images.json \
+  --terraform-dir . \
+  --allow-zero-desired
 ```
 
-Watch `/facility/<environment>/migrate` in CloudWatch Logs for
-`applied 0001_control_plane.sql` (or `already applied`) followed by the seed
-summary. `facility doctor` will flag `seed_essentials` if this task did not run.
+This produces a `status=staged` event: migration and digest pointers are ready,
+but zero running tasks are not reported as healthy. Raise all five desired
+counts in the next step. On later deployments, omit `--allow-zero-desired`; the
+command waits for and verifies five healthy services. Exit `10` is a retryable
+database-lock timeout, `11` is a changed applied migration, `12` is rolled-back
+migration SQL, `21` means service rollback succeeded, and `22` means operator
+intervention is required because service rollback was incomplete.
+
+Treat this command as a single-writer operation: do not run it concurrently
+from CI and an operator laptop. It rechecks all five service pointers after the
+database gate and refuses observed drift, but ECS has no atomic compare-and-swap
+across services. A CI wrapper must use one concurrency group per Facility
+environment.
 
 ## 6. Bind the instance
 
@@ -223,8 +286,10 @@ Until this runs, every sign-in fails with `not_invited` or
 
 ## 7. Start and verify the services
 
-Raise all five desired counts in `playground.tfvars`, apply the same file, and
-wait for every service, including MCP:
+After the first staged deployment, raise all five desired counts in
+`playground.tfvars`, apply the same file, and wait for every service, including
+MCP. Terraform continues to own desired counts and service configuration while
+preserving the digest-pinned live task pointers:
 
 ```bash
 terraform apply -var-file=playground.tfvars

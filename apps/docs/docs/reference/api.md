@@ -43,13 +43,14 @@ clients can generate from the committed OpenAPI document until SDK distribution.
 
 ## Resource map
 
-The committed contract currently contains 119 `/v1` operations. Its domains are:
+The committed contract currently contains 138 `/v1` operations. Its domains are:
 
 - identity and policy: `/me`, `/org`, `/members`, `/roles`, `/keys`;
 - project delivery: `/projects`, repositories, GitHub App discovery and issue
   sync/trigger, project health, kickstart, upgrade, and outcomes;
-- agent work: agents and status, sessions/runs, durable transcripts, interrupt,
-  resume, live events, and conversations;
+- agent work: agents and status, sessions/runs, durable transcripts, exact-SHA
+  pull-request delivery inspection/retry, interrupt, resume, live events, and
+  conversations;
 - knowledge and governance: KB, tasks, registry, action types, proposals, inbox,
   operational issues, and the audit chain;
 - infrastructure and cost: providers, virtual keys, budgets, spend, raw LLM

@@ -1,12 +1,45 @@
-import { newId } from "@facility/core";
-import { createDb, insertAuditEvent, previewSandboxes } from "@facility/db";
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { newId, open, seal } from "@facility/core";
+import { createDb, insertAuditEvent, previewAccessHandoffs, previewSandboxes } from "@facility/db";
+import { and, eq, gt, inArray, isNull, lt, or } from "drizzle-orm";
 import { request as upstreamRequest } from "undici";
+import { z } from "zod";
+import { ApiError } from "./errors.js";
+import { sandboxNamespace } from "./sandbox/cache.js";
 import { previewSandboxDriver, type SandboxDriver, SandboxLaunchError } from "./sandbox/driver.js";
 import type { AppConfig, Principal } from "./types.js";
 
 type Db = ReturnType<typeof createDb>["db"];
 type Preview = typeof previewSandboxes.$inferSelect;
+
+const HandoffTtlMs = 60_000;
+const PreviewSessionTtlMs = 60 * 60_000;
+const PreviewProvisionLeaseMs = 15 * 60_000;
+const PreviewAccessToken = z.discriminatedUnion("kind", [
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("handoff"),
+    handoffId: z.string(),
+    userId: z.string(),
+    orgId: z.string(),
+    projectId: z.string(),
+    previewId: z.string(),
+    expiresAt: z.number().int(),
+  }),
+  z.object({
+    version: z.literal(1),
+    kind: z.literal("preview_session"),
+    userId: z.string(),
+    orgId: z.string(),
+    previewId: z.string(),
+    expiresAt: z.number().int(),
+  }),
+]);
+
+export type PreviewHandoffClaims = Extract<z.infer<typeof PreviewAccessToken>, { kind: "handoff" }>;
+export type PreviewSessionClaims = Extract<
+  z.infer<typeof PreviewAccessToken>,
+  { kind: "preview_session" }
+>;
 
 export type PreviewCreateInput = {
   orgId: string;
@@ -55,11 +88,192 @@ export function assertPreviewProvisioningAvailable(config: AppConfig) {
       "Preview provisioning is disabled until interactive authentication is configured",
     );
   }
+  if (!config.facilityInsecureDev && !isolatedPreviewOrigin(config)) {
+    throw previewError(
+      503,
+      "preview_origin_unavailable",
+      "Preview provisioning is disabled until an isolated preview origin is configured",
+    );
+  }
+}
+
+export function isolatedPreviewOrigin(config: AppConfig) {
+  if (!config.previewUrl) return false;
+  const preview = new URL(config.previewUrl);
+  return [config.publicUrl, config.webUrl ?? config.publicUrl, config.mcpPublicUrl]
+    .filter((value): value is string => Boolean(value))
+    .every((value) => new URL(value).hostname !== preview.hostname);
+}
+
+export function assertPreviewOriginSurface(
+  config: AppConfig,
+  rawHost: string | undefined,
+  rawPath: string,
+) {
+  if (!isolatedPreviewOrigin(config) || !config.previewUrl) return;
+  const requestHost = hostname(rawHost);
+  const previewHost = new URL(config.previewUrl).hostname.toLowerCase();
+  let path: string;
+  try {
+    // Fastify routes percent-encoded path segments after decoding them. Apply
+    // the same interpretation at the origin boundary so `/%70review/...`
+    // cannot bypass the dedicated-host check.
+    path = decodeURIComponent(rawPath.split("?", 1)[0] ?? "/");
+  } catch {
+    throw previewError(404, "not_found", "Route not found");
+  }
+  const servesPreview = /^\/(?:preview|preview-auth)\//.test(path);
+  if (requestHost === previewHost ? !servesPreview : servesPreview) {
+    throw previewError(404, "not_found", "Route not found");
+  }
+}
+
+export async function mintPreviewHandoff(
+  db: Db,
+  config: AppConfig,
+  input: { userId: string; orgId: string; projectId: string; previewId: string },
+  now = Date.now(),
+) {
+  const claims: PreviewHandoffClaims = {
+    version: 1,
+    kind: "handoff",
+    handoffId: newId("pvh"),
+    ...input,
+    expiresAt: now + HandoffTtlMs,
+  };
+  await db.insert(previewAccessHandoffs).values({
+    id: claims.handoffId,
+    orgId: claims.orgId,
+    projectId: claims.projectId,
+    previewId: claims.previewId,
+    userId: claims.userId,
+    expiresAt: new Date(claims.expiresAt),
+  });
+  return seal(JSON.stringify(claims), config.secretMasterKey);
+}
+
+export async function readPreviewHandoff(
+  config: AppConfig,
+  token: string,
+  previewId: string,
+  now = Date.now(),
+) {
+  const claims = await readPreviewToken(config, token, now);
+  if (claims.kind !== "handoff" || claims.previewId !== previewId) {
+    throw invalidPreviewAccess();
+  }
+  return claims;
+}
+
+export async function consumePreviewHandoff(
+  db: Db,
+  claims: PreviewHandoffClaims,
+  now = new Date(),
+) {
+  const consumed = (
+    await db
+      .update(previewAccessHandoffs)
+      .set({ consumedAt: now })
+      .where(
+        and(
+          eq(previewAccessHandoffs.id, claims.handoffId),
+          eq(previewAccessHandoffs.orgId, claims.orgId),
+          eq(previewAccessHandoffs.projectId, claims.projectId),
+          eq(previewAccessHandoffs.previewId, claims.previewId),
+          eq(previewAccessHandoffs.userId, claims.userId),
+          isNull(previewAccessHandoffs.consumedAt),
+          gt(previewAccessHandoffs.expiresAt, now),
+        ),
+      )
+      .returning({ id: previewAccessHandoffs.id })
+  )[0];
+  if (!consumed) throw invalidPreviewAccess();
+}
+
+export async function mintPreviewSession(
+  config: AppConfig,
+  input: { userId: string; orgId: string; previewId: string },
+  now = Date.now(),
+) {
+  const claims: PreviewSessionClaims = {
+    version: 1,
+    kind: "preview_session",
+    ...input,
+    expiresAt: now + PreviewSessionTtlMs,
+  };
+  return seal(JSON.stringify(claims), config.secretMasterKey);
+}
+
+export async function readPreviewSession(
+  config: AppConfig,
+  token: string,
+  previewId: string,
+  now = Date.now(),
+) {
+  const claims = await readPreviewToken(config, token, now);
+  if (claims.kind !== "preview_session" || claims.previewId !== previewId) {
+    throw invalidPreviewAccess();
+  }
+  return claims;
+}
+
+export function previewCookieName(previewId: string) {
+  if (!/^[A-Za-z0-9_-]+$/.test(previewId)) throw invalidPreviewAccess();
+  return `facility_preview_${previewId}`;
+}
+
+export function previewCookieOptions(config: AppConfig, previewId: string) {
+  return {
+    httpOnly: true,
+    sameSite: "lax" as const,
+    secure: config.previewUrl?.startsWith("https://") ?? false,
+    path: `/preview/${encodeURIComponent(previewId)}`,
+    maxAge: PreviewSessionTtlMs / 1000,
+  };
+}
+
+export function previewAccessUrl(config: AppConfig, projectId: string, previewId: string) {
+  const controlUrl = new URL(config.webUrl ?? config.publicUrl);
+  const apiUrl = new URL(config.publicUrl);
+  const throughWebProxy = controlUrl.origin !== apiUrl.origin;
+  controlUrl.pathname = `${throughWebProxy ? "/api" : ""}/v1/projects/${encodeURIComponent(
+    projectId,
+  )}/previews/${encodeURIComponent(previewId)}/open`;
+  controlUrl.search = "";
+  controlUrl.hash = "";
+  return controlUrl.toString();
+}
+
+async function readPreviewToken(config: AppConfig, token: string, now: number) {
+  try {
+    if (!token || Buffer.from(token, "base64").toString("base64") !== token) {
+      throw invalidPreviewAccess();
+    }
+    const claims = PreviewAccessToken.parse(JSON.parse(await open(token, config.secretMasterKey)));
+    if (claims.expiresAt <= now) throw invalidPreviewAccess();
+    return claims;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw invalidPreviewAccess();
+  }
+}
+
+function invalidPreviewAccess() {
+  return previewError(401, "preview_access_invalid", "Preview access is invalid or expired");
+}
+
+function hostname(rawHost: string | undefined) {
+  if (!rawHost) return "";
+  try {
+    return new URL(`http://${rawHost}`).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
 }
 
 export async function createPreviewRecord(db: Db, input: PreviewCreateInput) {
   const id = newId("sbx");
-  return (
+  const inserted = (
     await db
       .insert(previewSandboxes)
       .values({
@@ -84,7 +298,23 @@ export async function createPreviewRecord(db: Db, input: PreviewCreateInput) {
         expiresAt: new Date(Date.now() + input.ttlHours * 3_600_000),
         createdBy: input.createdBy,
       })
+      .onConflictDoNothing()
       .returning()
+  )[0];
+  if (inserted || !input.runId) return inserted;
+  return (
+    await db
+      .select()
+      .from(previewSandboxes)
+      .where(
+        and(
+          eq(previewSandboxes.runId, input.runId),
+          eq(previewSandboxes.orgId, input.orgId),
+          eq(previewSandboxes.projectId, input.projectId),
+          inArray(previewSandboxes.status, ["provisioning", "running"]),
+        ),
+      )
+      .limit(1)
   )[0];
 }
 
@@ -93,12 +323,47 @@ export async function provisionPreview(
   previewId: string,
   driverOverride?: SandboxDriver,
 ) {
+  const provisionStartedAt = Date.now();
   const { db, client } = createDb(config.databaseUrl);
   try {
-    const preview = (
+    const claimedAt = new Date(provisionStartedAt);
+    const staleClaim = new Date(provisionStartedAt - PreviewProvisionLeaseMs);
+    const candidate = (
       await db.select().from(previewSandboxes).where(eq(previewSandboxes.id, previewId)).limit(1)
     )[0];
-    if (preview?.status !== "provisioning" || preview.ref) return preview;
+    if (
+      candidate?.status !== "provisioning" ||
+      candidate.ref ||
+      (candidate.provisionClaimedAt && candidate.provisionClaimedAt >= staleClaim)
+    ) {
+      return candidate;
+    }
+    const recoveringLaunch = candidate.provisionClaimedAt !== null;
+    const preview = (
+      await db
+        .update(previewSandboxes)
+        .set({ provisionClaimedAt: claimedAt, updatedAt: claimedAt })
+        .where(
+          and(
+            eq(previewSandboxes.id, previewId),
+            eq(previewSandboxes.status, "provisioning"),
+            isNull(previewSandboxes.ref),
+            candidate.provisionClaimedAt
+              ? eq(previewSandboxes.provisionClaimedAt, candidate.provisionClaimedAt)
+              : isNull(previewSandboxes.provisionClaimedAt),
+            or(
+              isNull(previewSandboxes.provisionClaimedAt),
+              lt(previewSandboxes.provisionClaimedAt, staleClaim),
+            ),
+          ),
+        )
+        .returning()
+    )[0];
+    if (!preview) {
+      return (
+        await db.select().from(previewSandboxes).where(eq(previewSandboxes.id, previewId)).limit(1)
+      )[0];
+    }
     const spec = previewConfig(preview.config);
     const driver = driverOverride ?? (await previewSandboxDriver(config.sandboxDriver));
     await db
@@ -106,9 +371,15 @@ export async function provisionPreview(
       .set({ driver: driver.name, updatedAt: new Date() })
       .where(eq(previewSandboxes.id, preview.id));
     let launchedRef: string | undefined;
+    let launchStartedAt = provisionStartedAt;
+    let launchFinishedAt: number | undefined;
+    let recoveryLookupFailed = false;
     try {
-      const launched = await driver.launch({
+      launchStartedAt = Date.now();
+      const launchSpec = {
         runId: `preview:${preview.id}`,
+        namespace: sandboxNamespace(config),
+        kind: "preview" as const,
         image: spec.image,
         cmd: spec.command,
         env: { PORT: String(spec.port), FACILITY_PREVIEW: "1" },
@@ -117,13 +388,56 @@ export async function provisionPreview(
         timeoutMin: Math.max(1, Math.ceil((preview.expiresAt.getTime() - Date.now()) / 60_000)),
         network: { egress: "unrestricted" },
         servicePort: spec.port,
-      });
+      };
+      let launched: Awaited<ReturnType<SandboxDriver["launch"]>> | undefined;
+      if (recoveringLaunch && driver.recoverLaunch) {
+        try {
+          launched = await driver.recoverLaunch({
+            runId: launchSpec.runId,
+            servicePort: launchSpec.servicePort,
+          });
+        } catch (error) {
+          recoveryLookupFailed = true;
+          throw error;
+        }
+      }
+      launched ??= await driver.launch(launchSpec);
+      launchFinishedAt = Date.now();
       launchedRef = launched.ref;
-      await db
+      const validEndpoint =
+        launched.endpoint && allowedOrigin(launched.endpoint, driver.name)
+          ? launched.endpoint
+          : undefined;
+      const [attached] = await db
         .update(previewSandboxes)
-        .set({ driver: driver.name, ref: launched.ref, updatedAt: new Date() })
-        .where(eq(previewSandboxes.id, preview.id));
-      if (!launched.endpoint || !allowedOrigin(launched.endpoint, driver.name)) {
+        .set({
+          driver: driver.name,
+          ref: launched.ref,
+          ...(validEndpoint ? { originUrl: validEndpoint } : {}),
+          provisionClaimedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(previewSandboxes.id, preview.id),
+            eq(previewSandboxes.status, "provisioning"),
+            isNull(previewSandboxes.ref),
+            eq(previewSandboxes.provisionClaimedAt, claimedAt),
+          ),
+        )
+        .returning({ id: previewSandboxes.id });
+      if (!attached) {
+        await retainAndDestroyUnattachedPreview(db, preview, driver, launched.ref);
+        launchedRef = undefined;
+        return (
+          await db
+            .select()
+            .from(previewSandboxes)
+            .where(eq(previewSandboxes.id, preview.id))
+            .limit(1)
+        )[0];
+      }
+      if (!validEndpoint) {
         try {
           await driver.destroy(launched.ref);
           await db
@@ -144,57 +458,168 @@ export async function provisionPreview(
       const ready =
         state === "running" &&
         (spec.readinessPath
-          ? await waitForPreviewReadiness(launched.endpoint, spec.readinessPath)
+          ? await waitForPreviewReadiness(validEndpoint, spec.readinessPath)
           : true);
       const status = ready ? "running" : "provisioning";
+      const provisionFinishedAt = Date.now();
       const updated = (
         await db
           .update(previewSandboxes)
           .set({
             driver: driver.name,
             ref: launched.ref,
-            originUrl: launched.endpoint,
+            originUrl: validEndpoint,
             status,
             ...(status === "running" ? { lastHealthAt: new Date() } : {}),
             updatedAt: new Date(),
           })
-          .where(eq(previewSandboxes.id, preview.id))
+          .where(
+            and(
+              eq(previewSandboxes.id, preview.id),
+              eq(previewSandboxes.status, "provisioning"),
+              eq(previewSandboxes.ref, launched.ref),
+            ),
+          )
           .returning()
       )[0];
+      if (!updated) {
+        return (
+          await db
+            .select()
+            .from(previewSandboxes)
+            .where(eq(previewSandboxes.id, preview.id))
+            .limit(1)
+        )[0];
+      }
       await insertAuditEvent(db, {
         orgId: preview.orgId,
         projectId: preview.projectId,
         actor: { type: "system", id: "preview.provisioner" },
         action: "preview.provisioned",
         target: { type: "preview", id: preview.id },
-        payload: { driver: driver.name, status, auth_mode: "facility_session" },
+        payload: {
+          driver: driver.name,
+          status,
+          auth_mode: "facility_session",
+          queue_delay_ms: elapsedMs(preview.createdAt.getTime(), provisionStartedAt),
+          launch_ms: elapsedMs(launchStartedAt, launchFinishedAt ?? provisionFinishedAt),
+          total_ms: elapsedMs(preview.createdAt.getTime(), provisionFinishedAt),
+        },
       });
       return updated;
     } catch (error) {
+      const failedAt = Date.now();
       const message = error instanceof Error ? error.message : String(error);
+      if (recoveryLookupFailed) {
+        await db
+          .update(previewSandboxes)
+          .set({
+            error: `preview_recovery_failed:${message}`,
+            // Preserve the stale marker so every retry must rediscover the
+            // possibly-live external task before it is allowed to launch.
+            provisionClaimedAt: candidate.provisionClaimedAt,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(previewSandboxes.id, preview.id),
+              eq(previewSandboxes.status, "provisioning"),
+              isNull(previewSandboxes.ref),
+              eq(previewSandboxes.provisionClaimedAt, claimedAt),
+            ),
+          );
+        throw error;
+      }
       const retryRef = error instanceof SandboxLaunchError ? error.ref : launchedRef;
-      await db
+      const [failed] = await db
         .update(previewSandboxes)
         .set({
           status: "failed",
           error: message,
+          provisionClaimedAt: null,
           ...(retryRef ? { ref: retryRef } : {}),
           updatedAt: new Date(),
         })
-        .where(eq(previewSandboxes.id, preview.id));
+        .where(
+          and(
+            eq(previewSandboxes.id, preview.id),
+            eq(previewSandboxes.status, "provisioning"),
+            retryRef
+              ? or(isNull(previewSandboxes.ref), eq(previewSandboxes.ref, retryRef))
+              : isNull(previewSandboxes.ref),
+          ),
+        )
+        .returning({ id: previewSandboxes.id });
+      if (!failed) {
+        if (retryRef) await retainAndDestroyUnattachedPreview(db, preview, driver, retryRef);
+        throw error;
+      }
       await insertAuditEvent(db, {
         orgId: preview.orgId,
         projectId: preview.projectId,
         actor: { type: "system", id: "preview.provisioner" },
         action: "preview.failed",
         target: { type: "preview", id: preview.id },
-        payload: { error: message },
+        payload: {
+          error: message,
+          queue_delay_ms: elapsedMs(preview.createdAt.getTime(), provisionStartedAt),
+          launch_ms: elapsedMs(launchStartedAt, launchFinishedAt ?? failedAt),
+          total_ms: elapsedMs(preview.createdAt.getTime(), failedAt),
+        },
       });
       throw error;
     }
   } finally {
     await client.end();
   }
+}
+
+async function retainAndDestroyUnattachedPreview(
+  db: Db,
+  preview: Preview,
+  driver: SandboxDriver,
+  ref: string,
+) {
+  const [retained] = await db
+    .update(previewSandboxes)
+    .set({
+      driver: driver.name,
+      ref,
+      error: "preview_attach_lost_cleanup_pending",
+      provisionClaimedAt: null,
+      updatedAt: new Date(),
+    })
+    .where(and(eq(previewSandboxes.id, preview.id), isNull(previewSandboxes.ref)))
+    .returning({ id: previewSandboxes.id });
+  if (!retained) {
+    const current = (
+      await db
+        .select({ ref: previewSandboxes.ref })
+        .from(previewSandboxes)
+        .where(eq(previewSandboxes.id, preview.id))
+        .limit(1)
+    )[0];
+    // A recovery worker can adopt the same deterministic ECS task while the
+    // original launcher is merely slow. In that case the ref is owned, not an
+    // orphan, and destroying it would invalidate the recovered preview.
+    if (current?.ref === ref) return;
+  }
+  try {
+    await driver.destroy(ref);
+  } catch (error) {
+    if (retained) return;
+    throw error;
+  }
+  if (retained) {
+    await db
+      .update(previewSandboxes)
+      .set({ ref: null, error: null, updatedAt: new Date() })
+      .where(and(eq(previewSandboxes.id, preview.id), eq(previewSandboxes.ref, ref)));
+  }
+}
+
+function elapsedMs(startedAt: number, endedAt: number) {
+  return Math.max(0, endedAt - startedAt);
 }
 
 export async function destroyPreview(
@@ -256,10 +681,16 @@ export async function destroyPreviewById(config: AppConfig, previewId: string) {
   }
 }
 
-export async function reconcilePreviews(config: AppConfig, driverOverride?: SandboxDriver) {
+export async function reconcilePreviews(
+  config: AppConfig,
+  driverOverride?: SandboxDriver,
+  enqueueProvision?: (previewId: string) => Promise<unknown>,
+) {
   const { db, client } = createDb(config.databaseUrl);
   const changed: string[] = [];
+  const requeued: string[] = [];
   try {
+    await db.delete(previewAccessHandoffs).where(lt(previewAccessHandoffs.expiresAt, new Date()));
     const expired = await db
       .select()
       .from(previewSandboxes)
@@ -278,7 +709,20 @@ export async function reconcilePreviews(config: AppConfig, driverOverride?: Sand
       .from(previewSandboxes)
       .where(inArray(previewSandboxes.status, ["provisioning", "running"]));
     for (const preview of active) {
-      if (!preview.ref) continue;
+      if (!preview.ref) {
+        const provisionClaimedAt = preview.provisionClaimedAt;
+        const claimIsStale =
+          provisionClaimedAt !== null &&
+          provisionClaimedAt.getTime() < Date.now() - PreviewProvisionLeaseMs;
+        if (preview.status === "provisioning" && (!provisionClaimedAt || claimIsStale)) {
+          if (enqueueProvision) {
+            await enqueueProvision(preview.id);
+            requeued.push(preview.id);
+          }
+        }
+        continue;
+      }
+      if (preview.error === "preview_attach_lost_cleanup_pending") continue;
       const driver =
         driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
       const state = await driver.status(preview.ref);
@@ -318,11 +762,16 @@ export async function reconcilePreviews(config: AppConfig, driverOverride?: Sand
     // Retain its ref on failure and retry cleanup on each reconciliation pass;
     // clear it only after the task/container and its per-preview definition are
     // gone.
-    const failedWithRefs = await db
+    const cleanupPendingRefs = await db
       .select()
       .from(previewSandboxes)
-      .where(eq(previewSandboxes.status, "failed"));
-    for (const preview of failedWithRefs) {
+      .where(
+        or(
+          inArray(previewSandboxes.status, ["failed", "expired", "destroyed"]),
+          eq(previewSandboxes.error, "preview_attach_lost_cleanup_pending"),
+        ),
+      );
+    for (const preview of cleanupPendingRefs) {
       if (!preview.ref) continue;
       const driver =
         driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
@@ -330,14 +779,18 @@ export async function reconcilePreviews(config: AppConfig, driverOverride?: Sand
         await driver.destroy(preview.ref);
         await db
           .update(previewSandboxes)
-          .set({ ref: null, updatedAt: new Date() })
+          .set({
+            ref: null,
+            ...(preview.error === "preview_attach_lost_cleanup_pending" ? { error: null } : {}),
+            updatedAt: new Date(),
+          })
           .where(eq(previewSandboxes.id, preview.id));
         changed.push(preview.id);
       } catch {
         // Keep the ref for the next bounded worker reconciliation.
       }
     }
-    return { changed };
+    return { changed, requeued };
   } finally {
     await client.end();
   }
@@ -474,5 +927,5 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function previewError(statusCode: number, code: string, message: string) {
-  return Object.assign(new Error(message), { statusCode, code });
+  return new ApiError(statusCode, code, message);
 }

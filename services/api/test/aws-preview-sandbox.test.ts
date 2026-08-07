@@ -1,6 +1,7 @@
 import {
   DeregisterTaskDefinitionCommand,
   DescribeTasksCommand,
+  ListTasksCommand,
   RegisterTaskDefinitionCommand,
   RunTaskCommand,
   StopTaskCommand,
@@ -29,7 +30,6 @@ describe("AWS preview sandbox driver", () => {
           taskDefinitionArn: "arn:aws:ecs:eu-west-1:123:task-definition/facility-prod-preview:7",
         },
       },
-      { tasks: [{ taskArn: "arn:aws:ecs:eu-west-1:123:task/facility-prod/task-1" }] },
       {
         tasks: [
           {
@@ -39,6 +39,8 @@ describe("AWS preview sandbox driver", () => {
           },
         ],
       },
+      { tasks: [] },
+      { tasks: [{ lastStatus: "RUNNING" }] },
       { tasks: [{ lastStatus: "RUNNING" }] },
       {},
       {},
@@ -82,11 +84,236 @@ describe("AWS preview sandbox driver", () => {
       ],
     });
     expect(commands[1]).toBeInstanceOf(RunTaskCommand);
+    expect((commands[1] as RunTaskCommand).input.startedBy).toMatch(
+      /^facility-preview-[a-f0-9]{19}$/,
+    );
+    expect((commands[1] as RunTaskCommand).input.startedBy).toHaveLength(36);
     expect(commands[2]).toBeInstanceOf(DescribeTasksCommand);
+    expect(commands[3]).toBeInstanceOf(DescribeTasksCommand);
     await expect(driver.status(launched.ref)).resolves.toBe("running");
+    expect(commands[4]).toBeInstanceOf(DescribeTasksCommand);
     await driver.destroy(launched.ref);
-    expect(commands[4]).toBeInstanceOf(StopTaskCommand);
-    expect(commands[5]).toBeInstanceOf(DeregisterTaskDefinitionCommand);
+    expect(commands[5]).toBeInstanceOf(StopTaskCommand);
+    expect(commands[6]).toBeInstanceOf(DeregisterTaskDefinitionCommand);
+  });
+
+  it("recovers the exact active task and its private endpoint without relaunching", async () => {
+    const commands: unknown[] = [];
+    const taskArn = "arn:aws:ecs:eu-west-1:123:task/facility-prod/recovered";
+    const taskDefinitionArn = "arn:aws:ecs:eu-west-1:123:task-definition/preview:12";
+    const ecs = {
+      send: async (command: unknown) => {
+        commands.push(command);
+        if (command instanceof ListTasksCommand) {
+          return command.input.desiredStatus === "STOPPED"
+            ? { taskArns: [] }
+            : { taskArns: [taskArn] };
+        }
+        if (command instanceof DescribeTasksCommand) {
+          return {
+            tasks: [
+              {
+                taskArn,
+                taskDefinitionArn,
+                startedBy: (commands[0] as ListTasksCommand).input.startedBy,
+                lastStatus: "RUNNING",
+                attachments: [{ details: [{ name: "privateIPv4Address", value: "10.0.2.44" }] }],
+              },
+            ],
+          };
+        }
+        return {};
+      },
+    };
+    const driver = new AwsPreviewSandboxDriver(
+      ecs as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+      async () => undefined,
+    );
+
+    await expect(
+      driver.recoverLaunch({ runId: "preview:sbx_recovered", servicePort: 3000 }),
+    ).resolves.toEqual({
+      ref: Buffer.from(JSON.stringify({ taskArn, taskDefinitionArn })).toString("base64url"),
+      endpoint: "http://10.0.2.44:3000",
+    });
+    expect(commands).toHaveLength(3);
+    expect(commands[0]).toBeInstanceOf(ListTasksCommand);
+    expect((commands[0] as ListTasksCommand).input).toMatchObject({
+      cluster: "facility-prod",
+      startedBy: expect.stringMatching(/^facility-preview-[a-f0-9]{19}$/),
+    });
+    expect((commands[0] as ListTasksCommand).input).not.toHaveProperty("desiredStatus");
+    expect(commands[1]).toBeInstanceOf(ListTasksCommand);
+    expect((commands[1] as ListTasksCommand).input).toMatchObject({
+      cluster: "facility-prod",
+      family: "facility-prod-preview",
+      desiredStatus: "STOPPED",
+    });
+    expect(commands[2]).toBeInstanceOf(DescribeTasksCommand);
+  });
+
+  it("cleans a stopped recovered task and its definition before allowing relaunch", async () => {
+    const commands: unknown[] = [];
+    const taskArn = "arn:aws:ecs:eu-west-1:123:task/facility-prod/stopped-recovery";
+    const taskDefinitionArn = "arn:aws:ecs:eu-west-1:123:task-definition/preview:13";
+    const ecs = {
+      send: async (command: unknown) => {
+        commands.push(command);
+        if (command instanceof ListTasksCommand) {
+          return command.input.desiredStatus === "STOPPED"
+            ? { taskArns: [taskArn] }
+            : { taskArns: [] };
+        }
+        if (command instanceof DescribeTasksCommand) {
+          return {
+            tasks: [
+              {
+                taskArn,
+                taskDefinitionArn,
+                startedBy: (commands[0] as ListTasksCommand).input.startedBy,
+                lastStatus: "STOPPED",
+              },
+            ],
+          };
+        }
+        return {};
+      },
+    };
+    const driver = new AwsPreviewSandboxDriver(
+      ecs as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+    );
+
+    await expect(
+      driver.recoverLaunch({ runId: "preview:stopped-recovery", servicePort: 3000 }),
+    ).resolves.toBeUndefined();
+    expect(
+      commands.map((command) => (command as { constructor: { name: string } }).constructor.name),
+    ).toEqual([
+      "ListTasksCommand",
+      "ListTasksCommand",
+      "DescribeTasksCommand",
+      "StopTaskCommand",
+      "DeregisterTaskDefinitionCommand",
+    ]);
+  });
+
+  it("returns no recovery when no active task exists and propagates discovery denial", async () => {
+    const missing = new AwsPreviewSandboxDriver(
+      { send: async () => ({ taskArns: [] }) } as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+    );
+    await expect(
+      missing.recoverLaunch({ runId: "preview:missing", servicePort: 3000 }),
+    ).resolves.toBeUndefined();
+
+    const denied = new AwsPreviewSandboxDriver(
+      {
+        send: async () => {
+          throw Object.assign(new Error("not authorized"), { name: "AccessDeniedException" });
+        },
+      } as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+    );
+    await expect(
+      denied.recoverLaunch({ runId: "preview:denied", servicePort: 3000 }),
+    ).rejects.toMatchObject({ name: "AccessDeniedException" });
+  });
+
+  it("returns a private endpoint after the existing activation budget expires", async () => {
+    const commands: unknown[] = [];
+    let sleeps = 0;
+    const ecs = {
+      send: async (command: unknown) => {
+        commands.push(command);
+        if (command instanceof RegisterTaskDefinitionCommand) {
+          return { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:task-definition/preview:8" } };
+        }
+        if (command instanceof RunTaskCommand) {
+          return { tasks: [{ taskArn: "arn:aws:ecs:task/facility-prod/slow" }] };
+        }
+        if (command instanceof DescribeTasksCommand) {
+          return {
+            tasks: [
+              {
+                lastStatus: "ACTIVATING",
+                attachments: [{ details: [{ name: "privateIPv4Address", value: "10.0.2.42" }] }],
+              },
+            ],
+          };
+        }
+        return {};
+      },
+    };
+    const driver = new AwsPreviewSandboxDriver(
+      ecs as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+      async () => {
+        sleeps += 1;
+      },
+    );
+    const launched = await driver.launch({
+      runId: "preview:slow",
+      image: "example.invalid/preview:latest",
+      env: {},
+      cpu: 1,
+      memoryMb: 1024,
+      timeoutMin: 60,
+      servicePort: 3000,
+    });
+    expect(launched.endpoint).toBe("http://10.0.2.42:3000");
+    expect(commands.filter((command) => command instanceof DescribeTasksCommand)).toHaveLength(30);
+    expect(sleeps).toBe(29);
+  });
+
+  it("cleans up a preview task that stops after receiving a private IP", async () => {
+    const commands: unknown[] = [];
+    const responses = [
+      { taskDefinition: { taskDefinitionArn: "arn:aws:ecs:task-definition/preview:9" } },
+      { tasks: [{ taskArn: "arn:aws:ecs:task/facility-prod/stopped" }] },
+      {
+        tasks: [
+          {
+            lastStatus: "PENDING",
+            attachments: [{ details: [{ name: "privateIPv4Address", value: "10.0.2.43" }] }],
+          },
+        ],
+      },
+      { tasks: [{ lastStatus: "STOPPED", stoppedReason: "CannotPullContainerError" }] },
+      {},
+      {},
+    ];
+    const ecs = {
+      send: async (command: unknown) => {
+        commands.push(command);
+        return responses.shift() ?? {};
+      },
+    };
+    const driver = new AwsPreviewSandboxDriver(
+      ecs as never,
+      { send: async () => ({}) } as never,
+      previewEnv,
+      async () => undefined,
+    );
+    await expect(
+      driver.launch({
+        runId: "preview:stopped",
+        image: "example.invalid/preview:missing",
+        env: {},
+        cpu: 1,
+        memoryMb: 1024,
+        timeoutMin: 60,
+        servicePort: 3000,
+      }),
+    ).rejects.toThrow("aws_preview_task_stopped_before_running:STOPPED");
+    expect(commands.at(-2)).toBeInstanceOf(StopTaskCommand);
+    expect(commands.at(-1)).toBeInstanceOf(DeregisterTaskDefinitionCommand);
   });
 
   it("deregisters the per-preview definition when task launch is denied", async () => {

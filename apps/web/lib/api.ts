@@ -62,8 +62,13 @@ export type {
  * Next can forward the session cookie; domain contracts live in @facility/sdk.
  */
 
-const API_URL = process.env.FACILITY_API_URL ?? "http://localhost:4400";
 export const SESSION_COOKIE = "facility_session";
+
+function facilityApiUrl() {
+  // Called from request-time server code (after `cookies()`), so a promoted
+  // standalone image reads the deployment's runtime environment.
+  return process.env.FACILITY_API_URL ?? "http://localhost:4400";
+}
 
 export type ApiResult<T> =
   | { ok: true; data: T }
@@ -80,7 +85,7 @@ async function apiFetch<Method extends FacilityRouteMethod, Path extends Facilit
   const jar = await cookies();
   const session = jar.get(SESSION_COOKIE);
   const client = new FacilityClient({
-    baseUrl: API_URL,
+    baseUrl: facilityApiUrl(),
     fetch: (input, init) => {
       const headers = new Headers(init?.headers);
       if (session) headers.set("cookie", `${SESSION_COOKIE}=${session.value}`);
@@ -247,7 +252,7 @@ export async function untypedApi<T>(
   const jar = await cookies();
   const session = jar.get(SESSION_COOKIE);
   try {
-    const res = await fetch(`${API_URL}${path}`, {
+    const res = await fetch(`${facilityApiUrl()}${path}`, {
       method,
       cache: "no-store",
       headers: {

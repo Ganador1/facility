@@ -1,7 +1,13 @@
+import { createPrivateKey } from "node:crypto";
 import { readdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  BatchGetProjectsCommand,
+  type BatchGetProjectsCommandOutput,
+  CodeBuildClient,
+} from "@aws-sdk/client-codebuild";
 import { BUNDLED_ROLES } from "@facility/core";
 import {
   actionTypes,
@@ -19,6 +25,10 @@ import { DockerSandboxDriver } from "./sandbox/docker.js";
 import type { AppConfig } from "./types.js";
 
 type Db = FastifyInstance["facilityDb"];
+
+export type DoctorCodeBuildSender = {
+  send(command: BatchGetProjectsCommand): Promise<BatchGetProjectsCommandOutput>;
+};
 
 export const DoctorCheckSchema = z.object({
   id: z.string(),
@@ -60,6 +70,7 @@ export async function runReadinessDoctor(input: {
   config: AppConfig;
   orgId: string;
   now?: Date;
+  codeBuildClient?: DoctorCodeBuildSender;
 }): Promise<DoctorResponse> {
   const now = input.now ?? new Date();
   const checks = await Promise.all([
@@ -68,6 +79,9 @@ export async function runReadinessDoctor(input: {
     checkSeedEssentials(input.db, input.orgId),
     checkWorkerHeartbeat(input.db, now),
     checkSandboxRunner(input.db, input.config, input.orgId),
+    ...(input.config.sandboxDriver === "aws"
+      ? [checkAwsSandbox(input.config, input.codeBuildClient)]
+      : []),
     checkGithubApp(input.config),
     checkAuthConfig(input.config),
     checkPreviewProtection(input.config),
@@ -79,6 +93,110 @@ export async function runReadinessDoctor(input: {
     generatedAt: now.toISOString(),
     checks,
   };
+}
+
+export async function checkAwsSandbox(
+  config: AppConfig,
+  providedClient?: DoctorCodeBuildSender,
+): Promise<DoctorCheck> {
+  const project = config.awsCodeBuildProject;
+  const region = config.awsRegion;
+  const cacheBaseLocation = config.awsCodeBuildCacheBaseLocation;
+  if (!project) {
+    return fail(
+      "aws_sandbox",
+      "AWS CodeBuild sandbox reachability",
+      "The CodeBuild project is not configured; platform-lane runs cannot start.",
+      "Set FACILITY_AWS_CODEBUILD_PROJECT to the runner project created for this deployment.",
+    );
+  }
+  if (!region) {
+    return fail(
+      "aws_sandbox",
+      "AWS CodeBuild sandbox reachability",
+      "The AWS region is not configured; CodeBuild reachability cannot be verified.",
+      "Set AWS_REGION to the region containing the Facility runner project.",
+    );
+  }
+  if (!cacheBaseLocation) {
+    return fail(
+      "aws_sandbox",
+      "AWS CodeBuild sandbox reachability",
+      "The per-project CodeBuild cache location is not configured; cached runs cannot be tenant-isolated.",
+      "Set FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION to the cache prefix created for this deployment.",
+    );
+  }
+
+  const client = providedClient ?? new CodeBuildClient({ region });
+  try {
+    const output = await client.send(new BatchGetProjectsCommand({ names: [project] }));
+    const found = output.projects?.find((candidate) => candidate.name === project);
+    if (!found || output.projectsNotFound?.includes(project)) {
+      return fail(
+        "aws_sandbox",
+        "AWS CodeBuild sandbox reachability",
+        `CodeBuild project "${project}" does not exist in ${region}.`,
+        "Apply the AWS Terraform stack or correct FACILITY_AWS_CODEBUILD_PROJECT.",
+      );
+    }
+    const image = found.environment?.image?.trim();
+    if (!image) {
+      return fail(
+        "aws_sandbox",
+        "AWS CodeBuild sandbox reachability",
+        `CodeBuild project "${project}" has no runner image configured.`,
+        "Rebuild and deploy the CodeBuild runner project with a runner image.",
+      );
+    }
+    if (found.cache?.type !== "NO_CACHE") {
+      return fail(
+        "aws_sandbox",
+        "AWS CodeBuild sandbox reachability",
+        `CodeBuild project "${project}" has a shared default cache instead of the fail-closed NO_CACHE default.`,
+        "Apply the current AWS Terraform module; Facility enables an isolated S3 prefix separately for every run.",
+      );
+    }
+    return pass(
+      "aws_sandbox",
+      "AWS CodeBuild sandbox reachability",
+      `CodeBuild project "${project}" is reachable in ${region}, runs "${image}", and defaults to no shared cache.`,
+    );
+  } catch (error) {
+    const errorCode = awsErrorCode(error);
+    if (isAwsConfigurationError(error)) {
+      return fail(
+        "aws_sandbox",
+        "AWS CodeBuild sandbox reachability",
+        `The AWS account, region, or task role cannot reach CodeBuild (${errorCode}).`,
+        "Verify AWS_REGION and the ECS task role permission to inspect the configured CodeBuild project.",
+      );
+    }
+    return warn(
+      "aws_sandbox",
+      "AWS CodeBuild sandbox reachability",
+      `CodeBuild reachability could not be verified because of a transient AWS error (${errorCode}).`,
+      "Retry facility doctor; if the warning persists, inspect AWS networking and CodeBuild service health.",
+    );
+  }
+}
+
+function awsErrorCode(error: unknown) {
+  if (!error || typeof error !== "object") return "UnknownError";
+  const candidate = error as { name?: unknown; Code?: unknown; code?: unknown };
+  for (const value of [candidate.name, candidate.Code, candidate.code]) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return "UnknownError";
+}
+
+function isAwsConfigurationError(error: unknown) {
+  const candidate = error as { name?: unknown; Code?: unknown; code?: unknown; message?: unknown };
+  const text = [candidate?.name, candidate?.Code, candidate?.code, candidate?.message]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  return /UnrecognizedClient|InvalidClientTokenId|AccessDenied|CredentialsProviderError|Could not load credentials|Region.*not|ConfigError/i.test(
+    text,
+  );
 }
 
 async function checkWorkerHeartbeat(db: Db, now: Date): Promise<DoctorCheck> {
@@ -373,7 +491,7 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
   }
 }
 
-function checkGithubApp(config: AppConfig): DoctorCheck {
+export function checkGithubApp(config: AppConfig): DoctorCheck {
   const values = {
     GITHUB_APP_ID: config.githubAppId,
     GITHUB_APP_PRIVATE_KEY: config.githubAppPrivateKey,
@@ -398,6 +516,16 @@ function checkGithubApp(config: AppConfig): DoctorCheck {
       "GitHub App configuration",
       `GitHub App is partially configured; missing ${missing.join(", ")}.`,
       "Complete the GitHub App environment variables or remove all of them to disable GitHub automation.",
+    );
+  }
+  try {
+    createPrivateKey(config.githubAppPrivateKey ?? "");
+  } catch {
+    return fail(
+      "github_app",
+      "GitHub App configuration",
+      "The configured GitHub App private key is not a valid PEM private key.",
+      "Replace GITHUB_APP_PRIVATE_KEY with the unmodified private key downloaded for this GitHub App.",
     );
   }
   return pass("github_app", "GitHub App configuration", "Required GitHub App values are set.");

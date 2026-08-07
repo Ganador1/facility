@@ -7,6 +7,7 @@ import {
   conversations,
   createDb,
   githubInstallations,
+  kbSpaces,
   migrate,
   projects,
   registryItems,
@@ -25,15 +26,72 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { verifyStoredReceipts } from "../src/receipt-integrity.js";
 import { AwsSandboxDriver } from "../src/sandbox/aws.js";
+import { sandboxCachePartition, sandboxNamespace } from "../src/sandbox/cache.js";
 import { DockerSandboxDriver } from "../src/sandbox/docker.js";
 import type { SandboxDriver } from "../src/sandbox/driver.js";
-import { dispatchRun, finishRun, reconcileSandboxes } from "../src/sandbox/orchestrator.js";
+import {
+  dispatchRun,
+  finishRun,
+  reconcileSandboxes,
+  repairExpectedHeadSha,
+  runDeliveryRefMismatch,
+} from "../src/sandbox/orchestrator.js";
 import { appendRunEvents } from "../src/sandbox/state.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_test";
 const masterKey = Buffer.alloc(32, 8).toString("base64");
+
+describe("run delivery integrity binding", () => {
+  const expected = {
+    headBranch: "facility/run-1",
+    expectedHeadSha: "expected-sha",
+    baseBranch: "main",
+  };
+
+  it("accepts only the exact head, base, and commit", () => {
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "facility/run-1", headSha: "expected-sha", baseRef: "main" },
+        expected,
+      ),
+    ).toBeNull();
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "facility/run-1", headSha: "moved-sha", baseRef: "main" },
+        expected,
+      ),
+    ).toBe("pull_request_head_sha_mismatch");
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "foreign-branch", headSha: "expected-sha", baseRef: "main" },
+        expected,
+      ),
+    ).toBe("pull_request_ref_mismatch");
+    expect(
+      runDeliveryRefMismatch(
+        { headRef: "facility/run-1", headSha: "expected-sha", baseRef: "release" },
+        expected,
+      ),
+    ).toBe("pull_request_ref_mismatch");
+  });
+
+  it("pins repair bundles to the admitted head and prefers doctor evidence", () => {
+    const admitted = "a".repeat(40);
+    const webhook = "b".repeat(40);
+    expect(
+      repairExpectedHeadSha("ci_doctor", {
+        ciDoctor: { admittedHeadSha: admitted },
+        pullRequest: { headSha: webhook },
+      }),
+    ).toBe(admitted);
+    expect(repairExpectedHeadSha("address_review", { pullRequest: { headSha: webhook } })).toBe(
+      webhook,
+    );
+    expect(repairExpectedHeadSha("builder", { pullRequest: { headSha: webhook } })).toBeNull();
+  });
+});
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
@@ -137,6 +195,143 @@ describe("sandbox api", async () => {
         throw { statusCode: 500, message: "daemon boom" };
       }).imageExists("runner:dev"),
     ).rejects.toMatchObject({ statusCode: 500 });
+  });
+
+  it("grants the legacy KB floor only to an explicitly harness-backed run", async () => {
+    const suffix = Date.now();
+    const [contract, harness, profile] = await Promise.all([
+      db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId,
+          kind: "agent_contract",
+          name: `permission-contract-${suffix}`,
+          latestVersion: 1,
+        })
+        .returning()
+        .then((rows) => rows[0]),
+      db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId,
+          kind: "harness",
+          name: `permission-harness-${suffix}`,
+          latestVersion: 1,
+        })
+        .returning()
+        .then((rows) => rows[0]),
+      db
+        .insert(sandboxProfiles)
+        .values({
+          id: newId("sbx"),
+          orgId,
+          projectId,
+          name: `permission-profile-${suffix}`,
+          driver: "docker",
+          image: "facility-runner:test",
+          resources: { timeout_min: 5 },
+        })
+        .returning()
+        .then((rows) => rows[0]),
+    ]);
+    if (!contract || !harness || !profile) throw new Error("permission fixtures missing");
+    await Promise.all([
+      db.insert(registryVersions).values({
+        id: newId("ver"),
+        orgId,
+        itemId: contract.id,
+        version: 1,
+        content: "Exercise the permission boundary.",
+        contentHash: `permission-contract-${suffix}`,
+        status: "active",
+      }),
+      db.insert(registryVersions).values({
+        id: newId("ver"),
+        orgId,
+        itemId: harness.id,
+        version: 1,
+        content: "Harness fixture.",
+        contentHash: `permission-harness-${suffix}`,
+        status: "active",
+      }),
+      db.insert(kbSpaces).values({
+        id: newId("kb"),
+        orgId,
+        projectId,
+        charterMd: "# Charter\n",
+        activeMd: "## Objective\n\n## Next Step\n\n## Blocker\n\n## Links\n",
+        config: {},
+      }),
+    ]);
+    const driver: SandboxDriver = {
+      name: "docker",
+      launch: async (spec) => ({ ref: `fake-${spec.runId}` }),
+      status: async () => "running",
+      async *logs() {},
+      stop: async () => undefined,
+      destroy: async () => undefined,
+    };
+
+    const permissionSets: string[][] = [];
+    for (const harnessEnabled of [false, true]) {
+      const agent = (
+        await db
+          .insert(agentDefs)
+          .values({
+            id: newId("agent"),
+            orgId,
+            projectId,
+            name: `permission-agent-${harnessEnabled}-${suffix}`,
+            engine: "byo",
+            model: { cmd: "true" },
+            contractItemId: contract.id,
+            harnessItemId: harnessEnabled ? harness.id : null,
+            sandboxProfileId: profile.id,
+            triggers: [],
+            permissions: [],
+            enabled: true,
+          })
+          .returning()
+      )[0];
+      if (!agent) throw new Error("permission agent fixture missing");
+      const run = (
+        await db
+          .insert(runs)
+          .values({
+            id: newId("run"),
+            orgId,
+            projectId,
+            agentDefId: agent.id,
+            mode: harnessEnabled ? "project-owner" : "builder",
+            engine: "byo",
+            trigger: {},
+            createdBy: { type: "user", id: "permission-test" },
+          })
+          .returning()
+      )[0];
+      if (!run) throw new Error("permission run fixture missing");
+      await dispatchRun(config, { runId: run.id, orgId }, { sandboxDriver: async () => driver });
+      const key = (
+        await db.select({ roleId: apiKeys.roleId }).from(apiKeys).where(eq(apiKeys.runId, run.id))
+      )[0];
+      const role = key?.roleId
+        ? (
+            await db
+              .select({ permissions: roles.permissions })
+              .from(roles)
+              .where(eq(roles.id, key.roleId))
+          )[0]
+        : undefined;
+      permissionSets.push(role?.permissions ?? []);
+    }
+
+    expect(permissionSets).toEqual([[], ["kb:read", "kb:write", "tasks:read", "tasks:write"]]);
   });
 
   it("dispatch persists engine-specific model policy on each run key", async () => {
@@ -257,6 +452,270 @@ describe("sandbox api", async () => {
     }
   });
 
+  it("derives the trusted CodeBuild nested-Docker flag only from the selected profile", async () => {
+    const suffix = Date.now();
+    const contract = (
+      await db
+        .insert(registryItems)
+        .values({
+          id: newId("item"),
+          orgId,
+          scope: "project",
+          projectId,
+          kind: "agent_contract",
+          name: `nested-docker-${suffix}`,
+          latestVersion: 1,
+        })
+        .returning()
+    )[0];
+    if (!contract) throw new Error("nested-Docker contract fixture missing");
+    await db.insert(registryVersions).values({
+      id: newId("ver"),
+      orgId,
+      itemId: contract.id,
+      version: 1,
+      content: "Exercise the selected sandbox capability.",
+      contentHash: `nested-docker-${suffix}`,
+      status: "active",
+    });
+    const profile = (
+      await db
+        .insert(sandboxProfiles)
+        .values({
+          id: newId("sbx"),
+          orgId,
+          projectId,
+          name: `nested-docker-${suffix}`,
+          driver: "aws",
+          image: "facility-runner:test",
+          setup: { nested_docker: false },
+          resources: { timeout_min: 5 },
+        })
+        .returning()
+    )[0];
+    if (!profile) throw new Error("nested-Docker profile fixture missing");
+    const agent = (
+      await db
+        .insert(agentDefs)
+        .values({
+          id: newId("agent"),
+          orgId,
+          projectId,
+          name: `nested-docker-${suffix}`,
+          engine: "byo",
+          model: { cmd: "true" },
+          contractItemId: contract.id,
+          sandboxProfileId: profile.id,
+          triggers: [],
+          permissions: [],
+          enabled: true,
+        })
+        .returning()
+    )[0];
+    if (!agent) throw new Error("nested-Docker agent fixture missing");
+    await db.insert(repos).values({
+      id: newId("repo"),
+      orgId,
+      projectId,
+      owner: `sandbox-capabilities-${suffix}`,
+      name: "repo",
+      defaultBranch: "main",
+      renderAnswers: {
+        packageInstallCmd: "pnpm install --frozen-lockfile",
+        provisionCmd: "pnpm run local:setup:ui",
+      },
+    });
+
+    const launched: Array<Parameters<SandboxDriver["launch"]>[0]> = [];
+    const driver: SandboxDriver = {
+      name: "aws",
+      launch: async (spec) => {
+        launched.push(spec);
+        return { ref: `fake-${spec.runId}` };
+      },
+      status: async () => "running",
+      async *logs() {},
+      stop: async () => undefined,
+      destroy: async () => undefined,
+    };
+    for (const fixture of [
+      {
+        setup: { nested_docker: false, provisioning: "deps_only" },
+        expected: "0",
+        provisioning: "deps_only",
+        packageInstallCmd: "pnpm install --frozen-lockfile",
+        provisionCmd: null,
+      },
+      {
+        setup: { nested_docker: true, provisioning: "none" },
+        expected: "1",
+        provisioning: "none",
+        packageInstallCmd: null,
+        provisionCmd: null,
+      },
+      // Profiles created before this capability keep their legacy full boundary.
+      {
+        setup: {},
+        expected: "1",
+        provisioning: "full",
+        packageInstallCmd: "pnpm install --frozen-lockfile",
+        provisionCmd: "pnpm run local:setup:ui",
+      },
+    ] as const) {
+      await db
+        .update(sandboxProfiles)
+        .set({ setup: fixture.setup })
+        .where(eq(sandboxProfiles.id, profile.id));
+      const run = (
+        await db
+          .insert(runs)
+          .values({
+            id: newId("run"),
+            orgId,
+            projectId,
+            agentDefId: agent.id,
+            mode: "builder",
+            engine: "byo",
+            trigger: {},
+            createdBy: { type: "user", id: "nested-docker-test" },
+          })
+          .returning()
+      )[0];
+      if (!run) throw new Error("nested-Docker run fixture missing");
+
+      await dispatchRun(config, { runId: run.id, orgId }, { sandboxDriver: async () => driver });
+
+      expect(launched.at(-1)?.env.FACILITY_SANDBOX_NESTED_DOCKER).toBe(fixture.expected);
+      expect(launched.at(-1)?.cachePartition).toBe(
+        sandboxCachePartition(config.secretMasterKey, orgId, projectId),
+      );
+      expect(launched.at(-1)?.env).not.toHaveProperty("FACILITY_CACHE_PARTITION");
+      const persistedRun = (
+        await db.select({ sandbox: runs.sandbox }).from(runs).where(eq(runs.id, run.id)).limit(1)
+      )[0];
+      expect(
+        (persistedRun?.sandbox as { bundle?: Record<string, unknown> } | null)?.bundle,
+      ).toMatchObject({
+        packageInstallCmd: fixture.packageInstallCmd,
+        provisionCmd: fixture.provisionCmd,
+      });
+      const sandboxEvent = (
+        await db.select({ data: runEvents.data }).from(runEvents).where(eq(runEvents.runId, run.id))
+      ).find((event) => (event.data as Record<string, unknown>).nested_docker !== undefined);
+      expect(sandboxEvent?.data).toMatchObject({
+        driver: "aws",
+        nested_docker: fixture.expected === "1",
+        provisioning: fixture.provisioning,
+      });
+    }
+
+    await db
+      .update(sandboxProfiles)
+      .set({ driver: "docker", setup: { nested_docker: false } })
+      .where(eq(sandboxProfiles.id, profile.id));
+    const dockerRun = (
+      await db
+        .insert(runs)
+        .values({
+          id: newId("run"),
+          orgId,
+          projectId,
+          agentDefId: agent.id,
+          mode: "builder",
+          engine: "byo",
+          trigger: {},
+          createdBy: { type: "user", id: "nested-docker-docker-driver-test" },
+        })
+        .returning()
+    )[0];
+    if (!dockerRun) throw new Error("docker-driver run fixture missing");
+    const dockerDriver: SandboxDriver = { ...driver, name: "docker" };
+
+    await dispatchRun(
+      config,
+      { runId: dockerRun.id, orgId },
+      { sandboxDriver: async () => dockerDriver },
+    );
+
+    expect(launched.at(-1)?.env).not.toHaveProperty("FACILITY_SANDBOX_NESTED_DOCKER");
+    expect(launched.at(-1)?.cachePartition).toBe(
+      sandboxCachePartition(config.secretMasterKey, orgId, projectId),
+    );
+    expect(launched.at(-1)?.env).not.toHaveProperty("FACILITY_CACHE_PARTITION");
+    const dockerSandboxEvent = (
+      await db
+        .select({ data: runEvents.data })
+        .from(runEvents)
+        .where(eq(runEvents.runId, dockerRun.id))
+    ).find((event) => (event.data as Record<string, unknown>).driver === "docker");
+    expect(dockerSandboxEvent?.data).not.toHaveProperty("nested_docker");
+    expect(dockerSandboxEvent?.data).toMatchObject({ provisioning: "full" });
+  });
+
+  it("accepts only coherent sandbox capability settings", async () => {
+    const valid = await app.inject({
+      method: "POST",
+      url: "/v1/sandbox-profiles",
+      headers: { cookie },
+      payload: {
+        name: `no-nested-docker-${Date.now()}`,
+        driver: "aws",
+        image: "facility-runner:test",
+        setup: { nested_docker: false, provisioning: "deps_only" },
+      },
+    });
+    expect(valid.statusCode).toBe(200);
+    expect(valid.json().setup).toMatchObject({
+      nested_docker: false,
+      provisioning: "deps_only",
+    });
+
+    for (const [setup, message] of [
+      [{ nested_docker: "false" }, "setup.nested_docker must be a boolean"],
+      [{ provisioning: "skip" }, "setup.provisioning must be full, deps_only, or none"],
+      [
+        { provisioning: "deps_only", provision_cmd: "pnpm setup" },
+        "setup command overrides cannot target phases disabled by setup.provisioning",
+      ],
+      [
+        { provisioning: "none", package_install_cmd: "pnpm install" },
+        "setup command overrides cannot target phases disabled by setup.provisioning",
+      ],
+    ] as const) {
+      const invalid = await app.inject({
+        method: "POST",
+        url: "/v1/sandbox-profiles",
+        headers: { cookie },
+        payload: {
+          name: `invalid-capability-${Date.now()}`,
+          driver: "aws",
+          image: "facility-runner:test",
+          setup,
+        },
+      });
+      expect(invalid.statusCode).toBe(400);
+      expect(invalid.body).toContain(message);
+    }
+
+    const invalidPatch = await app.inject({
+      method: "PATCH",
+      url: `/v1/sandbox-profiles/${valid.json().id}`,
+      headers: { cookie },
+      payload: { setup: { provisioning: false } },
+    });
+    expect(invalidPatch.statusCode).toBe(400);
+    expect(invalidPatch.body).toContain("setup.provisioning must be full, deps_only, or none");
+
+    const validPatch = await app.inject({
+      method: "PATCH",
+      url: `/v1/sandbox-profiles/${valid.json().id}`,
+      headers: { cookie },
+      payload: { setup: { nested_docker: false, provisioning: "none" } },
+    });
+    expect(validPatch.statusCode).toBe(200);
+    expect(validPatch.json().setup).toEqual({ nested_docker: false, provisioning: "none" });
+  });
+
   it("appendRunEvents allocates contiguous seqs under concurrent appends", async () => {
     const runId = newId("run");
     await insertRunnerRun("frt_seq", "running", runId, {});
@@ -316,6 +775,32 @@ describe("sandbox api", async () => {
     } finally {
       await limited.close();
     }
+  });
+
+  it("persists authenticated runner phase timings without a schema migration", async () => {
+    const token = "frt_phase_timing";
+    const run = await insertRunnerRun(token, "running");
+    const payload = {
+      name: "package_install",
+      status: "completed",
+      duration_ms: 1_234,
+      outcome: "succeeded",
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/runs/${run.id}/events`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: [{ type: "phase", data: payload }],
+    });
+
+    expect(response.statusCode).toBe(200);
+    const [stored] = await db
+      .select({ type: runEvents.type, data: runEvents.data, ts: runEvents.ts })
+      .from(runEvents)
+      .where(eq(runEvents.runId, run.id));
+    expect(stored).toMatchObject({ type: "phase", data: payload });
+    expect(stored?.ts).toBeInstanceOf(Date);
   });
 
   it("aws driver fails loudly as not_configured when env is missing", async () => {
@@ -671,7 +1156,7 @@ describe("sandbox api", async () => {
       },
       {
         type: "check",
-        data: { name: "agent smoke", status: "skipped", self_reported: true },
+        data: { name: "agent smoke", status: " SKIPPED ", self_reported: true },
       },
     ]);
 
@@ -743,7 +1228,7 @@ describe("sandbox api", async () => {
     expect(body).toContain("notify delivered");
   }, 10_000);
 
-  it("returns a per-installation repo token for runner clone credentials", async () => {
+  it("returns per-installation clone credentials and bound security-sweep evidence", async () => {
     const token = "frt_clone";
     const installationNumber = Date.now();
     const owner = `octo-${installationNumber}`;
@@ -775,7 +1260,7 @@ describe("sandbox api", async () => {
       sealedVirtualKey: await seal("fvk_test", masterKey),
       bundle: {
         runId,
-        mode: "builder",
+        mode: "security-sweep",
         engine: "byo",
         contract: "contract",
         skills: [],
@@ -783,6 +1268,7 @@ describe("sandbox api", async () => {
         repo: {
           cloneUrl: `https://github.com/${owner}/private-repo.git`,
           branch: "main",
+          expectedHeadSha: null,
           installationTokenRef: installation.id,
         },
         packageInstallCmd: "pnpm install --frozen-lockfile",
@@ -793,10 +1279,25 @@ describe("sandbox api", async () => {
         timeoutMin: 60,
       },
     });
+    await db.update(runs).set({ mode: "security-sweep" }).where(eq(runs.id, run.id));
     let tokenInput: Record<string, unknown> | undefined;
     app.githubInstallationTokenFactory = async (input) => {
       tokenInput = input;
       return "installation-token";
+    };
+    const previousGithubFactory = app.githubClientFactory;
+    app.githubClientFactory = async (actualInstallationId) => {
+      expect(actualInstallationId).toBe(installationNumber);
+      return {
+        request: async (route: string) => ({
+          data: route.includes("dependency-graph") ? { sbom: { packages: [] } } : [],
+        }),
+        rest: {
+          repos: {
+            getBranch: async () => ({ data: { commit: { sha: "a".repeat(40) } } }),
+          },
+        },
+      } as never;
     };
 
     const response = await app.inject({
@@ -809,6 +1310,22 @@ describe("sandbox api", async () => {
     const hello = response.json();
     expect(hello.repoToken).toBe("installation-token");
     expect(hello.packageRegistryToken).toBe("package-token");
+    expect(hello.securitySweepEvidence).toMatchObject({
+      schema: "facility.security.sweep-input.v1",
+      runId,
+      repository: {
+        owner,
+        name: "private-repo",
+        ref: "main",
+        headSha: "a".repeat(40),
+      },
+      sources: {
+        codeScanning: [],
+        dependabot: [],
+        secretScanning: [],
+        sbom: { sbom: { packages: [] } },
+      },
+    });
     expect(hello.bundleUrl).not.toContain("?");
     const bundlePath = new URL(hello.bundleUrl).pathname;
     expect((await app.inject({ method: "GET", url: bundlePath })).statusCode).toBe(401);
@@ -833,6 +1350,7 @@ describe("sandbox api", async () => {
     expect(replay.statusCode).toBe(409);
     expect(replay.json().error.code).toBe("virtual_key_revealed");
     app.githubInstallationTokenFactory = undefined;
+    app.githubClientFactory = previousGithubFactory;
   });
 
   it("does not release the package token when no dedicated install phase exists", async () => {
@@ -848,7 +1366,7 @@ describe("sandbox api", async () => {
         contract: "contract",
         skills: [],
         engineConfig: {},
-        repo: { cloneUrl: null, branch: null, installationTokenRef: null },
+        repo: { cloneUrl: null, branch: null, expectedHeadSha: null, installationTokenRef: null },
         packageInstallCmd: null,
         provisionCmd: null,
         checkCmds: [],
@@ -1030,6 +1548,63 @@ describe("sandbox api", async () => {
     expect(await driver.status(launched.ref)).toBe("lost");
   }, 60_000);
 
+  it("isolates run sweeps from other instances and preview workloads", async () => {
+    if (!(await dockerReachable())) {
+      console.warn("Docker socket is not reachable from this sandbox; skipping namespace test");
+      return;
+    }
+    const driver = new DockerSandboxDriver();
+    const refs: string[] = [];
+    try {
+      const alphaRun = await driver.launch({
+        runId: `run_alpha_${Date.now()}`,
+        namespace: "instance_alpha",
+        kind: "run",
+        image: "alpine:3.20",
+        env: {},
+        cpu: 0.5,
+        memoryMb: 128,
+        timeoutMin: 1,
+        cmd: ["sleep", "30"],
+      });
+      refs.push(alphaRun.ref);
+      const betaRun = await driver.launch({
+        runId: `run_beta_${Date.now()}`,
+        namespace: "instance_beta",
+        kind: "run",
+        image: "alpine:3.20",
+        env: {},
+        cpu: 0.5,
+        memoryMb: 128,
+        timeoutMin: 1,
+        cmd: ["sleep", "30"],
+      });
+      refs.push(betaRun.ref);
+      const alphaPreview = await driver.launch({
+        runId: `preview:alpha_${Date.now()}`,
+        namespace: "instance_alpha",
+        kind: "preview",
+        image: "alpine:3.20",
+        env: {},
+        cpu: 0.5,
+        memoryMb: 128,
+        timeoutMin: 1,
+        cmd: ["sleep", "30"],
+      });
+      refs.push(alphaPreview.ref);
+
+      expect(await driver.listFacilityContainers("instance_alpha")).toEqual([
+        { ref: alphaRun.ref, runId: expect.stringMatching(/^run_alpha_/) },
+      ]);
+      expect(await driver.listFacilityContainers("instance_beta")).toEqual([
+        { ref: betaRun.ref, runId: expect.stringMatching(/^run_beta_/) },
+      ]);
+      expect(await driver.status(alphaPreview.ref)).toBe("running");
+    } finally {
+      await Promise.all(refs.map((ref) => driver.destroy(ref).catch(() => undefined)));
+    }
+  }, 60_000);
+
   it("reconciler destroys orphan docker containers after label and run-state double check", async () => {
     if (!(await dockerReachable())) {
       console.warn(
@@ -1041,6 +1616,7 @@ describe("sandbox api", async () => {
     const runId = `run_orphan_${Date.now()}`;
     const launched = await driver.launch({
       runId,
+      namespace: sandboxNamespace(config),
       image: "alpine:3.20",
       env: {},
       cpu: 0.5,

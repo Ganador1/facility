@@ -19,8 +19,9 @@ const repoRoot = existsSync(join(packagedAssetsRoot, "packages/harness/contracts
   : workspaceRoot;
 loadDotenv({ path: join(workspaceRoot, ".env"), quiet: true });
 
-type SeedOptions = {
+export type SeedOptions = {
   includeDemoData?: boolean;
+  log?: (message: string) => void;
 };
 
 type RegistryDb = {
@@ -48,8 +49,14 @@ const BUNDLED_ACTION_TYPES = [
   { name: "mcp_tool_call", required: ["toolName", "args", "requestedBy"] },
 ];
 
-function defaultSandboxProfileId(orgId: string): string {
+const ANALYSIS_AGENT_NAMES = ["review", "security-sweep"] as const;
+
+export function defaultSandboxProfileId(orgId: string): string {
   return orgId === "org_dev_the_agile_monkeys" ? "sbx_dev_default" : `sbx_default_${orgId}`;
+}
+
+export function analysisSandboxProfileId(orgId: string): string {
+  return orgId === "org_dev_the_agile_monkeys" ? "sbx_dev_analysis" : `sbx_analysis_${orgId}`;
 }
 
 // The default sandbox profile must run the Facility runner (its ENTRYPOINT), or
@@ -129,35 +136,43 @@ export async function seed(
   if (!connectionString) {
     throw new Error("DATABASE_URL is required");
   }
-  const includeDemoData = options.includeDemoData ?? process.env.FACILITY_SEED_DEMO !== "0";
   const sql = postgres(connectionString, { max: 1 });
   try {
-    for (const role of BUNDLED_ROLES) {
-      await sql`
+    await seedWithClient(sql, options);
+  } finally {
+    await sql.end();
+  }
+}
+
+export async function seedWithClient(sql: postgres.Sql, options: SeedOptions = {}): Promise<void> {
+  const includeDemoData = options.includeDemoData ?? process.env.FACILITY_SEED_DEMO !== "0";
+  const log = options.log ?? console.log;
+  for (const role of BUNDLED_ROLES) {
+    await sql`
         INSERT INTO roles (id, org_id, name, description, permissions)
         VALUES (${`role_bundled_${role.name}`}, NULL, ${role.name}, ${role.description}, ${role.permissions})
         ON CONFLICT (coalesce(org_id, '__bundled__'), name)
         DO UPDATE SET description = EXCLUDED.description, permissions = EXCLUDED.permissions, updated_at = now()
       `;
-    }
-    const seededOrgs = await sql<{ id: string }[]>`SELECT id FROM orgs`;
-    await seedOrgEssentialsForOrgsSql(
+  }
+  const seededOrgs = await sql<{ id: string }[]>`SELECT id FROM orgs`;
+  await seedOrgEssentialsForOrgsSql(
+    sql,
+    seededOrgs.map((org) => org.id),
+  );
+  if (!includeDemoData) {
+    // Deploy-time seeds refresh bundled contracts and templates for existing
+    // tenants too. Do this set-wise so an upgrade is not one database round
+    // trip per file per tenant.
+    await seedBundledRegistryForOrgsSql(
       sql,
       seededOrgs.map((org) => org.id),
     );
-    if (!includeDemoData) {
-      // Deploy-time seeds refresh bundled contracts and templates for existing
-      // tenants too. Do this set-wise so an upgrade is not one database round
-      // trip per file per tenant.
-      await seedBundledRegistryForOrgsSql(
-        sql,
-        seededOrgs.map((org) => org.id),
-      );
-      console.log("seed complete");
-      return;
-    }
+    log("seed complete");
+    return;
+  }
 
-    await sql`
+  await sql`
       INSERT INTO orgs (id, name, slug, settings)
       VALUES (
         'org_dev_the_agile_monkeys',
@@ -167,19 +182,19 @@ export async function seed(
       )
       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
     `;
-    await sql`
+  await sql`
       INSERT INTO users (id, email, name, status)
       VALUES ('user_dev_admin', 'admin@theagilemonkeys.com', 'Dev Admin', 'active')
       ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, updated_at = now()
     `;
-    await sql`
+  await sql`
       INSERT INTO org_members (id, org_id, user_id, role_id)
       VALUES ('member_dev_admin', 'org_dev_the_agile_monkeys', 'user_dev_admin', 'role_bundled_owner')
       ON CONFLICT (org_id, user_id) DO UPDATE SET role_id = EXCLUDED.role_id, updated_at = now()
     `;
 
-    await seedOrgEssentialsSql(sql, "org_dev_the_agile_monkeys");
-    const devProjects = await sql<{ id: string }[]>`
+  await seedOrgEssentialsSql(sql, "org_dev_the_agile_monkeys");
+  const devProjects = await sql<{ id: string }[]>`
       INSERT INTO projects (id, org_id, name, slug, description, settings)
       VALUES (
         'proj_dev_facility',
@@ -195,11 +210,11 @@ export async function seed(
         updated_at = now()
       RETURNING id
     `;
-    const devProjectId = devProjects[0]?.id;
-    if (!devProjectId) throw new Error("failed to seed dev project");
+  const devProjectId = devProjects[0]?.id;
+  if (!devProjectId) throw new Error("failed to seed dev project");
 
-    const bundled = await seedBundledRegistrySql(sql, "org_dev_the_agile_monkeys");
-    await sql`
+  const bundled = await seedBundledRegistrySql(sql, "org_dev_the_agile_monkeys");
+  await sql`
       INSERT INTO agent_defs (
         id,
         org_id,
@@ -240,7 +255,7 @@ export async function seed(
         enabled = true,
         updated_at = now()
     `;
-    await sql`
+  await sql`
       INSERT INTO agent_defs (
         id,
         org_id,
@@ -280,10 +295,7 @@ export async function seed(
         enabled = true,
         updated_at = now()
     `;
-    console.log("seed complete");
-  } finally {
-    await sql.end();
-  }
+  log("seed complete");
 }
 
 export async function seedBundledRegistryForOrg(db: RegistryDb, orgId: string): Promise<void> {
@@ -301,6 +313,28 @@ async function seedOrgEssentialsSql(sql: postgres.Sql, orgId: string): Promise<v
       ${defaultSandboxDriver()},
       ${defaultRunnerImage()},
       '{"deps":[]}'::jsonb,
+      ${defaultSandboxResources()}::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `;
+
+  await sql`
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    VALUES (
+      ${analysisSandboxProfileId(orgId)},
+      ${orgId},
+      'Analysis runner',
+      ${defaultSandboxDriver()},
+      ${defaultRunnerImage()},
+      '{"deps":[],"nested_docker":false,"provisioning":"deps_only"}'::jsonb,
       ${defaultSandboxResources()}::jsonb,
       '{"egress":"restricted"}'::jsonb
     )
@@ -346,6 +380,7 @@ async function seedOrgEssentialsForOrgsSql(sql: postgres.Sql, orgIds: string[]):
   const orgInputs = orgIds.map((orgId) => ({
     org_id: orgId,
     profile_id: defaultSandboxProfileId(orgId),
+    analysis_profile_id: analysisSandboxProfileId(orgId),
   }));
   await sql`
     WITH inputs AS (
@@ -372,6 +407,53 @@ async function seedOrgEssentialsForOrgsSql(sql: postgres.Sql, orgIds: string[]):
       resources = EXCLUDED.resources,
       network = EXCLUDED.network,
       updated_at = now()
+  `;
+  await sql`
+    WITH inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text, profile_id text, analysis_profile_id text)
+    )
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    SELECT
+      inputs.analysis_profile_id,
+      inputs.org_id,
+      'Analysis runner',
+      ${defaultSandboxDriver()},
+      ${defaultRunnerImage()},
+      '{"deps":[],"nested_docker":false,"provisioning":"deps_only"}'::jsonb,
+      ${defaultSandboxResources()}::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    FROM inputs
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `;
+  // One-time activation for legacy agents that still point at Facility's
+  // canonical default. The timestamp guard makes a later operator assignment
+  // back to the full profile durable; custom and NULL assignments also remain
+  // untouched. The org join prevents cross-tenant profile references.
+  await sql`
+    WITH inputs AS (
+      SELECT *
+      FROM jsonb_to_recordset(${sql.json(orgInputs)}::jsonb)
+        AS value(org_id text, profile_id text, analysis_profile_id text)
+    )
+    UPDATE agent_defs AS agents
+    SET sandbox_profile_id = inputs.analysis_profile_id, updated_at = now()
+    FROM inputs
+    INNER JOIN sandbox_profiles AS analysis_profiles
+      ON analysis_profiles.id = inputs.analysis_profile_id
+      AND analysis_profiles.org_id = inputs.org_id
+    WHERE agents.org_id = inputs.org_id
+      AND agents.sandbox_profile_id = inputs.profile_id
+      AND agents.name = ANY(${[...ANALYSIS_AGENT_NAMES]})
+      AND agents.updated_at < analysis_profiles.created_at
   `;
   const actionInputs = BUNDLED_ACTION_TYPES.map((actionType) => ({
     name: actionType.name,
@@ -416,6 +498,8 @@ async function seedOrgEssentialsForOrgsSql(sql: postgres.Sql, orgIds: string[]):
 }
 
 async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void> {
+  // New-org onboarding has no legacy agents to reassign. Existing-tenant
+  // activation intentionally remains in the set-wise deploy seed above.
   await db.execute(drizzleSql`
     INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
     VALUES (
@@ -425,6 +509,28 @@ async function seedOrgEssentialsDb(db: RegistryDb, orgId: string): Promise<void>
       ${defaultSandboxDriver()},
       ${defaultRunnerImage()},
       '{"deps":[]}'::jsonb,
+      ${defaultSandboxResources()}::jsonb,
+      '{"egress":"restricted"}'::jsonb
+    )
+    ON CONFLICT (id) DO UPDATE SET
+      name = EXCLUDED.name,
+      driver = EXCLUDED.driver,
+      image = EXCLUDED.image,
+      setup = EXCLUDED.setup,
+      resources = EXCLUDED.resources,
+      network = EXCLUDED.network,
+      updated_at = now()
+  `);
+
+  await db.execute(drizzleSql`
+    INSERT INTO sandbox_profiles (id, org_id, name, driver, image, setup, resources, network)
+    VALUES (
+      ${analysisSandboxProfileId(orgId)},
+      ${orgId},
+      'Analysis runner',
+      ${defaultSandboxDriver()},
+      ${defaultRunnerImage()},
+      '{"deps":[],"nested_docker":false,"provisioning":"deps_only"}'::jsonb,
       ${defaultSandboxResources()}::jsonb,
       '{"egress":"restricted"}'::jsonb
     )

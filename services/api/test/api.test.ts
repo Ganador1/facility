@@ -1,4 +1,4 @@
-import { createHmac } from "node:crypto";
+import { createHmac, generateKeyPairSync } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -7,11 +7,13 @@ import { hashKey, newId, seal } from "@facility/core";
 import {
   actionTypes,
   agentDefs,
+  analysisSandboxProfileId,
   auditEvents,
   budgets,
   conversationMessages,
   conversations,
   createDb,
+  defaultSandboxProfileId,
   ghIssues,
   githubInstallations,
   inboundEvents,
@@ -45,7 +47,7 @@ import {
 } from "@facility/db";
 import { and, eq, ne, sql } from "drizzle-orm";
 import postgres from "postgres";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp, mintSessionCookie } from "../src/app.js";
 import { registerAssistantTurn, releaseAssistantTurn } from "../src/assistant/turn-registry.js";
 import type { GithubClientFactory } from "../src/github/client.js";
@@ -58,6 +60,9 @@ import type { AppConfig } from "../src/types.js";
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgres://facility:facility@localhost:5461/facility_test";
 const masterKey = Buffer.alloc(32, 9).toString("base64");
+const githubAppTestKey = generateKeyPairSync("rsa", { modulusLength: 1024 })
+  .privateKey.export({ type: "pkcs8", format: "pem" })
+  .toString();
 
 async function canConnect() {
   const sqlClient = postgres(databaseUrl, { max: 1, connect_timeout: 10 });
@@ -289,7 +294,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(135);
+    ).toBe(138);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },
@@ -306,6 +311,12 @@ describe("api", async () => {
       expect.objectContaining({ name: "Idempotency-Key", in: "header" }),
     );
     expect(document.paths["/health"]?.get?.security).toEqual([]);
+    expect(
+      document.paths["/v1/projects/{projectId}/previews/{previewId}/open"]?.get?.[
+        "x-facility-permission"
+      ],
+    ).toBe("runs:read");
+    expect(document.paths["/preview-auth/{previewId}"]?.get?.security).toEqual([]);
     expect(document.paths["/v1/runs/{runId}/kb-checkpoint"]?.post?.security).toEqual([
       { runnerToken: [] },
     ]);
@@ -620,6 +631,39 @@ describe("api", async () => {
     expect(await validateProjectKb(db, orgId, projectId)).toMatchObject({
       ok: true,
       errors: [],
+    });
+    const projectAgents = await db
+      .select({ name: agentDefs.name, sandboxProfileId: agentDefs.sandboxProfileId })
+      .from(agentDefs)
+      .where(and(eq(agentDefs.orgId, orgId), eq(agentDefs.projectId, projectId)));
+    const profileByAgent = new Map(
+      projectAgents.map((agent) => [agent.name, agent.sandboxProfileId]),
+    );
+    for (const name of ["review", "security-sweep"]) {
+      expect(profileByAgent.get(name), name).toBe(analysisSandboxProfileId(orgId));
+    }
+    for (const name of [
+      "builder",
+      "architect",
+      "codex-builder",
+      "codex-architect",
+      "address-review",
+      "ci-doctor",
+      "project-owner",
+      "learning",
+    ]) {
+      expect(profileByAgent.get(name), name).toBe(defaultSandboxProfileId(orgId));
+    }
+    const analysisProfile = (
+      await db
+        .select()
+        .from(sandboxProfiles)
+        .where(eq(sandboxProfiles.id, analysisSandboxProfileId(orgId)))
+        .limit(1)
+    )[0];
+    expect(analysisProfile?.setup).toMatchObject({
+      nested_docker: false,
+      provisioning: "deps_only",
     });
     let listedProject = false;
     for (let offset = 0; !listedProject; offset += 100) {
@@ -1663,7 +1707,7 @@ describe("api", async () => {
           id: newId("run"),
           orgId,
           projectId: planProjectId,
-          mode: "architect",
+          mode: "codex-architect",
           engine: "codex",
           status: "succeeded",
           trigger: { type: "github_comment", issue: { number: 42 } },
@@ -3332,11 +3376,31 @@ describe("api", async () => {
       costCents: 123,
       latencyMs: 10,
     });
-    const spend = await app.inject({
-      method: "GET",
-      url: "/v1/spend?groupBy=model",
-      headers: { cookie },
+    // Database-managed created_at can lead the millisecond application clock.
+    // The default spend window must therefore use the database clock too.
+    const RealDate = Date;
+    const applicationNow = RealDate.now() - 1_000;
+    const SkewedDate = new Proxy(RealDate, {
+      construct(target, args) {
+        return Reflect.construct(target, args.length ? args : [applicationNow]);
+      },
+      get(target, property, receiver) {
+        if (property === "now") return () => applicationNow;
+        return Reflect.get(target, property, receiver);
+      },
     });
+    vi.stubGlobal("Date", SkewedDate);
+    const spend = await (async () => {
+      try {
+        return await app.inject({
+          method: "GET",
+          url: "/v1/spend?groupBy=model",
+          headers: { cookie },
+        });
+      } finally {
+        vi.stubGlobal("Date", RealDate);
+      }
+    })();
     expect(spend.statusCode).toBe(200);
     expect(
       spend
@@ -3876,7 +3940,7 @@ describe("api", async () => {
     config.s3SecretKey = "test";
     config.awsRegion = "us-east-1";
     config.githubAppId = "1";
-    config.githubAppPrivateKey = "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----";
+    config.githubAppPrivateKey = githubAppTestKey;
     config.githubAppWebhookSecret = "secret";
     config.githubAppSlug = "facility-test";
     const first = await insertAuditEvent(db, {
@@ -3910,6 +3974,10 @@ describe("api", async () => {
       expect(checkStatus(healthy.json(), "object_storage")).toBe("pass");
       expect(checkStatus(healthy.json(), "audit_hash_chain")).toBe("pass");
       expect(checkStatus(healthy.json(), "worker_heartbeat")).toBe("pass");
+      expect(checkStatus(healthy.json(), "github_app")).toBe("pass");
+      expect(
+        healthy.json().checks.some((check: { id: string }) => check.id === "aws_sandbox"),
+      ).toBe(false);
       // The seeded default profile runs the configured runner image on the docker
       // driver (Docker reachable in the test env). Whether that image is present
       // locally is environmental, so the platform-lane check is pass (image
@@ -3918,6 +3986,17 @@ describe("api", async () => {
       expect([...objects.keys()].some((key) => key.includes("/facility-test/envelopes/"))).toBe(
         true,
       );
+
+      config.githubAppPrivateKey = "not-a-private-key";
+      const invalidGithubKey = await app.inject({
+        method: "GET",
+        url: "/v1/admin/doctor",
+        headers: { cookie },
+      });
+      expect(invalidGithubKey.json().ok).toBe(false);
+      expect(checkStatus(invalidGithubKey.json(), "github_app")).toBe("fail");
+      expect(JSON.stringify(invalidGithubKey.json())).not.toContain("not-a-private-key");
+      config.githubAppPrivateKey = githubAppTestKey;
 
       await db.update(auditEvents).set({ hash: "broken" }).where(eq(auditEvents.id, second.id));
       const broken = await app.inject({

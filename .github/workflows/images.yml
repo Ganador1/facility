@@ -3,11 +3,11 @@
 # passes; a manual run publishes a commit-SHA tag and never a version tag. The
 # version comes from the commits on main, not from a tag someone pushed.
 #
-# Builds first push addressable digests without deployable tags. Only after all
-# five builds succeed does the promote job point the six service tags at those
-# digests (worker intentionally reuses api). Existing tags are inspected through
-# the GitHub Packages API: an exact digest is idempotent, while a conflicting
-# replay fails closed before promotion.
+# One Bake graph first pushes five addressable digests without deployable tags.
+# Only after the complete graph succeeds does the promote job point the six
+# service tags at those digests (worker intentionally reuses api). Existing
+# tags are inspected through the GitHub Packages API: an exact digest is
+# idempotent, while a conflicting replay fails closed before promotion.
 #
 # A package is created PRIVATE regardless of the repository's visibility: what
 # it inherits from the linked repository is access permissions, not visibility.
@@ -33,9 +33,6 @@ permissions:
 concurrency:
   group: images-${{ github.repository }}
   cancel-in-progress: false
-
-env:
-  REGISTRY: ghcr.io/${{ github.repository }}
 
 jobs:
   plan:
@@ -72,45 +69,11 @@ jobs:
     permissions:
       contents: read
       packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # api carries the worker and the migrate task as well: same bits, a
-          # different command. The worker tags are promoted from this digest.
-          - image: api
-            dockerfile: Dockerfile
-            target: api
-            context: .
-            build_args: ""
-          - image: gateway
-            dockerfile: Dockerfile
-            target: gateway
-            context: .
-            build_args: ""
-          - image: mcp
-            dockerfile: Dockerfile
-            target: mcp
-            context: .
-            build_args: ""
-          - image: web
-            dockerfile: apps/web/Dockerfile
-            target: web
-            context: .
-            # The official image serves Facility's hosted control plane. AWS
-            # self-hosters with a different api_url must build their web image
-            # for that deployment, as documented in the runbook.
-            build_args: FACILITY_API_URL=https://api.facility.tam-os.com
-          - image: runner
-            dockerfile: runner/Dockerfile
-            target: ""
-            context: .
-            build_args: ""
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      # The plan job's stamp cannot cross the job boundary. Stamp every matrix
-      # checkout so the built image contains the version on its promoted tag.
+      # The plan job's stamp cannot cross the job boundary. Stamp this isolated
+      # checkout so every target contains the version on its promoted tag.
       - name: Stamp the decided version
         if: inputs.version != ''
         run: node scripts/release.mjs stamp "${{ inputs.version }}"
@@ -123,37 +86,122 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Shell steps do not receive the cache runtime credentials that JavaScript
+      # actions receive. Export them before raw Buildx uses the type=gha cache.
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
+
       # linux/amd64 only, matching the module's default task_cpu_architecture.
-      # Graviton deployments still build their own until arm64 is added here.
-      - name: Build and push the addressable digest
-        id: build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.dockerfile }}
-          target: ${{ matrix.target }}
-          build-args: ${{ matrix.build_args }}
-          platforms: linux/amd64
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-
-      - name: Record the built digest
+      # A single graph shares base, dependency, and workspace stages across the
+      # five thin security-boundary images. The overlay pushes only canonical
+      # digests; release tags remain gated by the promote job.
+      - name: Build and push the addressable image set
         env:
-          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-          IMAGE_NAME: ${{ matrix.image }}
-        run: node scripts/images.mjs record-digest "$IMAGE_NAME" "$IMAGE_DIGEST" "$RUNNER_TEMP/image-digests"
+          ECR_REGISTRY: ghcr.io
+          ECR_PREFIX: ${{ github.repository }}
+          IMAGE_TAG: unused-by-publish-overlay
+          PLATFORM: linux/amd64
+          PUBLISH_REGISTRY: ghcr.io
+          PUBLISH_PREFIX: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata="$RUNNER_TEMP/image-build-metadata.json"
+          (
+            cd infra
+            docker buildx bake \
+              --allow=fs.read=.. \
+              --file docker-bake.hcl \
+              --file docker-bake.publish.hcl \
+              --metadata-file "$metadata"
+          )
+          node scripts/images.mjs record-bake-digests \
+            "$metadata" "$RUNNER_TEMP/image-digests"
 
-      - name: Preserve the digest for promotion
+      - name: Preserve the complete digest set for promotion
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: facility-image-${{ matrix.image }}-${{ github.sha }}
-          path: ${{ runner.temp }}/image-digests/${{ matrix.image }}.json
+          name: facility-image-digests-${{ github.sha }}
+          path: ${{ runner.temp }}/image-digests/*.json
           if-no-files-found: error
           retention-days: 1
 
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: facility-image-digests-${{ github.sha }}
+          path: ${{ runner.temp }}/image-digests
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pin both the scanner version and release-asset checksum. This avoids a
+      # downloader action whose pinned JavaScript still executes an installer
+      # from a mutable upstream branch.
+      - id: grype
+        name: Install the checksum-pinned Grype scanner
+        env:
+          GRYPE_SHA256: aaa98d27d2d7efd9317c6a1ad6d9b15f3e65bab320e7d03bde41e251387bb71c
+          GRYPE_VERSION: 0.110.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/grype.tar.gz"
+          directory="$RUNNER_TEMP/grype"
+          mkdir -p "$directory"
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://github.com/anchore/grype/releases/download/v$GRYPE_VERSION/grype_${GRYPE_VERSION}_linux_amd64.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$GRYPE_SHA256" "$archive" | sha256sum --check --strict
+          tar -xzf "$archive" -C "$directory" grype
+          chmod 0755 "$directory/grype"
+          printf 'cmd=%s\n' "$directory/grype" >> "$GITHUB_OUTPUT"
+
+      # Download the vulnerability database once. The five scans below then
+      # reuse it and the runner's container-layer cache.
+      - name: Refresh the Grype vulnerability database once
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+          GRYPE_CHECK_FOR_APP_UPDATE: "false"
+        run: '"$GRYPE" db update'
+
+      - name: Gate every addressable image digest on fixable high CVEs
+        env:
+          DIGEST_DIRECTORY: ${{ runner.temp }}/image-digests
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+          GRYPE_CHECK_FOR_APP_UPDATE: "false"
+          GRYPE_DB_AUTO_UPDATE: "false"
+          IMAGE_PREFIX: ghcr.io/${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          scan_failed=0
+          for image in api gateway mcp web runner; do
+            digest="$(node -e '
+              const fs = require("node:fs");
+              const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+              if (manifest.image !== process.argv[2] || !/^sha256:[0-9a-f]{64}$/.test(manifest.digest)) {
+                throw new Error(`invalid digest manifest for ${process.argv[2]}`);
+              }
+              process.stdout.write(manifest.digest);
+            ' "$DIGEST_DIRECTORY/$image.json" "$image")"
+            if ! "$GRYPE" "registry:$IMAGE_PREFIX/$image@$digest" --fail-on high --only-fixed; then
+              scan_failed=1
+            fi
+          done
+          exit "$scan_failed"
+
   promote:
-    needs: [plan, build]
+    needs: [plan, build, scan]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -173,9 +221,8 @@ jobs:
       - name: Download every accepted digest
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          pattern: facility-image-*-${{ github.sha }}
+          name: facility-image-digests-${{ github.sha }}
           path: ${{ runner.temp }}/image-digests
-          merge-multiple: true
 
       - name: Promote the complete image set
         env:

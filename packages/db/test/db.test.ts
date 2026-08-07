@@ -1,8 +1,25 @@
+import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { hashChain, newId } from "@facility/core";
 import { count, eq, inArray, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createDb, insertAuditEvent, migrate, seed, withOrg } from "../src/index.js";
+import {
+  analysisSandboxProfileId,
+  applyMigrations,
+  createDb,
+  defaultSandboxProfileId,
+  deployDatabase,
+  insertAuditEvent,
+  MigrationChecksumError,
+  MigrationExecutionError,
+  MigrationLockTimeoutError,
+  migrate,
+  seed,
+  withOrg,
+} from "../src/index.js";
 import * as schema from "../src/schema.js";
 
 const databaseUrl =
@@ -39,6 +56,227 @@ describe("db", async () => {
 
   afterAll(async () => {
     await client.end();
+  });
+
+  it("stores migration checksums and rejects edits to applied SQL before applying more", async () => {
+    const migrationsDir = await mkdtemp(join(tmpdir(), "facility-migrations-"));
+    const schemaName = `migration_test_${randomUUID().replaceAll("-", "_")}`;
+    const isolated = postgres(databaseUrl, { max: 1 });
+    try {
+      await isolated.unsafe(`CREATE SCHEMA "${schemaName}"`);
+      await isolated.unsafe(`SET search_path TO "${schemaName}"`);
+      await writeFile(join(migrationsDir, "0001_first.sql"), "CREATE TABLE first (id text);\n");
+
+      const first = await applyMigrations(isolated, { migrationsDir, log: () => undefined });
+      expect(first.applied).toEqual(["0001_first.sql"]);
+      const checksumRows = await isolated<{ checksum: string | null }[]>`
+        SELECT checksum FROM _facility_migrations WHERE name = '0001_first.sql'
+      `;
+      expect(checksumRows[0]?.checksum).toMatch(/^[a-f0-9]{64}$/);
+
+      const second = await applyMigrations(isolated, { migrationsDir, log: () => undefined });
+      expect(second.skipped).toEqual(["0001_first.sql"]);
+      await isolated`UPDATE _facility_migrations SET checksum = NULL WHERE name = '0001_first.sql'`;
+      const legacy = await applyMigrations(isolated, { migrationsDir, log: () => undefined });
+      expect(legacy.backfilled).toEqual(["0001_first.sql"]);
+
+      await writeFile(join(migrationsDir, "0001_first.sql"), "CREATE TABLE first (id text);\n\n");
+      await writeFile(join(migrationsDir, "0002_second.sql"), "CREATE TABLE second (id text);\n");
+      await expect(
+        applyMigrations(isolated, { migrationsDir, log: () => undefined }),
+      ).rejects.toBeInstanceOf(MigrationChecksumError);
+      const secondTable = await isolated<{ name: string | null }[]>`
+        SELECT to_regclass('second')::text AS name
+      `;
+      expect(secondTable[0]?.name).toBeNull();
+
+      await writeFile(join(migrationsDir, "0001_first.sql"), "CREATE TABLE first (id text);\n");
+      await writeFile(
+        join(migrationsDir, "0002_second.sql"),
+        "CREATE TABLE rolled_back (id text); SELECT * FROM table_that_does_not_exist;\n",
+      );
+      await expect(
+        applyMigrations(isolated, { migrationsDir, log: () => undefined }),
+      ).rejects.toBeInstanceOf(MigrationExecutionError);
+      const rollbackRows = await isolated<{ ledger: number; table_name: string | null }[]>`
+        SELECT
+          (SELECT count(*)::int FROM _facility_migrations WHERE name = '0002_second.sql') AS ledger,
+          to_regclass('rolled_back')::text AS table_name
+      `;
+      expect(rollbackRows[0]).toEqual({ ledger: 0, table_name: null });
+    } finally {
+      await isolated.unsafe(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`).catch(() => undefined);
+      await isolated.end();
+      await rm(migrationsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("times out cleanly when another deploy holds the database lock", async () => {
+    const blocker = postgres(databaseUrl, { max: 1 });
+    const events: Array<{ phase: string; status: string }> = [];
+    try {
+      await blocker`SELECT pg_advisory_lock(hashtext('facility:migrations'))`;
+      await expect(
+        deployDatabase(databaseUrl, {
+          includeDemoData: false,
+          lockPollMs: 5,
+          lockTimeoutMs: 20,
+          log: (event) => events.push(event),
+        }),
+      ).rejects.toBeInstanceOf(MigrationLockTimeoutError);
+      expect(events).toContainEqual(expect.objectContaining({ phase: "lock", status: "failed" }));
+      expect(events).not.toContainEqual(
+        expect.objectContaining({ phase: "migrations", status: "started" }),
+      );
+    } finally {
+      await blocker`SELECT pg_advisory_unlock(hashtext('facility:migrations'))`.catch(
+        () => undefined,
+      );
+      await blocker.end();
+    }
+  });
+
+  it("enforces GitHub-delivery, CI-repair, and active-preview idempotency in Postgres", async () => {
+    const orgId = newId("org");
+    const projectId = newId("proj");
+    await db.insert(schema.orgs).values({
+      id: orgId,
+      name: "Idempotency constraints",
+      slug: `idempotency-${orgId}`,
+      settings: {},
+    });
+    await db.insert(schema.projects).values({
+      id: projectId,
+      orgId,
+      name: "Idempotency constraints",
+      slug: "idempotency",
+      settings: {},
+    });
+
+    const run = (overrides: Partial<typeof schema.runs.$inferInsert> = {}) => ({
+      id: newId("run"),
+      orgId,
+      projectId,
+      mode: "builder",
+      engine: "codex",
+      trigger: {},
+      sandbox: {},
+      gh: {},
+      createdBy: { type: "test", id: "db-idempotency" },
+      ...overrides,
+    });
+
+    const deliveryId = `delivery-${randomUUID()}`;
+    await db.insert(schema.runs).values(run({ githubDeliveryId: deliveryId }));
+    await expect(
+      db.insert(schema.runs).values(run({ githubDeliveryId: deliveryId })),
+    ).rejects.toMatchObject({
+      cause: { code: "23505", constraint_name: "runs_org_github_delivery_uidx" },
+    });
+
+    const ciRepairKey = randomUUID().replaceAll("-", "");
+    await db
+      .insert(schema.runs)
+      .values(
+        run({ ciRepairKey, githubDeliveryId: `delivery-${randomUUID()}`, mode: "ci_doctor" }),
+      );
+    await expect(
+      db
+        .insert(schema.runs)
+        .values(
+          run({ ciRepairKey, githubDeliveryId: `delivery-${randomUUID()}`, mode: "ci_doctor" }),
+        ),
+    ).rejects.toMatchObject({
+      cause: { code: "23505", constraint_name: "runs_org_ci_repair_key_uidx" },
+    });
+
+    const previewRun = await db.insert(schema.runs).values(run()).returning({ id: schema.runs.id });
+    const runId = previewRun[0]?.id;
+    if (!runId) throw new Error("preview idempotency run fixture missing");
+    const expiresAt = new Date(Date.now() + 60_000);
+    await db.insert(schema.previewSandboxes).values({
+      id: newId("sbx"),
+      orgId,
+      projectId,
+      runId,
+      status: "failed",
+      driver: "aws",
+      config: {},
+      expiresAt,
+      createdBy: { type: "test", id: "terminal-preview" },
+    });
+    await db.insert(schema.previewSandboxes).values({
+      id: newId("sbx"),
+      orgId,
+      projectId,
+      runId,
+      status: "provisioning",
+      driver: "aws",
+      config: {},
+      expiresAt,
+      createdBy: { type: "test", id: "active-preview" },
+    });
+    await expect(
+      db.insert(schema.previewSandboxes).values({
+        id: newId("sbx"),
+        orgId,
+        projectId,
+        runId,
+        status: "running",
+        driver: "aws",
+        config: {},
+        expiresAt,
+        createdBy: { type: "test", id: "duplicate-active-preview" },
+      }),
+    ).rejects.toMatchObject({
+      cause: { code: "23505", constraint_name: "preview_sandboxes_run_uidx" },
+    });
+  });
+
+  it("runs schema and system-data reconciliation behind one deploy entry point", async () => {
+    const observer = postgres(databaseUrl, { max: 1 });
+    // Open the observer before the very short empty-database reconciliation;
+    // otherwise connection startup can finish only after the deploy unlocks.
+    await observer`SELECT 1`;
+    const events: Array<{
+      migrationsApplied?: number;
+      migrationsSkipped?: number;
+      phase: string;
+      status: string;
+    }> = [];
+    const observeLock = () => observer<{ acquired: boolean }[]>`
+      SELECT pg_try_advisory_lock(hashtext('facility:migrations')) AS acquired
+    `;
+    let reconciliationLock: Promise<Awaited<ReturnType<typeof observeLock>>> | undefined;
+    try {
+      await deployDatabase(databaseUrl, {
+        includeDemoData: false,
+        log: (event) => {
+          events.push(event);
+          if (event.phase === "reconciliation" && event.status === "started") {
+            // postgres.js queries are lazy; attaching then() here makes this
+            // observation race reconciliation, not the post-deploy assertion.
+            reconciliationLock = observeLock().then((rows) => rows);
+          }
+        },
+      });
+      expect((await reconciliationLock)?.[0]?.acquired).toBe(false);
+    } finally {
+      await observer.end();
+    }
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ phase: "lock", status: "completed" }),
+        expect.objectContaining({ phase: "migrations", status: "completed" }),
+        expect.objectContaining({ phase: "reconciliation", status: "completed" }),
+        expect.objectContaining({ phase: "deploy", status: "completed" }),
+      ]),
+    );
+    const migrationEvent = events.find(
+      (event) => event.phase === "migrations" && event.status === "completed",
+    );
+    expect(migrationEvent?.migrationsApplied).toBe(0);
+    expect(migrationEvent?.migrationsSkipped).toBeGreaterThan(0);
   });
 
   it("round-trips typed rows across core tables", async () => {
@@ -187,7 +425,10 @@ describe("db", async () => {
       "skill_proposal",
       "task_creation",
     ]);
-    expect(seededProfiles.map((profile) => profile.name)).toEqual(["Default runner"]);
+    expect(seededProfiles.map((profile) => profile.name).sort()).toEqual([
+      "Analysis runner",
+      "Default runner",
+    ]);
     expect(seededActionTypes.find((action) => action.name === "plan_acceptance")?.executor).toEqual(
       {
         type: "internal",
@@ -243,6 +484,140 @@ describe("db", async () => {
           .limit(1)
       )[0]?.executor,
     ).toEqual({ type: "webhook", config: { url: "https://hooks.invalid/plan" } });
+  });
+
+  it("moves only managed lightweight analysis agents to their tenant's analysis profile", async () => {
+    const orgA = newId("org");
+    const orgB = newId("org");
+    const projectA = newId("proj");
+    const projectB = newId("proj");
+    await db.insert(schema.orgs).values([
+      { id: orgA, name: "Analysis A", slug: `analysis-a-${orgA}`, settings: {} },
+      { id: orgB, name: "Analysis B", slug: `analysis-b-${orgB}`, settings: {} },
+    ]);
+    await db.insert(schema.projects).values([
+      { id: projectA, orgId: orgA, name: "Analysis A", slug: "analysis", settings: {} },
+      { id: projectB, orgId: orgB, name: "Analysis B", slug: "analysis", settings: {} },
+    ]);
+    await seed(databaseUrl, { includeDemoData: false });
+
+    const contractA = (
+      await db
+        .select({ id: schema.registryItems.id })
+        .from(schema.registryItems)
+        .where(eq(schema.registryItems.orgId, orgA))
+        .limit(1)
+    )[0];
+    const contractB = (
+      await db
+        .select({ id: schema.registryItems.id })
+        .from(schema.registryItems)
+        .where(eq(schema.registryItems.orgId, orgB))
+        .limit(1)
+    )[0];
+    if (!contractA || !contractB) throw new Error("analysis migration contract fixtures missing");
+
+    const customProfileId = newId("sbx");
+    await db.insert(schema.sandboxProfiles).values({
+      id: customProfileId,
+      orgId: orgA,
+      name: "Custom analysis",
+      driver: "docker",
+      image: "custom-runner:test",
+      setup: {},
+      resources: {},
+      network: {},
+    });
+    const fixtures = [
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "review",
+        contractItemId: contractA.id,
+        sandboxProfileId: defaultSandboxProfileId(orgA),
+      },
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "architect",
+        contractItemId: contractA.id,
+        sandboxProfileId: customProfileId,
+      },
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "security-sweep",
+        contractItemId: contractA.id,
+        sandboxProfileId: null,
+      },
+      {
+        id: newId("agent"),
+        orgId: orgA,
+        projectId: projectA,
+        name: "builder",
+        contractItemId: contractA.id,
+        sandboxProfileId: defaultSandboxProfileId(orgA),
+      },
+      {
+        id: newId("agent"),
+        orgId: orgB,
+        projectId: projectB,
+        name: "codex-architect",
+        contractItemId: contractB.id,
+        sandboxProfileId: defaultSandboxProfileId(orgB),
+      },
+    ].map((fixture) => ({
+      ...fixture,
+      engine: "codex",
+      model: {},
+      triggers: [],
+      permissions: [],
+      enabled: true,
+      // These rows model agents created before the managed Analysis profile was
+      // introduced. Later API edits advance updatedAt and are not migrated.
+      createdAt: new Date("2020-01-01T00:00:00Z"),
+      updatedAt: new Date("2020-01-01T00:00:00Z"),
+    }));
+    await db.insert(schema.agentDefs).values(fixtures);
+
+    await seed(databaseUrl, { includeDemoData: false });
+    const assignments = new Map(
+      (
+        await db
+          .select({ id: schema.agentDefs.id, sandboxProfileId: schema.agentDefs.sandboxProfileId })
+          .from(schema.agentDefs)
+          .where(
+            inArray(
+              schema.agentDefs.id,
+              fixtures.map((fixture) => fixture.id),
+            ),
+          )
+      ).map((agent) => [agent.id, agent.sandboxProfileId]),
+    );
+    expect(assignments.get(fixtures[0]?.id ?? "")).toBe(analysisSandboxProfileId(orgA));
+    expect(assignments.get(fixtures[1]?.id ?? "")).toBe(customProfileId);
+    expect(assignments.get(fixtures[2]?.id ?? "")).toBeNull();
+    expect(assignments.get(fixtures[3]?.id ?? "")).toBe(defaultSandboxProfileId(orgA));
+    expect(assignments.get(fixtures[4]?.id ?? "")).toBe(defaultSandboxProfileId(orgB));
+    expect(assignments.get(fixtures[4]?.id ?? "")).not.toBe(defaultSandboxProfileId(orgA));
+
+    await db
+      .update(schema.agentDefs)
+      .set({ sandboxProfileId: defaultSandboxProfileId(orgA), updatedAt: new Date() })
+      .where(eq(schema.agentDefs.id, fixtures[0]?.id ?? ""));
+    await seed(databaseUrl, { includeDemoData: false });
+    expect(
+      (
+        await db
+          .select({ sandboxProfileId: schema.agentDefs.sandboxProfileId })
+          .from(schema.agentDefs)
+          .where(eq(schema.agentDefs.id, fixtures[0]?.id ?? ""))
+          .limit(1)
+      )[0]?.sandboxProfileId,
+    ).toBe(defaultSandboxProfileId(orgA));
   });
 
   it("allows only one plan-acceptance builder run per architect plan under a race", async () => {
@@ -406,7 +781,22 @@ describe("db", async () => {
     // A developer database can include later migrations from another worktree;
     // assert this checkout's latest migration was applied without assuming it
     // is the newest row in that shared database.
-    expect(Array.from(applied).map((row) => row.name)).toContain("0030_github_sync_watermarks.sql");
+    expect(Array.from(applied).map((row) => row.name)).toContain(
+      "0038_ci_repair_admission_key.sql",
+    );
+    const previewRunIndex = (await db.execute(
+      sql`
+        SELECT indexdef
+        FROM pg_indexes
+        WHERE tablename = 'preview_sandboxes'
+          AND indexname = 'preview_sandboxes_run_uidx'
+      `,
+    )) as Iterable<{ indexdef: string }>;
+    const previewRunIndexDefinition = Array.from(previewRunIndex)[0]?.indexdef ?? "";
+    expect(previewRunIndexDefinition).toContain("status");
+    expect(previewRunIndexDefinition).toContain("provisioning");
+    expect(previewRunIndexDefinition).toContain("running");
+    expect(previewRunIndexDefinition).not.toContain("failed");
     const invalidOutcomeRollups = (await db.execute(
       sql`
         SELECT count(*)::int AS count

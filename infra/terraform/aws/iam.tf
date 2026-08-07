@@ -221,6 +221,7 @@ resource "aws_iam_role_policy" "task" {
         Sid    = "ManageRunnerBuilds"
         Effect = "Allow"
         Action = [
+          "codebuild:BatchGetProjects",
           "codebuild:BatchGetBuilds",
           "codebuild:StopBuild"
         ]
@@ -265,6 +266,17 @@ resource "aws_iam_role_policy" "task" {
           "ecs:StopTask"
         ]
         Resource = "arn:aws:ecs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:task/${aws_ecs_cluster.facility.name}/*"
+      },
+      {
+        Sid      = "DiscoverPreviewTasks"
+        Effect   = "Allow"
+        Action   = "ecs:ListTasks"
+        Resource = "*"
+        Condition = {
+          ArnEquals = {
+            "ecs:cluster" = aws_ecs_cluster.facility.arn
+          }
+        }
       },
       {
         Sid    = "PassPreviewRoles"
@@ -321,6 +333,39 @@ resource "aws_iam_role_policy" "codebuild_runner" {
           "ecr:GetDownloadUrlForLayer"
         ]
         Resource = aws_ecr_repository.service["runner"].arn
+      },
+      {
+        Sid    = "ReadWriteProjectCaches"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectVersion",
+          "s3:PutObject"
+        ]
+        Resource = "${aws_s3_bucket.objects.arn}/codebuild-cache/*"
+      },
+      {
+        Sid    = "VerifyCacheBucket"
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketAcl",
+          "s3:GetBucketLocation"
+        ]
+        Resource = aws_s3_bucket.objects.arn
+      },
+      {
+        Sid    = "EncryptProjectCaches"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+          "kms:GenerateDataKey"
+        ]
+        Resource = aws_kms_key.facility.arn
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "s3.${var.aws_region}.amazonaws.com"
+          }
+        }
       },
       {
         Sid    = "ManageVpcNetworkInterfaces"

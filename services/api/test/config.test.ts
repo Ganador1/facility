@@ -29,6 +29,54 @@ describe("API configuration", () => {
     ).toThrow("FACILITY_INSECURE_DEV is refused in production");
   });
 
+  it("requires an isolated HTTPS preview origin in production", () => {
+    expect(() => readConfig({ ...validEnv, NODE_ENV: "production" })).toThrow(
+      "FACILITY_PREVIEW_URL is required in production",
+    );
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        FACILITY_PREVIEW_URL: "http://previews.example.net",
+      }),
+    ).toThrow("FACILITY_PREVIEW_URL must use HTTPS in production");
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        PUBLIC_URL: "https://api.example.com",
+        WEB_URL: "https://app.example.com",
+        FACILITY_PREVIEW_URL: "https://app.example.com/previews",
+      }),
+    ).toThrow("FACILITY_PREVIEW_URL must use a host separate from other Facility origins");
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        PUBLIC_URL: "https://api.example.com",
+        MCP_PUBLIC_URL: "https://facility-previews.example.net",
+        FACILITY_PREVIEW_URL: "https://facility-previews.example.net",
+      }),
+    ).toThrow("FACILITY_PREVIEW_URL must use a host separate from other Facility origins");
+    expect(
+      readConfig({
+        ...validEnv,
+        NODE_ENV: "production",
+        PUBLIC_URL: "https://api.example.com",
+        WEB_URL: "https://app.example.com",
+        FACILITY_PREVIEW_URL: "https://facility-previews.example.net/",
+      }),
+    ).toMatchObject({ previewUrl: "https://facility-previews.example.net" });
+    expect(() =>
+      readConfig({
+        ...validEnv,
+        FACILITY_PREVIEW_URL: "https://user:secret@facility-previews.example.net/base?x=1",
+      }),
+    ).toThrow(
+      "FACILITY_PREVIEW_URL must be an origin without credentials, path, query, or fragment",
+    );
+  });
+
   it("requires direct GitHub client credentials as a pair", () => {
     expect(() => readConfig({ ...validEnv, GITHUB_OAUTH_CLIENT_ID: "client" })).toThrow(
       "GitHub OAuth client id and secret must be configured together",
@@ -54,6 +102,19 @@ describe("API configuration", () => {
   it("trims the optional package registry credential for scoped runner handoff", () => {
     expect(readConfig({ ...validEnv, PACKAGE_REGISTRY_TOKEN: "  package-token\n" })).toMatchObject({
       packageRegistryToken: "package-token",
+    });
+  });
+
+  it("surfaces the AWS CodeBuild runner project to the production doctor", () => {
+    expect(
+      readConfig({
+        ...validEnv,
+        FACILITY_AWS_CODEBUILD_PROJECT: "  facility-prod-runner  ",
+        FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION: "  facility-prod-objects/codebuild-cache  ",
+      }),
+    ).toMatchObject({
+      awsCodeBuildProject: "facility-prod-runner",
+      awsCodeBuildCacheBaseLocation: "facility-prod-objects/codebuild-cache",
     });
   });
 

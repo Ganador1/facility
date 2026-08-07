@@ -25,6 +25,13 @@ import {
   parseCodexJsonlLine,
   parseCodexSessionId,
 } from "./parsers.js";
+import { RunPhaseRecorder } from "./phases.js";
+import { sandboxRuntimeEvent } from "./runtime.js";
+import {
+  type PreparedSecuritySweepEvidence,
+  prepareSecuritySweepEvidence,
+  verifySecuritySweepEvidence,
+} from "./security-sweep.js";
 import type { RunBundle, RunEvent } from "./types.js";
 
 const workRoot = "/work";
@@ -36,6 +43,7 @@ const sessionStateArchive = join(runtimeRoot, "claude-session-state.tgz");
 const engineStderrFile = join(runtimeRoot, "engine.stderr.log");
 const AGENT_PROGRESS_MAX_BYTES = 16 * 1024;
 const SECURITY_REPORT_MAX_BYTES = 256 * 1024;
+const SECURITY_EVIDENCE_MAX_BYTES = 256 * 1024;
 const SESSION_STATE_MAX_BYTES = 200 * 1024 * 1024;
 const RATE_LIMIT_RETRY_LIMIT = 8;
 const DEFAULT_RETRY_AFTER_MS = 1_000;
@@ -56,6 +64,7 @@ let engineSessionId: string | null = null;
 let activeEngineChild: ReturnType<typeof spawn> | null = null;
 let clearInterruptEscalation: (() => void) | null = null;
 let interruptRequested = false;
+let engineEventTransportDegraded = false;
 
 // Secret values injected into the run (virtual key, platform key, runner token,
 // repo clone token) that must never surface in captured check output persisted to
@@ -75,85 +84,160 @@ export function redactSecrets(text: string, secrets: Iterable<string> = secretsT
 
 async function main() {
   const startedAt = Date.now();
+  const phases = new RunPhaseRecorder(emit);
   let bundle: RunBundle | null = null;
   let steerStop: (() => void) | undefined;
   let progressStop: (() => Promise<boolean>) | undefined;
+  let preparedSecuritySweep: PreparedSecuritySweepEvidence | null = null;
   secretsToRedact.add(runnerToken());
   try {
+    phases.start("bootstrap");
     const hello = await api<Record<string, unknown>>(`/internal/runs/${currentRunId()}/hello`, {
       method: "POST",
     });
     bundle = (await fetchJson(String(hello.bundleUrl), {
       headers: { authorization: `Bearer ${runnerToken()}` },
     })) as RunBundle;
-    await prepareWorkspace(bundle, String(hello.virtualKey), {
-      platformKey: hello.platformKey ? String(hello.platformKey) : null,
-      platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl(),
-      projectId: hello.projectId ? String(hello.projectId) : "",
-      repoToken: hello.repoToken ? String(hello.repoToken) : null,
+    const activeBundle = bundle;
+    await phases.finish({ outcome: "succeeded" });
+    const runtimeEvent = sandboxRuntimeEvent();
+    if (runtimeEvent) await emit([runtimeEvent]).catch(() => undefined);
+    await phases.measure("workspace", () =>
+      prepareWorkspace(activeBundle, String(hello.virtualKey), {
+        platformKey: hello.platformKey ? String(hello.platformKey) : null,
+        platformApiUrl: hello.platformApiUrl ? String(hello.platformApiUrl) : apiUrl(),
+        projectId: hello.projectId ? String(hello.projectId) : "",
+        repoToken: hello.repoToken ? String(hello.repoToken) : null,
+      }),
+    );
+    await phases.measure("runner_runtime", async () => {
+      await grantWorkspaceToUntrusted();
+      await prepareRunnerRuntime();
     });
-    await grantWorkspaceToUntrusted();
-    await prepareRunnerRuntime();
     steerStop = startSteeringPoll();
-    if (bundle.packageInstallCmd) {
+    const packageInstallCmd = activeBundle.packageInstallCmd;
+    if (packageInstallCmd) {
       const packageToken = hello.packageRegistryToken
         ? String(hello.packageRegistryToken).trim()
         : null;
       if (packageToken) secretsToRedact.add(packageToken);
-      if (packageToken && !privateRegistryInstallCommand(bundle.packageInstallCmd)) {
+      if (packageToken && !privateRegistryInstallCommand(packageInstallCmd)) {
         throw new Error("package_install_command_not_allowed_for_private_registry");
       }
-      const installed = await runPackageInstall(
-        bundle.packageInstallCmd,
-        cwdFor(bundle),
-        bundle.timeoutMin,
-        packageToken,
+      const installed = await phases.measure(
+        "package_install",
+        () =>
+          runPackageInstall(
+            packageInstallCmd,
+            cwdFor(activeBundle),
+            activeBundle.timeoutMin,
+            packageToken,
+          ),
+        (code) => ({ outcome: code === 0 ? "succeeded" : "failed" }),
       );
       if (installed !== 0) {
         await postResult(bundle, "failed", startedAt, { code: "package_install_failed" });
         return;
       }
+    } else {
+      await phases.skip("package_install", "not_configured");
     }
-    if (bundle.provisionCmd) {
-      const provision = await runShell(
-        bundle.provisionCmd,
-        cwdFor(bundle),
-        "shell",
-        bundle.timeoutMin,
+    const provisionCmd = activeBundle.provisionCmd;
+    if (provisionCmd) {
+      const provision = await phases.measure(
+        "provision",
+        () => runShell(provisionCmd, cwdFor(activeBundle), "shell", activeBundle.timeoutMin),
+        (code) => ({ outcome: code === 0 ? "succeeded" : "failed" }),
       );
       if (provision !== 0) {
         await postResult(bundle, "failed", startedAt, { code: "provision_failed" });
         return;
       }
+    } else {
+      await phases.skip("provision", "not_configured");
+    }
+    if (isSecurityMode(activeBundle.mode)) {
+      preparedSecuritySweep = await preparePlatformSecuritySweepEvidence(
+        activeBundle,
+        hello.securitySweepEvidence,
+      );
     }
     await writeFile(transcriptFile, "");
     progressStop = startAgentProgressPoll(cwdFor(bundle));
-    const engineCode = await runEngine(bundle, startedAt);
-    const progressPublished = await progressStop();
-    progressStop = undefined;
-    const securityReport = isSecurityMode(bundle.mode)
-      ? await readSecurityReport(join(cwdFor(bundle), ".agent-sdlc", "security-findings.json"))
-      : undefined;
-    const securityReportConfigured = !isSecurityMode(bundle.mode) || securityReport !== null;
-    if (isSecurityMode(bundle.mode)) {
-      await emit([
-        {
-          type: "check",
-          data: {
-            self_reported: false,
-            name: "structured security findings",
-            status: securityReportConfigured ? "passed" : "failed",
-            ...(securityReportConfigured ? {} : { reason: "security_report_invalid" }),
+    const stopProgress = progressStop;
+    const engineCode = await phases.measure(
+      "agent",
+      () => runEngine(activeBundle, startedAt),
+      (code) => ({
+        outcome: interruptRequested ? "canceled" : code === 0 ? "succeeded" : "failed",
+      }),
+    );
+    const captured = await phases.measure("result_capture", async () => {
+      const progressPublished = await stopProgress();
+      progressStop = undefined;
+      const securityReport = isSecurityMode(activeBundle.mode)
+        ? await readSecurityReport(
+            join(cwdFor(activeBundle), ".agent-sdlc", "security-findings.json"),
+          )
+        : undefined;
+      const securityReportConfigured =
+        !isSecurityMode(activeBundle.mode) || securityReport !== null;
+      const securityEvidenceConfigured =
+        !isSecurityMode(activeBundle.mode) ||
+        (preparedSecuritySweep !== null &&
+          (await verifySecuritySweepEvidence(preparedSecuritySweep)));
+      if (isSecurityMode(activeBundle.mode)) {
+        await emit([
+          {
+            type: "check",
+            data: {
+              self_reported: false,
+              name: "deterministic security evidence",
+              status: securityEvidenceConfigured ? "passed" : "failed",
+              ...(securityEvidenceConfigured ? {} : { reason: "security_evidence_invalid" }),
+            },
           },
-        },
-      ]);
-    }
-    await uploadTranscript();
-    await uploadSessionState(bundle);
+          {
+            type: "check",
+            data: {
+              self_reported: false,
+              name: "structured security findings",
+              status: securityReportConfigured ? "passed" : "failed",
+              ...(securityReportConfigured ? {} : { reason: "security_report_invalid" }),
+            },
+          },
+        ]);
+      }
+      if (engineEventTransportDegraded) {
+        await emit([
+          {
+            type: "artifact_error",
+            data: { kind: "engine_events_degraded" },
+          },
+        ]).catch(() => undefined);
+      }
+      await uploadTranscript();
+      await uploadSessionState(activeBundle);
+      return {
+        progressPublished,
+        securityReport,
+        securityReportConfigured,
+        securityEvidenceConfigured,
+      };
+    });
+    const {
+      progressPublished,
+      securityReport,
+      securityReportConfigured,
+      securityEvidenceConfigured,
+    } = captured;
     if (interruptRequested) {
+      await phases.skip("acceptance", "agent_canceled");
+      await phases.skip("delivery", "agent_canceled");
       await postResult(bundle, "canceled", startedAt, "human_interrupt");
       return;
     }
+    phases.start("acceptance");
     await emitChecks(cwdFor(bundle));
     const progressConfigured = !requiresAgentProgress(bundle.mode) || progressPublished;
     if (requiresAgentProgress(bundle.mode)) {
@@ -231,15 +315,30 @@ async function main() {
           ? true
           : await runChecks(bundle, cwdFor(bundle))
         : false;
-    const engineAndChecksSucceeded = engineCode === 0 && checksPassed && securityReportConfigured;
+    await phases.finish({ outcome: checksPassed ? "succeeded" : "failed" });
+    const engineAndChecksSucceeded =
+      engineCode === 0 && checksPassed && securityReportConfigured && securityEvidenceConfigured;
+    let delivery: {
+      git: Awaited<ReturnType<typeof shipGitChanges>> | undefined;
+      error: string | null;
+    };
     if (engineAndChecksSucceeded) {
-      await emit([{ type: "delivery", data: { status: "preparing" } }]);
+      delivery = await phases.measure(
+        "delivery",
+        async () => {
+          await emit([{ type: "delivery", data: { status: "preparing" } }]);
+          const git = await shipGitChanges(activeBundle);
+          const error = deliveryFailure(activeBundle, git);
+          await emit([deliveryStatusEvent(git, error)]);
+          return { git, error };
+        },
+        ({ error }) => ({ outcome: error ? "failed" : "succeeded" }),
+      );
+    } else {
+      await phases.skip("delivery", "run_preconditions_failed");
+      delivery = { git: undefined, error: null };
     }
-    const git = engineAndChecksSucceeded ? await shipGitChanges(bundle) : undefined;
-    const deliveryError = engineAndChecksSucceeded ? deliveryFailure(bundle, git) : null;
-    if (engineAndChecksSucceeded) {
-      await emit([deliveryStatusEvent(git, deliveryError)]);
-    }
+    const { git, error: deliveryError } = delivery;
     const succeeded = engineAndChecksSucceeded && deliveryError === null;
     await postResult(
       bundle,
@@ -253,15 +352,18 @@ async function main() {
             ? { code: "checks_not_configured" }
             : !progressConfigured
               ? { code: "agent_progress_missing" }
-              : !securityReportConfigured
-                ? { code: "security_report_invalid" }
-                : deliveryError
-                  ? { code: deliveryError }
-                  : { code: "checks_failed" },
+              : !securityEvidenceConfigured
+                ? { code: "security_evidence_invalid" }
+                : !securityReportConfigured
+                  ? { code: "security_report_invalid" }
+                  : deliveryError
+                    ? { code: deliveryError }
+                    : { code: "checks_failed" },
       git,
       securityReport ?? undefined,
     );
   } catch (error) {
+    await phases.fail().catch(() => undefined);
     await postResult(bundle, "failed", startedAt, { error: errorMessage(error) }).catch(
       () => undefined,
     );
@@ -310,6 +412,18 @@ export async function prepareWorkspace(
     if (bundle.resume?.branch) {
       await checkoutResumeBranch(repoDirFor(root), bundle.resume.branch);
     }
+    if (bundle.repo.expectedHeadSha) {
+      if (!/^[0-9a-f]{40}$/i.test(bundle.repo.expectedHeadSha)) {
+        throw new Error("repository_expected_head_sha_invalid");
+      }
+      const actualHeadSha = (await gitOutput(repoDirFor(root), ["rev-parse", "HEAD"])).trim();
+      if (actualHeadSha !== bundle.repo.expectedHeadSha) {
+        // Admission evaluated a different tree. Stop before provisioning, the
+        // model, or a contents-write token; the newer head will emit its own CI
+        // completion signal and receive a fresh deterministic decision.
+        throw new Error("repository_head_sha_mismatch");
+      }
+    }
     // Provisioning and live-agent metadata must never leak into the delivered
     // diff. The runner owns these paths even when a repository has no
     // .gitignore (a common case for small/new projects).
@@ -322,6 +436,7 @@ export async function prepareWorkspace(
         ".agent-sdlc/checks.jsonl",
         ".agent-sdlc/delivery.json",
         ".agent-sdlc/security-findings.json",
+        ".facility-sweep/",
         ...[...skillsByFile.keys()].flatMap((fileBase) => [
           `.claude/skills/${fileBase}/`,
           `.agents/skills/${fileBase}/`,
@@ -483,11 +598,20 @@ async function runJsonProcess(
       const sessionId = parseSessionId(line);
       if (sessionId) {
         engineSessionId = sessionId;
-        await emit([{ type: "session", data: { engine_session_id: sessionId } }]);
+        if (
+          !(await emitEngineEventsBestEffort(
+            [{ type: "session", data: { engine_session_id: sessionId } }],
+            emit,
+          ))
+        ) {
+          engineEventTransportDegraded = true;
+        }
       }
     }
     const event = parse(line);
-    if (event) await emit([event]);
+    if (event && !(await emitEngineEventsBestEffort([event], emit))) {
+      engineEventTransportDegraded = true;
+    }
   }
   const code = await exitCode(child);
   if (activeEngineChild === child) activeEngineChild = null;
@@ -549,6 +673,94 @@ export async function readSecurityReport(path: string): Promise<Record<string, u
   } catch {
     return null;
   }
+}
+
+async function preparePlatformSecuritySweepEvidence(bundle: RunBundle, raw: unknown) {
+  if (!bundle.repo.cloneUrl) throw new Error("security_sweep_repository_unavailable");
+  const cwd = cwdFor(bundle);
+  const [owner, repo] = githubRepositoryName(bundle.repo.cloneUrl).split("/");
+  if (!owner || !repo) throw new Error("security_sweep_repository_unavailable");
+  const ref = bundle.repo.branch;
+  if (!ref) throw new Error("security_sweep_ref_unavailable");
+  const headSha = (await gitOutput(cwd, ["rev-parse", "HEAD"])).trim();
+  const [workflowPermissions, guards, weekDiff] = await Promise.all([
+    collectWorkflowPermissions(cwd),
+    collectGuardEvidence(cwd, bundle.timeoutMin),
+    gitOutput(cwd, ["log", "--since=8 days ago", "--name-only", "--pretty=format:%h %s"]),
+  ]);
+  return prepareSecuritySweepEvidence({
+    cwd,
+    raw,
+    expected: { runId: bundle.runId, owner, repo, ref, headSha },
+    local: {
+      workflowPermissions: boundedEvidenceText(workflowPermissions),
+      guards,
+      weekDiff: boundedEvidenceText(weekDiff),
+    },
+  });
+}
+
+async function collectWorkflowPermissions(cwd: string) {
+  const directory = join(cwd, ".github", "workflows");
+  const entries = await readdir(directory, { withFileTypes: true }).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    },
+  );
+  const permissionLine =
+    /^\s*(?:permissions:|(?:actions|attestations|checks|contents|deployments|id-token|issues|packages|pull-requests|security-events|statuses):)/;
+  const inventory: string[] = [];
+  for (const entry of entries.sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  )) {
+    if (!entry.isFile() || !/\.ya?ml$/i.test(entry.name)) continue;
+    const body = await readCappedUtf8(join(directory, entry.name), SECURITY_EVIDENCE_MAX_BYTES);
+    body.split(/\r?\n/).forEach((line, index) => {
+      if (permissionLine.test(line)) inventory.push(`${entry.name}:${index + 1}:${line}`);
+    });
+  }
+  return inventory.length ? `${inventory.join("\n")}\n` : "";
+}
+
+async function collectGuardEvidence(cwd: string, timeoutMin: number) {
+  if (!(await pathExists(join(cwd, "guards", "run.mjs")))) {
+    return { unavailable: true, source: "guards", reason: "not_configured" };
+  }
+  const result = await runCheckCommand(
+    "node guards/run.mjs --json",
+    cwd,
+    Math.min(timeoutMin, 10),
+    SECURITY_EVIDENCE_MAX_BYTES,
+  );
+  if (result.code !== 0) {
+    return {
+      unavailable: true,
+      source: "guards",
+      reason: "command_failed",
+      exitCode: result.code,
+    };
+  }
+  try {
+    const parsed = JSON.parse(result.tail);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed
+      : { unavailable: true, source: "guards", reason: "malformed_output" };
+  } catch {
+    return { unavailable: true, source: "guards", reason: "malformed_output" };
+  }
+}
+
+function boundedEvidenceText(value: string) {
+  const encoded = Buffer.from(value);
+  if (encoded.length <= SECURITY_EVIDENCE_MAX_BYTES) return value;
+  const suffix = "\n[truncated]\n";
+  const prefixBytes = SECURITY_EVIDENCE_MAX_BYTES - Buffer.byteLength(suffix);
+  let bounded = encoded.subarray(0, prefixBytes).toString("utf8");
+  while (Buffer.byteLength(bounded) > prefixBytes) {
+    bounded = bounded.slice(0, -1);
+  }
+  return `${bounded}${suffix}`;
 }
 
 function isSecurityReport(value: unknown): value is Record<string, unknown> {
@@ -671,7 +883,7 @@ export function buildClaudeCodeArgs(bundle: RunBundle, restoredSessionState: boo
   const args =
     bundle.resume && restoredSessionState
       ? ["-p", bundle.resume.prompt, "--resume", bundle.resume.sessionId]
-      : ["-p", composedPrompt(bundle)];
+      : ["-p", resumeRecoveryPrompt(bundle)];
   args.push(
     "--output-format",
     "stream-json",
@@ -682,6 +894,27 @@ export function buildClaudeCodeArgs(bundle: RunBundle, restoredSessionState: boo
     "500",
   );
   return args;
+}
+
+export function resumeRecoveryPrompt(bundle: RunBundle) {
+  const fallbackScope = bundle.resume?.fallbackScope;
+  if (!fallbackScope) return composedPrompt(bundle);
+  const priorPrompt = composedPrompt({ ...bundle, scope: fallbackScope });
+  return `${priorPrompt}\n\n## Resume recovery\nThe prior Claude session state from run ${bundle.resume?.sessionStateFrom} was unavailable. Continue from the governed objective above without assuming unrecorded prior work.\n\n## Resume instruction\n${bundle.resume?.prompt}`;
+}
+
+export async function emitEngineEventsBestEffort(
+  events: RunEvent[],
+  send: (events: RunEvent[]) => Promise<unknown>,
+) {
+  try {
+    await send(events);
+    return true;
+  } catch {
+    // Stream events are live observability, not the execution boundary. The
+    // complete local JSONL transcript and final /result remain authoritative.
+    return false;
+  }
 }
 
 type ControlMessage = { id: string; body: string; kind?: string };
@@ -984,7 +1217,12 @@ export function checkEvent(command: string, code: number, tail: string) {
 // hung check's ENTIRE tree — `pnpm test` spawning node workers, etc. — is
 // signalled at the timeout, not just the top `sh` (whose death would orphan the
 // workers until the sandbox is reaped).
-export async function runCheckCommand(command: string, cwd: string, timeoutMin: number) {
+export async function runCheckCommand(
+  command: string,
+  cwd: string,
+  timeoutMin: number,
+  maxOutputBytes = 4_000,
+) {
   const child = spawn("sh", ["-c", command], {
     cwd,
     env: engineEnv(),
@@ -998,7 +1236,7 @@ export async function runCheckCommand(command: string, cwd: string, timeoutMin: 
     new Promise<void>((resolve) => {
       if (!stream) return resolve();
       stream.on("data", (chunk) => {
-        tail = (tail + chunk.toString()).slice(-4000);
+        tail = (tail + chunk.toString()).slice(-maxOutputBytes);
       });
       stream.on("end", resolve);
       stream.on("error", () => resolve());
@@ -1019,6 +1257,7 @@ async function postResult(
   securityReport?: Record<string, unknown>,
 ) {
   const stderrTail = await readFile(engineStderrFile, "utf8").catch(() => "");
+  const activity = await runnerReceiptActivity(bundle, status);
   await api(`/internal/runs/${currentRunId()}/result`, {
     method: "POST",
     body: JSON.stringify({
@@ -1028,15 +1267,7 @@ async function postResult(
         mode: receiptMode(bundle?.mode),
         model: configuredModel(bundle?.engineConfig),
         result: status,
-        activity: {
-          turns: 0,
-          shell_commands: 0,
-          file_changes: 0,
-          mcp_tool_calls: 0,
-          web_searches: 0,
-          tool_calls: 0,
-          errors: status === "failed" ? 1 : 0,
-        },
+        activity,
         timing: {
           started_at: new Date(startedAt).toISOString(),
           ended_at: new Date().toISOString(),
@@ -1053,6 +1284,67 @@ async function postResult(
       engineSessionId: engineSessionId ?? undefined,
       securityReport,
     }),
+  });
+}
+
+const FACILITY_MANAGED_REPOSITORY_FILES = new Set([
+  ".agent-sdlc/progress.md",
+  ".agent-sdlc/checks.jsonl",
+  ".agent-sdlc/delivery.json",
+  ".agent-sdlc/security-findings.json",
+]);
+
+export async function runnerReceiptActivity(
+  bundle: RunBundle | null,
+  status: "succeeded" | "failed" | "canceled",
+  root = workRoot,
+) {
+  const fileChanges = bundle ? await receiptFileChangeCount(bundle, root).catch(() => 0) : 0;
+  return {
+    turns: 0,
+    shell_commands: 0,
+    file_changes: fileChanges,
+    mcp_tool_calls: 0,
+    web_searches: 0,
+    tool_calls: 0,
+    errors: status === "failed" ? 1 : 0,
+  };
+}
+
+async function receiptFileChangeCount(bundle: RunBundle, root: string) {
+  const mode = normalizedMode(bundle.mode);
+  if (!bundle.repo.cloneUrl || (!requiresDelivery(bundle.mode) && !repairRepositoryMode(mode))) {
+    return 0;
+  }
+
+  const cwd = cwdFor(bundle, root);
+  const baseRef = `origin/${bundle.repo.branch ?? "main"}`;
+  const [tracked, untracked] = await Promise.all([
+    gitOutput(cwd, ["diff", "--name-only", "-z", "--no-renames", baseRef, "--"]),
+    gitOutput(cwd, ["ls-files", "--others", "--exclude-standard", "-z", "--"]),
+  ]);
+  const changedPaths = new Set([...tracked.split("\0"), ...untracked.split("\0")].filter(Boolean));
+  for (const path of changedPaths) {
+    if (facilityManagedRepositoryFile(bundle, path)) changedPaths.delete(path);
+  }
+  return changedPaths.size;
+}
+
+function facilityManagedRepositoryFile(bundle: RunBundle, path: string) {
+  if (
+    FACILITY_MANAGED_REPOSITORY_FILES.has(path) ||
+    path.startsWith(".facility-sweep/") ||
+    path.startsWith("node_modules/")
+  ) {
+    return true;
+  }
+  if (Object.hasOwn(bundle.harness?.files ?? {}, path)) return true;
+  return bundle.skills.some((skill) => {
+    const fileBase = safeName(skill.name);
+    return (
+      path === `.claude/skills/${fileBase}/SKILL.md` ||
+      path === `.agents/skills/${fileBase}/SKILL.md`
+    );
   });
 }
 
@@ -1832,6 +2124,8 @@ async function emit(events: RunEvent[]) {
     body: JSON.stringify(safe),
   });
 }
+
+export { emit as emitRunEvents };
 
 async function api<T>(
   path: string,

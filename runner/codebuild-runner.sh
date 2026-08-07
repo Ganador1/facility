@@ -9,9 +9,16 @@ readonly docker_runtime="/run/facility-docker"
 readonly proxy_runtime="/run/facility-proxy"
 readonly bind_runtime="/run/facility-binds"
 readonly workspace_view="/run/facility-workspace"
+readonly npm_cache="/work/.npm"
 readonly raw_socket="${docker_runtime}/docker.sock"
 readonly public_socket="${proxy_runtime}/docker.sock"
 readonly bind_socket="${bind_runtime}/mounter.sock"
+readonly nested_docker="${FACILITY_SANDBOX_NESTED_DOCKER:-1}"
+
+if [[ "$nested_docker" != "0" && "$nested_docker" != "1" ]]; then
+  echo "FACILITY_SANDBOX_NESTED_DOCKER must be 0 or 1" >&2
+  exit 2
+fi
 
 if [[ "${FACILITY_CODEBUILD_SMOKE:-}" == "1" && \
   "${FACILITY_CODEBUILD_SMOKE_TIMEOUT_INNER:-}" != "1" ]]; then
@@ -444,29 +451,100 @@ security_smoke() {
   fi
 }
 
-mkdir -p "$docker_runtime" "$proxy_runtime" "$bind_runtime" "$workspace_view" \
-  /var/lib/facility-docker/docker-fuse /var/lib/facility-docker/docker-vfs /work
-chown -R "$docker_user:$docker_user" "$docker_runtime" /var/lib/facility-docker
-chown -R "$proxy_user:$untrusted_gid" "$proxy_runtime"
+security_smoke_without_docker() {
+  echo "Facility smoke: checking the no-Docker fast path"
+  if [[ "${FACILITY_DOCKER_STORAGE_DRIVER:-}" != "none" ]]; then
+    echo "No-Docker smoke failed: storage driver was not reported as none" >&2
+    return 1
+  fi
+  if [[ -n "$dockerd_pid" || -n "$proxy_pid" || -n "$mounter_pid" ]]; then
+    echo "No-Docker smoke failed: a nested-Docker process was recorded" >&2
+    return 1
+  fi
+  if [[ -S "$raw_socket" || -S "$public_socket" || -S "$bind_socket" || \
+    -e /var/run/docker.sock || -L /var/run/docker.sock ]]; then
+    echo "No-Docker smoke failed: a Docker or broker socket was published" >&2
+    return 1
+  fi
+  if [[ -n "${DOCKER_HOST:-}" ]]; then
+    echo "No-Docker smoke failed: DOCKER_HOST was exported" >&2
+    return 1
+  fi
+  if ! iptables -C OUTPUT -m owner --uid-owner "$untrusted_uid" \
+    -d 169.254.0.0/16 -j REJECT; then
+    echo "No-Docker smoke failed: the agent identity can reach IPv4 metadata" >&2
+    return 1
+  fi
+  if [[ "$(run_untrusted id -u)" != "$untrusted_uid" ]]; then
+    echo "No-Docker smoke failed: repository commands did not drop root" >&2
+    return 1
+  fi
+  if ! run_untrusted test -w /work; then
+    echo "No-Docker smoke failed: the agent identity cannot write its workspace" >&2
+    return 1
+  fi
+  if run_untrusted env --unset=RUNNER_TOKEN sh -c \
+    'tr "\000" "\n" 2>/dev/null < "/proc/$1/environ" | grep -q "^RUNNER_TOKEN="' \
+    facility-no-docker-security-probe "$$"; then
+    echo "No-Docker smoke failed: the agent user read the runner credential" >&2
+    return 1
+  fi
+  mkdir /work/.facility-no-docker-security-root
+  if run_untrusted rmdir /work/.facility-no-docker-security-root >/dev/null 2>&1; then
+    echo "No-Docker smoke failed: the agent user replaced runner-owned state" >&2
+    return 1
+  fi
+  rmdir /work/.facility-no-docker-security-root
+  if run_untrusted test -w /app/dist/index.js; then
+    echo "No-Docker smoke failed: the agent user can rewrite the runner" >&2
+    return 1
+  fi
+  local name
+  for name in "${credential_vars[@]}"; do
+    if [[ -n "${!name:-}" ]]; then
+      echo "No-Docker smoke failed: $name reached the repository environment" >&2
+      return 1
+    fi
+  done
+  echo "Facility CodeBuild no-Docker boundary is ready"
+}
+
+mkdir -p /work
 chown root:"$untrusted_gid" /work
 chmod 3770 /work
-chmod 0710 "$docker_runtime" "$proxy_runtime"
-chown root:root "$bind_runtime"
-chmod 0711 "$bind_runtime"
-chown root:root "$workspace_view"
-chmod 0711 "$workspace_view"
-# RootlessKit converts inherited mounts to slaves. A dedicated shared mount
-# here is therefore the deterministic master for aliases created later by the
-# root broker; dockerd receives those aliases without exposing the raw daemon.
-mount --bind "$workspace_view" "$workspace_view"
-mount --make-shared "$workspace_view"
-if ! findmnt -rn -T "$workspace_view" -o PROPAGATION | grep -qx shared; then
-  echo "Facility could not establish shared workspace mount propagation" >&2
-  exit 1
-fi
 : >/var/log/facility-dockerd.log
 : >/var/log/facility-docker-proxy.log
 : >/var/log/facility-bind-mounter.log
+
+if [[ "$nested_docker" == "1" ]]; then
+  mkdir -p "$docker_runtime" "$proxy_runtime" "$bind_runtime" "$workspace_view" \
+    /var/lib/facility-docker/docker-overlay \
+    /var/lib/facility-docker/docker-fuse \
+    /var/lib/facility-docker/docker-vfs
+  chown -R "$docker_user:$docker_user" "$docker_runtime" /var/lib/facility-docker
+  chown -R "$proxy_user:$untrusted_gid" "$proxy_runtime"
+  chmod 0710 "$docker_runtime" "$proxy_runtime"
+  chown root:root "$bind_runtime"
+  chmod 0711 "$bind_runtime"
+  chown root:root "$workspace_view"
+  chmod 0711 "$workspace_view"
+  # RootlessKit converts inherited mounts to slaves. A dedicated shared mount
+  # here is therefore the deterministic master for aliases created later by the
+  # root broker; dockerd receives those aliases without exposing the raw daemon.
+  mount --bind "$workspace_view" "$workspace_view"
+  mount --make-shared "$workspace_view"
+  if ! findmnt -rn -T "$workspace_view" -o PROPAGATION | grep -qx shared; then
+    echo "Facility could not establish shared workspace mount propagation" >&2
+    exit 1
+  fi
+else
+  export FACILITY_DOCKER_STORAGE_DRIVER=none
+  echo "Facility CodeBuild: nested Docker disabled by sandbox profile"
+  if [[ -e /var/run/docker.sock || -L /var/run/docker.sock ]]; then
+    echo "Facility refused the no-Docker path because /var/run/docker.sock already exists" >&2
+    exit 1
+  fi
+fi
 
 echo "Facility CodeBuild: host boundary configured"
 
@@ -487,41 +565,65 @@ if command -v ip6tables >/dev/null 2>&1; then
   ip6tables -I FORWARD 1 -d fd00:ec2::254 -j REJECT || true
 fi
 
-if ! start_docker fuse-overlayfs /var/lib/facility-docker/docker-fuse; then
-  echo "fuse-overlayfs unavailable; retrying with the portable vfs driver" \
-    >>/var/log/facility-dockerd.log
-  stop_process_group "$dockerd_pid"
-  dockerd_pid=""
-  rm -f "$raw_socket"
-  start_docker vfs /var/lib/facility-docker/docker-vfs || true
-fi
+if [[ "$nested_docker" == "1" ]]; then
+  start_storage_driver() {
+    local driver="$1"
+    local data_root="$2"
+    if start_docker "$driver" "$data_root"; then
+      export FACILITY_DOCKER_STORAGE_DRIVER="$driver"
+      return 0
+    fi
+    echo "$driver unavailable; trying the next rootless Docker storage driver" \
+      >>/var/log/facility-dockerd.log
+    stop_process_group "$dockerd_pid"
+    dockerd_pid=""
+    rm -f "$raw_socket"
+    return 1
+  }
 
-if ! DOCKER_HOST="unix://${raw_socket}" docker info >/dev/null 2>&1; then
-  echo "Facility could not start rootless Docker inside the CodeBuild sandbox" >&2
-  tail -n 200 /var/log/facility-dockerd.log >&2 || true
-  exit 1
-fi
-echo "Facility CodeBuild: rootless Docker is ready"
-chmod 0660 "$raw_socket"
-# Dockerd keeps its listening descriptor open. Reassign the pathname to the
-# proxy identity so even a bind-validation TOCTOU cannot give root inside a
-# rootless child access to the unrestricted daemon API.
-chown root:"$proxy_user" "$raw_socket"
-if ! start_mounter; then
-  echo "Facility could not start the transactional bind broker" >&2
-  tail -n 200 /var/log/facility-bind-mounter.log >&2 || true
-  exit 1
-fi
-echo "Facility CodeBuild: transactional bind broker is ready"
-start_proxy
+  start_storage_driver overlay2 /var/lib/facility-docker/docker-overlay || \
+    start_storage_driver fuse-overlayfs /var/lib/facility-docker/docker-fuse || \
+    start_storage_driver vfs /var/lib/facility-docker/docker-vfs || true
 
-export DOCKER_HOST="unix://${public_socket}"
-if ! docker info >/dev/null 2>&1; then
-  echo "Facility could not start the restricted Docker proxy" >&2
-  tail -n 200 /var/log/facility-docker-proxy.log >&2 || true
-  exit 1
+  if ! DOCKER_HOST="unix://${raw_socket}" docker info >/dev/null 2>&1; then
+    echo "Facility could not start rootless Docker inside the CodeBuild sandbox" >&2
+    tail -n 200 /var/log/facility-dockerd.log >&2 || true
+    exit 1
+  fi
+  if [[ -z "${FACILITY_DOCKER_STORAGE_DRIVER:-}" ]]; then
+    echo "Facility could not identify the rootless Docker storage driver" >&2
+    exit 1
+  fi
+  if [[ "$FACILITY_DOCKER_STORAGE_DRIVER" == "vfs" ]]; then
+    echo "Facility CodeBuild: rootless Docker is ready (storage driver: vfs, degraded)"
+  else
+    echo "Facility CodeBuild: rootless Docker is ready (storage driver: ${FACILITY_DOCKER_STORAGE_DRIVER})"
+  fi
+  chmod 0660 "$raw_socket"
+  # Dockerd keeps its listening descriptor open. Reassign the pathname to the
+  # proxy identity so even a bind-validation TOCTOU cannot give root inside a
+  # rootless child access to the unrestricted daemon API.
+  chown root:"$proxy_user" "$raw_socket"
+  if ! start_mounter; then
+    echo "Facility could not start the transactional bind broker" >&2
+    tail -n 200 /var/log/facility-bind-mounter.log >&2 || true
+    exit 1
+  fi
+  echo "Facility CodeBuild: transactional bind broker is ready"
+  if ! start_proxy; then
+    echo "Facility could not start the restricted Docker proxy" >&2
+    tail -n 200 /var/log/facility-docker-proxy.log >&2 || true
+    exit 1
+  fi
+
+  export DOCKER_HOST="unix://${public_socket}"
+  if ! docker info >/dev/null 2>&1; then
+    echo "Facility could not start the restricted Docker proxy" >&2
+    tail -n 200 /var/log/facility-docker-proxy.log >&2 || true
+    exit 1
+  fi
+  echo "Facility CodeBuild: restricted Docker proxy is ready"
 fi
-echo "Facility CodeBuild: restricted Docker proxy is ready"
 
 for name in "${credential_vars[@]}"; do unset "$name"; done
 export HOME=/work
@@ -529,14 +631,22 @@ export XDG_CACHE_HOME=/work/.cache
 export XDG_CONFIG_HOME=/work/.config
 export XDG_DATA_HOME=/work/.local/share
 export TMPDIR=/work/.tmp
-mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$TMPDIR"
+# Every project run may restore and update its project-scoped package cache.
+# Keep pnpm's content verification explicit so an untrusted branch cannot make
+# a later trusted run consume bytes that do not match its frozen lockfile.
+export PNPM_CONFIG_VERIFY_STORE_INTEGRITY=true
+mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$npm_cache" "$TMPDIR"
 chown -R "$untrusted_uid:$untrusted_gid" "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" /work/.local \
-  "$TMPDIR"
-chmod -R g+rwX "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" /work/.local "$TMPDIR"
+  "$npm_cache" "$TMPDIR"
+chmod -R g+rwX "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" /work/.local "$npm_cache" "$TMPDIR"
 umask 0002
 
 if [[ "${FACILITY_CODEBUILD_SMOKE:-}" == "1" ]]; then
-  security_smoke
+  if [[ "$nested_docker" == "1" ]]; then
+    security_smoke
+  else
+    security_smoke_without_docker
+  fi
   exit 0
 fi
 

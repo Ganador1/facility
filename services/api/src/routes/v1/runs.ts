@@ -3,6 +3,7 @@ import {
   agentDefs,
   insertAuditEvent,
   projects,
+  runDeliveries,
   runEvents,
   runs,
   steerMessages,
@@ -36,6 +37,17 @@ import {
   assertProjectInOrg as sharedAssertProjectInOrg,
   type V1RouteContext,
 } from "./shared.js";
+
+const RunDeliverySchema = z.object({
+  runId: z.string(),
+  status: z.enum(["pending", "delivering", "delivered", "blocked"]),
+  attempts: z.number().int(),
+  nextAttemptAt: z.date(),
+  blockedReason: z.string().nullable(),
+  error: z.string().nullable(),
+  prNumber: z.number().int().nullable(),
+  prUrl: z.string().nullable(),
+});
 
 export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteContext) {
   const { db, config } = context;
@@ -142,6 +154,30 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
         .offset(query.offset);
       // Strip sealed credentials from every run-read surface.
       return rows.map(redactRunSecrets);
+    },
+  );
+
+  app.get(
+    "/v1/runs/:runId/delivery",
+    {
+      config: { permission: "runs:read" },
+      schema: { params: IdParams, response: { 200: RunDeliverySchema } },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { runId } = request.params as { runId: string };
+      await loadRun(p, runId);
+      const delivery = (
+        await db
+          .select()
+          .from(runDeliveries)
+          .where(and(eq(runDeliveries.orgId, p.orgId), eq(runDeliveries.runId, runId)))
+          .limit(1)
+      )[0];
+      if (!delivery || (p.projectId && delivery.projectId !== p.projectId)) {
+        throw notFound("Run delivery not found");
+      }
+      return delivery;
     },
   );
 
@@ -478,6 +514,66 @@ export async function registerRunsRoutes(app: FastifyInstance, context: V1RouteC
       // response copy — redactRunSecrets returns a fresh object, leaving row intact.
       await cancelRun(config, row);
       return redactRunSecrets(row);
+    },
+  );
+
+  app.post(
+    "/v1/runs/:runId/delivery/retry",
+    {
+      config: { permission: "runs:write", auditAction: "run.delivery_retried" },
+      schema: {
+        params: IdParams,
+        response: { 200: RunDeliverySchema },
+      },
+    },
+    async (request) => {
+      const p = principal(request);
+      const { runId } = request.params as { runId: string };
+      await loadRun(p, runId);
+      const existing = (
+        await db
+          .select()
+          .from(runDeliveries)
+          .where(and(eq(runDeliveries.orgId, p.orgId), eq(runDeliveries.runId, runId)))
+          .limit(1)
+      )[0];
+      if (!existing || (p.projectId && existing.projectId !== p.projectId)) {
+        throw notFound("Run delivery not found");
+      }
+      if (existing.status === "pending") return existing;
+      if (existing.status !== "blocked") {
+        throw new ApiError(
+          409,
+          "delivery_not_retryable",
+          "Only blocked run deliveries can be retried",
+        );
+      }
+      const delivery = (
+        await db
+          .update(runDeliveries)
+          .set({
+            status: "pending",
+            attempts: 0,
+            nextAttemptAt: new Date(),
+            blockedReason: null,
+            error: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(runDeliveries.orgId, p.orgId),
+              eq(runDeliveries.projectId, existing.projectId),
+              eq(runDeliveries.runId, runId),
+              eq(runDeliveries.status, "blocked"),
+            ),
+          )
+          .returning()
+      )[0];
+      if (!delivery) {
+        throw new ApiError(409, "delivery_changed", "Run delivery changed concurrently");
+      }
+      await app.enqueue?.("deliveries.deliver", { runId }).catch(() => undefined);
+      return delivery;
     },
   );
 

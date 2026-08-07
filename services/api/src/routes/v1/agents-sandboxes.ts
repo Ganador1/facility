@@ -4,6 +4,11 @@ import { and, asc, eq } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ApiError } from "../../errors.js";
+import {
+  nestedDockerSettingIsValid,
+  provisioningCommandsAreCoherent,
+  provisioningSettingIsValid,
+} from "../../sandbox/capabilities.js";
 import { validateScheduleTrigger } from "../../schedules.js";
 import type { Principal } from "../../types.js";
 import {
@@ -27,6 +32,30 @@ export async function registerAgentsSandboxesRoutes(
   registerCrud(app, "/v1/projects/:projectId/agents", "agents", agentDefs, "agent");
   registerCrud(app, "/v1/sandbox-profiles", "sandboxes", sandboxProfiles, "sbx");
 }
+
+const SandboxSetup = AnyObject.superRefine((setup, context) => {
+  if (!nestedDockerSettingIsValid(setup)) {
+    context.addIssue({
+      code: "custom",
+      message: "setup.nested_docker must be a boolean",
+      path: ["nested_docker"],
+    });
+  }
+  if (!provisioningSettingIsValid(setup)) {
+    context.addIssue({
+      code: "custom",
+      message: "setup.provisioning must be full, deps_only, or none",
+      path: ["provisioning"],
+    });
+  }
+  if (!provisioningCommandsAreCoherent(setup)) {
+    context.addIssue({
+      code: "custom",
+      message: "setup command overrides cannot target phases disabled by setup.provisioning",
+      path: ["provisioning"],
+    });
+  }
+});
 
 function _objectOrEmpty(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -61,7 +90,7 @@ function registerCrud(
           name: z.string(),
           driver: z.string(),
           image: z.string(),
-          setup: AnyObject.default({}),
+          setup: SandboxSetup.default({}),
           resources: AnyObject.default({}),
           network: AnyObject.default({}),
         });
@@ -82,7 +111,7 @@ function registerCrud(
           name: z.string().optional(),
           driver: z.string().optional(),
           image: z.string().optional(),
-          setup: AnyObject.optional(),
+          setup: SandboxSetup.optional(),
           resources: AnyObject.optional(),
           network: AnyObject.optional(),
         });

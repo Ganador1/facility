@@ -36,13 +36,25 @@ To delegate the whole setup to Claude Code or Codex, paste this prompt:
 > the services to be ready, then report their local URLs.
 
 To exercise the complete production-shaped stack instead of source-watch mode,
-run `SECRET_MASTER_KEY="$(openssl rand -base64 32)" docker compose up -d --wait`.
-That stack builds the runner image, migrates and seeds once, and starts the API,
-worker, gateway, MCP server, and optional web application together.
+run
+
+```bash
+SECRET_MASTER_KEY="$(openssl rand -base64 32)" \
+  docker compose --profile local-storage up -d --wait
+```
+
+The `local-storage` profile adds the bundled MinIO and its bucket setup. That
+stack builds the runner image, migrates and seeds once, and starts the API,
+worker, gateway, MCP server, and optional web application together. To run
+against an external S3-compatible store instead, set `S3_ENDPOINT` (plus the
+matching `S3_*`/`AWS_REGION` values) and omit the profile — the API and gateway
+start without MinIO and do not wait on bucket creation.
 
 Create a GitHub App for the local instance, configure its OAuth callback and
 credentials, and run `facility instance bootstrap` before opening
-`http://localhost:3400`. To let GitHub reach a development machine —
+`http://localhost:3400`. If you run the source CLI, follow bootstrap with
+`FACILITY_SEED_DEMO=0 pnpm --filter @facility/db run deploy`; the API image's
+operator wrapper does that reconciliation automatically. To let GitHub reach a development machine —
 webhooks, so the loop reacts to issues, comments and pull requests — see
 [Local development](local-development). See [Authentication modes](authentication) for the exact
 callback, permissions, and bootstrap arguments. Local login uses GitHub exactly
@@ -73,10 +85,11 @@ configuration, and audit hash-chain verification.
 | postgres | 5461 | internal only | database |
 | minio | 9000 | internal only | envelope/transcript storage |
 
-The compose stack uses MinIO for envelopes and auto-creates the configured
-bucket (`S3_BUCKET`, default `facility`) during startup. API and gateway sign
-object-store requests with AWS SigV4, so the same settings work with MinIO,
-AWS S3, R2, and other S3-compatible endpoints.
+The `local-storage` profile runs MinIO for envelopes and auto-creates the
+configured bucket (`S3_BUCKET`, default `facility`) during startup. API and
+gateway sign object-store requests with AWS SigV4, so the same settings work
+with MinIO, AWS S3, R2, and other S3-compatible endpoints. Point `S3_ENDPOINT`
+at an external store and leave the profile off to run without MinIO.
 
 ## First real steps
 

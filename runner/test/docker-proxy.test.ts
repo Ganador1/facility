@@ -1,8 +1,10 @@
+import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   dockerRequestPolicy,
@@ -18,6 +20,28 @@ afterEach(async () => {
 });
 
 describe("restricted Docker API", () => {
+  test("seeds Corepack into ephemeral run storage instead of the persistent package cache", async () => {
+    const runnerRoot = fileURLToPath(new URL("..", import.meta.url));
+    const [dockerfile, entrypoint] = await Promise.all([
+      readFile(join(runnerRoot, "Dockerfile"), "utf8"),
+      readFile(join(runnerRoot, "runner-entrypoint.sh"), "utf8"),
+    ]);
+    expect(dockerfile).toContain(
+      "COREPACK_HOME=/opt/facility-corepack corepack install --global --cache-only",
+    );
+    expect(entrypoint).toContain('export COREPACK_HOME="$XDG_CACHE_HOME/node/corepack"');
+    expect(entrypoint).toContain('cp -a /opt/facility-corepack/. "$COREPACK_HOME/"');
+    expect(entrypoint).toContain('chmod -R u+w "$COREPACK_HOME"');
+  });
+
+  test("pins package-store integrity for project-scoped CodeBuild caches", async () => {
+    const script = await readFile(
+      join(fileURLToPath(new URL("..", import.meta.url)), "codebuild-runner.sh"),
+      "utf8",
+    );
+    expect(script).toContain("export PNPM_CONFIG_VERIFY_STORE_INTEGRITY=true");
+  });
+
   test("allows build and ordinary container lifecycle calls", () => {
     expect(dockerRequestPolicy("POST", "/v1.47/build?t=repo%2Fimage")).toEqual({
       allowed: true,
@@ -513,6 +537,17 @@ test("custom CodeBuild lifecycle commands drop root", async () => {
   );
 });
 
+test("CodeBuild rejects malformed nested-Docker capability values before setup", () => {
+  const script = fileURLToPath(new URL("../codebuild-runner.sh", import.meta.url));
+  const result = spawnSync("bash", [script], {
+    encoding: "utf8",
+    env: { ...process.env, FACILITY_SANDBOX_NESTED_DOCKER: "false" },
+  });
+  expect(result.status).toBe(2);
+  expect(result.stderr).toContain("FACILITY_SANDBOX_NESTED_DOCKER must be 0 or 1");
+  expect(result.stdout).not.toContain("host boundary configured");
+});
+
 test("CodeBuild keeps pinned bind aliases outside the recursively managed workspace", async () => {
   const script = await readFile(new URL("../codebuild-runner.sh", import.meta.url), "utf8");
   expect(script).toContain('readonly workspace_view="/run/facility-workspace"');
@@ -531,6 +566,16 @@ test("CodeBuild metadata egress is scoped to untrusted identities", async () => 
   );
   expect(script).toContain("iptables -I FORWARD 1 -d 169.254.0.0/16 -j REJECT");
   expect(script).not.toContain("iptables -I OUTPUT 1 -d 169.254.0.0/16 -j REJECT");
+});
+
+test("CodeBuild gives restored package caches to the untrusted identity", async () => {
+  const script = await readFile(new URL("../codebuild-runner.sh", import.meta.url), "utf8");
+  expect(script).toContain('readonly npm_cache="/work/.npm"');
+  expect(script).toContain(
+    'mkdir -p "$XDG_CACHE_HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$npm_cache"',
+  );
+  expect(script).toContain('"$npm_cache" "$TMPDIR"');
+  expect(script).not.toContain("chown -R root:root /work/.npm");
 });
 
 function listen(server: http.Server | net.Server, socket: string) {

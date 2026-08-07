@@ -11,6 +11,7 @@ export const ID_PREFIXES = {
   sess: "sess",
   agent: "agent",
   sbx: "sbx",
+  pvh: "pvh",
   key: "key",
   prov: "prov",
   vkey: "vkey",

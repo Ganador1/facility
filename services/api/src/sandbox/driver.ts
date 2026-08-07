@@ -2,8 +2,15 @@ export type SandboxDriverName = "docker" | "aws";
 
 export type LaunchSpec = {
   runId: string;
+  // Opaque control-plane ownership boundary for shared Docker daemons. Docker
+  // uses it as a label; managed-cloud drivers already isolate by project/task.
+  namespace?: string;
+  kind?: "run" | "preview";
   image: string;
   env: Record<string, string>;
+  // Trusted control-plane partition for provider-managed dependency caches.
+  // It must never be copied into the untrusted sandbox environment.
+  cachePartition?: string;
   cpu: number;
   memoryMb: number;
   timeoutMin: number;
@@ -11,6 +18,8 @@ export type LaunchSpec = {
   network?: Record<string, unknown>;
   servicePort?: number;
 };
+
+export type RecoverLaunchSpec = Pick<LaunchSpec, "runId" | "servicePort">;
 
 export class SandboxLaunchError extends Error {
   constructor(
@@ -26,6 +35,7 @@ export class SandboxLaunchError extends Error {
 export interface SandboxDriver {
   name: SandboxDriverName;
   launch(spec: LaunchSpec): Promise<{ ref: string; endpoint?: string }>;
+  recoverLaunch?(spec: RecoverLaunchSpec): Promise<{ ref: string; endpoint?: string } | undefined>;
   status(ref: string): Promise<"starting" | "running" | "exited" | "lost">;
   logs(ref: string, afterLine?: number): AsyncIterable<string>;
   stop(ref: string, opts?: { kill?: boolean }): Promise<void>;

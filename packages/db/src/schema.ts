@@ -446,6 +446,11 @@ export const runs = pgTable(
     receipt: jsonb("receipt"),
     gh: jsonb("gh").notNull().default(sql`'{}'::jsonb`),
     engineSessionId: text("engine_session_id"),
+    githubDeliveryId: text("github_delivery_id"),
+    // A distinct GitHub delivery can report the same failing PR head. This
+    // durable admission key prevents scaled workers from dispatching two
+    // ci-doctor runs for that head after both observed the same history.
+    ciRepairKey: text("ci_repair_key"),
     transcriptUri: text("transcript_uri"),
     sessionStateUri: text("session_state_uri"),
     error: text("error"),
@@ -455,7 +460,15 @@ export const runs = pgTable(
     createdBy: jsonb("created_by").notNull(),
     ...timestamps,
   },
-  (table) => [index("runs_org_project_idx").on(table.orgId, table.projectId)],
+  (table) => [
+    index("runs_org_project_idx").on(table.orgId, table.projectId),
+    uniqueIndex("runs_org_github_delivery_uidx")
+      .on(table.orgId, table.githubDeliveryId)
+      .where(sql`${table.githubDeliveryId} is not null`),
+    uniqueIndex("runs_org_ci_repair_key_uidx")
+      .on(table.orgId, table.ciRepairKey)
+      .where(sql`${table.ciRepairKey} is not null`),
+  ],
 );
 
 export const runEvents = pgTable(
@@ -476,6 +489,56 @@ export const runEvents = pgTable(
     primaryKey({ columns: [table.runId, table.seq] }),
     index("run_events_org_idx").on(table.orgId),
     index("run_events_run_seq_idx").on(table.runId, table.seq),
+  ],
+);
+
+export const runDeliveries = pgTable(
+  "run_deliveries",
+  {
+    runId: text("run_id")
+      .primaryKey()
+      .references(() => runs.id),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    repoId: text("repo_id")
+      .notNull()
+      .references(() => repos.id),
+    owner: text("owner").notNull(),
+    repoName: text("repo_name").notNull(),
+    headBranch: text("head_branch").notNull(),
+    expectedHeadSha: text("expected_head_sha").notNull(),
+    baseBranch: text("base_branch").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    issueNumber: integer("issue_number"),
+    status: text("status").notNull().default("pending"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }).defaultNow().notNull(),
+    blockedReason: text("blocked_reason"),
+    error: text("error"),
+    prNumber: integer("pr_number"),
+    prUrl: text("pr_url"),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [
+    index("run_deliveries_pending_idx")
+      .on(table.status, table.nextAttemptAt)
+      .where(sql`${table.status} in ('pending', 'delivering')`),
+    index("run_deliveries_org_project_idx").on(
+      table.orgId,
+      table.projectId,
+      table.createdAt.desc(),
+    ),
+    check(
+      "run_deliveries_status_check",
+      sql`${table.status} in ('pending', 'delivering', 'delivered', 'blocked')`,
+    ),
+    check("run_deliveries_attempts_check", sql`${table.attempts} >= 0`),
   ],
 );
 
@@ -992,24 +1055,57 @@ export const previewSandboxes = pgTable(
     originUrl: text("origin_url"),
     config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
     error: text("error"),
+    provisionClaimedAt: timestamp("provision_claimed_at", { withTimezone: true }),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     lastHealthAt: timestamp("last_health_at", { withTimezone: true }),
     createdBy: jsonb("created_by").notNull(),
     ...timestamps,
   },
   (table) => [
+    uniqueIndex("preview_sandboxes_run_uidx")
+      .on(table.runId)
+      .where(sql`${table.runId} is not null and ${table.status} in ('provisioning', 'running')`),
     index("preview_sandboxes_org_project_idx").on(
       table.orgId,
       table.projectId,
       table.createdAt.desc(),
     ),
     index("preview_sandboxes_expiry_idx").on(table.status, table.expiresAt),
+    index("preview_sandboxes_unbound_provision_idx")
+      .on(table.status, table.provisionClaimedAt, table.createdAt)
+      .where(sql`${table.status} = 'provisioning' and ${table.ref} is null`),
     check(
       "preview_sandboxes_status_check",
       sql`${table.status} in ('provisioning', 'running', 'failed', 'expired', 'destroyed')`,
     ),
     check("preview_sandboxes_auth_check", sql`${table.authMode} = 'facility_session'`),
     check("preview_sandboxes_driver_check", sql`${table.driver} in ('docker', 'aws')`),
+  ],
+);
+
+export const previewAccessHandoffs = pgTable(
+  "preview_access_handoffs",
+  {
+    id: text("id").primaryKey(),
+    orgId: text("org_id")
+      .notNull()
+      .references(() => orgs.id),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    previewId: text("preview_id")
+      .notNull()
+      .references(() => previewSandboxes.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("preview_access_handoffs_expiry_idx").on(table.expiresAt),
+    index("preview_access_handoffs_preview_user_idx").on(table.previewId, table.userId),
   ],
 );
 

@@ -1,8 +1,19 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import {
+  DEV_COMPOSE,
+  TEST_DATABASES,
+  recreateTestDatabase,
+} from "./verify-test-databases.mjs";
 
-const compose = ["compose", "-f", "docker-compose.dev.yml"];
-const wasRunning = output("docker", [...compose, "ps", "--status", "running", "-q", "postgres"]).trim();
+const wasRunning = output("docker", [
+  ...DEV_COMPOSE,
+  "ps",
+  "--status",
+  "running",
+  "-q",
+  "postgres",
+]).trim();
 let startedPostgres = false;
 
 try {
@@ -12,44 +23,28 @@ try {
   step("Clean workspace build (Turbo cache disabled)", "pnpm", ["build:clean"]);
 
   if (!wasRunning) {
-    step("Start isolated test Postgres", "docker", [...compose, "up", "-d", "--wait", "postgres"]);
+    step("Start isolated test Postgres", "docker", [
+      ...DEV_COMPOSE,
+      "up",
+      "-d",
+      "--wait",
+      "postgres",
+    ]);
     startedPostgres = true;
   }
-  for (const database of ["facility_test", "facility_gw"]) ensureDatabase(database);
+  for (const database of TEST_DATABASES) {
+    console.log(`\n==> Recreate isolated database ${database}`);
+    recreateTestDatabase(database, run);
+  }
 
   step("Critical integration tests (direct, uncached, skips forbidden)", "pnpm", ["test:critical"]);
   step("Remaining tests (Turbo cache disabled)", "pnpm", ["test:uncached"]);
   step("Repository guards", "pnpm", ["guards"]);
   step("All-severity dependency audit", "pnpm", ["audit", "--audit-level", "low"]);
 } finally {
-  if (startedPostgres) run("docker", [...compose, "stop", "postgres"], { allowFailure: true });
-}
-
-function ensureDatabase(name) {
-  const exists = output("docker", [
-    ...compose,
-    "exec",
-    "-T",
-    "postgres",
-    "psql",
-    "-U",
-    "facility",
-    "-d",
-    "postgres",
-    "-tAc",
-    `SELECT 1 FROM pg_database WHERE datname='${name}'`,
-  ]).trim();
-  if (exists === "1") return;
-  step(`Create isolated database ${name}`, "docker", [
-    ...compose,
-    "exec",
-    "-T",
-    "postgres",
-    "createdb",
-    "-U",
-    "facility",
-    name,
-  ]);
+  if (startedPostgres) {
+    run("docker", [...DEV_COMPOSE, "stop", "postgres"], { allowFailure: true });
+  }
 }
 
 function step(label, command, args) {

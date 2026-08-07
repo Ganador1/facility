@@ -33,6 +33,12 @@ type AwsSandboxConfig = {
   project: string;
 };
 
+type AwsSandboxLaunchConfig = AwsSandboxConfig & {
+  cacheBaseLocation: string;
+};
+
+const CACHE_PATHS = ["/work/.local/share/pnpm/store/**/*", "/work/.npm/_cacache/**/*"] as const;
+
 const STARTING_PHASES = new Set([
   "SUBMITTED",
   "QUEUED",
@@ -59,7 +65,8 @@ export class AwsSandboxDriver implements SandboxDriver {
   }
 
   async launch(spec: LaunchSpec): Promise<{ ref: string; endpoint?: string }> {
-    const config = this.config();
+    const config = this.launchConfig();
+    const cachePartition = codeBuildCachePartition(spec.cachePartition);
     const output = (await this.codebuild.send(
       new StartBuildCommand({
         projectName: config.project,
@@ -69,6 +76,13 @@ export class AwsSandboxDriver implements SandboxDriver {
         environmentVariablesOverride: Object.entries(spec.env)
           .sort(([left], [right]) => left.localeCompare(right))
           .map(([name, value]) => ({ name, value, type: "PLAINTEXT" })),
+        // The project default is deliberately NO_CACHE. Every run must receive
+        // its own unguessable S3 prefix or it starts without a cache rather than
+        // falling back to a cache shared by every Facility tenant.
+        cacheOverride: {
+          type: "S3",
+          location: `${config.cacheBaseLocation}/${cachePartition}`,
+        },
         ...(spec.cmd ? { buildspecOverride: codeBuildBuildspec(spec.cmd) } : {}),
       }),
     )) as StartBuildCommandOutput;
@@ -155,6 +169,15 @@ export class AwsSandboxDriver implements SandboxDriver {
     return { region, project };
   }
 
+  private launchConfig(): AwsSandboxLaunchConfig {
+    const config = this.config();
+    const cacheBaseLocation = stringEnv(
+      this.env.FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION,
+    )?.replace(/\/+$/, "");
+    if (!cacheBaseLocation) this.notConfigured("FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION");
+    return { ...config, cacheBaseLocation };
+  }
+
   private notConfigured(missing: string): never {
     const error = new Error(`AWS sandbox driver is not configured; missing ${missing}`);
     (error as Error & { code: string }).code = "not_configured";
@@ -180,7 +203,15 @@ function codeBuildComputeType(cpu: number, memoryMb: number) {
 
 function codeBuildBuildspec(cmd: string[]) {
   const command = ["/app/codebuild-runner.sh", ...cmd].map(shellQuote).join(" ");
-  return `version: 0.2\nrun-as: root\nphases:\n  build:\n    commands:\n      - ${JSON.stringify(command)}\n`;
+  const paths = CACHE_PATHS.map((path) => `    - ${JSON.stringify(path)}`).join("\n");
+  return `version: 0.2\nrun-as: root\nphases:\n  build:\n    commands:\n      - ${JSON.stringify(command)}\ncache:\n  paths:\n${paths}\n`;
+}
+
+function codeBuildCachePartition(value: string | undefined) {
+  if (value && /^[a-f0-9]{64}$/.test(value)) return value;
+  const error = new Error("AWS sandbox cache partition is missing or invalid");
+  (error as Error & { code: string }).code = "not_configured";
+  throw error;
 }
 
 function shellQuote(value: string) {
