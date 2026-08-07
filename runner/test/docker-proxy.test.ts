@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   dockerRequestPolicy,
+  dockerUpgradeAllowed,
   secureDockerBindSources,
   startDockerProxy,
   validateDockerBody,
@@ -42,6 +43,71 @@ describe("restricted Docker API", () => {
     expect(script).toContain("export PNPM_CONFIG_VERIFY_STORE_INTEGRITY=true");
   });
 
+  test("keeps the official rootless launcher behind explicit host-loopback isolation", async () => {
+    const runnerRoot = fileURLToPath(new URL("..", import.meta.url));
+    const [dockerfile, script] = await Promise.all([
+      readFile(join(runnerRoot, "Dockerfile"), "utf8"),
+      readFile(join(runnerRoot, "codebuild-runner.sh"), "utf8"),
+    ]);
+    expect(dockerfile).toMatch(
+      /^FROM docker:29-dind-rootless@sha256:[0-9a-f]{64} AS docker-tools$/m,
+    );
+    expect(dockerfile).toContain("COPY --from=docker-tools /usr/local/bin/");
+    expect(dockerfile).not.toMatch(/^\s+docker\.io\s+\\$/m);
+    expect(dockerfile).not.toMatch(/^\s+rootlesskit\s+\\$/m);
+    expect(script).toContain(
+      'DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS="--net=slirp4netns --disable-host-loopback"',
+    );
+    expect(script).toContain("/usr/local/bin/dockerd-entrypoint.sh dockerd");
+    expect(script).not.toContain("/usr/share/docker.io/contrib/dockerd-rootless.sh");
+    expect(script).toContain("-f /app/find-descendant.awk");
+    expect(script).not.toContain("ps -eo pid=,pgid=,uid=,comm=");
+    expect(script).toMatch(
+      /setsid nsenter --mount="\/proc\/\$\{docker_daemon_pid\}\/ns\/mnt" -- env -i/,
+    );
+  });
+
+  test("selects one descendant dockerd and denies ambiguous or spoofed process trees", () => {
+    const program = fileURLToPath(new URL("../find-descendant.awk", import.meta.url));
+    const find = (processes: string) =>
+      spawnSync(
+        "awk",
+        [
+          "-v",
+          "root_pid=244",
+          "-v",
+          "target_uid=1001",
+          "-v",
+          "target_command=dockerd",
+          "-f",
+          program,
+        ],
+        { encoding: "utf8", input: processes },
+      );
+
+    const valid = find(`
+244 1 0 runuser
+252 244 1001 rootlesskit
+316 252 1001 rootlesskit
+343 316 1001 docker-init
+348 343 1001 dockerd
+360 348 1001 containerd
+900 1 1001 dockerd
+`);
+    expect(valid.status).toBe(0);
+    expect(valid.stdout.trim()).toBe("348");
+
+    for (const denied of [
+      `244 1 0 runuser\n252 244 1001 rootlesskit\n348 252 1000 dockerd\n`,
+      `244 1 0 runuser\n348 1 1001 dockerd\n`,
+      `244 1 0 runuser\n348 244 1001 dockerd\n349 244 1001 dockerd\n`,
+    ]) {
+      const result = find(denied);
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toBe("");
+    }
+  });
+
   test("allows build and ordinary container lifecycle calls", () => {
     expect(dockerRequestPolicy("POST", "/v1.47/build?t=repo%2Fimage")).toEqual({
       allowed: true,
@@ -73,6 +139,26 @@ describe("restricted Docker API", () => {
     expect(
       validateDockerBody("container", { HostConfig: { SecurityOpt: ["label:disable"] } }),
     ).toBeNull();
+  });
+
+  test("allows only lifecycle and integrated rootless BuildKit upgrades", () => {
+    for (const path of [
+      "/grpc",
+      "/v1.55/session",
+      "/v1.55/exec/abc/start",
+      "/v1.55/containers/abc/attach",
+    ]) {
+      expect(dockerUpgradeAllowed("POST", path)).toBe(true);
+    }
+    const deniedUpgrades: Array<[string, string]> = [
+      ["GET", "/grpc"],
+      ["POST", "/plugins/pull"],
+      ["POST", "/containers/abc/update"],
+      ["POST", "/grpc/other"],
+    ];
+    for (const [method, path] of deniedUpgrades) {
+      expect(dockerUpgradeAllowed(method, path)).toBe(false);
+    }
   });
 
   test("denies daemon administration and runtime privilege escalation", () => {
@@ -477,6 +563,51 @@ describe("restricted Docker API", () => {
     await expect(upgrade(publicSocket, "/v1.47/exec/abc/start", execBody)).resolves.toBe("ready");
   });
 
+  test("keeps serving after a BuildKit probe closes its upgraded socket", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "facility-buildkit-upgrade-"));
+    const upstreamSocket = join(dir, "upstream.sock");
+    const publicSocket = join(dir, "public.sock");
+    const upstream = net.createServer((socket) => {
+      socket.once("data", (request) => {
+        const headers = request.toString();
+        if (headers.startsWith("POST /grpc ")) {
+          socket.write(
+            "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n",
+          );
+          setTimeout(() => socket.write(Buffer.from([0, 0, 0, 4])), 10);
+          return;
+        }
+        socket.end("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK");
+      });
+      socket.on("error", () => {});
+    });
+    await listen(upstream, upstreamSocket);
+    const proxy = await startDockerProxy({ publicSocket, upstreamSocket });
+    cleanup.push(async () => {
+      await close(proxy);
+      await close(upstream);
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const client = net.createConnection(publicSocket, () => {
+        client.write(
+          "POST /grpc HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n",
+        );
+      });
+      client.once("data", () => {
+        client.destroy();
+        setTimeout(resolve, 30);
+      });
+      client.once("error", reject);
+    });
+
+    await expect(get(publicSocket, "/_ping")).resolves.toMatchObject({
+      status: 200,
+      body: "OK",
+    });
+  });
+
   test("flushes long-lived Docker response headers before the body", async () => {
     const dir = await mkdtemp(join(tmpdir(), "facility-docker-stream-"));
     const upstreamSocket = join(dir, "upstream.sock");
@@ -550,8 +681,10 @@ test("CodeBuild rejects malformed nested-Docker capability values before setup",
 
 test("CodeBuild keeps pinned bind aliases outside the recursively managed workspace", async () => {
   const script = await readFile(new URL("../codebuild-runner.sh", import.meta.url), "utf8");
-  expect(script).toContain('readonly workspace_view="/run/facility-workspace"');
+  expect(script).toContain('readonly workspace_view="/var/lib/facility-workspace"');
+  expect(script).toContain('readonly bind_runtime="/var/lib/facility-binds"');
   expect(script).not.toContain('readonly workspace_view="/work/');
+  expect(script).toContain("docker_namespace_mounts -rn -o TARGET");
   expect(script).toContain("if ! find /work -type d -print >/dev/null; then");
   expect(script).toContain('--mount "type=bind,src=/work,dst=/workspace,readonly"');
 });
@@ -611,6 +744,20 @@ function request(socketPath: string, path: string, body: Record<string, unknown>
     );
     req.on("error", reject);
     req.end(json);
+  });
+}
+
+function get(socketPath: string, path: string) {
+  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+    const req = http.request({ socketPath, method: "GET", path }, (response) => {
+      let responseBody = "";
+      response.on("data", (chunk) => {
+        responseBody += chunk.toString();
+      });
+      response.on("end", () => resolve({ status: response.statusCode ?? 0, body: responseBody }));
+    });
+    req.on("error", reject);
+    req.end();
   });
 }
 

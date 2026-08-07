@@ -7,8 +7,11 @@ readonly untrusted_uid="${FACILITY_UNTRUSTED_UID:-1000}"
 readonly untrusted_gid="${FACILITY_UNTRUSTED_GID:-1000}"
 readonly docker_runtime="/run/facility-docker"
 readonly proxy_runtime="/run/facility-proxy"
-readonly bind_runtime="/run/facility-binds"
-readonly workspace_view="/run/facility-workspace"
+readonly bind_runtime="/var/lib/facility-binds"
+# The official RootlessKit launcher copy-ups /run inside dockerd's mount
+# namespace. Keep propagated bind aliases under /var/lib so the shared mount is
+# visible on both sides without placing privileged state inside /work.
+readonly workspace_view="/var/lib/facility-workspace"
 readonly npm_cache="/work/.npm"
 readonly raw_socket="${docker_runtime}/docker.sock"
 readonly public_socket="${proxy_runtime}/docker.sock"
@@ -47,6 +50,7 @@ proxy_secret_vars=(
 
 dockerd_env=()
 dockerd_pid=""
+docker_daemon_pid=""
 proxy_pid=""
 mounter_pid=""
 for name in "${proxy_secret_vars[@]}"; do dockerd_env+=(--unset="$name"); done
@@ -93,7 +97,7 @@ start_docker() {
     XDG_RUNTIME_DIR="$docker_runtime" \
     DOCKER_HOST="unix://${raw_socket}" \
     DOCKERD_ROOTLESS_ROOTLESSKIT_FLAGS="--net=slirp4netns --disable-host-loopback" \
-    /usr/share/docker.io/contrib/dockerd-rootless.sh \
+    /usr/local/bin/dockerd-entrypoint.sh dockerd \
       --host="unix://${raw_socket}" \
       --storage-driver="$storage_driver" \
       --data-root="$data_root" \
@@ -134,18 +138,19 @@ start_proxy() {
 }
 
 start_mounter() {
-  local docker_uid docker_daemon_pid
+  local docker_uid
   docker_uid="$(id -u "$docker_user")"
-  docker_daemon_pid="$(
-    ps -eo pid=,pgid=,uid=,comm= | awk \
-      -v group="$dockerd_pid" -v uid="$docker_uid" \
-      '$2 == group && $3 == uid && $4 == "dockerd" { print $1 }'
-  )"
-  if [[ -z "$docker_daemon_pid" || "$docker_daemon_pid" == *$'\n'* ]]; then
+  if ! docker_daemon_pid="$(
+    ps -eo pid=,ppid=,uid=,comm= | awk \
+      -v root_pid="$dockerd_pid" \
+      -v target_uid="$docker_uid" \
+      -v target_command=dockerd \
+      -f /app/find-descendant.awk
+  )"; then
     echo "Facility could not identify the rootless Docker mount namespace" >&2
     return 1
   fi
-  setsid env -i \
+  setsid nsenter --mount="/proc/${docker_daemon_pid}/ns/mnt" -- env -i \
     /usr/local/bin/facility-bind-broker \
       "$bind_socket" "/work" "$workspace_view" \
       "$(id -u "$proxy_user")" "$(id -g "$proxy_user")" \
@@ -173,6 +178,11 @@ start_mounter() {
     sleep 1
   done
   return 1
+}
+
+docker_namespace_mounts() {
+  if [[ -z "$docker_daemon_pid" ]]; then return 1; fi
+  nsenter --mount="/proc/${docker_daemon_pid}/ns/mnt" -- findmnt "$@"
 }
 
 security_smoke() {
@@ -382,13 +392,13 @@ security_smoke() {
   local rollback_probe='const net=require("node:net"); const socket=net.createConnection(process.argv[1]); let response=""; const timer=setTimeout(()=>socket.destroy(new Error("timeout")),1000); socket.setEncoding("utf8"); socket.on("connect",()=>socket.end("BATCH 2\nOPEN .facility-security-partial/probe\nOPEN .facility-security-partial/missing\n")); socket.on("data",chunk=>response+=chunk); socket.on("end",()=>{clearTimeout(timer); process.exit(response==="ERR workspace_bind_source_denied\n"?0:1)}); socket.on("error",()=>{clearTimeout(timer); process.exit(1)});'
   echo "Facility smoke: checking transactional bind rollback"
   local aliases_before aliases_after
-  aliases_before="$(findmnt -rn -o TARGET | grep -c "^${workspace_view}/" || true)"
+  aliases_before="$(docker_namespace_mounts -rn -o TARGET | grep -c "^${workspace_view}/" || true)"
   if ! runuser --user "$proxy_user" -- env -i \
     /usr/local/bin/node -e "$rollback_probe" "$bind_socket"; then
     echo "Security smoke failed: the bind broker did not reject a partial batch" >&2
     return 1
   fi
-  aliases_after="$(findmnt -rn -o TARGET | grep -c "^${workspace_view}/" || true)"
+  aliases_after="$(docker_namespace_mounts -rn -o TARGET | grep -c "^${workspace_view}/" || true)"
   if [[ "$aliases_after" != "$aliases_before" ]]; then
     echo "Security smoke failed: a rejected broker batch leaked a pinned alias" >&2
     return 1
@@ -440,7 +450,7 @@ security_smoke() {
   fi
   run_untrusted rm /work/.facility-security-create/dangling
   rmdir /work/.facility-security-create/created /work/.facility-security-create
-  if ! findmnt -rn -o TARGET | grep -q "^${workspace_view}/"; then
+  if ! docker_namespace_mounts -rn -o TARGET | grep -q "^${workspace_view}/"; then
     echo "Security smoke failed: workspace binds did not use pinned mount aliases" >&2
     return 1
   fi
@@ -457,7 +467,8 @@ security_smoke_without_docker() {
     echo "No-Docker smoke failed: storage driver was not reported as none" >&2
     return 1
   fi
-  if [[ -n "$dockerd_pid" || -n "$proxy_pid" || -n "$mounter_pid" ]]; then
+  if [[ -n "$dockerd_pid" || -n "$docker_daemon_pid" || -n "$proxy_pid" || \
+    -n "$mounter_pid" ]]; then
     echo "No-Docker smoke failed: a nested-Docker process was recorded" >&2
     return 1
   fi

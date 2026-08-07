@@ -40,8 +40,9 @@ function terraformResource(source, type, name) {
 }
 
 function apiStage(image) {
-  const start = image.indexOf("FROM base AS api\n");
-  assert.notEqual(start, -1, "the root Dockerfile must still build an api stage");
+  const declaration = image.match(/^FROM \S+ AS api$/m);
+  assert.ok(declaration, "the root Dockerfile must still build an api stage");
+  const start = declaration.index;
   const end = image.indexOf("\nFROM ", start + 1);
   return image.slice(start, end === -1 ? undefined : end);
 }

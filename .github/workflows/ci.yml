@@ -213,6 +213,19 @@ jobs:
         if: steps.policy.outputs.required == 'true'
         run: docker build --pull -f runner/Dockerfile -t facility-runner:dev .
 
+      # Ubuntu 24.04 restricts unprivileged user namespaces through AppArmor,
+      # including inside this disposable nested-Docker test. RootlessKit needs
+      # that kernel primitive; AWS CodeBuild runs the image directly and does
+      # not use this CI-only outer container boundary.
+      - name: Permit nested rootless user namespaces
+        if: steps.policy.outputs.required == 'true'
+        shell: bash
+        run: |
+          key=kernel.apparmor_restrict_unprivileged_userns
+          if sudo sysctl "$key" >/dev/null 2>&1; then
+            sudo sysctl -w "$key=0"
+          fi
+
       - name: Exercise the privileged CodeBuild boundary
         if: steps.policy.outputs.required == 'true'
         run: |

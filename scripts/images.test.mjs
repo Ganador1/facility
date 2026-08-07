@@ -195,9 +195,13 @@ test("CI gates release images and the reusable publisher stages digests before p
   assert.match(scanJob, /"\$GRYPE" db update/);
   assert.match(scanJob, /GRYPE_DB_AUTO_UPDATE: "false"/);
   assert.match(scanJob, /GRYPE_CHECK_FOR_APP_UPDATE: "false"/);
+  assert.match(scanJob, /actions\/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5/);
   assert.match(scanJob, /for image in api gateway mcp web runner/);
   assert.match(scanJob, /registry:\$IMAGE_PREFIX\/\$image@\$digest/);
   assert.match(scanJob, /--fail-on high --only-fixed/);
+  assert.match(scanJob, /\[\[ "\$image" == "runner" \]\]/);
+  assert.match(scanJob, /--config "\$GITHUB_WORKSPACE\/runner\/grype\.yaml"/);
+  assert.match(scanJob, /cd "\$RUNNER_TEMP"/);
   assert.match(scanJob, /scan_failed=1/);
   assert.match(scanJob, /exit "\$scan_failed"/);
   assert.doesNotMatch(scanJob, /matrix:/);
@@ -208,4 +212,18 @@ test("CI gates release images and the reusable publisher stages digests before p
     /publish-images:[\s\S]*needs: \[decide-release, verify, package-release, self-host-build, sandbox-e2e\]/,
   );
   assert.match(ciWorkflow, /publish-images:[\s\S]*uses: \.\/\.github\/workflows\/images\.yml/);
+});
+
+test("sandbox CI explicitly admits RootlessKit user namespaces on Ubuntu 24.04", () => {
+  const sandboxJob = ciWorkflow.split("\n  publish-npm:")[0].split("\n  sandbox-e2e:")[1];
+  assert.ok(sandboxJob, "CI must contain the sandbox E2E job");
+  assert.match(sandboxJob, /- name: Permit nested rootless user namespaces/);
+  assert.match(sandboxJob, /key=kernel\.apparmor_restrict_unprivileged_userns/);
+  assert.match(sandboxJob, /if sudo sysctl "\$key" >\/dev\/null 2>&1; then/);
+  assert.match(sandboxJob, /sudo sysctl -w "\$key=0"/);
+  assert.ok(
+    sandboxJob.indexOf("Permit nested rootless user namespaces") <
+      sandboxJob.indexOf("Exercise the privileged CodeBuild boundary"),
+    "the host must admit unprivileged user namespaces before RootlessKit starts",
+  );
 });
