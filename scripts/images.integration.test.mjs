@@ -132,6 +132,10 @@ test("a fresh image set promotes six packages and aliases worker to the api dige
     calls.map(({ githubToken, ghToken }) => ({ githubToken, ghToken })),
     Array.from({ length: 6 }, () => ({ githubToken: null, ghToken: null })),
   );
+  assert.ok(
+    calls.every(({ args }) => args.includes("--prefer-index=false")),
+    "promotion must preserve each single-platform source manifest digest",
+  );
   const worker = calls.find(({ args }) => args.includes("ghcr.io/theam/facility/worker:0.3.0"));
   assert(worker);
   assert.equal(worker.args.at(-1), `ghcr.io/theam/facility/api@${imageDigests().get("api")}`);

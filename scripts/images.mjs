@@ -227,7 +227,10 @@ export async function publishImageSet({
 
   for (const image of plan.images) {
     if (image.missingTags.length === 0) continue;
-    const args = ["buildx", "imagetools", "create"];
+    // A single-platform source is already the exact deployable manifest.
+    // Buildx otherwise wraps it in a new index with a different digest, which
+    // makes an identical immutable-tag replay look like changed runtime bytes.
+    const args = ["buildx", "imagetools", "create", "--prefer-index=false"];
     for (const tag of image.missingTags) {
       args.push("--tag", `${registry}/${image.image}:${tag}`);
     }
