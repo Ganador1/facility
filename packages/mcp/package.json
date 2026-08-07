@@ -12,6 +12,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsup src/index.ts src/bin/facility-mcp.ts --format esm --dts",
+    "build:runtime": "tsup src/index.ts src/bin/facility-mcp.ts --format esm",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },

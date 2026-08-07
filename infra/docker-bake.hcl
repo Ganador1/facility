@@ -28,21 +28,32 @@ target "service" {
   attest = ["type=provenance,disabled=true"]
 }
 
+# Make the shared package build a real dependency edge. Without the named
+# context, concurrent target solves may each start the same cold RUN before a
+# sibling has populated BuildKit's cache.
+target "service-packages" {
+  inherits = ["service"]
+  target   = "build-service-packages"
+}
+
 target "api" {
   inherits = ["service"]
   target   = "api"
+  contexts = { build-service-packages = "target:service-packages" }
   tags     = ["${ECR_REGISTRY}/${ECR_PREFIX}/api:${IMAGE_TAG}"]
 }
 
 target "gateway" {
   inherits = ["service"]
   target   = "gateway"
+  contexts = { build-service-packages = "target:service-packages" }
   tags     = ["${ECR_REGISTRY}/${ECR_PREFIX}/gateway:${IMAGE_TAG}"]
 }
 
 target "mcp" {
   inherits = ["service"]
   target   = "mcp"
+  contexts = { build-service-packages = "target:service-packages" }
   tags     = ["${ECR_REGISTRY}/${ECR_PREFIX}/mcp:${IMAGE_TAG}"]
 }
 

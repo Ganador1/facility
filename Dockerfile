@@ -49,15 +49,19 @@ RUN pnpm install --frozen-lockfile --filter '@facility/core...' \
       --filter '@facility/harness...' \
       --filter '@facility/api...' --filter '@facility/gateway...'
 
-# --- API build: API + its workspace runtime dependencies ---
-FROM deps AS build-api
+# Build the workspace packages shared by the three service images once. Bake
+# requests API, gateway, and MCP concurrently; keeping this as one graph vertex
+# prevents three Core builds and two DB builds from competing for memory.
+FROM deps AS build-service-packages
 COPY packages ./packages
-COPY services/api ./services/api
 COPY tsconfig.base.json ./
-# @facility/harness is a runtime dependency of the API (KB validation, the
-# Project Owner / learning harness) — it must be built into the image.
 RUN pnpm --filter '@facility/core' --filter '@facility/db' \
-      --filter '@facility/harness' --filter '@facility/api' run build
+      --filter '@facility/harness' --filter '@facility/sdk' run build:runtime
+
+# --- API build: API + its workspace runtime dependencies ---
+FROM build-service-packages AS build-api
+COPY services/api ./services/api
+RUN pnpm --filter '@facility/api' run build:runtime
 # Produce isolated production trees. `deploy --prod` keeps runtime workspace
 # dependencies and package assets (including DB migrations) while excluding
 # source workspaces, tests, build tools, and every devDependency.
@@ -70,20 +74,14 @@ RUN test -f /prod/api/node_modules/@facility/db/dist/seed-assets/packages/harnes
   && test -f /prod/api/node_modules/@facility/core/dist/render-assets/packages/cli/templates/workflows/facility-crew.yml
 
 # --- Gateway build: avoid compiling the much larger API for proxy-only fixes ---
-FROM deps AS build-gateway
-COPY packages ./packages
+FROM build-service-packages AS build-gateway
 COPY services/gateway ./services/gateway
-COPY tsconfig.base.json ./
-RUN pnpm --filter '@facility/core' --filter '@facility/db' \
-      --filter '@facility/gateway' run build
+RUN pnpm --filter '@facility/gateway' run build:runtime
 RUN pnpm --filter '@facility/gateway' deploy --prod --legacy /prod/gateway
 
 # --- MCP build: keep SDK/MCP changes independent from API and gateway ---
-FROM deps AS build-mcp
-COPY packages ./packages
-COPY tsconfig.base.json ./
-RUN pnpm --filter '@facility/core' --filter '@facility/sdk' \
-      --filter '@facility/mcp' run build
+FROM build-service-packages AS build-mcp
+RUN pnpm --filter '@facility/mcp' run build:runtime
 RUN pnpm --filter '@facility/mcp' deploy --prod --legacy /prod/mcp
 
 # --- api (also serves the worker via `node dist/worker.js`) ---
