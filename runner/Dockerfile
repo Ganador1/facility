@@ -164,11 +164,16 @@ COPY --from=bind-broker-build /facility-bind-broker /usr/local/bin/facility-bind
 COPY runner/package.json runner/package-lock.json runner/tsconfig.json ./
 COPY packages/run-objective/package.json /packages/run-objective/
 COPY packages/run-objective/src /packages/run-objective/src
+# Repository-runner source changes are frequent and do not change the locked
+# runtime dependency graph. Keep npm ci in its own cacheable layer so an agent
+# telemetry or lifecycle edit rebuilds the small bundle instead of reinstalling
+# and auditing the same dependencies.
+RUN npm ci
 COPY runner/src ./src
 # The runtime image consumes JavaScript only. Declaration generation remains in
 # the workspace build/typecheck gates and previously added about a minute to
 # every cache-miss runner image build without changing runtime bytes.
-RUN npm ci && npm run build:runtime && npm prune --omit=dev
+RUN npm run build:runtime && npm prune --omit=dev
 
 # Run non-root: agent CLIs (Claude Code) refuse bypass-permissions as root, and
 # a rogue agent process should never hold uid 0.
