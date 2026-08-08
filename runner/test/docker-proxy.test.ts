@@ -21,6 +21,16 @@ afterEach(async () => {
 });
 
 describe("restricted Docker API", () => {
+  test("keeps Debian security refreshes explicit in the cached runner graph", async () => {
+    const dockerfile = await readFile(
+      join(fileURLToPath(new URL("..", import.meta.url)), "Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toMatch(
+      /ARG DEBIAN_SECURITY_REFRESH=\d{8}\s+RUN test -n "\$DEBIAN_SECURITY_REFRESH" \\\s+&& apt-get update \\\s+&& DEBIAN_FRONTEND=noninteractive apt-get upgrade -y/,
+    );
+  });
+
   test("seeds Corepack into ephemeral run storage instead of the persistent package cache", async () => {
     const runnerRoot = fileURLToPath(new URL("..", import.meta.url));
     const [dockerfile, entrypoint] = await Promise.all([

@@ -38,7 +38,14 @@ RUN apt-get update \
 
 FROM node:24-trixie@sha256:66bb8d36ae1ddd72199ed235a089904874ca4079ee517936ca3adb80506a75c1 AS runner-base
 
-RUN apt-get update \
+# The digest-pinned Node base can lag Debian security uploads, while BuildKit
+# correctly caches an earlier apt upgrade against the unchanged base digest.
+# Bump this audited epoch only when a scanner identifies a distro fix that the
+# official image has not incorporated yet; using it in the command makes that
+# refresh explicit and reproducible instead of disabling the whole build cache.
+ARG DEBIAN_SECURITY_REFRESH=20260808
+RUN test -n "$DEBIAN_SECURITY_REFRESH" \
+  && apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
