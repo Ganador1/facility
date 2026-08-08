@@ -47,3 +47,6 @@ allowBuilds:
 auditConfig:
   ignoreGhsas:
     - GHSA-mh99-v99m-4gvg
+
+minimumReleaseAgeExclude:
+  - '@vercel/sandbox@3.0.0'

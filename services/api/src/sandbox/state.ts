@@ -48,6 +48,7 @@ export type RunSandboxState = {
   bundle?: RunBundle;
   launchedAt?: string;
   finishedAt?: string;
+  destroyedAt?: string;
   lastStatus?: string;
   // True for in-process assistant turns: no container, no driver — the key
   // lifecycle and orphan sweeps still apply through virtualKeyId.

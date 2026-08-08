@@ -43,6 +43,55 @@ describe("restricted Docker API", () => {
     expect(script).toContain("export PNPM_CONFIG_VERIFY_STORE_INTEGRITY=true");
   });
 
+  test("does not ship the agent CLI download cache in the runtime image", async () => {
+    const dockerfile = await readFile(
+      join(fileURLToPath(new URL("..", import.meta.url)), "Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toMatch(
+      /npm ci --omit=dev[\s\S]*npm cache clean --force[\s\S]*rm -rf \/root\/\.npm/,
+    );
+  });
+
+  test("does not generate unused declarations in the runtime image", async () => {
+    const dockerfile = await readFile(
+      join(fileURLToPath(new URL("..", import.meta.url)), "Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toContain("npm run build:runtime");
+    expect(dockerfile).not.toMatch(/RUN npm ci && npm run build &&/);
+    expect(dockerfile.indexOf("RUN npm ci && npm run build:runtime")).toBeLessThan(
+      dockerfile.indexOf("runner/runner-entrypoint.sh runner/codebuild-runner.sh"),
+    );
+    expect(dockerfile).toMatch(
+      /RUN mkdir -p \/work\/.facility-package-cache[\s\S]*chmod -R a-w \/app[\s\S]*COPY --chown=root:root --chmod=0555/,
+    );
+  });
+
+  test("keeps root bootstrap isolated to the explicit Vercel target", async () => {
+    const dockerfile = await readFile(
+      join(fileURLToPath(new URL("..", import.meta.url)), "Dockerfile"),
+      "utf8",
+    );
+    expect(dockerfile).toMatch(/FROM runner-base AS vercel-runner\s+USER root/);
+    expect(dockerfile).toMatch(/FROM runner-base AS runner\s+USER node\s*$/);
+    expect(dockerfile).not.toMatch(/^\s+sudo\s+\\?$/m);
+    expect(dockerfile).not.toContain("NOPASSWD");
+  });
+
+  test("uses the Vercel VM boundary without exposing the raw Docker socket", async () => {
+    const script = await readFile(
+      join(fileURLToPath(new URL("..", import.meta.url)), "codebuild-runner.sh"),
+      "utf8",
+    );
+    expect(script).toContain('if [[ "$sandbox_provider" == "vercel" ]]');
+    expect(script).toContain(`setsid env "\${dockerd_env[@]}" dockerd`);
+    expect(script).toContain(`--host="unix://\${raw_socket}"`);
+    expect(script).toContain('chown root:"$proxy_user" "$raw_socket"');
+    expect(script).toContain(`export DOCKER_HOST="unix://\${public_socket}"`);
+    expect(script).not.toContain("chmod 666 /var/run/docker.sock");
+  });
+
   test("keeps the official rootless launcher behind explicit host-loopback isolation", async () => {
     const runnerRoot = fileURLToPath(new URL("..", import.meta.url));
     const [dockerfile, script] = await Promise.all([

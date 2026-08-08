@@ -1079,7 +1079,7 @@ export const previewSandboxes = pgTable(
       sql`${table.status} in ('provisioning', 'running', 'failed', 'expired', 'destroyed')`,
     ),
     check("preview_sandboxes_auth_check", sql`${table.authMode} = 'facility_session'`),
-    check("preview_sandboxes_driver_check", sql`${table.driver} in ('docker', 'aws')`),
+    check("preview_sandboxes_driver_check", sql`${table.driver} in ('docker', 'aws', 'vercel')`),
   ],
 );
 

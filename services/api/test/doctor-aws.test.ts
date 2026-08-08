@@ -4,7 +4,13 @@ import {
   type BatchGetProjectsCommandOutput,
 } from "@aws-sdk/client-codebuild";
 import { describe, expect, it } from "vitest";
-import { checkAwsSandbox, checkGithubApp, type DoctorCodeBuildSender } from "../src/doctor.js";
+import {
+  checkAwsSandbox,
+  checkGithubApp,
+  checkVercelSandbox,
+  type DoctorCodeBuildSender,
+  type DoctorVercelClient,
+} from "../src/doctor.js";
 import type { AppConfig } from "../src/types.js";
 
 const baseConfig: AppConfig = {
@@ -171,6 +177,59 @@ describe("GitHub App production doctor", () => {
   });
 });
 
+describe("Vercel production doctor", () => {
+  const config: AppConfig = {
+    ...baseConfig,
+    sandboxDriver: "vercel",
+    vercelToken: "provider-secret",
+    vercelTeamId: "team_facility",
+    vercelProjectId: "prj_facility",
+  };
+
+  it("fails closed before provider calls when the project binding is incomplete", async () => {
+    const client = new FakeVercelClient();
+    await expect(
+      checkVercelSandbox({ ...config, vercelToken: undefined }, client),
+    ).resolves.toMatchObject({ id: "vercel_sandbox", status: "fail", ok: false });
+    await expect(
+      checkVercelSandbox({ ...config, vercelProjectId: undefined }, client),
+    ).resolves.toMatchObject({ id: "vercel_sandbox", status: "fail", ok: false });
+    expect(client.inputs).toHaveLength(0);
+  });
+
+  it("proves the exact team/project binding without leaking the token", async () => {
+    const client = new FakeVercelClient();
+    const check = await checkVercelSandbox(config, client);
+
+    expect(check).toMatchObject({ id: "vercel_sandbox", status: "pass", ok: true });
+    expect(check.message).toContain("team_facility");
+    expect(check.message).toContain("prj_facility");
+    expect(JSON.stringify(check)).not.toContain("provider-secret");
+    expect(client.inputs).toEqual([
+      {
+        token: "provider-secret",
+        teamId: "team_facility",
+        projectId: "prj_facility",
+        limit: 1,
+      },
+    ]);
+  });
+
+  it("fails for rejected bindings and warns only for transient errors", async () => {
+    const denied = new FakeVercelClient(httpError(403));
+    const transient = new FakeVercelClient(new Error("provider unavailable"));
+
+    await expect(checkVercelSandbox(config, denied)).resolves.toMatchObject({
+      status: "fail",
+      ok: false,
+    });
+    await expect(checkVercelSandbox(config, transient)).resolves.toMatchObject({
+      status: "warn",
+      ok: true,
+    });
+  });
+});
+
 class FakeCodeBuildClient implements DoctorCodeBuildSender {
   readonly commands: BatchGetProjectsCommand[] = [];
 
@@ -181,4 +240,20 @@ class FakeCodeBuildClient implements DoctorCodeBuildSender {
     if (this.result instanceof Error) throw this.result;
     return { ...this.result, $metadata: {} };
   }
+}
+
+class FakeVercelClient implements DoctorVercelClient {
+  readonly inputs: Array<Parameters<DoctorVercelClient["list"]>[0]> = [];
+
+  constructor(private readonly error?: Error) {}
+
+  async list(input: Parameters<DoctorVercelClient["list"]>[0]) {
+    this.inputs.push(input);
+    if (this.error) throw this.error;
+    return {};
+  }
+}
+
+function httpError(status: number) {
+  return Object.assign(new Error(`HTTP ${status}`), { response: { status } });
 }

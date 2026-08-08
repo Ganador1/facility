@@ -45,6 +45,14 @@ A **platform-lane** run (Claude Code, Codex) needs a sandbox profile whose
   runner. Build it with `docker build -f runner/Dockerfile -t facility-runner:dev .` and set
   `FACILITY_RUNNER_IMAGE` (default `facility-runner:dev`). A bare base image like
   `node:24-trixie` only supports **BYO-command** runs.
+- **vercel** (production managed path) — Facility boots the runner from the
+  configured project's Vercel Container Registry, starts its lifecycle command
+  inside an ephemeral Sandbox, and stores only an opaque sandbox/command
+  reference. `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`, and a scoped `VERCEL_TOKEN`
+  (or workload `VERCEL_OIDC_TOKEN`) bind every lookup to one project. Restricted
+  profiles use the Vercel firewall; preview profiles expose only their declared
+  port through a `*.vercel.run` route. Set `FACILITY_SANDBOX_DRIVER=vercel` and
+  make `FACILITY_RUNNER_IMAGE` a runner image pushed to that project's VCR.
 - **aws** (CodeBuild) — each run starts a private CodeBuild job using the runner
   image fixed in the deployed CodeBuild project. Profile image overrides are
   deliberately ignored: an editable image cannot inherit the project's AWS
@@ -74,10 +82,16 @@ exactly as the object-store check is.
 ## Drivers
 
 Execution is driver-based: local Docker for development and self-hosting,
-AWS CodeBuild for cloud, with the driver interface open for Kubernetes jobs.
-The control plane sees one contract: launch, status, stop, destroy.
+Vercel Sandbox as the production managed path, and AWS CodeBuild as an optional
+development provider. The control plane sees one contract: launch, recover,
+status, logs, stop, destroy. Provider tokens never enter the sandbox command.
 
-AWS preview environments are the deliberate exception to the execution backend:
+Vercel previews reuse that same adapter. The preview command and port produce a
+short-lived `*.vercel.run` origin, while Facility keeps its existing session
+handoff and isolated reverse-proxy origin. That preserves one preview access
+model without a preview scheduler, warm pool, or another service.
+
+AWS preview environments remain the deliberate exception to that backend:
 they need a private inbound service endpoint, which CodeBuild does not expose.
 The AWS module therefore registers an immutable, unprivileged ECS Fargate task
 definition for each preview image while agent runs remain on privileged CodeBuild.

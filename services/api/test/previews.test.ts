@@ -308,6 +308,65 @@ describe("SSO-protected preview sandboxes", async () => {
     expect(launchCount).toBe(0);
   });
 
+  it("accepts only the HTTPS vercel.run endpoint returned by the Vercel driver", async () => {
+    const preview = await createPreviewRecord(db, {
+      orgId,
+      projectId,
+      image: "preview-app:sha",
+      command: ["pnpm", "start"],
+      port: 3000,
+      ttlHours: 1,
+      driver: "vercel",
+      createdBy: { type: "user", id: userId },
+    });
+    if (!preview) throw new Error("Vercel preview fixture missing");
+    const driver: SandboxDriver = {
+      name: "vercel",
+      launch: async () => ({
+        ref: "vercel-preview-ref",
+        endpoint: "https://3000-facility-preview.vercel.run",
+      }),
+      status: async () => "running",
+      async *logs() {},
+      stop: async () => undefined,
+      destroy: async () => undefined,
+    };
+
+    await expect(provisionPreview(config, preview.id, driver)).resolves.toMatchObject({
+      status: "running",
+      driver: "vercel",
+      originUrl: "https://3000-facility-preview.vercel.run",
+    });
+
+    const malicious = await createPreviewRecord(db, {
+      orgId,
+      projectId,
+      image: "preview-app:other-sha",
+      command: ["pnpm", "start"],
+      port: 3000,
+      ttlHours: 1,
+      driver: "vercel",
+      createdBy: { type: "user", id: userId },
+    });
+    if (!malicious) throw new Error("malicious Vercel preview fixture missing");
+    const untrustedEndpoint: SandboxDriver = {
+      ...driver,
+      launch: async () => ({ ref: "untrusted-ref", endpoint: "https://attacker.example" }),
+    };
+    await expect(provisionPreview(config, malicious.id, untrustedEndpoint)).rejects.toThrow(
+      "preview_driver_did_not_return_a_private_endpoint",
+    );
+    await expect(
+      db.select().from(previewSandboxes).where(eq(previewSandboxes.id, malicious.id)).limit(1),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        status: "failed",
+        originUrl: null,
+        error: "preview_driver_did_not_return_a_private_endpoint",
+      }),
+    ]);
+  });
+
   it("keeps stale recovery retryable when AWS task discovery is denied", async () => {
     const preview = await createPreviewRecord(db, {
       orgId,

@@ -208,3 +208,42 @@ run "custom_preview_keeps_the_advanced_override" {
     error_message = "The custom-domain mode must not inject a managed-origin token."
   }
 }
+
+run "vercel_sandbox_provider_replaces_only_the_compute_binding" {
+  command = plan
+
+  variables {
+    app_hostname        = "app.example.com"
+    api_hostname        = "api.example.com"
+    mcp_hostname        = "mcp.example.com"
+    sandbox_driver      = "vercel"
+    vercel_team_id      = "team_facility"
+    vercel_project_id   = "prj_facility"
+    vercel_runner_image = "facility-runner:sha"
+  }
+
+  assert {
+    condition     = one([for entry in local.api_environment : entry.value if entry.name == "FACILITY_SANDBOX_DRIVER"]) == "vercel"
+    error_message = "The API must select the Vercel sandbox adapter."
+  }
+
+  assert {
+    condition     = one([for entry in local.worker_environment : entry.value if entry.name == "FACILITY_RUNNER_IMAGE"]) == "facility-runner:sha"
+    error_message = "The worker must use the project-scoped VCR runner image."
+  }
+
+  assert {
+    condition     = one([for entry in local.worker_environment : entry.value if entry.name == "VERCEL_TEAM_ID"]) == "team_facility" && one([for entry in local.worker_environment : entry.value if entry.name == "VERCEL_PROJECT_ID"]) == "prj_facility"
+    error_message = "The worker must receive the exact Vercel team/project binding."
+  }
+
+  assert {
+    condition     = length([for entry in local.worker_environment : entry if startswith(entry.name, "FACILITY_AWS_")]) == 0
+    error_message = "The Vercel path must not inject unused AWS sandbox configuration."
+  }
+
+  assert {
+    condition     = length([for entry in local.worker_secrets : entry if entry.name == "VERCEL_TOKEN"]) == 1
+    error_message = "The Vercel token must come from Secrets Manager rather than Terraform state."
+  }
+}

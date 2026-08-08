@@ -155,6 +155,24 @@ describe("API configuration", () => {
     });
   });
 
+  it("accepts a Vercel sandbox project binding without exposing a token fallback", () => {
+    expect(
+      readConfig({
+        ...validEnv,
+        FACILITY_SANDBOX_DRIVER: "vercel",
+        VERCEL_TOKEN: "  personal-token  ",
+        VERCEL_OIDC_TOKEN: "  workload-token  ",
+        VERCEL_TEAM_ID: "  team_facility  ",
+        VERCEL_PROJECT_ID: "  prj_facility  ",
+      }),
+    ).toMatchObject({
+      sandboxDriver: "vercel",
+      vercelToken: "workload-token",
+      vercelTeamId: "team_facility",
+      vercelProjectId: "prj_facility",
+    });
+  });
+
   it("rejects the direct GitHub organization restriction in broker mode", () => {
     expect(() =>
       readConfig({

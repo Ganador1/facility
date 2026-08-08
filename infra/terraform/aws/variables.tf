@@ -16,6 +16,50 @@ variable "project" {
   default     = "facility"
 }
 
+variable "sandbox_driver" {
+  description = "Sandbox compute provider. Use vercel for the production path; aws remains available as the CodeBuild/Fargate development provider."
+  type        = string
+  default     = "aws"
+
+  validation {
+    condition     = contains(["aws", "vercel"], var.sandbox_driver)
+    error_message = "sandbox_driver must be aws or vercel for the AWS-hosted control plane."
+  }
+}
+
+variable "vercel_team_id" {
+  description = "Vercel team id that owns Sandboxes when sandbox_driver is vercel."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.sandbox_driver != "vercel" || trimspace(var.vercel_team_id) != ""
+    error_message = "vercel_team_id is required when sandbox_driver is vercel."
+  }
+}
+
+variable "vercel_project_id" {
+  description = "Vercel project id that owns Sandboxes and its project-scoped VCR images."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.sandbox_driver != "vercel" || trimspace(var.vercel_project_id) != ""
+    error_message = "vercel_project_id is required when sandbox_driver is vercel."
+  }
+}
+
+variable "vercel_runner_image" {
+  description = "Vercel Container Registry image used by platform-lane sandboxes."
+  type        = string
+  default     = "facility-runner:latest"
+
+  validation {
+    condition     = var.sandbox_driver != "vercel" || trimspace(var.vercel_runner_image) != ""
+    error_message = "vercel_runner_image is required when sandbox_driver is vercel."
+  }
+}
+
 variable "allowed_http_cidr_blocks" {
   description = "CIDR blocks allowed to reach the public ALB."
   type        = list(string)

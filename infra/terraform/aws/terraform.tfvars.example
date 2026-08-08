@@ -2,6 +2,14 @@ aws_region  = "us-east-1"
 environment = "playground"
 project     = "facility"
 
+# Production-critical default: Vercel Sandboxes and VCR. Set aws to retain the
+# CodeBuild/Fargate development provider instead. Populate the generated
+# vercel_token secret out of band when selecting vercel.
+sandbox_driver     = "vercel"
+vercel_team_id     = "team_replace_me"
+vercel_project_id  = "prj_replace_me"
+vercel_runner_image = "facility-runner:latest"
+
 app_hostname = "app.example.com"
 api_hostname = "api.example.com"
 mcp_hostname = "mcp.example.com"

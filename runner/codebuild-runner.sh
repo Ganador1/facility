@@ -17,6 +17,8 @@ readonly raw_socket="${docker_runtime}/docker.sock"
 readonly public_socket="${proxy_runtime}/docker.sock"
 readonly bind_socket="${bind_runtime}/mounter.sock"
 readonly nested_docker="${FACILITY_SANDBOX_NESTED_DOCKER:-1}"
+readonly sandbox_provider="${FACILITY_SANDBOX_PROVIDER:-aws}"
+metadata_boundary="host"
 
 if [[ "$nested_docker" != "0" && "$nested_docker" != "1" ]]; then
   echo "FACILITY_SANDBOX_NESTED_DOCKER must be 0 or 1" >&2
@@ -112,6 +114,33 @@ start_docker() {
   return 1
 }
 
+start_vercel_docker() {
+  echo "Facility Vercel: starting isolated rootful Docker"
+  echo "Starting Facility Docker for Vercel" >>/var/log/facility-dockerd.log
+  # Vercel already places this process inside a disposable Firecracker VM.
+  # RootlessKit needs a TUN device that custom-image guests do not expose, so
+  # keep the daemon rootful inside that VM and retain Facility's policy proxy
+  # as the only socket visible to repository-controlled processes.
+  setsid env "${dockerd_env[@]}" dockerd \
+    --host="unix://${raw_socket}" \
+    >>/var/log/facility-dockerd.log 2>&1 &
+  dockerd_pid="$!"
+  docker_daemon_pid="$dockerd_pid"
+
+  for _ in $(seq 1 90); do
+    if DOCKER_HOST="unix://${raw_socket}" docker info >/dev/null 2>&1; then
+      FACILITY_DOCKER_STORAGE_DRIVER="$(
+        DOCKER_HOST="unix://${raw_socket}" docker info --format '{{.Driver}}'
+      )"
+      export FACILITY_DOCKER_STORAGE_DRIVER
+      return 0
+    fi
+    if ! kill -0 "$dockerd_pid" >/dev/null 2>&1; then return 1; fi
+    sleep 1
+  done
+  return 1
+}
+
 start_proxy() {
   setsid runuser --user "$proxy_user" -- env -i \
     PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -138,16 +167,21 @@ start_proxy() {
 }
 
 start_mounter() {
-  local docker_uid
-  docker_uid="$(id -u "$docker_user")"
-  if ! docker_daemon_pid="$(
-    ps -eo pid=,ppid=,uid=,comm= | awk \
-      -v root_pid="$dockerd_pid" \
-      -v target_uid="$docker_uid" \
-      -v target_command=dockerd \
-      -f /app/find-descendant.awk
-  )"; then
-    echo "Facility could not identify the rootless Docker mount namespace" >&2
+  if [[ "$sandbox_provider" != "vercel" ]]; then
+    local docker_uid
+    docker_uid="$(id -u "$docker_user")"
+    if ! docker_daemon_pid="$(
+      ps -eo pid=,ppid=,uid=,comm= | awk \
+        -v root_pid="$dockerd_pid" \
+        -v target_uid="$docker_uid" \
+        -v target_command=dockerd \
+        -f /app/find-descendant.awk
+    )"; then
+      echo "Facility could not identify the rootless Docker mount namespace" >&2
+      return 1
+    fi
+  elif ! kill -0 "$docker_daemon_pid" >/dev/null 2>&1; then
+    echo "Facility could not identify the Vercel Docker mount namespace" >&2
     return 1
   fi
   setsid nsenter --mount="/proc/${docker_daemon_pid}/ns/mnt" -- env -i \
@@ -207,16 +241,21 @@ security_smoke() {
     return 1
   fi
   echo "Facility smoke: checking metadata egress isolation"
-  local isolated_uid
-  for isolated_uid in "$untrusted_uid" "$(id -u "$docker_user")" "$(id -u "$proxy_user")"; do
-    if ! iptables -C OUTPUT -m owner --uid-owner "$isolated_uid" \
-      -d 169.254.0.0/16 -j REJECT; then
-      echo "Security smoke failed: an untrusted identity can reach IPv4 metadata" >&2
+  if [[ "$metadata_boundary" == "host" ]]; then
+    local isolated_uid
+    for isolated_uid in "$untrusted_uid" "$(id -u "$docker_user")" "$(id -u "$proxy_user")"; do
+      if ! iptables -C OUTPUT -m owner --uid-owner "$isolated_uid" \
+        -d 169.254.0.0/16 -j REJECT; then
+        echo "Security smoke failed: an untrusted identity can reach IPv4 metadata" >&2
+        return 1
+      fi
+    done
+    if iptables -C OUTPUT -d 169.254.0.0/16 -j REJECT >/dev/null 2>&1; then
+      echo "Security smoke failed: metadata isolation also blocked the CodeBuild agent" >&2
       return 1
     fi
-  done
-  if iptables -C OUTPUT -d 169.254.0.0/16 -j REJECT >/dev/null 2>&1; then
-    echo "Security smoke failed: metadata isolation also blocked the CodeBuild agent" >&2
+  elif [[ "$sandbox_provider" != "vercel" ]]; then
+    echo "Security smoke failed: an unknown provider owns the metadata boundary" >&2
     return 1
   fi
   if run_untrusted test -w "$workspace_view" || \
@@ -374,7 +413,11 @@ security_smoke() {
     return 1
   fi
   local runtime_socket
-  runtime_socket="$(find "$docker_runtime" -type s ! -path "$raw_socket" -print -quit)"
+  if [[ "$sandbox_provider" == "vercel" ]]; then
+    runtime_socket="$(find /run/vercel -type s -print -quit 2>/dev/null || true)"
+  else
+    runtime_socket="$(find "$docker_runtime" -type s ! -path "$raw_socket" -print -quit)"
+  fi
   if [[ -z "$runtime_socket" ]]; then
     echo "Security smoke failed: the runtime isolation probe found no internal socket" >&2
     return 1
@@ -481,9 +524,14 @@ security_smoke_without_docker() {
     echo "No-Docker smoke failed: DOCKER_HOST was exported" >&2
     return 1
   fi
-  if ! iptables -C OUTPUT -m owner --uid-owner "$untrusted_uid" \
-    -d 169.254.0.0/16 -j REJECT; then
-    echo "No-Docker smoke failed: the agent identity can reach IPv4 metadata" >&2
+  if [[ "$metadata_boundary" == "host" ]]; then
+    if ! iptables -C OUTPUT -m owner --uid-owner "$untrusted_uid" \
+      -d 169.254.0.0/16 -j REJECT; then
+      echo "No-Docker smoke failed: the agent identity can reach IPv4 metadata" >&2
+      return 1
+    fi
+  elif [[ "$sandbox_provider" != "vercel" ]]; then
+    echo "No-Docker smoke failed: an unknown provider owns the metadata boundary" >&2
     return 1
   fi
   if [[ "$(run_untrusted id -u)" != "$untrusted_uid" ]]; then
@@ -563,17 +611,25 @@ echo "Facility CodeBuild: host boundary configured"
 # the identities that can execute repository-controlled work, including the
 # rootlesskit user that originates nested-container traffic. CodeBuild's root
 # agent must retain its control-plane connection so builds can report completion.
-for isolated_uid in "$untrusted_uid" "$(id -u "$docker_user")" "$(id -u "$proxy_user")"; do
-  iptables -I OUTPUT 1 -m owner --uid-owner "$isolated_uid" -d 169.254.0.0/16 -j REJECT
-done
-iptables -I FORWARD 1 -d 169.254.0.0/16 -j REJECT
-if command -v ip6tables >/dev/null 2>&1; then
+if [[ "$sandbox_provider" == "vercel" ]]; then
+  # The Vercel driver installs a subnet deny before this process starts. Its
+  # Firecracker guest intentionally lacks the netfilter owner module, so a
+  # second in-guest iptables boundary is neither available nor necessary.
+  metadata_boundary="provider"
+  echo "Facility Vercel: metadata egress denied by provider network policy"
+else
   for isolated_uid in "$untrusted_uid" "$(id -u "$docker_user")" "$(id -u "$proxy_user")"; do
-    ip6tables -I OUTPUT 1 -m owner --uid-owner "$isolated_uid" -d fe80::/10 -j REJECT || true
-    ip6tables -I OUTPUT 1 -m owner --uid-owner "$isolated_uid" -d fd00:ec2::254 -j REJECT || true
+    iptables -I OUTPUT 1 -m owner --uid-owner "$isolated_uid" -d 169.254.0.0/16 -j REJECT
   done
-  ip6tables -I FORWARD 1 -d fe80::/10 -j REJECT || true
-  ip6tables -I FORWARD 1 -d fd00:ec2::254 -j REJECT || true
+  iptables -I FORWARD 1 -d 169.254.0.0/16 -j REJECT
+  if command -v ip6tables >/dev/null 2>&1; then
+    for isolated_uid in "$untrusted_uid" "$(id -u "$docker_user")" "$(id -u "$proxy_user")"; do
+      ip6tables -I OUTPUT 1 -m owner --uid-owner "$isolated_uid" -d fe80::/10 -j REJECT || true
+      ip6tables -I OUTPUT 1 -m owner --uid-owner "$isolated_uid" -d fd00:ec2::254 -j REJECT || true
+    done
+    ip6tables -I FORWARD 1 -d fe80::/10 -j REJECT || true
+    ip6tables -I FORWARD 1 -d fd00:ec2::254 -j REJECT || true
+  fi
 fi
 
 if [[ "$nested_docker" == "1" ]]; then
@@ -592,23 +648,27 @@ if [[ "$nested_docker" == "1" ]]; then
     return 1
   }
 
-  start_storage_driver overlay2 /var/lib/facility-docker/docker-overlay || \
-    start_storage_driver fuse-overlayfs /var/lib/facility-docker/docker-fuse || \
-    start_storage_driver vfs /var/lib/facility-docker/docker-vfs || true
+  if [[ "$sandbox_provider" == "vercel" ]]; then
+    start_vercel_docker || true
+  else
+    start_storage_driver overlay2 /var/lib/facility-docker/docker-overlay || \
+      start_storage_driver fuse-overlayfs /var/lib/facility-docker/docker-fuse || \
+      start_storage_driver vfs /var/lib/facility-docker/docker-vfs || true
+  fi
 
   if ! DOCKER_HOST="unix://${raw_socket}" docker info >/dev/null 2>&1; then
-    echo "Facility could not start rootless Docker inside the CodeBuild sandbox" >&2
+    echo "Facility could not start Docker inside the sandbox" >&2
     tail -n 200 /var/log/facility-dockerd.log >&2 || true
     exit 1
   fi
   if [[ -z "${FACILITY_DOCKER_STORAGE_DRIVER:-}" ]]; then
-    echo "Facility could not identify the rootless Docker storage driver" >&2
+    echo "Facility could not identify the Docker storage driver" >&2
     exit 1
   fi
   if [[ "$FACILITY_DOCKER_STORAGE_DRIVER" == "vfs" ]]; then
-    echo "Facility CodeBuild: rootless Docker is ready (storage driver: vfs, degraded)"
+    echo "Facility sandbox: Docker is ready (storage driver: vfs, degraded)"
   else
-    echo "Facility CodeBuild: rootless Docker is ready (storage driver: ${FACILITY_DOCKER_STORAGE_DRIVER})"
+    echo "Facility sandbox: Docker is ready (storage driver: ${FACILITY_DOCKER_STORAGE_DRIVER})"
   fi
   chmod 0660 "$raw_socket"
   # Dockerd keeps its listening descriptor open. Reassign the pathname to the

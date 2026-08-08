@@ -2,9 +2,10 @@
 
 This module provisions the AWS reference deployment from the platform architecture:
 VPC, two private AZs, public ALB, RDS Postgres 16, S3 object storage, ECR,
-ECS Fargate services for `api`, `worker`, `gateway`, `web`, and `mcp`, privileged
-CodeBuild jobs for agent runs, unprivileged Fargate preview tasks, KMS, Secrets
-Manager, and CloudWatch logs.
+ECS Fargate services for `api`, `worker`, `gateway`, `web`, and `mcp`, optional
+CodeBuild jobs/Fargate preview tasks, KMS, Secrets Manager, and CloudWatch logs.
+The production control plane can select Vercel Sandboxes and Vercel-hosted
+preview routes without moving those long-running services from AWS.
 
 Topology:
 
@@ -19,7 +20,11 @@ Topology:
 - `gateway` has no public ALB route. It is reachable only inside the VPC through
   Cloud Map at the `gateway_internal_url` output.
 - Postgres accepts `5432` only from the ECS service security group.
-- CodeBuild sandboxes run in private subnets and can reach the internal gateway.
+- With `sandbox_driver = "vercel"`, API and worker receive only the Vercel
+  team/project binding and the generated Secrets Manager token reference. The
+  default runner profile points at the project-scoped VCR image; CodeBuild and
+  preview-task settings are not injected into the application tasks.
+- With `sandbox_driver = "aws"`, CodeBuild sandboxes run in private subnets and can reach the internal gateway.
   Their least-privilege service role has no Secrets Manager access. Runs always
   use the runner image fixed on the CodeBuild project; database-backed sandbox
   profiles cannot override that AWS-trusted image. Each Facility project gets
@@ -67,6 +72,9 @@ Edit `playground.tfvars`:
   organization restriction.
 - Set `enable_package_registry_token = true` only after populating the optional
   private package token; leave it false for public-package repositories.
+- Select `sandbox_driver = "vercel"`, set its team/project ids and VCR runner
+  image, then populate the generated `vercel_token` secret. Select `aws` only
+  when validating the optional CodeBuild/Fargate provider.
 - Tune `envelope_retention_days` for your data-retention policy.
 
 The automated AWS release path deliberately deploys only from the ECR

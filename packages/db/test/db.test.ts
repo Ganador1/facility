@@ -451,6 +451,18 @@ describe("db", async () => {
       "Analysis runner",
       "Default runner",
     ]);
+    expect(seededProfiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Default runner",
+          resources: { cpu: 2, memory_mb: 4096, timeout_min: 60 },
+        }),
+        expect.objectContaining({
+          name: "Analysis runner",
+          resources: { cpu: 2, memory_mb: 4096, timeout_min: 60 },
+        }),
+      ]),
+    );
     expect(seededActionTypes.find((action) => action.name === "plan_acceptance")?.executor).toEqual(
       {
         type: "internal",
@@ -803,9 +815,16 @@ describe("db", async () => {
     // A developer database can include later migrations from another worktree;
     // assert this checkout's latest migration was applied without assuming it
     // is the newest row in that shared database.
-    expect(Array.from(applied).map((row) => row.name)).toContain(
-      "0038_ci_repair_admission_key.sql",
-    );
+    expect(Array.from(applied).map((row) => row.name)).toContain("0039_vercel_sandbox_driver.sql");
+    const previewDriverConstraint = (await db.execute(
+      sql`
+        SELECT pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+        WHERE conrelid = 'preview_sandboxes'::regclass
+          AND conname = 'preview_sandboxes_driver_check'
+      `,
+    )) as Iterable<{ definition: string }>;
+    expect(Array.from(previewDriverConstraint)[0]?.definition).toContain("vercel");
     const previewRunIndex = (await db.execute(
       sql`
         SELECT indexdef
