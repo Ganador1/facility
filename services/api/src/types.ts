@@ -38,8 +38,8 @@ export type AppConfig = {
   gatewayUrl: string;
   // Image the seeded default sandbox profile uses to run the platform runner.
   sandboxRunnerImage: string;
-  // Driver the seeded default sandbox profile uses ("docker" | "aws").
-  sandboxDriver: "docker" | "aws";
+  // Driver the seeded default sandbox profile uses.
+  sandboxDriver: "docker" | "aws" | "vercel";
   authIdentityProvider?: "github" | "oidc";
   authCallbackUrl?: string;
   githubOauthClientId?: string;
@@ -63,6 +63,9 @@ export type AppConfig = {
   awsRegion?: string;
   awsCodeBuildProject?: string;
   awsCodeBuildCacheBaseLocation?: string;
+  vercelToken?: string;
+  vercelTeamId?: string;
+  vercelProjectId?: string;
   packageRegistryToken?: string;
   githubAppId?: string;
   githubAppPrivateKey?: string;

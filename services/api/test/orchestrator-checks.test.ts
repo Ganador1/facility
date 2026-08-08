@@ -88,6 +88,36 @@ describe("repository-specific model overrides", () => {
       model: "default",
     });
   });
+
+  it("selects repository overrides by configured engine, not legacy agent name", () => {
+    const models = {
+      plan: "claude-plan",
+      build: "claude-build",
+      review: "claude-review",
+      codexPlan: "codex-plan",
+      codexBuild: "codex-build",
+    };
+
+    expect(
+      resolveRepoEngineConfig(
+        "architect",
+        { model: "stale-claude", primary: "default-codex", reasoning_effort: "high" },
+        { models },
+        "codex",
+      ),
+    ).toEqual({ primary: "codex-plan", reasoning_effort: "high" });
+    expect(
+      resolveRepoEngineConfig("builder", { primary: "default-codex" }, { models }, "codex"),
+    ).toEqual({ primary: "codex-build" });
+    expect(
+      resolveRepoEngineConfig("architect", { primary: "stale-codex" }, { models }, "claude_code"),
+    ).toEqual({ model: "claude-plan" });
+    // There is no configured codexReview override, so a Codex review keeps its
+    // own compatible project default rather than receiving the Claude alias.
+    expect(
+      resolveRepoEngineConfig("review", { primary: "default-codex" }, { models }, "codex"),
+    ).toEqual({ primary: "default-codex" });
+  });
 });
 
 describe("platform run repository setup", () => {

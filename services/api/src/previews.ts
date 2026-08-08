@@ -55,7 +55,7 @@ export type PreviewCreateInput = {
   port: number;
   readinessPath?: string;
   ttlHours: number;
-  driver?: "docker" | "aws";
+  driver?: "docker" | "aws" | "vercel";
   createdBy: { type: string; id: string };
 };
 
@@ -649,7 +649,7 @@ export async function destroyPreview(
 ) {
   if (!["destroyed", "expired"].includes(preview.status) && preview.ref) {
     const driver =
-      driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
+      driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws" | "vercel"));
     try {
       await driver.destroy(preview.ref);
     } catch (error) {
@@ -743,7 +743,8 @@ export async function reconcilePreviews(
       }
       if (preview.error === "preview_attach_lost_cleanup_pending") continue;
       const driver =
-        driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
+        driverOverride ??
+        (await previewSandboxDriver(preview.driver as "docker" | "aws" | "vercel"));
       const state = await driver.status(preview.ref);
       const spec = previewConfig(preview.config);
       const ready =
@@ -793,7 +794,8 @@ export async function reconcilePreviews(
     for (const preview of cleanupPendingRefs) {
       if (!preview.ref) continue;
       const driver =
-        driverOverride ?? (await previewSandboxDriver(preview.driver as "docker" | "aws"));
+        driverOverride ??
+        (await previewSandboxDriver(preview.driver as "docker" | "aws" | "vercel"));
       try {
         await driver.destroy(preview.ref);
         await db
@@ -918,8 +920,12 @@ function numberInRange(value: unknown, min: number, max: number, fallback: numbe
 function allowedOrigin(value: string, driver: string) {
   try {
     const url = new URL(value);
-    if (url.protocol !== "http:" || url.username || url.password) return false;
+    if (url.username || url.password) return false;
     if (driver === "docker") return url.hostname === "127.0.0.1";
+    if (driver === "vercel") {
+      return url.protocol === "https:" && url.hostname.endsWith(".vercel.run");
+    }
+    if (url.protocol !== "http:") return false;
     return privateIpv4(url.hostname);
   } catch {
     return false;

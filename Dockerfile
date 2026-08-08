@@ -34,7 +34,9 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
 
 # --- deps: install with the full workspace manifest set for cache reuse ---
 FROM base AS deps
+ENV FACILITY_ALLOW_UNUSED_PATCHES=true
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY patches ./patches
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/sdk/package.json packages/sdk/
@@ -43,6 +45,8 @@ COPY packages/harness/package.json packages/harness/
 COPY packages/run-objective/package.json packages/run-objective/
 COPY services/api/package.json services/api/
 COPY services/gateway/package.json services/gateway/
+# The reviewed image-size patch belongs to the docs-only graph. These filtered
+# service installs deliberately omit docs, so they may leave that patch unused.
 RUN pnpm install --frozen-lockfile --filter '@facility/core...' \
       --filter '@facility/db...' --filter '@facility/sdk...' \
       --filter '@facility/mcp...' \

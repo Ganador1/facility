@@ -30,6 +30,15 @@ export type DoctorCodeBuildSender = {
   send(command: BatchGetProjectsCommand): Promise<BatchGetProjectsCommandOutput>;
 };
 
+export type DoctorVercelClient = {
+  list(input: {
+    token: string;
+    teamId: string;
+    projectId: string;
+    limit: number;
+  }): Promise<unknown>;
+};
+
 export const DoctorCheckSchema = z.object({
   id: z.string(),
   label: z.string(),
@@ -71,6 +80,7 @@ export async function runReadinessDoctor(input: {
   orgId: string;
   now?: Date;
   codeBuildClient?: DoctorCodeBuildSender;
+  vercelClient?: DoctorVercelClient;
 }): Promise<DoctorResponse> {
   const now = input.now ?? new Date();
   const checks = await Promise.all([
@@ -81,6 +91,9 @@ export async function runReadinessDoctor(input: {
     checkSandboxRunner(input.db, input.config, input.orgId),
     ...(input.config.sandboxDriver === "aws"
       ? [checkAwsSandbox(input.config, input.codeBuildClient)]
+      : []),
+    ...(input.config.sandboxDriver === "vercel"
+      ? [checkVercelSandbox(input.config, input.vercelClient)]
       : []),
     checkGithubApp(input.config),
     checkAuthConfig(input.config),
@@ -93,6 +106,59 @@ export async function runReadinessDoctor(input: {
     generatedAt: now.toISOString(),
     checks,
   };
+}
+
+export async function checkVercelSandbox(
+  config: AppConfig,
+  providedClient?: DoctorVercelClient,
+): Promise<DoctorCheck> {
+  const token = config.vercelToken;
+  const teamId = config.vercelTeamId;
+  const projectId = config.vercelProjectId;
+  const missing = [
+    !token && "VERCEL_TOKEN or VERCEL_OIDC_TOKEN",
+    !teamId && "VERCEL_TEAM_ID",
+    !projectId && "VERCEL_PROJECT_ID",
+  ].filter((value): value is string => Boolean(value));
+  if (missing.length > 0 || !token || !teamId || !projectId) {
+    return fail(
+      "vercel_sandbox",
+      "Vercel Sandbox reachability",
+      `The Vercel sandbox provider is missing ${missing.join(", ")}; platform-lane runs cannot start.`,
+      "Bind Facility to a Vercel team and project, then provide a scoped token or workload OIDC token.",
+    );
+  }
+
+  const client = providedClient ?? {
+    async list(input: { token: string; teamId: string; projectId: string; limit: number }) {
+      const { Sandbox } = await import("@vercel/sandbox");
+      return Sandbox.list(input);
+    },
+  };
+  try {
+    await client.list({ token, teamId, projectId, limit: 1 });
+    return pass(
+      "vercel_sandbox",
+      "Vercel Sandbox reachability",
+      `Vercel project "${projectId}" is reachable for team "${teamId}".`,
+    );
+  } catch (error) {
+    const status = httpStatus(error);
+    if (status === 401 || status === 403 || status === 404) {
+      return fail(
+        "vercel_sandbox",
+        "Vercel Sandbox reachability",
+        `The configured Vercel project binding was rejected (${status}).`,
+        "Verify the team/project ids and rotate the scoped Vercel provider token.",
+      );
+    }
+    return warn(
+      "vercel_sandbox",
+      "Vercel Sandbox reachability",
+      "Vercel reachability could not be verified because of a transient provider error.",
+      "Retry facility doctor; if the warning persists, inspect Vercel service health and egress.",
+    );
+  }
 }
 
 export async function checkAwsSandbox(
@@ -418,7 +484,8 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
     }
     // A profile can run a platform-lane agent only if its driver matches the
     // deployment and its image ships the runner. Docker launches the profile
-    // image directly; CodeBuild receives it as imageOverride for each build.
+    // image directly; managed drivers boot the profile image inside their
+    // project-scoped compute boundary.
     const runnerImage = config.sandboxRunnerImage;
     const driver = config.sandboxDriver;
     const canRunRunner = profiles.some(
@@ -431,12 +498,14 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
       // capability, so a deployment where no profile can run the runner is not
       // production-ready. `facility doctor` blocks the go/no-go on it.
       const expectation =
-        driver === "aws" ? `driver "aws"` : `driver "docker" and the runner image (${runnerImage})`;
+        driver === "aws"
+          ? `driver "aws"`
+          : `driver "${driver}" and the runner image (${runnerImage})`;
       return fail(
         "sandbox_runner",
         "Sandbox runner profile",
         `No sandbox profile matches this deployment (${expectation}); platform-lane runs (Claude Code, Codex) will not start.`,
-        "Set FACILITY_SANDBOX_DRIVER (and FACILITY_RUNNER_IMAGE for docker) to match this deployment and re-seed.",
+        "Set FACILITY_SANDBOX_DRIVER and FACILITY_RUNNER_IMAGE to match this deployment, then re-seed.",
       );
     }
     // For the docker driver, config alone isn't enough — the worker must be able
@@ -453,7 +522,7 @@ async function checkSandboxRunner(db: Db, config: AppConfig, orgId: string): Pro
             "sandbox_runner",
             "Sandbox runner profile",
             `A docker sandbox profile is configured, but the Docker daemon is unreachable: ${message}`,
-            "Give the worker access to the Docker socket (mount /var/run/docker.sock), or set FACILITY_SANDBOX_DRIVER=aws.",
+            "Give the worker access to the Docker socket (mount /var/run/docker.sock), or select a configured managed sandbox driver.",
           );
         }
         // A missing probe container is expected — it proves the daemon answered.
@@ -614,6 +683,16 @@ async function checkReceiptIntegrity(db: Db, orgId: string): Promise<DoctorCheck
     "Agent receipt integrity",
     `${report.checked} stored agent receipts verify against the audit chain.`,
   );
+}
+
+function httpStatus(error: unknown) {
+  if (typeof error !== "object" || error === null) return undefined;
+  const candidate = error as {
+    status?: number;
+    statusCode?: number;
+    response?: { status?: number };
+  };
+  return candidate.status ?? candidate.statusCode ?? candidate.response?.status;
 }
 
 function pass(id: string, label: string, message: string): DoctorCheck {

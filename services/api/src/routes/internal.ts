@@ -1,6 +1,6 @@
 import { open, verifyKey } from "@facility/core";
 import { githubInstallations, insertAuditEvent, repos, runs, steerMessages } from "@facility/db";
-import { and, asc, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import {
@@ -90,7 +90,7 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
       const securitySweepEvidence = isSecuritySweepMode(run.mode)
         ? await securitySweepEvidenceForRun(run, sandbox)
         : null;
-      const updatedSandbox = { ...sandbox, virtualKeyRevealedAt: new Date().toISOString() };
+      const virtualKeyRevealedAt = new Date().toISOString();
       // Claim the transition to running only if the run is still active. A cancel
       // that lands between the auth snapshot and here must win — we must not
       // resurrect a terminal run, and (critically) must not hand its sandbox the
@@ -100,7 +100,10 @@ export async function registerInternalRoutes(app: FastifyInstance, config: AppCo
         .set({
           status: "running",
           startedAt: run.startedAt ?? new Date(),
-          sandbox: updatedSandbox,
+          // launch() and /hello race on fast providers. Merge only the field
+          // owned by this endpoint so a provider ref attached after the auth
+          // snapshot cannot be erased by this one-shot credential claim.
+          sandbox: sql`${runs.sandbox} || ${JSON.stringify({ virtualKeyRevealedAt })}::jsonb`,
           updatedAt: new Date(),
         })
         .where(and(eq(runs.id, run.id), eq(runs.status, "provisioning")))

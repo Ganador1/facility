@@ -219,6 +219,7 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   const webDockerfile = await readFile(join(root, "apps/web/Dockerfile"), "utf8");
   const runnerDockerfile = await readFile(join(root, "runner/Dockerfile"), "utf8");
   const runnerGrypePolicy = await readFile(join(root, "runner/grype.yaml"), "utf8");
+  const pnpmWorkspace = await readFile(join(root, "pnpm-workspace.yaml"), "utf8");
   const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   const agentCliPackage = JSON.parse(
     await readFile(join(root, "runner", "agent-clis", "package.json"), "utf8"),
@@ -238,11 +239,21 @@ test("Bake keeps thin target boundaries and publishes every target through one g
     ].map(async (path) => JSON.parse(await readFile(join(root, path), "utf8"))),
   );
   assert.doesNotMatch(webDockerfile, /^COPY \. \.$/m);
+  assert.match(pnpmWorkspace, /^allowUnusedPatches: \$\{FACILITY_ALLOW_UNUSED_PATCHES-false\}$/m);
+  for (const dockerfile of [controlDockerfile, webDockerfile]) {
+    const installPosition = dockerfile.indexOf(" install --frozen-lockfile");
+    assert.ok(
+      dockerfile.indexOf("COPY pnpm-lock.yaml") < dockerfile.indexOf("COPY patches ./patches"),
+    );
+    assert.ok(dockerfile.indexOf("COPY patches ./patches") < installPosition);
+    assert.ok(
+      dockerfile.indexOf("ENV FACILITY_ALLOW_UNUSED_PATCHES=true") < installPosition,
+      "filtered image commands must explicitly allow the omitted docs-only patch",
+    );
+  }
   assert.ok(
-    webDockerfile.indexOf("COPY pnpm-lock.yaml") < webDockerfile.indexOf("RUN pnpm install"),
-  );
-  assert.ok(
-    webDockerfile.indexOf("RUN pnpm install") < webDockerfile.indexOf("COPY apps/web apps/web"),
+    webDockerfile.indexOf(" install --frozen-lockfile") <
+      webDockerfile.indexOf("COPY apps/web apps/web"),
   );
   assert.equal(rootPackage.packageManager, "pnpm@11.20.0");
   const sharedServiceBuild = controlDockerfile.match(

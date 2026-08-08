@@ -1,4 +1,4 @@
-export type SandboxDriverName = "docker" | "aws";
+export type SandboxDriverName = "docker" | "aws" | "vercel";
 
 export type LaunchSpec = {
   runId: string;
@@ -47,12 +47,16 @@ export async function sandboxDriver(name: SandboxDriverName): Promise<SandboxDri
     const { DockerSandboxDriver } = await import("./docker.js");
     return new DockerSandboxDriver();
   }
+  if (name === "vercel") {
+    const { VercelSandboxDriver } = await import("./vercel.js");
+    return new VercelSandboxDriver();
+  }
   const { AwsSandboxDriver } = await import("./aws.js");
   return new AwsSandboxDriver();
 }
 
 export async function previewSandboxDriver(name: SandboxDriverName): Promise<SandboxDriver> {
-  if (name === "docker") return sandboxDriver(name);
+  if (name === "docker" || name === "vercel") return sandboxDriver(name);
   const { AwsPreviewSandboxDriver } = await import("./aws-preview.js");
   return new AwsPreviewSandboxDriver();
 }

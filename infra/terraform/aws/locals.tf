@@ -57,10 +57,11 @@ locals {
     { name = "LOG_LEVEL", value = "info" },
     { name = "S3_BUCKET", value = aws_s3_bucket.objects.bucket },
     { name = "AWS_REGION", value = var.aws_region },
-    # The AWS stack runs sandboxes via CodeBuild, so the seeded default
-    # sandbox profile (created by the migrate+seed task) must use it too.
-    { name = "FACILITY_SANDBOX_DRIVER", value = "aws" },
-    { name = "FACILITY_RUNNER_IMAGE", value = local.images.runner },
+    # The control plane remains on AWS while sandbox compute is a swappable
+    # provider. The migrate+seed task receives the same pair so new profiles
+    # are immediately executable on the selected provider.
+    { name = "FACILITY_SANDBOX_DRIVER", value = var.sandbox_driver },
+    { name = "FACILITY_RUNNER_IMAGE", value = var.sandbox_driver == "vercel" ? var.vercel_runner_image : local.images.runner },
   ]
 
   aws_sandbox_environment = [
@@ -78,11 +79,20 @@ locals {
     { name = "FACILITY_AWS_TASK_CPU_ARCHITECTURE", value = var.task_cpu_architecture },
   ]
 
+  vercel_sandbox_environment = [
+    { name = "VERCEL_TEAM_ID", value = var.vercel_team_id },
+    { name = "VERCEL_PROJECT_ID", value = var.vercel_project_id },
+  ]
+
+  sandbox_provider_environment = (
+    var.sandbox_driver == "vercel" ? local.vercel_sandbox_environment : local.aws_sandbox_environment
+  )
+
   preview_surface_environment = local.managed_preview_origin ? [
     { name = "FACILITY_PREVIEW_SURFACE_TOKEN", value = random_password.preview_surface[0].result },
   ] : []
 
-  api_environment = concat(local.common_environment, local.aws_sandbox_environment, local.preview_surface_environment, [
+  api_environment = concat(local.common_environment, local.sandbox_provider_environment, local.preview_surface_environment, [
     { name = "PORT", value = tostring(local.ports.api) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
@@ -95,10 +105,13 @@ locals {
     { name = "FACILITY_OAUTH_ISSUER", value = local.public_urls.api },
     { name = "MCP_PUBLIC_URL", value = local.public_urls.mcp },
     { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
-    { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    # AWS sandboxes reach the gateway over private service discovery. Vercel
+    # sandboxes use the authenticated provider paths routed through the existing
+    # public API hostname; the ALB exposes no other gateway surface.
+    { name = "SANDBOX_GATEWAY_URL", value = var.sandbox_driver == "vercel" ? local.public_urls.api : "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
 
-  worker_environment = concat(local.common_environment, local.aws_sandbox_environment, [
+  worker_environment = concat(local.common_environment, local.sandbox_provider_environment, [
     { name = "PORT", value = tostring(local.ports.worker) },
     { name = "PUBLIC_URL", value = local.public_urls.api },
     { name = "WEB_URL", value = local.public_urls.web },
@@ -107,7 +120,7 @@ locals {
     # same ownership namespace when an operator pins a stable instance id.
     { name = "FACILITY_INSTANCE_ID", value = var.facility_instance_id },
     { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
-    { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    { name = "SANDBOX_GATEWAY_URL", value = var.sandbox_driver == "vercel" ? local.public_urls.api : "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
 
   gateway_environment = concat(local.common_environment, [
@@ -145,6 +158,7 @@ locals {
     "package_registry_token",
     "dev_anthropic_api_key",
     "dev_openai_api_key",
+    "vercel_token",
   ])
 
   core_secrets = [
@@ -169,12 +183,19 @@ locals {
     { name = "PACKAGE_REGISTRY_TOKEN", valueFrom = aws_secretsmanager_secret.app["package_registry_token"].arn },
   ]
 
+  sandbox_provider_secrets = var.sandbox_driver == "vercel" ? [
+    { name = "VERCEL_TOKEN", valueFrom = aws_secretsmanager_secret.app["vercel_token"].arn },
+  ] : []
+
   api_secrets = concat(
     local.core_secrets,
     local.identity_secrets,
     [{ name = "FACILITY_OAUTH_JWKS", valueFrom = aws_secretsmanager_secret.app["facility_oauth_jwks"].arn }],
-    var.enable_package_registry_token ? local.package_registry_secrets : []
+    var.enable_package_registry_token ? local.package_registry_secrets : [],
+    local.sandbox_provider_secrets
   )
+
+  worker_secrets = concat(local.common_secrets, local.sandbox_provider_secrets)
 
   dev_provider_secrets = [
     { name = "DEV_ANTHROPIC_API_KEY", valueFrom = aws_secretsmanager_secret.app["dev_anthropic_api_key"].arn },
@@ -202,7 +223,7 @@ locals {
       command       = ["node", "dist/worker.js"]
       port          = local.ports.worker
       environment   = local.worker_environment
-      secrets       = local.common_secrets
+      secrets       = local.worker_secrets
       public        = false
       health_path   = "/health"
     }

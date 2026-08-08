@@ -163,6 +163,35 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
     const nestedDocker = nestedDockerEnabled(profile.setup);
     const provisioning = provisioningDepth(profile.setup);
     const driver = await (deps.sandboxDriver ?? sandboxDriver)(driverName);
+    // A provider launch starts the runner command before launch() returns. Fast
+    // providers (notably Vercel Sandbox) can therefore reach /hello before we
+    // receive their provider ref. Persist the runner credential and one-shot
+    // bundle first so authentication is ready when the command starts.
+    const [runnerTokenHash, sealedVirtualKey, sealedPlatformKey] = await Promise.all([
+      hashKey(runnerToken),
+      seal(virtualKey.secret, config.secretMasterKey),
+      seal(platformKey.secret, config.secretMasterKey),
+    ]);
+    const preparedSandbox: RunSandboxState = {
+      driver: driver.name,
+      image: profile.image,
+      runnerTokenHash,
+      virtualKeyId: virtualKey.id,
+      sealedVirtualKey,
+      platformKeyId: platformKey.id,
+      sealedPlatformKey,
+      projectId: run.projectId,
+      bundle,
+    };
+    const [prepared] = await db
+      .update(runs)
+      .set({ sandbox: preparedSandbox, updatedAt: new Date() })
+      .where(and(eq(runs.id, run.id), eq(runs.status, "provisioning")))
+      .returning({ id: runs.id });
+    if (!prepared) {
+      await revokeRunKeys(db, createdKeys);
+      return;
+    }
     const launchSpec: LaunchSpec = {
       runId: run.id,
       namespace: sandboxNamespace(config),
@@ -173,7 +202,7 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
         FACILITY_API_URL: config.sandboxApiUrl,
         RUN_ID: run.id,
         RUNNER_TOKEN: runnerToken,
-        ...(driverName === "aws"
+        ...(driverName === "aws" || driverName === "vercel"
           ? { FACILITY_SANDBOX_NESTED_DOCKER: nestedDocker ? "1" : "0" }
           : {}),
       },
@@ -181,29 +210,32 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
       memoryMb: resourceNumber(profile.resources, "memory_mb", 4096),
       timeoutMin: bundle.timeoutMin,
       cmd: command(profile.setup),
-      network: objectOrEmpty(profile.network),
+      network: {
+        ...objectOrEmpty(profile.network),
+        // Provider firewalls need the two control-plane callbacks even when a
+        // profile otherwise uses the standard restricted package/GitHub set.
+        allowed_domains: [
+          ...arrayField(profile.network, "allowed_domains"),
+          new URL(config.sandboxApiUrl).hostname,
+          new URL(config.sandboxGatewayUrl).hostname,
+        ],
+      },
     };
     const launched = await driver.launch(launchSpec);
     launchedSandbox = { driver, ref: launched.ref };
-    // Attach the live sandbox only if the run is still active. If a cancel raced
-    // provisioning and already made the run terminal, do NOT hand it a live
-    // sandbox + keys — tear the sandbox down and revoke the credentials.
+    // Attach the provider ref only if the run is still active. If cancellation
+    // raced provisioning, tear down the newly launched sandbox; cancelRun has
+    // already revoked the credentials persisted above.
     const [attached] = await db
       .update(runs)
       .set({
-        sandbox: {
-          driver: driver.name,
+        // /hello may have already marked virtualKeyRevealedAt while launch()
+        // was returning. Merge only provider-owned fields so that one-shot
+        // credential claim can never be overwritten and replayed.
+        sandbox: sql`${runs.sandbox} || ${JSON.stringify({
           ref: launched.ref,
-          image: profile.image,
-          runnerTokenHash: await hashKey(runnerToken),
-          virtualKeyId: virtualKey.id,
-          sealedVirtualKey: await seal(virtualKey.secret, config.secretMasterKey),
-          platformKeyId: platformKey.id,
-          sealedPlatformKey: await seal(platformKey.secret, config.secretMasterKey),
-          projectId: run.projectId,
-          bundle,
           launchedAt: new Date().toISOString(),
-        },
+        })}::jsonb`,
         updatedAt: new Date(),
       })
       .where(and(eq(runs.id, run.id), notInArray(runs.status, [...TERMINAL_RUN_STATUSES])))
@@ -220,7 +252,9 @@ export async function dispatchRun(config: AppConfig, job: DispatchJob, deps: Dis
           driver: driver.name,
           ref: launched.ref,
           provisioning,
-          ...(driverName === "aws" ? { nested_docker: nestedDocker } : {}),
+          ...(driverName === "aws" || driverName === "vercel"
+            ? { nested_docker: nestedDocker }
+            : {}),
         },
       },
     ]);
@@ -342,7 +376,11 @@ export async function finishRun(
   if (!claimed) return run;
   if (sandbox.driver && sandbox.ref) {
     const driver = await sandboxDriver(sandbox.driver);
-    await driver.destroy(sandbox.ref).catch(() => undefined);
+    const destroyed = await driver
+      .destroy(sandbox.ref)
+      .then(() => true)
+      .catch(() => false);
+    if (destroyed) await markSandboxDestroyed(db, run.id);
   }
   await revokeRunKeys(db, sandbox);
   if (status === "succeeded" && deliveryPlan) {
@@ -1400,13 +1438,18 @@ function previewImageForCommit(image: string, commitSha: string | undefined) {
 
 export async function cancelRun(config: AppConfig, run: RunRow) {
   const sandbox = readSandbox(run.sandbox);
+  let destroyed = false;
   if (sandbox.driver && sandbox.ref) {
     const driver = await sandboxDriver(sandbox.driver);
     await driver.stop(sandbox.ref).catch(() => undefined);
-    await driver.destroy(sandbox.ref).catch(() => undefined);
+    destroyed = await driver
+      .destroy(sandbox.ref)
+      .then(() => true)
+      .catch(() => false);
   }
   const { db, client } = createDb(config.databaseUrl);
   try {
+    if (destroyed) await markSandboxDestroyed(db, run.id);
     await revokeRunKeys(db, sandbox);
     await updateGithubRunProgress(db, run.id, "canceled", { config }).catch(() => undefined);
   } finally {
@@ -1577,6 +1620,35 @@ export async function reconcileSandboxes(
       }
     }
 
+    // A provider delete can fail transiently after the terminal run state has
+    // already committed (or the API can restart between those two operations).
+    // Retry every unconfirmed terminal cleanup here. The durable marker makes
+    // successful deletes one-shot while preserving idempotent recovery across
+    // Docker, CodeBuild, and Vercel providers.
+    const pendingTerminalCleanup = await db
+      .select({ id: runs.id, sandbox: runs.sandbox })
+      .from(runs)
+      .where(
+        and(
+          inArray(runs.status, [...TERMINAL_RUN_STATUSES]),
+          sql`${runs.sandbox}->>'driver' is not null`,
+          sql`${runs.sandbox}->>'ref' is not null`,
+          sql`coalesce(${runs.sandbox}->>'lastStatus', '') <> 'destroyed'`,
+        ),
+      )
+      .limit(20);
+    for (const run of pendingTerminalCleanup) {
+      try {
+        const sandbox = readSandbox(run.sandbox);
+        if (!sandbox.driver || !sandbox.ref) continue;
+        const driver = await sandboxDriver(sandbox.driver);
+        await driver.destroy(sandbox.ref);
+        await markSandboxDestroyed(db, run.id);
+      } catch {
+        // A transient provider failure stays unmarked and retries next tick.
+      }
+    }
+
     // Invariant backstop: a terminal run must never own a live key. Each terminal
     // path already revokes best-effort, but a crash between the status commit and
     // that revoke would otherwise leave keys live until their natural expiry — so
@@ -1707,13 +1779,14 @@ async function buildRunBundle(
   // appends /v1/messages, while Codex appends /responses to a provider base
   // URL that must already include /v1.
   const gatewayBase = config.sandboxGatewayUrl.replace(/\/$/, "");
+  const engine = normalizeEngine(agent.engine || run.engine);
   const bundle: RunBundle = {
     runId: run.id,
     mode: run.mode,
-    engine: normalizeEngine(agent.engine || run.engine),
+    engine,
     contract,
     skills,
-    engineConfig: resolveRepoEngineConfig(agent.name, agent.model, repo?.renderAnswers),
+    engineConfig: resolveRepoEngineConfig(agent.name, agent.model, repo?.renderAnswers, engine),
     repo: repo
       ? {
           cloneUrl: `https://github.com/${repo.owner}/${repo.name}.git`,
@@ -1954,6 +2027,19 @@ export async function revokeRunKeys(
       .set({ revokedAt: now })
       .where(and(eq(apiKeys.id, sandbox.platformKeyId), isNull(apiKeys.revokedAt)));
   }
+}
+
+async function markSandboxDestroyed(db: ReturnType<typeof createDb>["db"], runId: string) {
+  await db
+    .update(runs)
+    .set({
+      sandbox: sql`${runs.sandbox} || ${JSON.stringify({
+        lastStatus: "destroyed",
+        destroyedAt: new Date().toISOString(),
+      })}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(eq(runs.id, runId));
 }
 
 export async function failRun(
@@ -2357,6 +2443,7 @@ function receiptCheck(value: unknown) {
 
 function normalizeDriver(value: string): SandboxDriverName {
   if (value === "aws") return "aws";
+  if (value === "vercel") return "vercel";
   return "docker";
 }
 
@@ -2399,25 +2486,31 @@ export function resolveCheckCmds(
   return arrayField(projectSettings, "check_cmds");
 }
 
-export function resolveRepoEngineConfig(agentName: string, base: unknown, renderAnswers: unknown) {
+export function resolveRepoEngineConfig(
+  agentName: string,
+  base: unknown,
+  renderAnswers: unknown,
+  engine?: RunBundle["engine"],
+) {
   const config = objectOrEmpty(base);
   const models = objectOrEmpty(objectOrEmpty(renderAnswers).models);
+  const codex = engine ? engine === "codex" : agentName.startsWith("codex-");
+  const role = agentName.replace(/^codex-/, "");
   const override =
-    agentName === "architect"
-      ? stringValue(models.plan)
-      : agentName === "builder"
-        ? stringValue(models.build)
-        : agentName === "review"
-          ? stringValue(models.review)
-          : agentName === "codex-architect"
-            ? stringValue(models.codexPlan)
-            : agentName === "codex-builder"
-              ? stringValue(models.codexBuild)
-              : undefined;
+    role === "architect"
+      ? stringValue(models[codex ? "codexPlan" : "plan"])
+      : role === "builder"
+        ? stringValue(models[codex ? "codexBuild" : "build"])
+        : role === "review"
+          ? stringValue(models[codex ? "codexReview" : "review"])
+          : undefined;
   if (!override) return config;
-  return agentName.startsWith("codex-")
-    ? { ...config, primary: override }
-    : { ...config, model: override };
+  if (codex) {
+    const { model: _incompatibleModel, ...compatible } = config;
+    return { ...compatible, primary: override };
+  }
+  const { primary: _incompatiblePrimary, ...compatible } = config;
+  return { ...compatible, model: override };
 }
 
 // The sandbox profile is an explicit platform override. Otherwise use the

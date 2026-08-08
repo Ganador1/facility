@@ -36,7 +36,7 @@ RUN apt-get update \
   && tar -xzf "/tmp/${archive}" -C /tmp \
   && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /gh
 
-FROM node:24-trixie@sha256:66bb8d36ae1ddd72199ed235a089904874ca4079ee517936ca3adb80506a75c1
+FROM node:24-trixie@sha256:66bb8d36ae1ddd72199ed235a089904874ca4079ee517936ca3adb80506a75c1 AS runner-base
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get upgrade -y \
@@ -130,8 +130,13 @@ RUN useradd --system --uid 1001 --create-home --home-dir /var/lib/facility-docke
 # runner application changes more frequently and must not re-resolve CLI
 # transitives or invalidate this install.
 COPY runner/agent-clis/package.json runner/agent-clis/package-lock.json /opt/facility-agent-clis/
+# npm's download cache duplicates the large native Claude/Codex packages in
+# the final layer. It is not used at runtime, would push this layer above VCR's
+# 500 MB compressed limit, and makes every registry transfer needlessly slow.
 RUN cd /opt/facility-agent-clis \
   && npm ci --omit=dev \
+  && npm cache clean --force \
+  && rm -rf /root/.npm \
   && ln -s /opt/facility-agent-clis/node_modules/.bin/claude /usr/local/bin/claude \
   && ln -s /opt/facility-agent-clis/node_modules/.bin/codex /usr/local/bin/codex \
   && claude --version \
@@ -159,19 +164,40 @@ COPY --from=bind-broker-build /facility-bind-broker /usr/local/bin/facility-bind
 COPY runner/package.json runner/package-lock.json runner/tsconfig.json ./
 COPY packages/run-objective/package.json /packages/run-objective/
 COPY packages/run-objective/src /packages/run-objective/src
+# Repository-runner source changes are frequent and do not change the locked
+# runtime dependency graph. Keep npm ci in its own cacheable layer so an agent
+# telemetry or lifecycle edit rebuilds the small bundle instead of reinstalling
+# and auditing the same dependencies.
+RUN npm ci
 COPY runner/src ./src
-COPY runner/runner-entrypoint.sh runner/codebuild-runner.sh runner/find-descendant.awk /app/
-RUN npm ci && npm run build && npm prune --omit=dev
+# The runtime image consumes JavaScript only. Declaration generation remains in
+# the workspace build/typecheck gates and previously added about a minute to
+# every cache-miss runner image build without changing runtime bytes.
+RUN npm run build:runtime && npm prune --omit=dev
 
 # Run non-root: agent CLIs (Claude Code) refuse bypass-permissions as root, and
 # a rogue agent process should never hold uid 0.
 RUN mkdir -p /work/.facility-package-cache \
   && chown -R node:node /work \
   && chown -R root:root /app \
-  && chmod -R a-w /app \
-  && chmod 0755 /app/runner-entrypoint.sh /app/codebuild-runner.sh
+  && chmod -R a-w /app
+# Shell bootstrap changes must not invalidate the dependency install, bundle,
+# or recursive application hardening layer.
+COPY --chown=root:root --chmod=0555 \
+  runner/runner-entrypoint.sh runner/codebuild-runner.sh runner/find-descendant.awk /app/
 ENV HOME=/work
 WORKDIR /work
-USER node
 ENTRYPOINT ["/app/runner-entrypoint.sh"]
 CMD ["node", "/app/dist/index.js"]
+
+# Vercel custom-image commands start as the image's declared user and its SDK
+# implements `sudo` by invoking a binary. Keep sudo out of the image: start only
+# the trusted bootstrap as root, then codebuild-runner.sh demotes every custom
+# command and repository/model child to UID 1000 before execution.
+FROM runner-base AS vercel-runner
+USER root
+
+# The default/local image retains the existing non-root boundary. Keep this as
+# the last stage so ordinary `docker build` and ECR publishing remain unchanged.
+FROM runner-base AS runner
+USER node

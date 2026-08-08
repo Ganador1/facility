@@ -1,4 +1,11 @@
-import { generateApiKey, hashKey, newId, seal, verifyFacilityReceipt } from "@facility/core";
+import {
+  generateApiKey,
+  hashKey,
+  newId,
+  seal,
+  verifyFacilityReceipt,
+  verifyKey,
+} from "@facility/core";
 import {
   agentDefs,
   apiKeys,
@@ -36,7 +43,7 @@ import {
   repairExpectedHeadSha,
   runDeliveryRefMismatch,
 } from "../src/sandbox/orchestrator.js";
-import { appendRunEvents } from "../src/sandbox/state.js";
+import { appendRunEvents, readSandbox } from "../src/sandbox/state.js";
 import type { AppConfig } from "../src/types.js";
 
 const databaseUrl =
@@ -527,9 +534,30 @@ describe("sandbox api", async () => {
     });
 
     const launched: Array<Parameters<SandboxDriver["launch"]>[0]> = [];
+    const preLaunchClaims = new Map<string, string>();
     const driver: SandboxDriver = {
       name: "aws",
       launch: async (spec) => {
+        // Regression: launch() is allowed to start the command immediately. Its
+        // runner token and bundle must therefore already be durable before the
+        // provider call, and provider-ref attachment must preserve a concurrent
+        // one-shot /hello claim.
+        const [beforeLaunch] = await db
+          .select({ sandbox: runs.sandbox })
+          .from(runs)
+          .where(eq(runs.id, spec.runId));
+        const prepared = readSandbox(beforeLaunch?.sandbox);
+        expect(prepared.ref).toBeUndefined();
+        expect(prepared.bundle).toBeDefined();
+        expect(await verifyKey(spec.env.RUNNER_TOKEN ?? "", prepared.runnerTokenHash ?? "")).toBe(
+          true,
+        );
+        const claimedAt = new Date().toISOString();
+        preLaunchClaims.set(spec.runId, claimedAt);
+        await db
+          .update(runs)
+          .set({ sandbox: { ...prepared, virtualKeyRevealedAt: claimedAt } })
+          .where(eq(runs.id, spec.runId));
         launched.push(spec);
         return { ref: `fake-${spec.runId}` };
       },
@@ -599,6 +627,9 @@ describe("sandbox api", async () => {
         packageInstallCmd: fixture.packageInstallCmd,
         provisionCmd: fixture.provisionCmd,
       });
+      expect(readSandbox(persistedRun?.sandbox).virtualKeyRevealedAt).toBe(
+        preLaunchClaims.get(run.id),
+      );
       const sandboxEvent = (
         await db.select({ data: runEvents.data }).from(runEvents).where(eq(runEvents.runId, run.id))
       ).find((event) => (event.data as Record<string, unknown>).nested_docker !== undefined);
@@ -1384,6 +1415,47 @@ describe("sandbox api", async () => {
     expect(response.json().packageRegistryToken).toBeNull();
   });
 
+  it("preserves provider-owned sandbox state when hello claims credentials", async () => {
+    const token = `frt_hello_merge_${Date.now()}`;
+    const runId = newId("run");
+    const launchedAt = new Date().toISOString();
+    const run = await insertRunnerRun(token, "provisioning", runId, {
+      driver: "vercel",
+      ref: "v1.provider-ref",
+      launchedAt,
+      runnerTokenHash: await hashKey(token),
+      sealedVirtualKey: await seal("fvk_hello_merge", masterKey),
+      bundle: {
+        runId,
+        mode: "architect",
+        engine: "byo",
+        contract: "contract",
+        skills: [],
+        engineConfig: {},
+        repo: { cloneUrl: null, branch: null, expectedHeadSha: null, installationTokenRef: null },
+        packageInstallCmd: null,
+        provisionCmd: null,
+        checkCmds: [],
+        gatewayUrls: { anthropic: "http://gateway/anthropic", openai: "http://gateway/openai" },
+        scope: {},
+        timeoutMin: 60,
+      },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/internal/runs/${run.id}/hello`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const [stored] = await db.select().from(runs).where(eq(runs.id, run.id));
+    const state = readSandbox(stored?.sandbox);
+    expect(state.ref).toBe("v1.provider-ref");
+    expect(state.launchedAt).toBe(launchedAt);
+    expect(state.virtualKeyRevealedAt).toEqual(expect.any(String));
+  });
+
   it("denies credential release after a run is terminal", async () => {
     const token = `frt_terminal_${Date.now()}`;
     const run = await insertRunnerRun(token, "failed", newId("run"), {
@@ -1626,6 +1698,43 @@ describe("sandbox api", async () => {
     });
     await reconcileSandboxes(config);
     expect(await driver.status(launched.ref)).toBe("lost");
+  }, 60_000);
+
+  it("reconciler records terminal sandbox cleanup so provider deletion is not retried forever", async () => {
+    if (!(await dockerReachable())) {
+      console.warn(
+        "Docker socket is not reachable from this sandbox; skipping terminal cleanup test",
+      );
+      return;
+    }
+    const driver = new DockerSandboxDriver();
+    const runId = newId("run");
+    const launched = await driver.launch({
+      runId,
+      namespace: sandboxNamespace(config),
+      image: "alpine:3.20",
+      env: {},
+      cpu: 0.5,
+      memoryMb: 128,
+      timeoutMin: 1,
+      cmd: ["sleep", "30"],
+    });
+    try {
+      await insertRunnerRun("frt_terminal_cleanup", "failed", runId, {
+        driver: "docker",
+        ref: launched.ref,
+      });
+
+      await reconcileSandboxes(config);
+
+      expect(await driver.status(launched.ref)).toBe("lost");
+      const [stored] = await db.select().from(runs).where(eq(runs.id, runId));
+      const state = readSandbox(stored?.sandbox);
+      expect(state.lastStatus).toBe("destroyed");
+      expect(state.destroyedAt).toEqual(expect.any(String));
+    } finally {
+      await driver.destroy(launched.ref).catch(() => undefined);
+    }
   }, 60_000);
 
   async function insertRunnerRun(

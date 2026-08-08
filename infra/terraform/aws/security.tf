@@ -121,6 +121,15 @@ resource "aws_vpc_security_group_egress_rule" "alb_to_mcp" {
   to_port                      = local.ports.mcp
 }
 
+resource "aws_vpc_security_group_egress_rule" "alb_to_vercel_gateway" {
+  count                        = var.sandbox_driver == "vercel" ? 1 : 0
+  security_group_id            = aws_security_group.alb.id
+  referenced_security_group_id = aws_security_group.service.id
+  from_port                    = local.ports.gateway
+  ip_protocol                  = "tcp"
+  to_port                      = local.ports.gateway
+}
+
 resource "aws_vpc_security_group_ingress_rule" "service_from_alb_api" {
   security_group_id            = aws_security_group.service.id
   referenced_security_group_id = aws_security_group.alb.id
@@ -143,6 +152,16 @@ resource "aws_vpc_security_group_ingress_rule" "service_from_alb_mcp" {
   from_port                    = local.ports.mcp
   ip_protocol                  = "tcp"
   to_port                      = local.ports.mcp
+}
+
+resource "aws_vpc_security_group_ingress_rule" "gateway_from_alb" {
+  count                        = var.sandbox_driver == "vercel" ? 1 : 0
+  security_group_id            = aws_security_group.service.id
+  referenced_security_group_id = aws_security_group.alb.id
+  from_port                    = local.ports.gateway
+  ip_protocol                  = "tcp"
+  to_port                      = local.ports.gateway
+  description                  = "Authenticated model gateway paths for Vercel sandboxes"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "gateway_from_services" {

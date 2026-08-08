@@ -79,7 +79,18 @@ export function redactSecrets(text: string, secrets: Iterable<string> = secretsT
     // long. split/join replaces every occurrence without regex-escaping the secret.
     if (secret && secret.length >= 8) out = out.split(secret).join("«redacted»");
   }
-  return out;
+  // Some repository setup tools generate credentials inside the sandbox, so
+  // they are not present in Facility's injected-secret set. Supabase CLI is a
+  // concrete example: `supabase start` prints publishable/secret keys and can
+  // print legacy JWTs. Treat these credential shapes as secrets at the central
+  // event boundary as well.
+  return out
+    .replace(/\bsb_(?:secret|publishable)_[A-Za-z0-9_-]+\b/g, "«redacted»")
+    .replace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g, "«redacted»")
+    .replace(
+      /((?:service[_ -]?role|anon|jwt secret|access key|secret key)\s*(?:key)?\s*[|│:]\s*)([^|│\r\n]+)/gi,
+      "$1«redacted» ",
+    );
 }
 
 async function main() {
@@ -1017,6 +1028,7 @@ export async function drainLineEvents(
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let activeDelivery: Promise<void> | undefined;
   let deliveryError: unknown;
+  let suppressedContainerProgress = 0;
 
   const clearFlushTimer = () => {
     if (flushTimer) clearTimeout(flushTimer);
@@ -1068,28 +1080,42 @@ export async function drainLineEvents(
       if (!activeDelivery && buffered.length > 0) startDelivery();
     }
   };
+  const enqueue = async (event: RunEvent) => {
+    const eventBytes = Buffer.byteLength(JSON.stringify(redactRunEvent(event)));
+    const separatorBytes = buffered.length === 0 ? 0 : 1;
+    if (buffered.length > 0 && bufferedBytes + separatorBytes + eventBytes > maxBatchBytes) {
+      // Flush the existing batch before adding a line that would exceed the
+      // request budget. A single large line is still sent on its own, as it
+      // was before batching, because splitting one event would change it.
+      await dispatchPending();
+    }
+
+    bufferedBytes += (buffered.length === 0 ? 0 : 1) + eventBytes;
+    buffered.push(event);
+    if (buffered.length >= batchSize || bufferedBytes >= maxBatchBytes) {
+      // Preserve stream backpressure at one pending batch while the API is
+      // throttling instead of chaining unbounded timer-created requests.
+      await dispatchPending();
+    } else {
+      scheduleFlush();
+    }
+  };
 
   try {
     for await (const line of lines) {
-      const event: RunEvent = { type: eventType, data: { text: line } };
-      const eventBytes = Buffer.byteLength(JSON.stringify(redactRunEvent(event)));
-      const separatorBytes = buffered.length === 0 ? 0 : 1;
-      if (buffered.length > 0 && bufferedBytes + separatorBytes + eventBytes > maxBatchBytes) {
-        // Flush the existing batch before adding a line that would exceed the
-        // request budget. A single large line is still sent on its own, as it
-        // was before batching, because splitting one event would change it.
-        await dispatchPending();
+      if (eventType === "shell" && isTransientContainerProgressLine(line)) {
+        suppressedContainerProgress += 1;
+        continue;
       }
-
-      bufferedBytes += (buffered.length === 0 ? 0 : 1) + eventBytes;
-      buffered.push(event);
-      if (buffered.length >= batchSize || bufferedBytes >= maxBatchBytes) {
-        // Preserve stream backpressure at one pending batch while the API is
-        // throttling instead of chaining unbounded timer-created requests.
-        await dispatchPending();
-      } else {
-        scheduleFlush();
-      }
+      await enqueue({ type: eventType, data: { text: line } });
+    }
+    if (suppressedContainerProgress > 0) {
+      await enqueue({
+        type: eventType,
+        data: {
+          text: `[Facility] Suppressed ${suppressedContainerProgress} transient container download progress lines`,
+        },
+      });
     }
     clearFlushTimer();
     while (activeDelivery || buffered.length > 0) {
@@ -1102,6 +1128,14 @@ export async function drainLineEvents(
     clearFlushTimer();
     lines.close();
   }
+}
+
+export function isTransientContainerProgressLine(line: string) {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI CSI starts with ESC by definition.
+  const plain = line.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").trim();
+  return /^[a-f0-9]{12,64}\s+(?:Pulling fs layer|Waiting|Downloading(?:\s+.*)?|Verifying Checksum|Download complete|Extracting(?:\s+.*)?|Pull complete)\s*$/i.test(
+    plain,
+  );
 }
 
 export async function runPackageInstall(

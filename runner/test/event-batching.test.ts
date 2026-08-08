@@ -56,6 +56,34 @@ describe("runner lifecycle event batching", () => {
     await draining;
   });
 
+  it("compacts transient container-layer progress but preserves useful shell output", async () => {
+    const stream = new PassThrough();
+    const deliveries: RunEvent[][] = [];
+    const draining = drainLineEvents(stream, "shell", async (events) => {
+      deliveries.push(events);
+    });
+
+    stream.end(
+      `${[
+        "studio Pulling",
+        "5592d1f29924 Pulling fs layer",
+        "5592d1f29924 Downloading 12.4MB",
+        "5592d1f29924 Extracting 13 s",
+        "5592d1f29924 Pull complete",
+        "studio Pulled",
+        "healthy and ready",
+      ].join("\n")}\n`,
+    );
+    await draining;
+
+    expect(deliveries.flatMap((events) => events.map((event) => event.data?.text))).toEqual([
+      "studio Pulling",
+      "studio Pulled",
+      "healthy and ready",
+      "[Facility] Suppressed 4 transient container download progress lines",
+    ]);
+  });
+
   it("coalesces one bounded pending batch while delivery is blocked", async () => {
     const stream = new PassThrough();
     let resolveBlockedDelivery: (() => void) | undefined;

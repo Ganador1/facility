@@ -13,7 +13,7 @@ resource "aws_lb" "public" {
 }
 
 resource "aws_lb_target_group" "service" {
-  for_each = {
+  for_each = merge({
     api = {
       port        = local.ports.api
       health_path = "/health"
@@ -26,7 +26,12 @@ resource "aws_lb_target_group" "service" {
       port        = local.ports.mcp
       health_path = "/readyz"
     }
-  }
+    }, var.sandbox_driver == "vercel" ? {
+    gateway = {
+      port        = local.ports.gateway
+      health_path = "/readyz"
+    }
+  } : {})
 
   name        = "${local.name_prefix}-${each.key}"
   port        = each.value.port
@@ -219,6 +224,48 @@ resource "aws_lb_listener_rule" "https_api" {
     host_header {
       values = [var.api_hostname]
     }
+  }
+}
+
+# A Vercel sandbox cannot resolve the control plane's private Cloud Map name.
+# Route only the two bearer-authenticated model-provider prefixes through the
+# existing API hostname, ahead of the general API host rule. The gateway target
+# and these rules do not exist for the private AWS sandbox path.
+resource "aws_lb_listener_rule" "http_vercel_gateway" {
+  count        = var.sandbox_driver == "vercel" && var.acm_certificate_arn == "" ? 1 : 0
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 5
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["gateway"].arn
+  }
+
+  condition {
+    host_header { values = [var.api_hostname] }
+  }
+
+  condition {
+    path_pattern { values = ["/anthropic", "/anthropic/*", "/openai/*"] }
+  }
+}
+
+resource "aws_lb_listener_rule" "https_vercel_gateway" {
+  count        = var.sandbox_driver == "vercel" && var.acm_certificate_arn != "" ? 1 : 0
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 5
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.service["gateway"].arn
+  }
+
+  condition {
+    host_header { values = [var.api_hostname] }
+  }
+
+  condition {
+    path_pattern { values = ["/anthropic", "/anthropic/*", "/openai/*"] }
   }
 }
 

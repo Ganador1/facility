@@ -42,8 +42,9 @@ const EnvSchema = z
     // seeded default sandbox profile and `facility doctor` both key off this.
     FACILITY_RUNNER_IMAGE: z.string().default("facility-runner:dev"),
     // Driver the seeded default sandbox profile uses. Must match the deployment:
-    // "docker" for local/self-host, "aws" for the CodeBuild stack.
-    FACILITY_SANDBOX_DRIVER: z.enum(["docker", "aws"]).default("docker"),
+    // "docker" for local/self-host, "vercel" for managed Sandboxes, or "aws"
+    // for the CodeBuild development provider.
+    FACILITY_SANDBOX_DRIVER: z.enum(["docker", "aws", "vercel"]).default("docker"),
     AUTH_IDENTITY_PROVIDER: z.enum(["github", "oidc"]).default("github"),
     AUTH_CALLBACK_URL: OptionalUrl,
     GITHUB_OAUTH_CLIENT_ID: z.string().optional(),
@@ -70,6 +71,10 @@ const EnvSchema = z
     AWS_REGION: z.string().optional(),
     FACILITY_AWS_CODEBUILD_PROJECT: z.string().trim().min(1).optional(),
     FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION: z.string().trim().min(1).optional(),
+    VERCEL_TOKEN: z.string().trim().min(1).optional(),
+    VERCEL_OIDC_TOKEN: z.string().trim().min(1).optional(),
+    VERCEL_TEAM_ID: z.string().trim().min(1).optional(),
+    VERCEL_PROJECT_ID: z.string().trim().min(1).optional(),
     PACKAGE_REGISTRY_TOKEN: z.string().trim().min(1).optional(),
     GITHUB_APP_ID: z.string().optional(),
     GITHUB_APP_PRIVATE_KEY: z.string().optional(),
@@ -217,6 +222,9 @@ export function readConfig(env = process.env): AppConfig {
     awsRegion: parsed.AWS_REGION,
     awsCodeBuildProject: parsed.FACILITY_AWS_CODEBUILD_PROJECT,
     awsCodeBuildCacheBaseLocation: parsed.FACILITY_AWS_CODEBUILD_CACHE_BASE_LOCATION,
+    vercelToken: parsed.VERCEL_OIDC_TOKEN ?? parsed.VERCEL_TOKEN,
+    vercelTeamId: parsed.VERCEL_TEAM_ID,
+    vercelProjectId: parsed.VERCEL_PROJECT_ID,
     packageRegistryToken: parsed.PACKAGE_REGISTRY_TOKEN,
     githubAppId: parsed.GITHUB_APP_ID,
     githubAppPrivateKey: parsed.GITHUB_APP_PRIVATE_KEY?.replace(/\\n/g, "\n"),

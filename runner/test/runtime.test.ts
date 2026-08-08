@@ -4,6 +4,7 @@ import { sandboxRuntimeEvent } from "../src/runtime.js";
 describe("sandbox runtime telemetry", () => {
   it.each([
     ["overlay2", false],
+    ["overlayfs", false],
     ["fuse-overlayfs", false],
     ["vfs", true],
   ] as const)("reports the allowlisted %s storage driver", (driver, degraded) => {
