@@ -238,9 +238,14 @@ test("Bake keeps thin target boundaries and publishes every target through one g
     ].map(async (path) => JSON.parse(await readFile(join(root, path), "utf8"))),
   );
   assert.doesNotMatch(webDockerfile, /^COPY \. \.$/m);
-  assert.ok(
-    webDockerfile.indexOf("COPY pnpm-lock.yaml") < webDockerfile.indexOf("RUN pnpm install"),
-  );
+  for (const dockerfile of [controlDockerfile, webDockerfile]) {
+    assert.ok(
+      dockerfile.indexOf("COPY pnpm-lock.yaml") < dockerfile.indexOf("COPY patches ./patches"),
+    );
+    assert.ok(
+      dockerfile.indexOf("COPY patches ./patches") < dockerfile.indexOf("RUN pnpm install"),
+    );
+  }
   assert.ok(
     webDockerfile.indexOf("RUN pnpm install") < webDockerfile.indexOf("COPY apps/web apps/web"),
   );

@@ -35,6 +35,7 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
 # --- deps: install with the full workspace manifest set for cache reuse ---
 FROM base AS deps
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY patches ./patches
 COPY packages/core/package.json packages/core/
 COPY packages/db/package.json packages/db/
 COPY packages/sdk/package.json packages/sdk/

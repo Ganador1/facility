@@ -25,6 +25,7 @@ FROM base AS build
 # Keep dependency resolution keyed to the lockfile and relevant workspace
 # manifests. UI/source/docs edits can then reuse this expensive install layer.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY patches ./patches
 COPY apps/web/package.json apps/web/
 COPY packages/run-objective/package.json packages/run-objective/
 COPY packages/sdk/package.json packages/sdk/
