@@ -1,6 +1,15 @@
 import type { RunEvent } from "./types.js";
 
-const DOCKER_STORAGE_DRIVERS = new Set(["overlay2", "fuse-overlayfs", "vfs", "none"]);
+const DOCKER_STORAGE_DRIVERS = new Set([
+  "overlay2",
+  // Docker's containerd image store reports the overlay snapshotter by this
+  // name. Vercel Sandboxes use it even though the daemon's graph driver is the
+  // same non-degraded overlay path.
+  "overlayfs",
+  "fuse-overlayfs",
+  "vfs",
+  "none",
+]);
 
 /** Fixed-shape CodeBuild runtime telemetry. Never copy arbitrary environment
  * values into run events: every runs:read principal in the org can see them. */
