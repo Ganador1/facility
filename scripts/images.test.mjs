@@ -127,6 +127,7 @@ test("one Bake result records an exact, internally consistent digest set", (t) =
       ];
     }),
   );
+  metadata["service-packages"] = {};
 
   assert.equal(recordBakeDigests({ metadata, directory }).length, BUILD_IMAGES.length);
   assert.deepEqual(
@@ -135,7 +136,7 @@ test("one Bake result records an exact, internally consistent digest set", (t) =
   );
   assert.throws(
     () => recordBakeDigests({ metadata: { ...metadata, unexpected: {} }, directory }),
-    /expected api,gateway,mcp,runner,web/,
+    /expected api,gateway,mcp,runner,web plus optional service-packages/,
   );
   assert.throws(
     () =>

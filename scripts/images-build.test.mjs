@@ -32,6 +32,7 @@ if (args[0] === "buildx" && args[1] === "bake") {
     const digest = "sha256:" + String(index + 1).repeat(64);
     return [name, { "containerimage.digest": digest, "containerimage.descriptor": { digest } }];
   }));
+  metadata["service-packages"] = {};
   writeFileSync(metadataPath, JSON.stringify(metadata));
 }
 `,
