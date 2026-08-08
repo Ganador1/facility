@@ -27,6 +27,8 @@ overrides:
   "ip-address@<10.3.1": 10.3.1
   "protobufjs@>=7.5.0 <7.6.5": 7.6.5
   "webpack-dev-server@<=5.2.5": 5.2.6
+  "dompurify@<=3.4.12": 3.4.13
+  "nanoid@>=3.0.0 <3.3.17": 3.3.17
 
 # Postinstall build-script allowlist — nothing builds unless named here.
 allowBuilds:
@@ -44,9 +46,16 @@ allowBuilds:
 # The advisory database still flags brace-expansion 1.x/2.x for GHSA-mh99-v99m-4gvg,
 # although 1.1.18 and 2.1.4 contain the bounded-expansion backport. Keep this temporary
 # ignore only while those patched legacy lines are required by the current dependency graph.
+# image-size has no upstream fixed release for its zero-length ICNS/HEIF/JXL loops.
+# The local patch adds progress guards, covered by dependencies-security.test.mjs.
 auditConfig:
   ignoreGhsas:
     - GHSA-mh99-v99m-4gvg
+    - GHSA-w3rx-r6r6-pgpr
+    - GHSA-5p2g-fcmc-qvqq
 
 minimumReleaseAgeExclude:
   - '@vercel/sandbox@3.0.0'
+
+patchedDependencies:
+  image-size@2.0.2: patches/image-size@2.0.2.patch
