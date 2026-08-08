@@ -117,6 +117,7 @@ function outputFixture() {
       "arn:aws:ecs:eu-west-1:123456789012:task-definition/facility-test-migrate:7",
     repositories: Object.fromEntries(AWS_ARTIFACT_NAMES.map((name) => [name, `${prefix}/${name}`])),
     runnerProject: "facility-test-runner",
+    sandboxDriver: "aws",
     securityGroup: "sg-123",
     serviceTaskDefinitions: Object.fromEntries(
       AWS_SERVICE_NAMES.map((name) => [
@@ -133,6 +134,7 @@ function rawOutputFixture() {
   return {
     aws_region: { value: outputs.awsRegion },
     task_cpu_architecture: { value: outputs.architecture },
+    sandbox_driver: { value: outputs.sandboxDriver },
     ecs_cluster_name: { value: outputs.cluster },
     codebuild_runner_project_name: { value: outputs.runnerProject },
     migrate_task_definition_arn: { value: outputs.migrateTaskDefinitionArn },
@@ -331,6 +333,13 @@ test("Bake metadata becomes one deterministic six-role ECR digest manifest", () 
 test("Terraform outputs and release manifest bind account, repositories, roles, and platform", () => {
   const outputs = normalizeTerraformOutputs(rawOutputFixture());
   assert.deepEqual(outputs, outputFixture());
+  const invalidDriver = rawOutputFixture();
+  invalidDriver.sandbox_driver.value = "local";
+  assert.throws(
+    () => normalizeTerraformOutputs(invalidDriver),
+    (error) =>
+      error.code === "terraform_outputs_invalid" && /must be aws or vercel/.test(error.message),
+  );
   assert.equal(
     validateAwsReleaseManifest(manifestFixture(), outputs).parsedImages.api.digest,
     digests.api,
@@ -412,6 +421,25 @@ test("successful deployment gates on migration and pins all five services in par
   const firstUpdate = aws.calls.findIndex(([name]) => name === "updateService");
   assert.ok(migrationCall > -1 && migrationCall < firstUpdate);
   assert.equal(events.at(-1).status, "completed");
+});
+
+test("Vercel deployments exclude the inactive CodeBuild runner from release preflight", async () => {
+  const aws = fakeAws({ runnerImage: "runner:must-not-be-read" });
+  const outputs = { ...outputFixture(), sandboxDriver: "vercel" };
+  await deployAws({ aws, manifest: manifestFixture(), outputs });
+
+  assert.equal(
+    aws.calls.some(([name]) => name === "getRunnerImage"),
+    false,
+  );
+  const assertedRepositories = aws.calls
+    .filter(([name]) => name === "assertImage")
+    .map(([, repository]) => repository);
+  assert.equal(assertedRepositories.length, 4);
+  assert.equal(
+    assertedRepositories.some((repository) => repository.endsWith("/runner")),
+    false,
+  );
 });
 
 for (const exitCode of [11, 12]) {
@@ -705,7 +733,7 @@ if (service === "ecr" && operation === "describe-images") {
   assert.match(await readFile(terraformLog, "utf8"), /output.*-json/);
 });
 
-test("CLI integration completes the real subprocess sequence without credentials or network", async (t) => {
+test("CLI integration deploys Vercel mode without reading inactive CodeBuild or runner ECR", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "facility-deploy-cli-success-"));
   t.after(() => rm(directory, { force: true, recursive: true }));
   const terraformLog = join(directory, "terraform.log");
@@ -777,6 +805,8 @@ if (service === "ecr" && operation === "describe-images") {
   await chmod(join(directory, "terraform"), 0o755);
   await chmod(join(directory, "aws"), 0o755);
 
+  const rawOutputs = rawOutputFixture();
+  rawOutputs.sandbox_driver.value = "vercel";
   const result = spawnSync(
     process.execPath,
     [
@@ -794,9 +824,8 @@ if (service === "ecr" && operation === "describe-images") {
         ...process.env,
         PATH: `${directory}:${process.env.PATH}`,
         FAKE_AWS_LOG: awsLog,
-        FAKE_RUNNER_IMAGE: manifestFixture().images.runner,
         FAKE_TERRAFORM_LOG: terraformLog,
-        FAKE_TERRAFORM_OUTPUTS: JSON.stringify(rawOutputFixture()),
+        FAKE_TERRAFORM_OUTPUTS: JSON.stringify(rawOutputs),
       },
     },
   );
@@ -806,6 +835,21 @@ if (service === "ecr" && operation === "describe-images") {
   const awsCalls = (await readFile(awsLog, "utf8")).trim().split("\n").map(JSON.parse);
   assert.equal(awsCalls.filter((args) => args.includes("register-task-definition")).length, 6);
   assert.equal(awsCalls.filter((args) => args.includes("update-service")).length, 5);
+  assert.equal(
+    awsCalls.filter((args) => args.includes("describe-images")).length,
+    4,
+    "only the four control-plane image digests execute in Vercel mode",
+  );
+  assert.equal(
+    awsCalls.some((args) => args.includes("batch-get-projects")),
+    false,
+    "inactive CodeBuild must not gate a Vercel release",
+  );
+  assert.equal(
+    awsCalls.some((args) => args.includes("facility-test/runner")),
+    false,
+    "inactive runner ECR findings must not gate a Vercel release",
+  );
   assert.ok(
     awsCalls.findIndex((args) => args.includes("run-task")) <
       awsCalls.findIndex((args) => args.includes("update-service")),

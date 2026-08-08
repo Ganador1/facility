@@ -262,6 +262,10 @@ module opts this account and region into paid Amazon Inspector scanning for only
 every HIGH or CRITICAL finding whose `fixAvailable` value is `YES` or `PARTIAL`.
 This matches the pinned Grype
 `--only-fixed` promotion policy without maintaining a drifting CVE allowlist.
+The preflight derives the active sandbox provider from Terraform. In `vercel`
+mode it scans the four control-plane images but deliberately does not inspect or
+compare the inactive CodeBuild runner: that image cannot execute in the release.
+In `aws` mode, the runner digest and its scan remain mandatory.
 
 The enhanced setting is registry-wide even though its repository filter is narrow.
 Leave it disabled in a shared AWS account unless this stack owns the central ECR
