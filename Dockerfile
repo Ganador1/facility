@@ -44,7 +44,9 @@ COPY packages/harness/package.json packages/harness/
 COPY packages/run-objective/package.json packages/run-objective/
 COPY services/api/package.json services/api/
 COPY services/gateway/package.json services/gateway/
-RUN pnpm install --frozen-lockfile --filter '@facility/core...' \
+# The reviewed image-size patch belongs to the docs-only graph. These filtered
+# service installs deliberately omit docs, so they may leave that patch unused.
+RUN pnpm --config.allow-unused-patches=true install --frozen-lockfile --filter '@facility/core...' \
       --filter '@facility/db...' --filter '@facility/sdk...' \
       --filter '@facility/mcp...' \
       --filter '@facility/harness...' \
@@ -56,17 +58,17 @@ RUN pnpm install --frozen-lockfile --filter '@facility/core...' \
 FROM deps AS build-service-packages
 COPY packages ./packages
 COPY tsconfig.base.json ./
-RUN pnpm --filter '@facility/core' --filter '@facility/db' \
+RUN pnpm --config.allow-unused-patches=true --filter '@facility/core' --filter '@facility/db' \
       --filter '@facility/harness' --filter '@facility/sdk' run build:runtime
 
 # --- API build: API + its workspace runtime dependencies ---
 FROM build-service-packages AS build-api
 COPY services/api ./services/api
-RUN pnpm --filter '@facility/api' run build:runtime
+RUN pnpm --config.allow-unused-patches=true --filter '@facility/api' run build:runtime
 # Produce isolated production trees. `deploy --prod` keeps runtime workspace
 # dependencies and package assets (including DB migrations) while excluding
 # source workspaces, tests, build tools, and every devDependency.
-RUN pnpm --filter '@facility/api' deploy --prod --legacy /prod/api
+RUN pnpm --config.allow-unused-patches=true --filter '@facility/api' deploy --prod --legacy /prod/api
 # First-org seeding and repository kickstart both load bundled source assets at
 # runtime. Fail the image build if pnpm deployment ever omits either package's
 # payload instead of discovering it after a user begins onboarding.
@@ -77,13 +79,13 @@ RUN test -f /prod/api/node_modules/@facility/db/dist/seed-assets/packages/harnes
 # --- Gateway build: avoid compiling the much larger API for proxy-only fixes ---
 FROM build-service-packages AS build-gateway
 COPY services/gateway ./services/gateway
-RUN pnpm --filter '@facility/gateway' run build:runtime
-RUN pnpm --filter '@facility/gateway' deploy --prod --legacy /prod/gateway
+RUN pnpm --config.allow-unused-patches=true --filter '@facility/gateway' run build:runtime
+RUN pnpm --config.allow-unused-patches=true --filter '@facility/gateway' deploy --prod --legacy /prod/gateway
 
 # --- MCP build: keep SDK/MCP changes independent from API and gateway ---
 FROM build-service-packages AS build-mcp
-RUN pnpm --filter '@facility/mcp' run build:runtime
-RUN pnpm --filter '@facility/mcp' deploy --prod --legacy /prod/mcp
+RUN pnpm --config.allow-unused-patches=true --filter '@facility/mcp' run build:runtime
+RUN pnpm --config.allow-unused-patches=true --filter '@facility/mcp' deploy --prod --legacy /prod/mcp
 
 # --- api (also serves the worker via `node dist/worker.js`) ---
 FROM runtime AS api

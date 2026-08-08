@@ -239,15 +239,21 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   );
   assert.doesNotMatch(webDockerfile, /^COPY \. \.$/m);
   for (const dockerfile of [controlDockerfile, webDockerfile]) {
+    const installPosition = dockerfile.indexOf(" install --frozen-lockfile");
     assert.ok(
       dockerfile.indexOf("COPY pnpm-lock.yaml") < dockerfile.indexOf("COPY patches ./patches"),
     );
-    assert.ok(
-      dockerfile.indexOf("COPY patches ./patches") < dockerfile.indexOf("RUN pnpm install"),
+    assert.ok(dockerfile.indexOf("COPY patches ./patches") < installPosition);
+    assert.match(dockerfile, /pnpm --config\.allow-unused-patches=true/);
+    assert.doesNotMatch(
+      dockerfile,
+      /(?:RUN|&&) pnpm (?!--config\.allow-unused-patches=true)/,
+      "filtered image commands must explicitly allow the omitted docs-only patch",
     );
   }
   assert.ok(
-    webDockerfile.indexOf("RUN pnpm install") < webDockerfile.indexOf("COPY apps/web apps/web"),
+    webDockerfile.indexOf(" install --frozen-lockfile") <
+      webDockerfile.indexOf("COPY apps/web apps/web"),
   );
   assert.equal(rootPackage.packageManager, "pnpm@11.20.0");
   const sharedServiceBuild = controlDockerfile.match(
@@ -268,7 +274,9 @@ test("Bake keeps thin target boundaries and publishes every target through one g
     assert.ok(serviceBuild, `${stage} must inherit the shared workspace build`);
     assert.match(
       serviceBuild,
-      new RegExp(`pnpm --filter '@facility/${packageName}' run build:runtime(?:\\s|$)`),
+      new RegExp(
+        `pnpm --config\\.allow-unused-patches=true --filter '@facility/${packageName}' run build:runtime(?:\\s|$)`,
+      ),
     );
     for (const sharedPackage of ["core", "db", "harness", "sdk"]) {
       assert.doesNotMatch(serviceBuild, new RegExp(`--filter '@facility/${sharedPackage}'`));
@@ -281,7 +289,7 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   );
   assert.match(
     webDockerfile,
-    /pnpm --filter '@facility\/sdk\.\.\.' run build:runtime && pnpm --filter '@facility\/web' build/,
+    /pnpm --config\.allow-unused-patches=true --filter '@facility\/sdk\.\.\.' run build:runtime \\\n\s+&& pnpm --config\.allow-unused-patches=true --filter '@facility\/web' build/,
   );
   for (const packageJson of runtimeBuildPackages) {
     assert.match(packageJson.scripts.build, / --dts(?: |$)/);
