@@ -48,6 +48,11 @@ output "task_cpu_architecture" {
   value       = var.task_cpu_architecture
 }
 
+output "sandbox_driver" {
+  description = "Active sandbox provider; release preflight validates only provider assets that can execute."
+  value       = var.sandbox_driver
+}
+
 output "secret_arns" {
   description = "Secrets Manager ARNs to populate out-of-band. Values are intentionally not managed by Terraform."
   value       = { for name, secret in aws_secretsmanager_secret.app : name => secret.arn }

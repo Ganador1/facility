@@ -253,6 +253,7 @@ export function normalizeTerraformOutputs(raw) {
       unwrapTerraformOutput(raw, "task_cpu_architecture"),
       "task_cpu_architecture",
     ),
+    sandboxDriver: assertString(unwrapTerraformOutput(raw, "sandbox_driver"), "sandbox_driver"),
     cluster: assertString(unwrapTerraformOutput(raw, "ecs_cluster_name"), "ecs_cluster_name"),
     runnerProject: assertString(
       unwrapTerraformOutput(raw, "codebuild_runner_project_name"),
@@ -272,6 +273,12 @@ export function normalizeTerraformOutputs(raw) {
   };
 
   expectedPlatform(outputs.architecture);
+  if (outputs.sandboxDriver !== "aws" && outputs.sandboxDriver !== "vercel") {
+    throw new AwsDeployError(
+      "terraform_outputs_invalid",
+      `sandbox_driver must be aws or vercel, received ${outputs.sandboxDriver}`,
+    );
+  }
   if (
     !Array.isArray(outputs.subnets) ||
     outputs.subnets.length < 2 ||
@@ -576,20 +583,28 @@ export async function deployAws({
   });
 
   deployEvent(log, "preflight", "started");
-  const uniqueImages = AWS_ARTIFACT_NAMES.map((name) => release.parsedImages[name]);
+  const usesAwsSandbox = outputs.sandboxDriver === "aws";
+  const uniqueImages = AWS_ARTIFACT_NAMES.filter((name) => usesAwsSandbox || name !== "runner").map(
+    (name) => release.parsedImages[name],
+  );
   const [runnerImage, services] = await Promise.all([
-    aws.getRunnerImage(outputs.runnerProject),
+    usesAwsSandbox ? aws.getRunnerImage(outputs.runnerProject) : Promise.resolve(null),
     aws.describeServices(outputs.cluster, AWS_SERVICE_NAMES),
     ...uniqueImages.map(({ repository, digest }) => aws.assertImage(repository, digest)),
   ]);
-  if (runnerImage !== release.images.runner) {
+  if (usesAwsSandbox && runnerImage !== release.images.runner) {
     throw new AwsDeployError(
       "runner_image_mismatch",
       `CodeBuild runner is ${runnerImage || "unset"}; apply Terraform with ${release.images.runner} before deploying this manifest`,
     );
   }
   const { bootstrap, prior } = inspectStableServices(services, { allowZeroDesired });
-  deployEvent(log, "preflight", "completed", { bootstrap, services: AWS_SERVICE_NAMES.length });
+  deployEvent(log, "preflight", "completed", {
+    bootstrap,
+    sandboxDriver: outputs.sandboxDriver,
+    services: AWS_SERVICE_NAMES.length,
+    validatedImages: uniqueImages.length,
+  });
 
   deployEvent(log, "register", "started");
   const roles = [...AWS_SERVICE_NAMES, "migrate"];
