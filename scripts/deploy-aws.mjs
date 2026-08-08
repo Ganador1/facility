@@ -11,6 +11,8 @@ export const AWS_SERVICE_NAMES = Object.freeze(["api", "worker", "gateway", "web
 export const AWS_ARTIFACT_NAMES = Object.freeze(["api", "gateway", "mcp", "web", "runner"]);
 export const AWS_IMAGE_NAMES = Object.freeze(["api", "worker", "gateway", "web", "mcp", "runner"]);
 
+const AWS_BAKE_AUXILIARY_TARGETS = new Set(["service-packages"]);
+
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const FULL_SHA_PATTERN = /^[0-9a-f]{40,64}$/;
 const ECR_FIX_AVAILABILITY = new Set(["YES", "NO", "PARTIAL"]);
@@ -165,7 +167,12 @@ export function enforceEcrScanPolicy(findings, { enhanced, repository }) {
 }
 
 export function createAwsReleaseManifest({ metadata, repositoryPrefix, sourceSha, platform }) {
-  assertExactKeys(metadata, AWS_ARTIFACT_NAMES, "Bake metadata");
+  const artifactMetadata = Object.fromEntries(
+    Object.entries(assertObject(metadata, "Bake metadata")).filter(
+      ([name]) => !AWS_BAKE_AUXILIARY_TARGETS.has(name),
+    ),
+  );
+  assertExactKeys(artifactMetadata, AWS_ARTIFACT_NAMES, "Bake metadata");
   const prefix = assertString(repositoryPrefix, "repository prefix").replace(/\/$/, "");
   if (!ECR_REPOSITORY_PATTERN.test(`${prefix}/api`)) {
     throw new AwsDeployError(
@@ -188,7 +195,7 @@ export function createAwsReleaseManifest({ metadata, repositoryPrefix, sourceSha
 
   const refs = {};
   for (const name of AWS_ARTIFACT_NAMES) {
-    const result = assertObject(metadata[name], `Bake metadata target ${name}`);
+    const result = assertObject(artifactMetadata[name], `Bake metadata target ${name}`);
     const digest = assertDigest(result["containerimage.digest"], `${name} digest`);
     const descriptorDigest = result["containerimage.descriptor"]?.digest;
     if (descriptorDigest !== digest) {

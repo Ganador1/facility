@@ -296,6 +296,7 @@ test("Bake metadata becomes one deterministic six-role ECR digest manifest", () 
       },
     ]),
   );
+  metadata["service-packages"] = {};
   assert.deepEqual(
     createAwsReleaseManifest({
       metadata,
@@ -314,6 +315,16 @@ test("Bake metadata becomes one deterministic six-role ECR digest manifest", () 
         sourceSha,
       }),
     /descriptor for api does not match/,
+  );
+  assert.throws(
+    () =>
+      createAwsReleaseManifest({
+        metadata: { ...metadata, unexpected: {} },
+        platform: "linux/amd64",
+        repositoryPrefix: prefix,
+        sourceSha,
+      }),
+    /Bake metadata contains .*unexpected/,
   );
 });
 

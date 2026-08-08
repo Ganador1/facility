@@ -10,6 +10,8 @@ export const BUILD_IMAGES = Object.freeze(["api", "gateway", "mcp", "web", "runn
 export const PUBLISHED_IMAGES = Object.freeze(["api", "worker", "gateway", "web", "mcp", "runner"]);
 export const GITHUB_API_URL = "https://api.github.com/";
 
+const BAKE_AUXILIARY_TARGETS = new Set(["service-packages"]);
+
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const DOCKER_TAG_PATTERN = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/;
 const GITHUB_SHA_PATTERN = /^[0-9a-f]{40,64}$/;
@@ -115,11 +117,12 @@ export function recordBakeDigests({ metadata, directory }) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
     throw new Error("Bake metadata must be an object keyed by image target");
   }
-  const targets = Object.keys(metadata).sort();
+  const allTargets = Object.keys(metadata).sort();
+  const targets = allTargets.filter((target) => !BAKE_AUXILIARY_TARGETS.has(target));
   const expected = [...BUILD_IMAGES].sort();
   if (JSON.stringify(targets) !== JSON.stringify(expected)) {
     throw new Error(
-      `Bake metadata targets ${targets.join(",") || "none"}; expected ${expected.join(",")}`,
+      `Bake metadata targets ${allTargets.join(",") || "none"}; expected ${expected.join(",")} plus optional service-packages`,
     );
   }
 
