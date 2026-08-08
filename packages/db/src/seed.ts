@@ -84,9 +84,9 @@ function defaultSandboxResources() {
 function defaultSandboxResourcesDrizzleSql() {
   const resources = defaultSandboxResources();
   return drizzleSql`jsonb_build_object(
-    'cpu', ${resources.cpu},
-    'memory_mb', ${resources.memory_mb},
-    'timeout_min', ${resources.timeout_min}
+    'cpu', ${resources.cpu}::integer,
+    'memory_mb', ${resources.memory_mb}::integer,
+    'timeout_min', ${resources.timeout_min}::integer
   )`;
 }
 

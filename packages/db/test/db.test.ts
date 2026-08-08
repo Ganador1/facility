@@ -18,6 +18,7 @@ import {
   MigrationLockTimeoutError,
   migrate,
   seed,
+  seedBundledRegistryForOrg,
   verifyAuditChain,
   withOrg,
 } from "../src/index.js";
@@ -391,6 +392,34 @@ describe("db", async () => {
     await seed(databaseUrl);
     const after = (await db.select({ value: count() }).from(schema.registryItems))[0]?.value ?? 0;
     expect(after).toBe(before);
+  });
+
+  it("seeds a newly admitted organization through the typed transaction path", async () => {
+    const orgId = newId("org");
+    await db.insert(schema.orgs).values({
+      id: orgId,
+      name: "Admission Seed Org",
+      slug: `admission-seed-${orgId}`,
+      settings: {},
+    });
+
+    await expect(seedBundledRegistryForOrg(db, orgId)).resolves.toBeUndefined();
+    const profiles = await db
+      .select({ name: schema.sandboxProfiles.name, resources: schema.sandboxProfiles.resources })
+      .from(schema.sandboxProfiles)
+      .where(eq(schema.sandboxProfiles.orgId, orgId));
+    expect(profiles).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "Default runner",
+          resources: { cpu: 2, memory_mb: 4096, timeout_min: 60 },
+        }),
+        expect.objectContaining({
+          name: "Analysis runner",
+          resources: { cpu: 2, memory_mb: 4096, timeout_min: 60 },
+        }),
+      ]),
+    );
   });
 
   it("seeds bundled Project Owner and learning agents enabled", async () => {
