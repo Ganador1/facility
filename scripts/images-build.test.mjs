@@ -239,10 +239,7 @@ test("Bake keeps thin target boundaries and publishes every target through one g
     ].map(async (path) => JSON.parse(await readFile(join(root, path), "utf8"))),
   );
   assert.doesNotMatch(webDockerfile, /^COPY \. \.$/m);
-  assert.match(
-    pnpmWorkspace,
-    /^allowUnusedPatches: \$\{FACILITY_ALLOW_UNUSED_PATCHES-false\}$/m,
-  );
+  assert.match(pnpmWorkspace, /^allowUnusedPatches: \$\{FACILITY_ALLOW_UNUSED_PATCHES-false\}$/m);
   for (const dockerfile of [controlDockerfile, webDockerfile]) {
     const installPosition = dockerfile.indexOf(" install --frozen-lockfile");
     assert.ok(
