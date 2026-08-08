@@ -22,6 +22,7 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
   done
 
 FROM base AS build
+ENV FACILITY_ALLOW_UNUSED_PATCHES=true
 # Keep dependency resolution keyed to the lockfile and relevant workspace
 # manifests. UI/source/docs edits can then reuse this expensive install layer.
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
@@ -32,7 +33,7 @@ COPY packages/sdk/package.json packages/sdk/
 COPY packages/ui/package.json packages/ui/
 # The reviewed image-size patch belongs to the docs-only graph. This filtered
 # web install deliberately omits docs, so it may leave that patch unused.
-RUN pnpm --config.allow-unused-patches=true install --frozen-lockfile --filter '@facility/web...'
+RUN pnpm install --frozen-lockfile --filter '@facility/web...'
 COPY apps/web apps/web
 COPY packages/run-objective packages/run-objective
 COPY packages/sdk packages/sdk
@@ -41,8 +42,7 @@ COPY tsconfig.base.json ./
 ENV NEXT_TELEMETRY_DISABLED=1
 # The web imports the SDK's published workspace entrypoint (`dist/index.js`). A
 # clean image has no SDK artifact, so build it before Next consumes the output.
-RUN pnpm --config.allow-unused-patches=true --filter '@facility/sdk...' run build:runtime \
-  && pnpm --config.allow-unused-patches=true --filter '@facility/web' build
+RUN pnpm --filter '@facility/sdk...' run build:runtime && pnpm --filter '@facility/web' build
 
 FROM runtime AS web
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3400 HOSTNAME=0.0.0.0

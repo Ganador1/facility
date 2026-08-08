@@ -59,3 +59,8 @@ minimumReleaseAgeExclude:
 
 patchedDependencies:
   image-size@2.0.2: patches/image-size@2.0.2.patch
+
+# Filtered production-image installs intentionally omit the docs-only patched
+# dependency. Keep full repository installs strict and open this exception only
+# in those Docker build stages.
+allowUnusedPatches: ${FACILITY_ALLOW_UNUSED_PATCHES-false}

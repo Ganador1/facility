@@ -219,6 +219,7 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   const webDockerfile = await readFile(join(root, "apps/web/Dockerfile"), "utf8");
   const runnerDockerfile = await readFile(join(root, "runner/Dockerfile"), "utf8");
   const runnerGrypePolicy = await readFile(join(root, "runner/grype.yaml"), "utf8");
+  const pnpmWorkspace = await readFile(join(root, "pnpm-workspace.yaml"), "utf8");
   const rootPackage = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
   const agentCliPackage = JSON.parse(
     await readFile(join(root, "runner", "agent-clis", "package.json"), "utf8"),
@@ -238,16 +239,18 @@ test("Bake keeps thin target boundaries and publishes every target through one g
     ].map(async (path) => JSON.parse(await readFile(join(root, path), "utf8"))),
   );
   assert.doesNotMatch(webDockerfile, /^COPY \. \.$/m);
+  assert.match(
+    pnpmWorkspace,
+    /^allowUnusedPatches: \$\{FACILITY_ALLOW_UNUSED_PATCHES-false\}$/m,
+  );
   for (const dockerfile of [controlDockerfile, webDockerfile]) {
     const installPosition = dockerfile.indexOf(" install --frozen-lockfile");
     assert.ok(
       dockerfile.indexOf("COPY pnpm-lock.yaml") < dockerfile.indexOf("COPY patches ./patches"),
     );
     assert.ok(dockerfile.indexOf("COPY patches ./patches") < installPosition);
-    assert.match(dockerfile, /pnpm --config\.allow-unused-patches=true/);
-    assert.doesNotMatch(
-      dockerfile,
-      /(?:RUN|&&) pnpm (?!--config\.allow-unused-patches=true)/,
+    assert.ok(
+      dockerfile.indexOf("ENV FACILITY_ALLOW_UNUSED_PATCHES=true") < installPosition,
       "filtered image commands must explicitly allow the omitted docs-only patch",
     );
   }
@@ -274,9 +277,7 @@ test("Bake keeps thin target boundaries and publishes every target through one g
     assert.ok(serviceBuild, `${stage} must inherit the shared workspace build`);
     assert.match(
       serviceBuild,
-      new RegExp(
-        `pnpm --config\\.allow-unused-patches=true --filter '@facility/${packageName}' run build:runtime(?:\\s|$)`,
-      ),
+      new RegExp(`pnpm --filter '@facility/${packageName}' run build:runtime(?:\\s|$)`),
     );
     for (const sharedPackage of ["core", "db", "harness", "sdk"]) {
       assert.doesNotMatch(serviceBuild, new RegExp(`--filter '@facility/${sharedPackage}'`));
@@ -289,7 +290,7 @@ test("Bake keeps thin target boundaries and publishes every target through one g
   );
   assert.match(
     webDockerfile,
-    /pnpm --config\.allow-unused-patches=true --filter '@facility\/sdk\.\.\.' run build:runtime \\\n\s+&& pnpm --config\.allow-unused-patches=true --filter '@facility\/web' build/,
+    /pnpm --filter '@facility\/sdk\.\.\.' run build:runtime && pnpm --filter '@facility\/web' build/,
   );
   for (const packageJson of runtimeBuildPackages) {
     assert.match(packageJson.scripts.build, / --dts(?: |$)/);
