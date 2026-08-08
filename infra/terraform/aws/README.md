@@ -17,13 +17,17 @@ Topology:
   certificate is required. As an advanced override, set `preview_hostname` to
   a separately registered site covered by the ALB certificate, and set
   `preview_route53_zone_id` when Terraform should create its alias record.
-- `gateway` has no public ALB route. It is reachable only inside the VPC through
-  Cloud Map at the `gateway_internal_url` output.
+- `gateway` is normally reachable only inside the VPC through Cloud Map at the
+  `gateway_internal_url` output. The Vercel sandbox mode additionally routes
+  only its bearer-authenticated `/anthropic` and `/openai` provider paths
+  through the existing API hostname.
 - Postgres accepts `5432` only from the ECS service security group.
 - With `sandbox_driver = "vercel"`, API and worker receive only the Vercel
   team/project binding and the generated Secrets Manager token reference. The
   default runner profile points at the project-scoped VCR image; CodeBuild and
-  preview-task settings are not injected into the application tasks.
+  preview-task settings are not injected into the application tasks. Vercel
+  sandboxes use the public API origin for authenticated model traffic rather
+  than the private Cloud Map hostname.
 - With `sandbox_driver = "aws"`, CodeBuild sandboxes run in private subnets and can reach the internal gateway.
   Their least-privilege service role has no Secrets Manager access. Runs always
   use the runner image fixed on the CodeBuild project; database-backed sandbox

@@ -105,7 +105,10 @@ locals {
     { name = "FACILITY_OAUTH_ISSUER", value = local.public_urls.api },
     { name = "MCP_PUBLIC_URL", value = local.public_urls.mcp },
     { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
-    { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    # AWS sandboxes reach the gateway over private service discovery. Vercel
+    # sandboxes use the authenticated provider paths routed through the existing
+    # public API hostname; the ALB exposes no other gateway surface.
+    { name = "SANDBOX_GATEWAY_URL", value = var.sandbox_driver == "vercel" ? local.public_urls.api : "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
 
   worker_environment = concat(local.common_environment, local.sandbox_provider_environment, [
@@ -117,7 +120,7 @@ locals {
     # same ownership namespace when an operator pins a stable instance id.
     { name = "FACILITY_INSTANCE_ID", value = var.facility_instance_id },
     { name = "GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
-    { name = "SANDBOX_GATEWAY_URL", value = "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
+    { name = "SANDBOX_GATEWAY_URL", value = var.sandbox_driver == "vercel" ? local.public_urls.api : "http://${aws_service_discovery_service.gateway.name}.${aws_service_discovery_private_dns_namespace.facility.name}:${local.ports.gateway}" },
   ])
 
   gateway_environment = concat(local.common_environment, [

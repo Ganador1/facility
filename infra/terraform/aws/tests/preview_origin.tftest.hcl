@@ -129,6 +129,11 @@ run "managed_preview_needs_no_domain_or_certificate" {
     condition     = length([for entry in local.worker_environment : entry if entry.name == "FACILITY_PREVIEW_SURFACE_TOKEN"]) == 0
     error_message = "The worker does not serve previews and must not receive the surface token."
   }
+
+  assert {
+    condition     = !contains(keys(aws_lb_target_group.service), "gateway") && length(aws_lb_listener_rule.http_vercel_gateway) == 0 && length(aws_lb_listener_rule.https_vercel_gateway) == 0 && length(aws_vpc_security_group_ingress_rule.gateway_from_alb) == 0
+    error_message = "The AWS sandbox path must keep the model gateway private."
+  }
 }
 
 run "managed_preview_uses_the_existing_https_api_origin" {
@@ -245,5 +250,45 @@ run "vercel_sandbox_provider_replaces_only_the_compute_binding" {
   assert {
     condition     = length([for entry in local.worker_secrets : entry if entry.name == "VERCEL_TOKEN"]) == 1
     error_message = "The Vercel token must come from Secrets Manager rather than Terraform state."
+  }
+
+  assert {
+    condition     = one([for entry in local.worker_environment : entry.value if entry.name == "SANDBOX_GATEWAY_URL"]) == "http://api.example.com"
+    error_message = "Vercel sandboxes must receive the reachable public API origin for authenticated model traffic."
+  }
+
+  assert {
+    condition     = length(aws_lb_listener_rule.http_vercel_gateway) == 1 && length(aws_lb_listener_rule.https_vercel_gateway) == 0
+    error_message = "The certificate-less Vercel path must route only through the HTTP API listener."
+  }
+
+  assert {
+    condition     = contains(keys(aws_lb_target_group.service), "gateway") && length(aws_vpc_security_group_ingress_rule.gateway_from_alb) == 1
+    error_message = "The Vercel path must connect its authenticated gateway target to the public ALB."
+  }
+}
+
+run "vercel_sandbox_gateway_uses_the_existing_https_api_origin" {
+  command = plan
+
+  variables {
+    app_hostname        = "app.example.com"
+    api_hostname        = "api.example.com"
+    mcp_hostname        = "mcp.example.com"
+    acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+    sandbox_driver      = "vercel"
+    vercel_team_id      = "team_facility"
+    vercel_project_id   = "prj_facility"
+    vercel_runner_image = "facility-runner:sha"
+  }
+
+  assert {
+    condition     = one([for entry in local.api_environment : entry.value if entry.name == "SANDBOX_GATEWAY_URL"]) == "https://api.example.com"
+    error_message = "Production Vercel sandboxes must use the existing TLS API origin."
+  }
+
+  assert {
+    condition     = length(aws_lb_listener_rule.http_vercel_gateway) == 0 && length(aws_lb_listener_rule.https_vercel_gateway) == 1
+    error_message = "Production Vercel model traffic must route only through the HTTPS listener."
   }
 }

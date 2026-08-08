@@ -145,7 +145,7 @@ resource "aws_ecs_service" "service" {
   }
 
   dynamic "load_balancer" {
-    for_each = each.value.public ? [1] : []
+    for_each = each.value.public || (each.key == "gateway" && var.sandbox_driver == "vercel") ? [1] : []
 
     content {
       target_group_arn = aws_lb_target_group.service[each.key].arn
