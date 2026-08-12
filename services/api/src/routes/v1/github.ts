@@ -168,11 +168,23 @@ function activityPullState(state: string): StoryGithubPull["state"] {
 const PipelineStageSchema = z.enum([
   "backlog",
   "planning",
-  "ready",
   "building",
   "validating",
   "review",
   "shipped",
+]);
+const PipelineStageStateSchema = z.enum([
+  "ready_to_plan",
+  "needs_attention",
+  "in_progress",
+  "needs_review",
+  "ready_to_build",
+  "failed",
+  "draft_pr",
+  "checks_running",
+  "checks_failed",
+  "awaiting_review",
+  "shipped_recently",
 ]);
 const PipelineStageKindSchema = z.enum(["human", "agent", "machine", "done"]);
 const PipelinePullRequestSchema = z.object({
@@ -207,6 +219,7 @@ const PipelineStorySchema = z.object({
   ghCreatedAt: DateValue.nullable(),
   ghUpdatedAt: DateValue.nullable(),
   closedAt: DateValue.nullable(),
+  stageState: PipelineStageStateSchema,
   runState: z.enum(["live", "failed"]).nullable(),
   currentRun: z
     .object({ id: z.string(), mode: z.string(), status: z.string(), engine: z.string() })

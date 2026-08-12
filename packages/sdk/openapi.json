@@ -11602,7 +11602,6 @@
                             "enum": [
                               "backlog",
                               "planning",
-                              "ready",
                               "building",
                               "validating",
                               "review",
@@ -11710,6 +11709,22 @@
                                   "nullable": true,
                                   "type": "string",
                                   "format": "date-time"
+                                },
+                                "stageState": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready_to_plan",
+                                    "needs_attention",
+                                    "in_progress",
+                                    "needs_review",
+                                    "ready_to_build",
+                                    "failed",
+                                    "draft_pr",
+                                    "checks_running",
+                                    "checks_failed",
+                                    "awaiting_review",
+                                    "shipped_recently"
+                                  ]
                                 },
                                 "runState": {
                                   "nullable": true,
@@ -11870,6 +11885,7 @@
                                 "ghCreatedAt",
                                 "ghUpdatedAt",
                                 "closedAt",
+                                "stageState",
                                 "runState",
                                 "currentRun",
                                 "attemptCount",
@@ -12525,7 +12541,6 @@
                           "enum": [
                             "backlog",
                             "planning",
-                            "ready",
                             "building",
                             "validating",
                             "review",
@@ -12552,7 +12567,6 @@
                             "enum": [
                               "backlog",
                               "planning",
-                              "ready",
                               "building",
                               "validating",
                               "review",
