@@ -2,8 +2,9 @@
 
 import { cx } from "@facility/ui";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { storyNavigation } from "@/lib/story-navigation";
 
 export type NavProject = { id: string; slug: string; name?: string };
 
@@ -98,6 +99,42 @@ function NavLinks({
   );
 }
 
+function StoryNavLinks({ projectId, onNavigate }: { projectId: string; onNavigate?: () => void }) {
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const selectedStage = searchParams.get("stage");
+  const root = `/projects/${projectId}/stories`;
+
+  return (
+    <nav className="flex flex-col" aria-label="Stories">
+      {storyNavigation(projectId).map((item, i) => {
+        const active = item.stage
+          ? pathname === root && selectedStage === item.stage
+          : pathname === root && selectedStage === null;
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            onClick={onNavigate}
+            aria-current={active ? "page" : undefined}
+            className={cx(
+              "group flex items-baseline gap-3 border-l-2 px-5 py-2 text-[13px] transition-colors",
+              active
+                ? "border-(--line-strong) font-medium text-(--ink)"
+                : "border-transparent text-(--mut) hover:text-(--ink)",
+            )}
+          >
+            <span className={cx("font-mono text-[10px]", active ? "text-(--ink)" : "text-(--dim)")}>
+              {String(i + 1).padStart(2, "0")}
+            </span>
+            {item.label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <span className="px-5 text-[10.5px] font-medium uppercase tracking-[0.08em] text-(--dim)">
@@ -115,6 +152,8 @@ function NavSections({
   inboxCount?: number;
   onNavigate?: () => void;
 }) {
+  const pathname = usePathname();
+
   if (!project) {
     return (
       <div className="flex flex-col gap-6">
@@ -126,6 +165,31 @@ function NavSections({
       </div>
     );
   }
+  const projectRoot = `/projects/${project.id}`;
+  const storiesRoot = `${projectRoot}/stories`;
+  const inStories = pathname === storiesRoot || pathname.startsWith(`${storiesRoot}/`);
+
+  if (inStories) {
+    return (
+      <div className="flex flex-col gap-3">
+        <Link
+          href={projectRoot}
+          onClick={onNavigate}
+          className="flex items-center gap-2 px-5 text-[12px] text-(--mut) transition-colors hover:text-(--ink)"
+        >
+          <span aria-hidden className="font-mono">
+            ←
+          </span>
+          Back to {project.name ?? project.slug}
+        </Link>
+        <div className="flex flex-col gap-2">
+          <SectionLabel>Stories</SectionLabel>
+          <StoryNavLinks projectId={project.id} onNavigate={onNavigate} />
+        </div>
+      </div>
+    );
+  }
+
   // Project mode: the sidebar belongs to the project. The way out is explicit
   // (back link on top) and the section is titled by the project itself.
   return (
