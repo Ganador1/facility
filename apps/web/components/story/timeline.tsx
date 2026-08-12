@@ -1,7 +1,7 @@
 import { StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
 import { ProposalCard } from "@/components/inbox/proposal-card";
-import { Markdown } from "@/components/markdown";
+import { type LinkReference, Markdown } from "@/components/markdown";
 import { RunOutcome } from "@/components/story/run-outcome";
 import type { Proposal } from "@/lib/api";
 import { fmtCost, fmtDuration } from "@/lib/runs";
@@ -18,10 +18,12 @@ export function StoryTimeline({
   projectId,
   items,
   canDecide,
+  linkReference,
 }: {
   projectId: string;
   items: StoryItem[];
   canDecide: boolean;
+  linkReference: LinkReference;
 }) {
   if (items.length === 0) {
     return (
@@ -38,7 +40,12 @@ export function StoryTimeline({
             aria-hidden
             className="absolute top-1.5 -left-[3.5px] h-[7px] w-[7px] border border-(--line-strong) bg-(--bg)"
           />
-          <TimelineItem projectId={projectId} item={item} canDecide={canDecide} />
+          <TimelineItem
+            projectId={projectId}
+            item={item}
+            canDecide={canDecide}
+            linkReference={linkReference}
+          />
         </li>
       ))}
     </ol>
@@ -71,10 +78,12 @@ function TimelineItem({
   projectId,
   item,
   canDecide,
+  linkReference,
 }: {
   projectId: string;
   item: StoryItem;
   canDecide: boolean;
+  linkReference: LinkReference;
 }) {
   switch (item.kind) {
     case "story_opened":
@@ -122,7 +131,7 @@ function TimelineItem({
             </span>
           </div>
           <div className="text-[12.5px]">
-            <Markdown source={item.comment.bodyMd} />
+            <Markdown source={item.comment.bodyMd} linkReference={linkReference} />
           </div>
         </div>
       );
@@ -183,7 +192,7 @@ function TimelineItem({
                 PR description
               </summary>
               <div className="mt-2 border-t border-(--line) pt-3 text-[12.5px]">
-                <Markdown source={item.pr.bodyMd} />
+                <Markdown source={item.pr.bodyMd} linkReference={linkReference} />
               </div>
             </details>
           ) : null}

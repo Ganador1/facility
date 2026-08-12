@@ -7,7 +7,9 @@ import { LiveRefresh } from "@/components/shell/live-refresh";
 import { StoryTimeline } from "@/components/story/timeline";
 import { StoryTriggerButtons } from "@/components/story/trigger-buttons";
 import { api } from "@/lib/api";
+import { pipelineStories } from "@/lib/pipeline";
 import { deriveStoryTimeline, proposalsForStory } from "@/lib/story";
+import { createStoryReferenceLink } from "@/lib/story-reference";
 
 export async function generateMetadata({ params }: { params: Promise<{ number: string }> }) {
   const { number } = await params;
@@ -33,11 +35,12 @@ export default async function StoryPage({
     ...(storyType ? { storyType } : {}),
   };
 
-  const [detail, inbox, outcomes, activity, me] = await Promise.all([
+  const [detail, inbox, outcomes, activity, pipeline, me] = await Promise.all([
     api.story(projectId, number, query),
     api.inboxAll(),
     api.outcomes(`?state=all&projectId=${projectId}&limit=200`),
     api.storyGithubActivity(projectId, number, query),
+    api.pipeline(projectId),
     api.me(),
   ]);
 
@@ -68,6 +71,11 @@ export default async function StoryPage({
   }
 
   const story = detail.data;
+  const linkReference = createStoryReferenceLink({
+    projectId,
+    currentStory: story,
+    stories: pipeline.ok ? pipelineStories(pipeline.data) : [],
+  });
   const proposals = (inbox.ok ? inbox.data : []).filter(
     (proposal) => proposal.projectId === projectId,
   );
@@ -172,14 +180,19 @@ export default async function StoryPage({
             {story.storyType === "issue" ? "issue" : "PR"} body
           </summary>
           <div className="border-t border-(--line) px-5 py-4">
-            <Markdown source={story.bodyMd} />
+            <Markdown source={story.bodyMd} linkReference={linkReference} />
           </div>
         </details>
       ) : null}
 
       <div className="flex flex-col gap-4">
         <Eyebrow>timeline</Eyebrow>
-        <StoryTimeline projectId={projectId} items={timeline} canDecide={has("hitl:decide")} />
+        <StoryTimeline
+          projectId={projectId}
+          items={timeline}
+          canDecide={has("hitl:decide")}
+          linkReference={linkReference}
+        />
       </div>
 
       <p className="text-[11.5px] text-(--dim)">
