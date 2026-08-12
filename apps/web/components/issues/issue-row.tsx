@@ -4,7 +4,7 @@ import { Button, ButtonLink, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import type { PipelineStory } from "@/lib/pipeline";
+import type { PipelineStageKey, PipelineStory } from "@/lib/pipeline";
 import { storyHref } from "@/lib/pipeline";
 
 function fmtAgo(iso: string | null) {
@@ -20,10 +20,12 @@ export function IssueRow({
   projectId,
   story,
   canTrigger,
+  stage,
 }: {
   projectId: string;
   story: PipelineStory;
   canTrigger: boolean;
+  stage: PipelineStageKey;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -66,6 +68,14 @@ export function IssueRow({
     : current?.mode.includes("builder")
       ? "builder"
       : null;
+  const showLabels = stage === "backlog";
+  const showRun = stage === "planning" || stage === "building";
+  const showPulls = stage === "building" || stage === "validating" || stage === "shipped";
+  const showChecks = stage === "validating";
+  const hasStageDetail =
+    (showRun && current !== null) ||
+    (showPulls && story.prs.length > 0) ||
+    (showChecks && story.ciState !== null);
 
   function action() {
     if (story.stageState === "needs_review") {
@@ -185,20 +195,25 @@ export function IssueRow({
         >
           ↗
         </a>
-        {story.labels.slice(0, 3).map((label) => (
-          <span
-            key={label}
-            className="border border-(--line) px-1.5 py-0.5 font-mono text-[10px] text-(--dim)"
-          >
-            {label}
-          </span>
-        ))}
-        <span className="font-mono text-[10.5px] text-(--dim)">{fmtAgo(story.ghUpdatedAt)}</span>
+        {showLabels
+          ? story.labels.slice(0, 3).map((label) => (
+              <span
+                key={label}
+                className="border border-(--line) px-1.5 py-0.5 font-mono text-[10px] text-(--dim)"
+              >
+                {label}
+              </span>
+            ))
+          : null}
+        <span className="font-mono text-[10.5px] text-(--dim)">
+          {stage === "shipped" ? "shipped" : "updated"}{" "}
+          {fmtAgo(story.closedAt ?? story.ghUpdatedAt)}
+        </span>
         {action()}
       </div>
-      {current || story.prs.length > 0 || story.ciState ? (
+      {hasStageDetail ? (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-0 sm:pl-10">
-          {current ? (
+          {showRun && current ? (
             <span className="flex items-center gap-2">
               <StatusDot tone={toneFor(current.status)} pulse={story.runState === "live"} />
               <Link
@@ -214,18 +229,20 @@ export function IssueRow({
               ) : null}
             </span>
           ) : null}
-          {story.prs.map((pr) => (
-            <a
-              key={pr.number}
-              href={pr.url}
-              target="_blank"
-              rel="noreferrer"
-              className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
-            >
-              PR #{pr.number} ↗
-            </a>
-          ))}
-          {story.ciState === "failure" && story.ciUrl ? (
+          {showPulls
+            ? story.prs.map((pr) => (
+                <a
+                  key={pr.number}
+                  href={pr.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-[11px] text-(--info) underline-offset-4 hover:underline"
+                >
+                  {pr.draft ? "Draft" : "PR"} #{pr.number} ↗
+                </a>
+              ))
+            : null}
+          {showChecks && story.ciState === "failure" && story.ciUrl ? (
             <a
               href={story.ciUrl}
               target="_blank"
@@ -235,7 +252,7 @@ export function IssueRow({
               <StatusDot tone="bad" />
               checks · failed
             </a>
-          ) : story.ciState === "pending" && story.ciUrl ? (
+          ) : showChecks && story.ciState === "pending" && story.ciUrl ? (
             <a
               href={story.ciUrl}
               target="_blank"

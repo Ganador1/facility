@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
 import type { PipelineStageKey, PipelineStory, Proposal, StoryDetail } from "@/lib/api";
-import { reviewablePullRequests, storyHref } from "@/lib/pipeline";
+import { pipelineStageStates, reviewablePullRequests, storyHref } from "@/lib/pipeline";
 import { deriveStoryTimeline, proposalsForStory } from "@/lib/story";
 
 describe("story presentation contract", () => {
+  it("exposes only statuses that make sense within each stage workspace", () => {
+    expect(pipelineStageStates("backlog")).toEqual(["needs_attention", "ready_to_plan"]);
+    expect(pipelineStageStates("planning")).toEqual([
+      "in_progress",
+      "needs_review",
+      "ready_to_build",
+      "failed",
+    ]);
+    expect(pipelineStageStates("validating")).toEqual(["checks_running", "checks_failed"]);
+    expect(pipelineStageStates("review")).toEqual(["in_progress", "awaiting_review", "failed"]);
+    expect(pipelineStageStates("backlog")).not.toContain("failed");
+  });
+
   it("keeps repository and story kind in every detail link", () => {
     expect(
       storyHref("project-1", {

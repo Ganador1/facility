@@ -26,6 +26,29 @@ const STATUS_ORDER: Record<PipelineStageKey, PipelineStageState[]> = {
   shipped: ["shipped_recently"],
 };
 
+const STAGE_DESCRIPTION: Record<PipelineStageKey, string> = {
+  backlog: "Choose what deserves planning. Priority and product context matter here.",
+  planning: "Shape the approach, resolve open decisions, and approve plans for building.",
+  building: "Follow active implementation, drafts, and work that needs intervention.",
+  validating: "Use check evidence to decide whether a change is ready for human review.",
+  review: "Review each pull request once, including every story it delivers.",
+  shipped: "See what reached the product recently and trace it back to its stories.",
+};
+
+const STATUS_DESCRIPTION: Record<PipelineStageState, string> = {
+  ready_to_plan: "Unstarted stories that can be sent to the architect.",
+  needs_attention: "Earlier activity stopped without producing a usable plan.",
+  in_progress: "An agent is actively working on these stories.",
+  needs_review: "Plans waiting for a human decision before implementation.",
+  ready_to_build: "Approved plans that can be sent to the builder.",
+  failed: "Agent work that stopped and needs inspection or another attempt.",
+  draft_pr: "Implementation has produced a draft change that is still being worked.",
+  checks_running: "Pull requests whose current-head checks have not finished.",
+  checks_failed: "Pull requests whose current-head checks need investigation.",
+  awaiting_review: "Pull requests ready for a human review and merge decision.",
+  shipped_recently: "Stories merged during the last seven days.",
+};
+
 const STATUS_TONE: Record<PipelineStageState, PipelineStatusTone> = {
   ready_to_plan: "human",
   needs_attention: "bad",
@@ -75,6 +98,18 @@ export function pipelineStageStateLabel(
 
 export function pipelineStageStateTone(state: PipelineStageState) {
   return STATUS_TONE[state];
+}
+
+export function pipelineStageDescription(stage: PipelineStageKey) {
+  return STAGE_DESCRIPTION[stage];
+}
+
+export function pipelineStageStateDescription(state: PipelineStageState) {
+  return STATUS_DESCRIPTION[state];
+}
+
+export function pipelineStageStates(stage: PipelineStageKey) {
+  return [...STATUS_ORDER[stage]];
 }
 
 export function pipelineStageSummaries(stage: PipelineStage) {

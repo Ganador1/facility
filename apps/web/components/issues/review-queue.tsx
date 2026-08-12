@@ -4,16 +4,23 @@ import type { PipelineStory } from "@/lib/api";
 import { storyHref } from "@/lib/pipeline";
 import { fmtAgo } from "@/lib/run-format";
 import { reviewPullRequestGroups } from "@/lib/story-groups";
+import { IssueRow } from "./issue-row";
 
 /** A pull request is one review action even when it delivers several stories. */
 export function ReviewQueue({
   projectId,
   stories,
+  canTrigger,
 }: {
   projectId: string;
   stories: PipelineStory[];
+  canTrigger: boolean;
 }) {
   const groups = reviewPullRequestGroups(stories);
+  const groupedStories = new Set(
+    groups.flatMap((group) => group.stories.map((story) => story.key)),
+  );
+  const ungroupedStories = stories.filter((story) => !groupedStories.has(story.key));
 
   return (
     <div className="flex flex-col border border-(--line)">
@@ -52,9 +59,11 @@ export function ReviewQueue({
                   checks {pull.ciState}
                 </span>
               ) : null}
-              <span className="font-mono text-[10.5px] text-(--dim)">
-                opened {fmtAgo(pull.createdAt)}
-              </span>
+              {pull.createdAt ? (
+                <span className="font-mono text-[10.5px] text-(--dim)">
+                  opened {fmtAgo(pull.createdAt)}
+                </span>
+              ) : null}
               <ButtonLink size="sm" href={pull.url} target="_blank" rel="noreferrer">
                 Review PR ↗
               </ButtonLink>
@@ -83,6 +92,15 @@ export function ReviewQueue({
           </article>
         );
       })}
+      {ungroupedStories.map((story) => (
+        <IssueRow
+          key={story.key}
+          projectId={projectId}
+          story={story}
+          canTrigger={canTrigger}
+          stage="review"
+        />
+      ))}
     </div>
   );
 }

@@ -10,9 +10,7 @@ export type PullRequestStoryGroup<Story extends Pick<PipelineStory, "repoId" | "
  * Review happens once per pull request even when that change carries several
  * stories. Preserve pipeline order while collecting every affected story.
  */
-export function groupStoriesByPullRequest<
-  Story extends Pick<PipelineStory, "repoId" | "prs">,
->(
+export function groupStoriesByPullRequest<Story extends Pick<PipelineStory, "repoId" | "prs">>(
   stories: Story[],
   include: (pull: PipelinePullRequest) => boolean,
 ): PullRequestStoryGroup<Story>[] {
