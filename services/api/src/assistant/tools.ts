@@ -29,7 +29,7 @@ export const ASSISTANT_TOOLS: AssistantTool[] = [
   {
     name: "get_pipeline",
     description:
-      "The project's delivery pipeline: repository-qualified stories grouped by stage (Backlog → Planning → Ready → Building → Validating → In review → Shipped) with current runs, mirrored PRs, aggregate CI and human gates. Use this for 'what is in flight / where is X'.",
+      "The project's delivery pipeline: repository-qualified stories grouped by durable stage (Backlog → Planning → Building → Validating → In review → Shipped), with an actionable state inside each stage, current runs, mirrored PRs, CI, and human gates. Use this for 'what is in flight / where is X / what needs action'.",
     inputSchema: NO_ARGS,
     toRequest: (_a, ctx) => ({ method: "GET", path: `/v1/projects/${ctx.projectId}/pipeline` }),
   },

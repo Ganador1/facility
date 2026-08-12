@@ -41,6 +41,7 @@ export type {
   PipelineStage,
   PipelineStageKey,
   PipelineStageKind,
+  PipelineStageState,
   PipelineStory,
   Project,
   ProjectRepo,

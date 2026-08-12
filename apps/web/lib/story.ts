@@ -10,7 +10,6 @@ export type StoryPr = StoryGithubActivity["prs"][number];
 const TIMELINE_STAGES: Record<PipelineStageKey, PipelineStageKey> = {
   backlog: "backlog",
   planning: "planning",
-  ready: "ready",
   building: "building",
   validating: "validating",
   review: "review",
@@ -81,7 +80,7 @@ function stageEntered(item: StoryItem): PipelineStageKey | null {
       return null;
     }
     case "proposal":
-      return item.proposal.actionType === "plan_acceptance" ? TIMELINE_STAGES.ready : null;
+      return item.proposal.actionType === "plan_acceptance" ? TIMELINE_STAGES.planning : null;
     case "pr_opened":
       if (item.pr.draft) return TIMELINE_STAGES.building;
       return item.pr.ciState === "pending" ? TIMELINE_STAGES.validating : TIMELINE_STAGES.review;

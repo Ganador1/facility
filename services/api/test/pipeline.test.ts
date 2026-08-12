@@ -70,8 +70,12 @@ describe("server-owned story pipeline", () => {
     expect(assembly.stories[0]?.prs.map((candidate) => candidate.number)).toEqual([20]);
     expect(assembly.stories[0]?.linkedRuns.map((candidate) => candidate.id)).toEqual(["run_01"]);
     expect(
-      classifyPipeline(assembly.stories, new Set(), NOW.getTime()).get("review")?.[0],
-    ).toMatchObject({ key: "repo_a:issue:7", ciState: "failure" });
+      classifyPipeline(assembly.stories, new Set(), NOW.getTime()).get("validating")?.[0],
+    ).toMatchObject({
+      key: "repo_a:issue:7",
+      stageState: "checks_failed",
+      ciState: "failure",
+    });
   });
 
   it("applies current-run precedence, current-head CI, and the Validating machine stage", () => {
@@ -103,17 +107,19 @@ describe("server-owned story pipeline", () => {
       NOW.getTime(),
     );
 
-    expect(staged.get("validating")?.map((story) => story.number)).toEqual([10]);
-    expect(staged.get("review")?.map((story) => [story.number, story.ciState])).toEqual([
-      [12, null],
-      [11, "failure"],
+    expect(staged.get("validating")?.map((story) => [story.number, story.stageState])).toEqual([
+      [11, "checks_failed"],
+      [10, "checks_running"],
     ]);
-    expect(staged.get("building")?.map((story) => [story.number, story.runState])).toEqual([
-      [2, "live"],
+    expect(staged.get("review")?.map((story) => [story.number, story.stageState])).toEqual([
+      [12, "awaiting_review"],
     ]);
-    expect(staged.get("planning")?.map((story) => [story.number, story.runState])).toEqual([
-      [3, "failed"],
-    ]);
+    expect(
+      staged.get("building")?.map((story) => [story.number, story.runState, story.stageState]),
+    ).toEqual([[2, "live", "in_progress"]]);
+    expect(
+      staged.get("planning")?.map((story) => [story.number, story.runState, story.stageState]),
+    ).toEqual([[3, "failed", "failed"]]);
     expect(PIPELINE_STAGES.map((stage) => [stage.key, stage.kind])).toContainEqual([
       "validating",
       "machine",
@@ -127,6 +133,7 @@ describe("server-owned story pipeline", () => {
     expect(staged.get("building")?.map((story) => [story.key, story.ciState, story.ciUrl])).toEqual(
       [[draft.key, null, null]],
     );
+    expect(staged.get("building")?.[0]?.stageState).toBe("draft_pr");
     expect(staged.get("validating")).toEqual([]);
     expect(staged.get("review")).toEqual([]);
   });
@@ -156,8 +163,64 @@ describe("server-owned story pipeline", () => {
     };
 
     const staged = classifyPipeline([pending, delivered], new Set(), NOW.getTime());
-    expect(staged.get("backlog")?.map((story) => story.number)).toContain(40);
-    expect(staged.get("review")?.map((story) => story.number)).toContain(41);
+    expect(staged.get("backlog")?.find((story) => story.number === 40)?.stageState).toBe(
+      "needs_attention",
+    );
+    expect(staged.get("review")?.find((story) => story.number === 41)?.stageState).toBe(
+      "awaiting_review",
+    );
+  });
+
+  it("keeps planning work together while exposing its actionable state", () => {
+    const live = {
+      ...storyWith({}),
+      key: "repo_a:issue:50",
+      number: 50,
+      prs: [],
+      linkedRuns: [run("run_50", "alice", "alpha", 50, "architect", "running")],
+    };
+    const awaitingReview = {
+      ...storyWith({}),
+      key: "repo_a:issue:51",
+      number: 51,
+      prs: [],
+      linkedRuns: [run("run_51", "alice", "alpha", 51, "architect", "succeeded")],
+    };
+    const readyToBuild = {
+      ...storyWith({}),
+      key: "repo_a:issue:52",
+      number: 52,
+      prs: [],
+      linkedRuns: [run("run_52", "alice", "alpha", 52, "architect", "succeeded")],
+    };
+    const failed = {
+      ...storyWith({}),
+      key: "repo_a:issue:53",
+      number: 53,
+      prs: [],
+      linkedRuns: [run("run_53", "alice", "alpha", 53, "architect", "failed")],
+    };
+
+    const staged = classifyPipeline(
+      [live, awaitingReview, readyToBuild, failed],
+      new Set([awaitingReview.key]),
+      NOW.getTime(),
+    );
+
+    expect(staged.get("planning")?.map((story) => [story.number, story.stageState])).toEqual([
+      [53, "failed"],
+      [52, "ready_to_build"],
+      [51, "needs_review"],
+      [50, "in_progress"],
+    ]);
+    expect(PIPELINE_STAGES.map((stage) => stage.key)).toEqual([
+      "backlog",
+      "planning",
+      "building",
+      "validating",
+      "review",
+      "shipped",
+    ]);
   });
 
   it("ships recent closed issues and merged orphan PRs, but not abandoned PRs", () => {
@@ -194,6 +257,7 @@ describe("server-owned story pipeline", () => {
       "repo_a:pull_request:30",
       "repo_a:issue:1",
     ]);
+    expect(shipped?.every((story) => story.stageState === "shipped_recently")).toBe(true);
   });
 });
 
