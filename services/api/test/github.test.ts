@@ -352,6 +352,62 @@ describe("github integration", async () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("accepts signed GitHub bursts outside the public API rate limit", async () => {
+    const limited = await buildApp(config, { rateLimitMax: 1 });
+    try {
+      await limited.ready();
+      expect((await limited.inject({ method: "GET", url: "/health" })).statusCode).toBe(200);
+      expect((await limited.inject({ method: "GET", url: "/health" })).statusCode).toBe(429);
+
+      const payload = Buffer.from(
+        JSON.stringify({
+          action: "requested",
+          installation: { id: 123 },
+          repository: { name: "repo", owner: { login: "octo" } },
+          workflow_run: { head_sha: "burst-sha" },
+        }),
+      );
+      const signature = `sha256=${createHmac("sha256", "webhook-secret").update(payload).digest("hex")}`;
+      let lastDelivery = "";
+      for (let index = 0; index < 3; index += 1) {
+        lastDelivery = newId("evt");
+        const response = await limited.inject({
+          method: "POST",
+          url: "/webhooks/github",
+          headers: {
+            "content-type": "application/json",
+            "x-github-event": "workflow_run",
+            "x-github-delivery": lastDelivery,
+            "x-hub-signature-256": signature,
+          },
+          payload,
+        });
+        expect(response.statusCode).toBe(202);
+      }
+      const [persisted] = await db
+        .select()
+        .from(inboundEvents)
+        .where(eq(inboundEvents.id, `gh_${lastDelivery}`));
+      expect(persisted).toMatchObject({ verified: true, eventType: "workflow_run" });
+      expect(persisted?.processedAt).toBeInstanceOf(Date);
+
+      const rejected = await limited.inject({
+        method: "POST",
+        url: "/webhooks/github",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "workflow_run",
+          "x-github-delivery": newId("evt"),
+          "x-hub-signature-256": "sha256=bad",
+        },
+        payload,
+      });
+      expect(rejected.statusCode).toBe(401);
+    } finally {
+      await limited.close();
+    }
+  });
+
   it("routes a webhook to the resolved org's repo when two tenants share a repo name", async () => {
     // repos are per-org unique (migration 0012), so two orgs can register the
     // same owner/name. The processor must select the repo of the webhook's

@@ -26,14 +26,18 @@ import {
   seed,
   userIdentities,
 } from "@facility/db";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { executeApprovedProposal } from "../src/executors.js";
 import type { GithubClientFactory, Octokit } from "../src/github/client.js";
 import { syncRepoIssues, upsertGhIssueFromWebhook } from "../src/github/issues-sync.js";
-import { enqueueGithubIssuesSync, processGithubWebhook } from "../src/github/processor.js";
+import {
+  enqueueGithubIssuesSync,
+  processGithubWebhook,
+  processGithubWebhookBatch,
+} from "../src/github/processor.js";
 import {
   syncRepoPullRequests,
   upsertGhPullRequestFromWebhook,
@@ -1134,6 +1138,212 @@ describe("github platform lane", async () => {
       .from(ghPullRequests)
       .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, prNumber)));
     expect(mirrored?.ciState).toBe("pending");
+  });
+
+  it("coalesces a CI notification burst into one authoritative reconciliation", async () => {
+    const owner = `checks-batch-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const prNumber = 72_002;
+    const headSha = `batch-${newId("evt")}`;
+    await insertPullRequest(repo.id, prNumber, {
+      headRef: "feature/batched-checks",
+      headSha,
+      ciState: null,
+      ciHeadSha: null,
+    });
+    const [integration] = await db
+      .insert(integrations)
+      .values({ id: newId("int"), orgId, kind: "github", name: `checks-batch-${Date.now()}` })
+      .returning();
+    if (!integration) throw new Error("integration fixture missing");
+
+    const eventIds: string[] = [];
+    const events: Array<typeof inboundEvents.$inferInsert> = [];
+    for (let index = 0; index < 1_000; index += 1) {
+      const eventId = newId("evt");
+      eventIds.push(eventId);
+      const completed = index >= 500;
+      events.push({
+        id: eventId,
+        orgId,
+        integrationId: integration.id,
+        eventType: "check_run",
+        payload: {
+          action: completed ? "completed" : "created",
+          repository: { owner: { login: owner }, name: repo.name },
+          check_run: {
+            name: `check-${index % 10}`,
+            status: completed ? "completed" : "in_progress",
+            conclusion: completed ? "success" : null,
+            head_sha: headSha,
+            pull_requests: [{ number: prNumber }],
+            check_suite: { head_branch: "feature/batched-checks", head_sha: headSha },
+          },
+        },
+        verified: true,
+      });
+    }
+    await db.insert(inboundEvents).values(events);
+
+    let factoryCalls = 0;
+    let graphqlCalls = 0;
+    let checkCalls = 0;
+    const factory = async () => {
+      factoryCalls += 1;
+      return {
+        graphql: async (_query: string, variables: Record<string, unknown>) => {
+          graphqlCalls += 1;
+          return {
+            repository: {
+              pullRequest: {
+                number: variables.number,
+                title: "Batched CI",
+                state: "OPEN",
+                isDraft: false,
+                author: { login: "octocat" },
+                headRefName: "feature/batched-checks",
+                headRefOid: headSha,
+                baseRefName: "main",
+                url: `https://github.test/${owner}/repo/pull/${prNumber}`,
+                closingIssuesReferences: { nodes: [] },
+                commits: {
+                  nodes: [{ commit: { oid: headSha, statusCheckRollup: { state: "SUCCESS" } } }],
+                },
+              },
+            },
+          };
+        },
+        rest: {
+          checks: {
+            listForRef: async () => {
+              checkCalls += 1;
+              return { data: { check_runs: [] } };
+            },
+          },
+        },
+      } as never;
+    };
+
+    await expect(
+      processGithubWebhookBatch(
+        db,
+        config,
+        eventIds.map((inboundEventId) => ({ inboundEventId })),
+        factory,
+      ),
+    ).resolves.toEqual({
+      events: 1_000,
+      reconciledEvents: 1_000,
+      reconciliations: 1,
+      coalescedEvents: 999,
+      projectionMs: expect.any(Number),
+      reconciliationMs: expect.any(Number),
+      maxReconciliationMs: expect.any(Number),
+    });
+    expect(factoryCalls).toBe(1);
+    expect(graphqlCalls).toBe(1);
+    expect(checkCalls).toBe(0);
+
+    const processed = await db
+      .select({ id: inboundEvents.id, processedAt: inboundEvents.processedAt })
+      .from(inboundEvents)
+      .where(inArray(inboundEvents.id, eventIds));
+    expect(processed).toHaveLength(1_000);
+    expect(processed.every((event) => event.processedAt instanceof Date)).toBe(true);
+    const [pull] = await db
+      .select()
+      .from(ghPullRequests)
+      .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, prNumber)));
+    expect(pull).toMatchObject({ ciState: "success", ciHeadSha: headSha });
+  });
+
+  it("resumes a replayed slash-command delivery without creating a second run", async () => {
+    const owner = `command-replay-${Date.now()}`;
+    const repo = await insertRepoWithInstallation(owner);
+    const installation = (
+      await db
+        .select()
+        .from(githubInstallations)
+        .where(eq(githubInstallations.id, repo.installationId ?? ""))
+        .limit(1)
+    )[0];
+    if (!installation) throw new Error("installation fixture missing");
+    await insertAgent("architect");
+    const [integration] = await db
+      .insert(integrations)
+      .values({ id: newId("int"), orgId, kind: "github", name: `command-${Date.now()}` })
+      .returning();
+    if (!integration) throw new Error("integration fixture missing");
+    const eventId = newId("evt");
+    await db.insert(inboundEvents).values({
+      id: eventId,
+      orgId,
+      integrationId: integration.id,
+      eventType: "issue_comment",
+      payload: {
+        action: "created",
+        installation: { id: installation.installationId },
+        repository: { owner: { login: owner }, name: repo.name },
+        sender: { login: "maintainer", type: "User" },
+        issue: { number: 937, title: "Plan Facility flow", body: "Keep behavior stable." },
+        comment: { id: 44, body: "/architect" },
+      },
+      verified: true,
+    });
+
+    let progressComments = 0;
+    const factory = async () =>
+      ({
+        rest: {
+          repos: {
+            getCollaboratorPermissionLevel: async () => ({ data: { permission: "write" } }),
+            getContent: async () => ({
+              data: {
+                type: "file",
+                encoding: "base64",
+                content: Buffer.from(
+                  JSON.stringify({ executionLane: { architect: "platform" } }),
+                ).toString("base64"),
+              },
+            }),
+          },
+          issues: {
+            listComments: async () => ({ data: [] }),
+            addAssignees: async () => ({ data: { assignees: [{ login: "maintainer" }] } }),
+            createComment: async () => {
+              progressComments += 1;
+              return { data: { id: progressComments, html_url: "https://github.test/comment" } };
+            },
+          },
+        },
+      }) as never;
+    const dispatches: Array<{ queue: string; data: Record<string, unknown> }> = [];
+    const enqueue = async (queue: string, data: Record<string, unknown>) => {
+      dispatches.push({ queue, data });
+      return null;
+    };
+
+    await processGithubWebhook(db, config, { inboundEventId: eventId }, factory, enqueue);
+    await db.update(inboundEvents).set({ processedAt: null }).where(eq(inboundEvents.id, eventId));
+    await processGithubWebhook(db, config, { inboundEventId: eventId }, factory, enqueue);
+
+    const dispatchedRuns = await db
+      .select()
+      .from(runs)
+      .where(and(eq(runs.orgId, orgId), eq(runs.githubDeliveryId, eventId)));
+    expect(dispatchedRuns).toHaveLength(1);
+    expect(progressComments).toBe(1);
+    expect(
+      dispatches.filter(
+        (job) => job.queue === "runs.dispatch" && job.data.runId === dispatchedRuns[0]?.id,
+      ),
+    ).toHaveLength(2);
+    expect(
+      await db
+        .select()
+        .from(runEvents)
+        .where(and(eq(runEvents.runId, dispatchedRuns[0]?.id ?? ""), eq(runEvents.seq, 1))),
+    ).toHaveLength(1);
   });
 
   it("dispatches CI-doctor from the final complete rollup without persisting raw logs", async () => {

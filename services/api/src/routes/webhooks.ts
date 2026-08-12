@@ -24,7 +24,11 @@ export async function registerWebhookRoutes(app: FastifyInstance, config: AppCon
     webhookApp.post(
       "/webhooks/github",
       {
-        config: { public: true },
+        // GitHub deliveries are authenticated by HMAC and deduplicated by their
+        // delivery id below. The global per-IP API limiter rejects legitimate
+        // GitHub bursts before either protection can run, so this signed durable
+        // ingress has its own backpressure boundary in the job queue.
+        config: { public: true, rateLimit: false },
         schema: { response: { 202: Ok, 401: Ok } },
       },
       async (request, reply) => {
@@ -68,6 +72,13 @@ export async function registerWebhookRoutes(app: FastifyInstance, config: AppCon
           .onConflictDoNothing()
           .returning();
         if (inserted.length === 0) return reply.status(202).send({ ok: true, replayed: true });
+        if (!githubWebhookRequiresWorker(eventType, payload)) {
+          await app.facilityDb
+            .update(inboundEvents)
+            .set({ processedAt: new Date() })
+            .where(eq(inboundEvents.id, id));
+          return reply.status(202).send({ ok: true });
+        }
         await app.enqueue("github.webhook", { inboundEventId: id });
         return reply.status(202).send({ ok: true });
       },
@@ -135,6 +146,11 @@ export async function registerWebhookRoutes(app: FastifyInstance, config: AppCon
       },
     );
   });
+}
+
+export function githubWebhookRequiresWorker(eventType: string, payload: Record<string, unknown>) {
+  if (eventType !== "workflow_run") return true;
+  return payload.action === "completed";
 }
 
 function verifyInboundSignature(

@@ -59,12 +59,24 @@ export function resolveSlashCommand(body: string): {
   return { command: raw.replace(/^codex-/, ""), agentCommand: raw, ambiguous: false };
 }
 
+export function githubTriggerRequiresClient(payload: TriggerPayload) {
+  if (payload.sender?.type === "Bot") return false;
+  if (payload.comment && payload.action && payload.action !== "created") return false;
+  if (!payload.comment && payload.action && payload.action !== "opened") return false;
+  if (payload.issue?.pull_request) return false;
+  const body =
+    payload.comment?.body ?? [payload.issue?.title ?? "", payload.issue?.body ?? ""].join("\n");
+  const command = resolveSlashCommand(body);
+  return !command.ambiguous && Boolean(command.command);
+}
+
 export async function routeTrigger(
   db: FacilityDb,
   orgId: string,
   client: FacilityGithubClient,
   payload: TriggerPayload,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+  githubDeliveryId?: string,
 ): Promise<{ routed: boolean; reason?: string; runId?: string }> {
   if (payload.sender?.type === "Bot") return { routed: false, reason: "bot_sender" };
   if (payload.comment && payload.action && payload.action !== "created") {
@@ -104,6 +116,10 @@ export async function routeTrigger(
   )[0];
   if (!repo) return { routed: false, reason: "repo_unmanaged" };
   if (!(await client.userCanWrite(sender))) return { routed: false, reason: "non_writer" };
+  if (githubDeliveryId) {
+    const replayedRunId = await resumeGithubDeliveryRun(db, repo.orgId, githubDeliveryId, enqueue);
+    if (replayedRunId) return { routed: true, reason: "delivery_replayed", runId: replayedRunId };
+  }
   // Reconcile from the default branch at handoff time, not only from an earlier
   // push delivery. This closes the merge/webhook race where the repository
   // workflow has already yielded to Facility but the database still has the
@@ -176,6 +192,7 @@ export async function routeTrigger(
           orgId: repo.orgId,
           projectId: repo.projectId,
           agentDefId: agent.id,
+          githubDeliveryId,
           mode: command,
           engine: agent.engine,
           trigger: accepted?.proposal
@@ -198,6 +215,7 @@ export async function routeTrigger(
           },
           createdBy: { type: "github", id: sender },
         })
+        .onConflictDoNothing()
         .returning()
     )[0];
     if (!created) return undefined;
@@ -224,6 +242,10 @@ export async function routeTrigger(
     }
     return created;
   });
+  if (!run && githubDeliveryId) {
+    const replayedRunId = await resumeGithubDeliveryRun(db, repo.orgId, githubDeliveryId, enqueue);
+    if (replayedRunId) return { routed: true, reason: "delivery_replayed", runId: replayedRunId };
+  }
   if (!run) return { routed: false, reason: "insert_failed" };
   try {
     const assigned = await client.assignIssue(issueNumber, sender);
@@ -250,13 +272,16 @@ export async function routeTrigger(
       payload: { decision: "approve", source: "github_command", builder_run_id: run.id },
     });
   }
-  await db.insert(runEvents).values({
-    orgId: repo.orgId,
-    runId: run.id,
-    seq: 1,
-    type: "queued",
-    data: { queue: "runs.dispatch" },
-  });
+  await db
+    .insert(runEvents)
+    .values({
+      orgId: repo.orgId,
+      runId: run.id,
+      seq: 1,
+      type: "queued",
+      data: { queue: "runs.dispatch" },
+    })
+    .onConflictDoNothing();
   // Actually dispatch to a sandbox — parity with manual run creation. The
   // slash-command path created the run but never enqueued it, so it never ran.
   // The GitHub comment is the end-user's live surface for this run. Comment
@@ -305,6 +330,32 @@ export async function routeTrigger(
   }
   await enqueue?.("runs.dispatch", { runId: run.id, orgId: repo.orgId });
   return { routed: true, runId: run.id };
+}
+
+async function resumeGithubDeliveryRun(
+  db: FacilityDb,
+  orgId: string,
+  githubDeliveryId: string,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+) {
+  const [run] = await db
+    .select({ id: runs.id })
+    .from(runs)
+    .where(and(eq(runs.orgId, orgId), eq(runs.githubDeliveryId, githubDeliveryId)))
+    .limit(1);
+  if (!run) return null;
+  await db
+    .insert(runEvents)
+    .values({
+      orgId,
+      runId: run.id,
+      seq: 1,
+      type: "queued",
+      data: { queue: "runs.dispatch", source: "github_delivery_replay" },
+    })
+    .onConflictDoNothing();
+  await enqueue?.("runs.dispatch", { runId: run.id, orgId });
+  return run.id;
 }
 
 async function auditAssignmentSkipped(

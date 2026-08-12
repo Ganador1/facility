@@ -2,10 +2,11 @@ import { createDb } from "@facility/db";
 import PgBoss from "pg-boss";
 import pino from "pino";
 import { readConfig } from "./config.js";
+import { createGithubClientFactory } from "./github/client.js";
 import {
   enqueueFingerprintVerify,
   enqueueGithubIssuesSync,
-  processGithubWebhook,
+  processGithubWebhookBatch,
 } from "./github/processor.js";
 import { expireIdempotencyRecords } from "./idempotency.js";
 import { deliverPendingWebhooks } from "./integrations/outbound.js";
@@ -27,6 +28,10 @@ export async function startWorker() {
   const boss = new PgBoss({ connectionString: config.databaseUrl });
   boss.on("error", (error) => logger.error({ err: error }, "pg-boss error"));
   await boss.start();
+  const githubFactory =
+    config.githubAppId && config.githubAppPrivateKey
+      ? createGithubClientFactory(config)
+      : undefined;
   const queues = [
     "runs.dispatch",
     "deliveries.deliver",
@@ -51,9 +56,41 @@ export async function startWorker() {
     await boss.createQueue(queue);
   }
   for (const queue of queues) {
-    await boss.work(queue, async (job: PgBoss.Job<unknown> | PgBoss.Job<unknown>[]) => {
-      const jobId = Array.isArray(job) ? job[0]?.id : job.id;
-      const data = Array.isArray(job) ? job[0]?.data : job.data;
+    if (queue === "github.webhook") {
+      await boss.work<{ inboundEventId?: string }>(
+        queue,
+        { batchSize: 1_000, includeMetadata: true, pollingIntervalSeconds: 0.5 },
+        async (jobs) => {
+          const startedAt = Date.now();
+          const result = await processGithubWebhookBatch(
+            db,
+            config,
+            jobs.map((job) => job.data),
+            githubFactory,
+            (name, payload) => boss.send(name, payload),
+            {
+              warn: (context, message) => logger.warn(context, message),
+            },
+          );
+          const oldestCreatedAt = Math.min(...jobs.map((job) => job.createdOn.getTime()));
+          logger.info(
+            {
+              queue,
+              batchSize: jobs.length,
+              queueWaitMs: Math.max(0, startedAt - oldestCreatedAt),
+              handlerMs: Date.now() - startedAt,
+              ...result,
+            },
+            "worker completed GitHub webhook batch",
+          );
+        },
+      );
+      continue;
+    }
+    await boss.work(queue, async (jobs: PgBoss.Job<unknown>[]) => {
+      const job = jobs[0];
+      const jobId = job?.id;
+      const data = job?.data;
       let result: Record<string, unknown> | undefined;
       if (queue === "runs.dispatch") {
         await dispatchRun(config, data as { runId?: string; orgId?: string });
@@ -102,25 +139,14 @@ export async function startWorker() {
         await runLearningNightly(config, (targetQueue, targetData) =>
           boss.send(targetQueue, targetData),
         );
-      } else if (queue === "github.webhook") {
-        await processGithubWebhook(
-          db,
-          config,
-          data as { inboundEventId?: string },
-          undefined,
-          (name, payload) => boss.send(name, payload),
-          {
-            warn: (context, message) => logger.warn(context, message),
-          },
-        );
       } else if (queue === "fingerprints.verify") {
-        await enqueueFingerprintVerify(db, config, data as { repoId?: string });
+        await enqueueFingerprintVerify(db, config, data as { repoId?: string }, githubFactory);
       } else if (queue === "github.issues-sync") {
         result = await enqueueGithubIssuesSync(
           db,
           config,
           data as { repoId?: string; orgId?: string },
-          undefined,
+          githubFactory,
           (targetQueue, targetData) => boss.send(targetQueue, targetData),
         );
       }

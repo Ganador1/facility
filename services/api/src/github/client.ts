@@ -632,6 +632,10 @@ export class FacilityGithubClient {
       this.repo,
     );
     if (!snapshot) return null;
+    // Failure names are only persisted and displayed for a failing aggregate.
+    // Avoid a second paginated GitHub request for the common pending/success
+    // states, where upsertPullRequestSnapshot deliberately stores an empty list.
+    if (snapshot.ciState !== "failure") return { ...snapshot, ciFailureNames: [] };
     const ciFailureNames = await this.getCurrentCiFailureNames(snapshot.headSha);
     return ciFailureNames ? { ...snapshot, ciFailureNames } : snapshot;
   }
