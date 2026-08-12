@@ -336,7 +336,6 @@ function storyDetail(): StoryDetail {
     pipelineStages: [
       { key: "backlog", label: "Backlog" },
       { key: "planning", label: "Planning" },
-      { key: "ready", label: "Ready" },
       { key: "building", label: "Building" },
       { key: "validating", label: "Validating" },
       { key: "review", label: "In review" },

@@ -32,6 +32,8 @@ export type {
   KickstartAnswers,
   KickstartPreview,
   KickstartResult,
+  LlmRequest,
+  LlmRequestPage,
   Me,
   Member,
   MemberRow,
@@ -41,6 +43,7 @@ export type {
   PipelineStage,
   PipelineStageKey,
   PipelineStageKind,
+  PipelineStageState,
   PipelineStory,
   Project,
   ProjectRepo,
@@ -148,6 +151,8 @@ export const api = {
   run: (id: string) => apiFetch("GET", `/v1/runs/${id}`),
   runEvents: (id: string, afterSeq = 0, limit = 500) =>
     apiFetch("GET", `/v1/runs/${id}/events`, { query: { afterSeq, limit } }),
+  recentRunEvents: (id: string, tail = 20) =>
+    apiFetch("GET", `/v1/runs/${id}/events`, { query: { tail, limit: tail } }),
   // GET /v1/inbox returns { items, proposals, issues } — unwrap to the
   // proposals array both consumers expect (guarded so a bare array also works).
   inbox: async (): Promise<ApiResult<Proposal[]>> => {
@@ -229,6 +234,8 @@ export const api = {
       query: { q, ...(type ? { type } : {}) } as never,
     }),
   spend: (params = "") => apiFetch("GET", "/v1/spend", { query: queryFromParams(params) }),
+  llmRequests: (params = "") =>
+    apiFetch("GET", "/v1/llm-requests", { query: queryFromParams(params) }),
   sandboxProfiles: () => apiFetch("GET", "/v1/sandbox-profiles"),
   members: () => apiFetch("GET", "/v1/members"),
   roles: () => apiFetch("GET", "/v1/roles"),

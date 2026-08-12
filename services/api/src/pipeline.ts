@@ -3,21 +3,32 @@
 export type PipelineStage =
   | "backlog"
   | "planning"
-  | "ready"
   | "building"
   | "validating"
   | "review"
   | "shipped";
 
+export type PipelineStageState =
+  | "ready_to_plan"
+  | "needs_attention"
+  | "in_progress"
+  | "needs_review"
+  | "ready_to_build"
+  | "failed"
+  | "draft_pr"
+  | "checks_running"
+  | "checks_failed"
+  | "awaiting_review"
+  | "shipped_recently";
+
 export type StageKind = "human" | "agent" | "machine" | "done";
 
 export const PIPELINE_STAGES = [
-  { key: "backlog", label: "Backlog", sub: "yours — pick up & launch", kind: "human" },
-  { key: "planning", label: "Planning", sub: "architect drafts the plan", kind: "agent" },
-  { key: "ready", label: "Ready", sub: "yours — review the plan", kind: "human" },
-  { key: "building", label: "Building", sub: "builder implements the plan", kind: "agent" },
-  { key: "validating", label: "Validating", sub: "machines check the PR", kind: "machine" },
-  { key: "review", label: "In review", sub: "yours — review the PR & iterate", kind: "human" },
+  { key: "backlog", label: "Backlog", sub: "work not started", kind: "human" },
+  { key: "planning", label: "Planning", sub: "shape the approach", kind: "agent" },
+  { key: "building", label: "Building", sub: "implement the plan", kind: "agent" },
+  { key: "validating", label: "Validating", sub: "run the checks", kind: "machine" },
+  { key: "review", label: "In review", sub: "review and merge", kind: "human" },
   { key: "shipped", label: "Shipped", sub: "merged · last 7 days", kind: "done" },
 ] as const satisfies ReadonlyArray<{
   key: PipelineStage;
@@ -73,6 +84,7 @@ export type PipelineStoryInput = {
 };
 
 export type PlacedPipelineStory = Omit<PipelineStoryInput, "linkedRuns"> & {
+  stageState: PipelineStageState;
   runState: "live" | "failed" | null;
   currentRun: { id: string; mode: string; status: string; engine: string } | null;
   attemptCount: number;
@@ -315,7 +327,7 @@ export function classifyPipeline(
       story.storyType === "issue" ? story.state === "closed" : story.state === "merged";
     const closedStamp = story.closedAt ?? story.ghUpdatedAt;
     if (shipped && closedStamp && now - closedStamp.getTime() < WEEK_MS) {
-      stages.get("shipped")?.push(placeBase(story));
+      stages.get("shipped")?.push(placeBase(story, "shipped_recently"));
     }
   }
   for (const placed of stages.values()) {
@@ -335,32 +347,55 @@ function placeOpen(
 ): { stage: PipelineStage; placed: PlacedPipelineStory } {
   const runs = [...story.linkedRuns].sort((a, b) => a.id.localeCompare(b.id));
   const current = runs.at(-1) ?? null;
-  const placed = placeBase(story);
   if (current && LIVE.has(current.status)) {
-    return { stage: stageForMode(current), placed: { ...placed, runState: "live" } };
+    return {
+      stage: stageForMode(current),
+      placed: { ...placeBase(story, "in_progress"), runState: "live" },
+    };
   }
   if (current?.status === "failed") {
-    return { stage: stageForMode(current), placed: { ...placed, runState: "failed" } };
+    return {
+      stage: stageForMode(current),
+      placed: { ...placeBase(story, "failed"), runState: "failed" },
+    };
   }
   const openPulls = story.prs.filter((pull) => pull.state === "open");
   const reviewablePulls = openPulls.filter((pull) => !pull.draft);
+  const checksFailed = reviewablePulls.some(hasCurrentCiState("failure"));
+  if (checksFailed) {
+    return { stage: "validating", placed: placeBase(story, "checks_failed") };
+  }
   const pending = reviewablePulls.some(hasCurrentCiState("pending"));
-  if (pending) return { stage: "validating", placed };
+  if (pending) return { stage: "validating", placed: placeBase(story, "checks_running") };
   const builderDelivered = runs.some(
     (run) =>
       isMode(run, "builder") &&
       run.status === "succeeded" &&
       numberValue(objectValue(objectValue(run.gh).pr).number) !== null,
   );
-  if (reviewablePulls.length > 0) return { stage: "review", placed };
-  if (openPulls.some((pull) => pull.draft)) return { stage: "building", placed };
-  if (builderDelivered) return { stage: "review", placed };
+  if (reviewablePulls.length > 0) {
+    return { stage: "review", placed: placeBase(story, "awaiting_review") };
+  }
+  if (openPulls.some((pull) => pull.draft)) {
+    return { stage: "building", placed: placeBase(story, "draft_pr") };
+  }
+  if (builderDelivered) {
+    return { stage: "review", placed: placeBase(story, "awaiting_review") };
+  }
   const planPublished = runs.some((run) => isMode(run, "architect") && run.status === "succeeded");
-  if (hasOpenProposal || planPublished) return { stage: "ready", placed };
-  return { stage: "backlog", placed };
+  if (hasOpenProposal) {
+    return { stage: "planning", placed: placeBase(story, "needs_review") };
+  }
+  if (planPublished) {
+    return { stage: "planning", placed: placeBase(story, "ready_to_build") };
+  }
+  return {
+    stage: "backlog",
+    placed: placeBase(story, runs.length > 0 ? "needs_attention" : "ready_to_plan"),
+  };
 }
 
-function placeBase(story: PipelineStoryInput): PlacedPipelineStory {
+function placeBase(story: PipelineStoryInput, stageState: PipelineStageState): PlacedPipelineStory {
   const runs = [...story.linkedRuns].sort((a, b) => a.id.localeCompare(b.id));
   const current = runs.at(-1) ?? null;
   const reviewablePulls = story.prs.filter((pull) => pull.state === "open" && !pull.draft);
@@ -371,6 +406,7 @@ function placeBase(story: PipelineStoryInput): PlacedPipelineStory {
   const { linkedRuns: _linkedRuns, ...fields } = story;
   return {
     ...fields,
+    stageState,
     runState: null,
     currentRun: current
       ? { id: current.id, mode: current.mode, status: current.status, engine: current.engine }

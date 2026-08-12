@@ -1,19 +1,6 @@
 import { cx, StatusDot } from "@facility/ui";
 import Link from "next/link";
-import type { ReactNode } from "react";
-import {
-  type PipelineStage,
-  type PipelineStageKind,
-  type PipelineStory,
-  storyHref,
-} from "@/lib/pipeline";
-
-const KIND_BORDER: Record<PipelineStageKind, string> = {
-  human: "border-t-(--human)",
-  agent: "border-t-(--line-strong)",
-  machine: "border-t-(--info)",
-  done: "border-t-(--ok)",
-};
+import { type PipelineStage, type PipelineStageKind, pipelineStageSummaries } from "@/lib/pipeline";
 
 const KIND_COUNT_TONE: Record<PipelineStageKind, string> = {
   human: "text-(--human)",
@@ -22,25 +9,11 @@ const KIND_COUNT_TONE: Record<PipelineStageKind, string> = {
   done: "text-(--ink)",
 };
 
-const KIND_DOT: Record<PipelineStageKind, (count: number) => ReactNode> = {
-  human: () => <StatusDot tone="human" />,
-  agent: (count) => <StatusDot tone={count > 0 ? "agent" : "machine"} pulse={count > 0} />,
-  machine: () => <StatusDot tone="machine" />,
-  done: () => <StatusDot tone="ok" />,
-};
-
 function countTone(kind: PipelineStageKind, count: number) {
   return count === 0 ? "text-(--dim)" : KIND_COUNT_TONE[kind];
 }
 
-/** The current run is the only run that explains a story's live placement. */
-export function RunStateDot({ story }: { story: PipelineStory }) {
-  if (story.runState === "failed") return <StatusDot tone="bad" />;
-  if (story.runState === "live") return <StatusDot tone="agent" pulse />;
-  return null;
-}
-
-/** The full board: one server-classified column per stage. */
+/** Durable lifecycle stages with actionable state queues inside each stage. */
 export function PipelineBoard({
   stages,
   projectId,
@@ -49,10 +22,11 @@ export function PipelineBoard({
   projectId?: string;
 }) {
   return (
-    <div className="grid grid-cols-2 border border-(--line) md:grid-cols-4 xl:grid-cols-7">
+    <div className="grid grid-cols-1 border border-(--line) sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
       {stages.map((stage) => {
+        const summaries = pipelineStageSummaries(stage);
         const header = (
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-1">
             <div className="flex items-baseline gap-2">
               <span
                 className={cx(
@@ -62,19 +36,15 @@ export function PipelineBoard({
               >
                 {stage.count}
               </span>
-              <span className="text-[12px] font-medium text-(--ink)">{stage.label}</span>
-              {KIND_DOT[stage.kind](stage.count)}
+              <span className="text-[12.5px] font-semibold text-(--ink)">{stage.label}</span>
             </div>
-            <span className="text-[10.5px] leading-snug text-(--dim)">{stage.sub}</span>
+            <span className="text-[11px] leading-snug text-(--dim)">{stage.sub}</span>
           </div>
         );
         return (
           <div
             key={stage.key}
-            className={cx(
-              "-ml-px flex min-h-[132px] flex-col gap-3 border-l border-t-2 border-l-(--line) p-4",
-              KIND_BORDER[stage.kind],
-            )}
+            className="-ml-px -mt-px flex min-h-[174px] flex-col gap-4 border-l border-t border-(--line) p-4"
           >
             {projectId ? (
               <Link
@@ -86,44 +56,42 @@ export function PipelineBoard({
             ) : (
               header
             )}
-            <div className="flex flex-col gap-1.5">
-              {stage.stories.slice(0, 3).map((story) => (
-                <span key={story.key} className="flex min-w-0 items-center gap-1.5">
-                  <RunStateDot story={story} />
-                  {projectId ? (
-                    <Link
-                      href={storyHref(projectId, story)}
-                      className="min-w-0 truncate text-[11.5px] leading-snug text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
-                      title={story.title}
-                    >
-                      <span className="font-mono text-(--dim)">#{story.number}</span> {story.title}
-                    </Link>
-                  ) : (
-                    <a
-                      href={story.htmlUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="min-w-0 truncate text-[11.5px] leading-snug text-(--mut) underline-offset-4 hover:text-(--ink) hover:underline"
-                      title={story.title}
-                    >
-                      <span className="font-mono text-(--dim)">#{story.number}</span> {story.title}
-                    </a>
-                  )}
-                  {story.ciState === "failure" && story.ciUrl ? (
-                    <a
-                      href={story.ciUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      aria-label="checks failed; open GitHub checks"
-                      className="shrink-0 font-mono text-[10px] text-(--bad) hover:underline"
-                    >
-                      <span aria-hidden="true">■</span> checks · failed
-                    </a>
-                  ) : null}
-                </span>
-              ))}
-              {stage.stories.length > 3 ? (
-                <span className="text-[10.5px] text-(--dim)">+{stage.stories.length - 3} more</span>
+            <div className="flex flex-col gap-1">
+              {summaries.map((summary) => {
+                const row = (
+                  <>
+                    <StatusDot
+                      tone={summary.tone}
+                      pulse={summary.state === "in_progress" || summary.state === "checks_running"}
+                    />
+                    <span className="w-6 text-right font-mono text-[12px] font-semibold text-(--ink)">
+                      {summary.count}
+                    </span>
+                    <span className="text-[11.5px] text-(--mut)">{summary.label}</span>
+                    {projectId ? (
+                      <span aria-hidden className="ml-auto text-[11px] text-(--dim)">
+                        →
+                      </span>
+                    ) : null}
+                  </>
+                );
+                return projectId ? (
+                  <Link
+                    key={summary.state}
+                    href={`/projects/${projectId}/stories?stage=${stage.key}&status=${summary.state}`}
+                    className="flex min-h-8 items-center gap-2 px-1 transition-colors hover:bg-(--card) hover:text-(--ink)"
+                    aria-label={`${summary.count} ${summary.label.toLowerCase()} in ${stage.label}`}
+                  >
+                    {row}
+                  </Link>
+                ) : (
+                  <div key={summary.state} className="flex min-h-8 items-center gap-2 px-1">
+                    {row}
+                  </div>
+                );
+              })}
+              {summaries.length === 0 ? (
+                <span className="px-1 py-2 text-[11.5px] text-(--dim)">Nothing here</span>
               ) : null}
             </div>
           </div>

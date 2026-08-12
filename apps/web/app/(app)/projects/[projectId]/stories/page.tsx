@@ -7,8 +7,8 @@ import { ErrorNotice, Offline } from "@/components/offline";
 import { StageSection } from "@/components/project/stage-section";
 import { LiveRefresh } from "@/components/shell/live-refresh";
 import { api } from "@/lib/api";
-import type { PipelineStageKey, PipelineStageKind } from "@/lib/pipeline";
-import { pipelineStories } from "@/lib/pipeline";
+import type { PipelineStageKey, PipelineStageKind, PipelineStageState } from "@/lib/pipeline";
+import { pipelineStageStateLabel, pipelineStories } from "@/lib/pipeline";
 
 export const metadata = { title: "stories" };
 
@@ -35,9 +35,9 @@ export default async function ProjectStoriesPage({
   searchParams,
 }: {
   params: Promise<{ projectId: string }>;
-  searchParams: Promise<{ stage?: string }>;
+  searchParams: Promise<{ stage?: string; status?: string }>;
 }) {
-  const [{ projectId }, { stage }] = await Promise.all([params, searchParams]);
+  const [{ projectId }, { stage, status }] = await Promise.all([params, searchParams]);
   const [pipelineResult, me] = await Promise.all([api.pipeline(projectId), api.me()]);
 
   if (!pipelineResult.ok && pipelineResult.offline) return <Offline />;
@@ -50,12 +50,31 @@ export default async function ProjectStoriesPage({
   const activeStage =
     stage && stageKeys.has(stage as PipelineStageKey) ? (stage as PipelineStageKey) : null;
   const items = pipelineResult.ok ? pipelineStories(pipelineResult.data) : [];
+  const stageStates = new Set(items.map((story) => story.stageState));
+  const activeStatus =
+    activeStage && status && stageStates.has(status as PipelineStageState)
+      ? (status as PipelineStageState)
+      : null;
   const counts = [...stages].reverse();
   const activeOpenStoryCount = items.filter((story) => story.state === "open").length;
 
-  const visibleStages = activeStage
+  const stageFiltered = activeStage
     ? counts.filter((candidate) => candidate.key === activeStage)
     : counts;
+  const visibleStages = activeStatus
+    ? stageFiltered.map((candidate) => ({
+        ...candidate,
+        stories: candidate.stories.filter((story) => story.stageState === activeStatus),
+      }))
+    : stageFiltered;
+  const activeStatusLabel =
+    activeStage && activeStatus
+      ? pipelineStageStateLabel(
+          activeStage,
+          activeStatus,
+          visibleStages.reduce((total, candidate) => total + candidate.stories.length, 0),
+        )
+      : null;
 
   return (
     <div className="flex flex-col gap-8">
@@ -109,6 +128,21 @@ export default async function ProjectStoriesPage({
             </span>
           </Link>
         ))}
+        {activeStage && activeStatusLabel ? (
+          <>
+            <span className="font-mono text-[11px] text-(--dim)">/</span>
+            <span className="inline-flex items-center gap-2 border border-(--line-strong) px-3 py-1.5 text-[12px] font-medium text-(--ink)">
+              {activeStatusLabel}
+              <Link
+                href={`/projects/${projectId}/stories?stage=${activeStage}`}
+                aria-label="clear status filter"
+                className="text-(--dim) hover:text-(--ink)"
+              >
+                ×
+              </Link>
+            </span>
+          </>
+        ) : null}
       </div>
 
       {!pipelineResult.ok ? (

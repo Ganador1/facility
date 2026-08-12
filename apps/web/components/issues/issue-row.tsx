@@ -1,6 +1,6 @@
 "use client";
 
-import { Button, StatusDot, toneFor } from "@facility/ui";
+import { Button, ButtonLink, StatusDot, toneFor } from "@facility/ui";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -61,6 +61,110 @@ export function IssueRow({
   }
 
   const current = story.currentRun;
+  const openPull = story.prs.find((pull) => pull.state === "open") ?? null;
+  const failedAgent = current?.mode.includes("architect")
+    ? "architect"
+    : current?.mode.includes("builder")
+      ? "builder"
+      : null;
+
+  function action() {
+    if (story.stageState === "needs_review") {
+      return (
+        <ButtonLink size="sm" href={storyHref(projectId, story)}>
+          Review plan
+        </ButtonLink>
+      );
+    }
+    if (story.stageState === "ready_to_plan" && canTrigger && story.storyType === "issue") {
+      return (
+        <Button
+          size="sm"
+          variant="primary"
+          tone="agent"
+          disabled={busy !== null}
+          onClick={() => void trigger("architect")}
+        >
+          {busy === "architect" ? "queuing…" : "Plan"}
+        </Button>
+      );
+    }
+    if (story.stageState === "ready_to_build" && canTrigger && story.storyType === "issue") {
+      return (
+        <Button
+          size="sm"
+          variant="primary"
+          tone="agent"
+          disabled={busy !== null}
+          onClick={() => void trigger("builder")}
+        >
+          {busy === "builder" ? "queuing…" : "Build"}
+        </Button>
+      );
+    }
+    if (story.stageState === "failed" && failedAgent && canTrigger) {
+      return (
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={busy !== null}
+          onClick={() => void trigger(failedAgent)}
+        >
+          {busy === failedAgent
+            ? "queuing…"
+            : failedAgent === "architect"
+              ? "Retry plan"
+              : "Retry build"}
+        </Button>
+      );
+    }
+    if (story.stageState === "draft_pr" && openPull) {
+      return (
+        <ButtonLink size="sm" href={openPull.url} target="_blank" rel="noreferrer">
+          Open draft ↗
+        </ButtonLink>
+      );
+    }
+    if (
+      (story.stageState === "checks_running" || story.stageState === "checks_failed") &&
+      story.ciUrl
+    ) {
+      return (
+        <ButtonLink
+          size="sm"
+          variant={story.stageState === "checks_failed" ? "danger" : "outline"}
+          href={story.ciUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {story.stageState === "checks_failed" ? "Inspect failure ↗" : "View checks ↗"}
+        </ButtonLink>
+      );
+    }
+    if (story.stageState === "awaiting_review" && openPull) {
+      return (
+        <ButtonLink size="sm" href={openPull.url} target="_blank" rel="noreferrer">
+          Review PR ↗
+        </ButtonLink>
+      );
+    }
+    if ((story.stageState === "in_progress" || story.stageState === "failed") && current) {
+      return (
+        <ButtonLink size="sm" href={`/projects/${projectId}/sessions/${current.id}`}>
+          View run
+        </ButtonLink>
+      );
+    }
+    if (story.stageState === "needs_attention") {
+      return (
+        <ButtonLink size="sm" variant="danger" href={storyHref(projectId, story)}>
+          Inspect
+        </ButtonLink>
+      );
+    }
+    return null;
+  }
+
   return (
     <div className="flex flex-col gap-2 border-b border-(--line) px-5 py-4 last:border-b-0">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -91,26 +195,7 @@ export function IssueRow({
           </span>
         ))}
         <span className="font-mono text-[10.5px] text-(--dim)">{fmtAgo(story.ghUpdatedAt)}</span>
-        {canTrigger && story.storyType === "issue" && story.state === "open" ? (
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy !== null}
-              onClick={() => void trigger("architect")}
-            >
-              {busy === "architect" ? "queuing…" : "architect"}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy !== null}
-              onClick={() => void trigger("builder")}
-            >
-              {busy === "builder" ? "queuing…" : "builder"}
-            </Button>
-          </div>
-        ) : null}
+        {action()}
       </div>
       {current || story.prs.length > 0 || story.ciState ? (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-0 sm:pl-10">

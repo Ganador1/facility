@@ -235,6 +235,7 @@ export type PipelineStage = ArrayItem<Pipeline["stages"]>;
 export type PipelineStageKey = PipelineStage["key"];
 export type PipelineStageKind = PipelineStage["kind"];
 export type PipelineStory = ArrayItem<PipelineStage["stories"]>;
+export type PipelineStageState = PipelineStory["stageState"];
 export type PipelinePullRequest = ArrayItem<PipelineStory["prs"]>;
 export type StoryDetail = FacilityGeneratedResponse<
   "GET",

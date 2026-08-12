@@ -8882,7 +8882,7 @@ export interface operations {
                     "application/json": {
                         stages: {
                             /** @enum {string} */
-                            key: "backlog" | "planning" | "ready" | "building" | "validating" | "review" | "shipped";
+                            key: "backlog" | "planning" | "building" | "validating" | "review" | "shipped";
                             label: string;
                             sub: string;
                             /** @enum {string} */
@@ -8911,6 +8911,8 @@ export interface operations {
                                 ghUpdatedAt: string | null;
                                 /** Format: date-time */
                                 closedAt: string | null;
+                                /** @enum {string} */
+                                stageState: "ready_to_plan" | "needs_attention" | "in_progress" | "needs_review" | "ready_to_build" | "failed" | "draft_pr" | "checks_running" | "checks_failed" | "awaiting_review" | "shipped_recently";
                                 /** @enum {string|null} */
                                 runState: "live" | "failed" | null;
                                 currentRun: {
@@ -9227,12 +9229,12 @@ export interface operations {
                         ciFailureNames: string[];
                         stage: {
                             /** @enum {string} */
-                            key: "backlog" | "planning" | "ready" | "building" | "validating" | "review" | "shipped";
+                            key: "backlog" | "planning" | "building" | "validating" | "review" | "shipped";
                             label: string;
                         } | null;
                         pipelineStages: {
                             /** @enum {string} */
-                            key: "backlog" | "planning" | "ready" | "building" | "validating" | "review" | "shipped";
+                            key: "backlog" | "planning" | "building" | "validating" | "review" | "shipped";
                             label: string;
                         }[];
                         allowLegacyProposalNumber: boolean;
