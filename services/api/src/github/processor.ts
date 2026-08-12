@@ -44,7 +44,12 @@ import {
   syncRepoPullRequests,
   upsertGhPullRequestFromWebhook,
 } from "./pull-requests-sync.js";
-import { laneFor, routeTrigger, type TriggerPayload } from "./router.js";
+import {
+  githubTriggerRequiresClient,
+  laneFor,
+  routeTrigger,
+  type TriggerPayload,
+} from "./router.js";
 import { renderGithubRunProgress } from "./run-progress.js";
 
 type WebhookPayload = TriggerPayload & {
@@ -129,6 +134,29 @@ type GithubWebhookLogger = {
   warn: (context: Record<string, unknown>, message: string) => void;
 };
 
+type GithubReconciliationWork = {
+  key: string;
+  eventId: string;
+  orgId: string;
+  receivedAt: Date;
+  payload: WebhookPayload;
+  runCiDoctor: boolean;
+};
+
+type DeferGithubReconciliation = (work: GithubReconciliationWork) => boolean;
+
+export type GithubWebhookBatchResult = {
+  events: number;
+  reconciledEvents: number;
+  reconciliations: number;
+  coalescedEvents: number;
+  projectionMs: number;
+  reconciliationMs: number;
+  maxReconciliationMs: number;
+};
+
+const GITHUB_RECONCILIATION_CONCURRENCY = 4;
+
 const fallbackGithubWebhookLogger: GithubWebhookLogger = {
   warn: (context, message) => console.warn(message, context),
 };
@@ -140,6 +168,7 @@ export async function processGithubWebhook(
   factory?: GithubClientFactory,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
   logger: GithubWebhookLogger = fallbackGithubWebhookLogger,
+  deferReconciliation?: DeferGithubReconciliation,
 ) {
   if (!data.inboundEventId) return;
   const event = (
@@ -147,6 +176,7 @@ export async function processGithubWebhook(
   )[0];
   if (!event || event.processedAt) return;
   const payload = event.payload as WebhookPayload;
+  let completionDeferred = false;
   try {
     if (event.eventType === "installation" || event.eventType === "installation_repositories") {
       await processInstallation(db, event.orgId, payload, enqueue);
@@ -160,6 +190,7 @@ export async function processGithubWebhook(
         factory ?? createGithubClientFactory(config),
         payload,
         enqueue,
+        event.id,
       );
     } else if (event.eventType === "issue_comment") {
       await bumpGhIssueCommentCount(db, event.orgId, payload);
@@ -169,6 +200,7 @@ export async function processGithubWebhook(
         factory ?? createGithubClientFactory(config),
         payload,
         enqueue,
+        event.id,
       );
     } else if (event.eventType === "pull_request") {
       await upsertGhPullRequestFromWebhook(db, event.orgId, payload);
@@ -214,6 +246,47 @@ export async function processGithubWebhook(
         enqueue,
       );
       if (isTerminalPullRequestSignal(event.eventType, payload)) {
+        completionDeferred =
+          deferReconciliation?.(githubReconciliationWork(event, payload, false)) ?? false;
+        if (!completionDeferred) {
+          await refreshPullRequestsBestEffort(
+            () =>
+              refreshPullRequestsAndPromoteReady(
+                db,
+                event.orgId,
+                payload,
+                factory ?? createGithubClientFactory(config),
+                { sourceEventId: event.id, observedAt: event.receivedAt },
+              ),
+            logger,
+            pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
+          );
+        }
+      }
+    } else if (event.eventType === "check_run" || event.eventType === "check_suite") {
+      if (event.eventType === "check_run") {
+        await processOperationalSignal(db, event.orgId, "check_run", payload);
+      }
+      completionDeferred =
+        deferReconciliation?.(
+          githubReconciliationWork(
+            event,
+            payload,
+            event.eventType === "check_run" &&
+              isTerminalPullRequestSignal(event.eventType, payload),
+          ),
+        ) ?? false;
+      if (!completionDeferred) {
+        if (event.eventType === "check_run") {
+          await processCiDoctorCheckRun(
+            db,
+            event.orgId,
+            event.id,
+            payload,
+            factory ?? createGithubClientFactory(config),
+            enqueue,
+          );
+        }
         await refreshPullRequestsBestEffort(
           () =>
             refreshPullRequestsAndPromoteReady(
@@ -227,14 +300,95 @@ export async function processGithubWebhook(
           pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
         );
       }
-    } else if (event.eventType === "check_run" || event.eventType === "check_suite") {
-      if (event.eventType === "check_run") {
-        await processOperationalSignal(db, event.orgId, "check_run", payload);
+    } else if (event.eventType === "status") {
+      if (isPullRequestStatusSignal(payload)) {
+        completionDeferred =
+          deferReconciliation?.(githubReconciliationWork(event, payload, false)) ?? false;
+        if (!completionDeferred) {
+          await refreshPullRequestsBestEffort(
+            () =>
+              refreshPullRequestsAndPromoteReady(
+                db,
+                event.orgId,
+                payload,
+                factory ?? createGithubClientFactory(config),
+                { sourceEventId: event.id, observedAt: event.receivedAt },
+              ),
+            logger,
+            pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
+          );
+        }
+      }
+    } else if (event.eventType === "deployment_status") {
+      await processOperationalSignal(db, event.orgId, "deployment_status", payload);
+    }
+    if (!completionDeferred) {
+      await db
+        .update(inboundEvents)
+        .set({ processedAt: new Date(), error: null })
+        .where(eq(inboundEvents.id, event.id));
+    }
+  } catch (error) {
+    await db
+      .update(inboundEvents)
+      .set({ error: error instanceof Error ? error.message : "unknown error" })
+      .where(eq(inboundEvents.id, event.id));
+    throw error;
+  }
+}
+
+export async function processGithubWebhookBatch(
+  db: FacilityDb,
+  config: AppConfig,
+  deliveries: Array<{ inboundEventId?: string }>,
+  factory?: GithubClientFactory,
+  enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+  logger: GithubWebhookLogger = fallbackGithubWebhookLogger,
+): Promise<GithubWebhookBatchResult> {
+  const startedAt = Date.now();
+  const reconciliations = new Map<
+    string,
+    {
+      eventIds: Set<string>;
+      latest: GithubReconciliationWork;
+      ciDoctor?: GithubReconciliationWork;
+    }
+  >();
+
+  for (const delivery of deliveries) {
+    await processGithubWebhook(db, config, delivery, factory, enqueue, logger, (work) => {
+      const current = reconciliations.get(work.key);
+      if (!current) {
+        reconciliations.set(work.key, {
+          eventIds: new Set([work.eventId]),
+          latest: work,
+          ...(work.runCiDoctor ? { ciDoctor: work } : {}),
+        });
+        return true;
+      }
+      current.eventIds.add(work.eventId);
+      if (isLaterGithubWork(work, current.latest)) current.latest = work;
+      if (work.runCiDoctor && (!current.ciDoctor || isLaterGithubWork(work, current.ciDoctor))) {
+        current.ciDoctor = work;
+      }
+      return true;
+    });
+  }
+
+  const projectionMs = Date.now() - startedAt;
+  const groups = [...reconciliations.values()];
+  const errors: unknown[] = [];
+  const reconciliationDurations: number[] = [];
+  const reconciliationStartedAt = Date.now();
+  await runWithConcurrency(groups, GITHUB_RECONCILIATION_CONCURRENCY, async (group) => {
+    const groupStartedAt = Date.now();
+    try {
+      if (group.ciDoctor) {
         await processCiDoctorCheckRun(
           db,
-          event.orgId,
-          event.id,
-          payload,
+          group.ciDoctor.orgId,
+          group.ciDoctor.eventId,
+          group.ciDoctor.payload,
           factory ?? createGithubClientFactory(config),
           enqueue,
         );
@@ -243,43 +397,48 @@ export async function processGithubWebhook(
         () =>
           refreshPullRequestsAndPromoteReady(
             db,
-            event.orgId,
-            payload,
+            group.latest.orgId,
+            group.latest.payload,
             factory ?? createGithubClientFactory(config),
-            { sourceEventId: event.id, observedAt: event.receivedAt },
+            {
+              sourceEventId: group.latest.eventId,
+              observedAt: group.latest.receivedAt,
+            },
           ),
         logger,
-        pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
+        pullRequestRefreshContext(
+          group.latest.eventId,
+          group.latest.orgId,
+          "github.reconciliation",
+          group.latest.payload,
+        ),
       );
-    } else if (event.eventType === "status") {
-      if (isPullRequestStatusSignal(payload)) {
-        await refreshPullRequestsBestEffort(
-          () =>
-            refreshPullRequestsAndPromoteReady(
-              db,
-              event.orgId,
-              payload,
-              factory ?? createGithubClientFactory(config),
-              { sourceEventId: event.id, observedAt: event.receivedAt },
-            ),
-          logger,
-          pullRequestRefreshContext(event.id, event.orgId, event.eventType, payload),
-        );
-      }
-    } else if (event.eventType === "deployment_status") {
-      await processOperationalSignal(db, event.orgId, "deployment_status", payload);
+      await db
+        .update(inboundEvents)
+        .set({ processedAt: new Date(), error: null })
+        .where(inArray(inboundEvents.id, [...group.eventIds]));
+    } catch (error) {
+      await db
+        .update(inboundEvents)
+        .set({ error: error instanceof Error ? error.message : "unknown error" })
+        .where(inArray(inboundEvents.id, [...group.eventIds]));
+      errors.push(error);
+    } finally {
+      reconciliationDurations.push(Date.now() - groupStartedAt);
     }
-    await db
-      .update(inboundEvents)
-      .set({ processedAt: new Date() })
-      .where(eq(inboundEvents.id, event.id));
-  } catch (error) {
-    await db
-      .update(inboundEvents)
-      .set({ error: error instanceof Error ? error.message : "unknown error" })
-      .where(eq(inboundEvents.id, event.id));
-    throw error;
-  }
+  });
+  if (errors.length) throw new AggregateError(errors, "GitHub webhook reconciliation batch failed");
+
+  const reconciledEvents = groups.reduce((count, group) => count + group.eventIds.size, 0);
+  return {
+    events: deliveries.length,
+    reconciledEvents,
+    reconciliations: groups.length,
+    coalescedEvents: Math.max(0, reconciledEvents - groups.length),
+    projectionMs,
+    reconciliationMs: Date.now() - reconciliationStartedAt,
+    maxReconciliationMs: Math.max(0, ...reconciliationDurations),
+  };
 }
 
 async function refreshPullRequestsBestEffort(
@@ -309,6 +468,60 @@ function isTerminalPullRequestSignal(eventType: string, payload: WebhookPayload)
     return ["success", "failure", "error"].includes(payload.state?.toLowerCase() ?? "");
   }
   return false;
+}
+
+function githubReconciliationWork(
+  event: { id: string; orgId: string; receivedAt: Date },
+  payload: WebhookPayload,
+  runCiDoctor: boolean,
+): GithubReconciliationWork {
+  const check = payload.check_run;
+  const headSha =
+    check?.head_sha ??
+    check?.check_suite?.head_sha ??
+    payload.check_suite?.head_sha ??
+    payload.workflow_run?.head_sha ??
+    payload.sha;
+  const pullNumbers = [
+    ...(check?.pull_requests ?? []),
+    ...(check?.check_suite?.pull_requests ?? []),
+    ...(payload.check_suite?.pull_requests ?? []),
+    ...(payload.workflow_run?.pull_requests ?? []),
+  ]
+    .flatMap((pull) => (typeof pull.number === "number" ? [pull.number] : []))
+    .sort((left, right) => left - right);
+  const repository = `${payload.repository?.owner?.login ?? "unknown"}/${payload.repository?.name ?? "unknown"}`;
+  const target = headSha ?? (pullNumbers.length ? `pulls:${pullNumbers.join(",")}` : event.id);
+  return {
+    key: `${event.orgId}:${repository}:${target}`,
+    eventId: event.id,
+    orgId: event.orgId,
+    receivedAt: event.receivedAt,
+    payload,
+    runCiDoctor,
+  };
+}
+
+function isLaterGithubWork(candidate: GithubReconciliationWork, current: GithubReconciliationWork) {
+  const timeDifference = candidate.receivedAt.getTime() - current.receivedAt.getTime();
+  return timeDifference > 0 || (timeDifference === 0 && candidate.eventId > current.eventId);
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  task: (item: T) => Promise<void>,
+) {
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+      while (next < items.length) {
+        const item = items[next];
+        next += 1;
+        if (item !== undefined) await task(item);
+      }
+    }),
+  );
 }
 
 function isPullRequestStatusSignal(payload: WebhookPayload) {
@@ -481,7 +694,9 @@ async function processTrigger(
   factory: GithubClientFactory,
   payload: WebhookPayload,
   enqueue?: (queue: string, data: Record<string, unknown>) => Promise<unknown>,
+  githubDeliveryId?: string,
 ) {
+  if (!githubTriggerRequiresClient(payload)) return;
   const owner = payload.repository?.owner?.login;
   const name = payload.repository?.name;
   const installationId = payload.installation?.id;
@@ -499,8 +714,8 @@ async function processTrigger(
     repo: name,
     defaultBranch: repo.defaultBranch,
   });
-  const result = await routeTrigger(db, orgId, client, payload, enqueue);
-  if (result.routed) {
+  const result = await routeTrigger(db, orgId, client, payload, enqueue, githubDeliveryId);
+  if (result.routed && result.reason !== "delivery_replayed") {
     await auditGithub(db, repo.orgId, "github.comment.created", repo, {
       issueNumber: payload.issue?.number,
       runId: result.runId,

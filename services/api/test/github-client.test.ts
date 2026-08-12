@@ -213,6 +213,45 @@ describe("GitHub pull-request snapshots", () => {
     });
   });
 
+  it("does not list check runs when the aggregate is not failing", async () => {
+    let checkCalls = 0;
+    const client = new FacilityGithubClient(
+      {
+        graphql: async () => ({
+          repository: {
+            pullRequest: {
+              number: 3,
+              title: "PR",
+              state: "OPEN",
+              headRefName: "feature",
+              headRefOid: "sha",
+              baseRefName: "main",
+              url: "https://github.test/octo/repo/pull/3",
+              commits: {
+                nodes: [{ commit: { oid: "sha", statusCheckRollup: { state: "SUCCESS" } } }],
+              },
+            },
+          },
+        }),
+        rest: {
+          checks: {
+            listForRef: async () => {
+              checkCalls += 1;
+              return { data: { check_runs: [] } };
+            },
+          },
+        },
+      } as never,
+      { owner: "octo", repo: "repo", defaultBranch: "main" },
+    );
+
+    await expect(client.getPullRequestSnapshot(3)).resolves.toMatchObject({
+      ciState: "success",
+      ciFailureNames: [],
+    });
+    expect(checkCalls).toBe(0);
+  });
+
   it("paginates closing references instead of truncating a large linked set", async () => {
     const variables: Record<string, unknown>[] = [];
     const client = new FacilityGithubClient(
