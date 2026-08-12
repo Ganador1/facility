@@ -6,6 +6,7 @@ import {
   engineEnv,
   githubCiOwnsAcceptance,
   parseSelfReportedChecks,
+  readOnlyRepositoryMode,
   redactEventData,
   redactSecrets,
   requiresDelivery,
@@ -13,6 +14,16 @@ import {
 } from "../src/index.js";
 
 describe("platform acceptance checks", () => {
+  it("does not measure read-only learning runs against the repository baseline", () => {
+    expect(readOnlyRepositoryMode("learning")).toBe(true);
+    expect(readOnlyRepositoryMode("codex-learning")).toBe(true);
+    expect(readOnlyRepositoryMode("architect")).toBe(true);
+    expect(readOnlyRepositoryMode("review")).toBe(true);
+    expect(readOnlyRepositoryMode("security-sweep")).toBe(true);
+    expect(readOnlyRepositoryMode("custom")).toBe(false);
+    expect(readOnlyRepositoryMode("builder")).toBe(false);
+  });
+
   it("reports the exit code of a passing command", async () => {
     const { code } = await runCheckCommand("echo ok; exit 0", tmpdir(), 5);
     expect(code).toBe(0);
