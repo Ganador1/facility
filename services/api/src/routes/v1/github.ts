@@ -200,6 +200,7 @@ const PipelinePullRequestSchema = z.object({
   createdAt: DateValue.nullable(),
   closedAt: DateValue.nullable(),
   mergedAt: DateValue.nullable(),
+  closingIssues: z.array(z.number().int()),
 });
 const PipelineStorySchema = z.object({
   key: z.string(),

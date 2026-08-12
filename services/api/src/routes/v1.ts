@@ -14,6 +14,7 @@ import { registerMeMembersRolesRoutes } from "./v1/me-members-roles.js";
 import { registerPreviewRoutes } from "./v1/previews.js";
 import { registerProjectsReposRoutes } from "./v1/projects-repos.js";
 import { registerProvidersBudgetsSpendRoutes } from "./v1/providers-budgets-spend.js";
+import { registerPullRequestLinkRoutes } from "./v1/pull-request-links.js";
 import { registerRegistryRoutes } from "./v1/registry.js";
 import { registerRunsRoutes } from "./v1/runs.js";
 import { assertProjectInOrg } from "./v1/shared.js";
@@ -35,6 +36,7 @@ export async function registerV1Routes(app: FastifyInstance, config: AppConfig) 
   await registerConversationsRoutes(app, context);
   await registerAssistantRoutes(app, context);
   await registerGithubV1Routes(app, context);
+  await registerPullRequestLinkRoutes(app, context);
   await registerProvidersBudgetsSpendRoutes(app, context);
   await registerPreviewRoutes(app, context);
   await registerAnalyticsRoutes(app, context);

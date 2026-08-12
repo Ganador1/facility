@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
 import { executeApprovedProposal } from "../src/executors.js";
 import type { GithubClientFactory, Octokit } from "../src/github/client.js";
+import { pullRequestBodyForIssue } from "../src/github/closing-issues.js";
 import { syncRepoIssues, upsertGhIssueFromWebhook } from "../src/github/issues-sync.js";
 import {
   enqueueGithubIssuesSync,
@@ -47,7 +48,6 @@ import { deliverPendingRunDeliveries } from "../src/sandbox/delivery.js";
 import {
   finishRun,
   publishRunDelivery,
-  pullRequestBodyForIssue,
   RunDeliveryLeaseLostError,
 } from "../src/sandbox/orchestrator.js";
 import type { AppConfig } from "../src/types.js";
@@ -2603,6 +2603,363 @@ describe("github platform lane", async () => {
     }
   });
 
+  it("attaches a PR by editing its live GitHub body, rereading the snapshot, and replaying safely", async () => {
+    const repo = await insertRepoWithInstallation(`attach-${Date.now()}`);
+    const issueNumber = 96_100;
+    const pullNumber = 96_101;
+    await insertIssue(repo.id, issueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repo.id, pullNumber, { bodyMd: "stale mirrored body" });
+
+    let liveBody = "Latest body edited on GitHub";
+    let linked = false;
+    let updateCalls = 0;
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = async () =>
+      ({
+        graphql: async () => ({
+          repository: {
+            pullRequest: pullRequestNode(repo, pullNumber, liveBody, linked ? [issueNumber] : []),
+          },
+        }),
+        rest: {
+          issues: {},
+          repos: {},
+          git: {},
+          pulls: {
+            update: async (input: Record<string, unknown>) => {
+              updateCalls += 1;
+              liveBody = String(input.body);
+              linked = true;
+              return { data: {} };
+            },
+          },
+        },
+      }) as never;
+    try {
+      const idempotencyKey = `attach-pr-${Date.now()}`;
+      const request = {
+        method: "POST" as const,
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues?repoId=${repo.id}`,
+        headers: { cookie, "idempotency-key": idempotencyKey },
+        payload: { issueNumber },
+      };
+      const attached = await app.inject(request);
+      const replayed = await app.inject(request);
+
+      expect(attached.statusCode, attached.body).toBe(200);
+      expect(attached.json()).toMatchObject({
+        repoId: repo.id,
+        pullNumber,
+        issueNumber,
+        closingIssues: [issueNumber],
+        changed: true,
+      });
+      expect(replayed.statusCode).toBe(200);
+      expect(replayed.headers["idempotency-status"]).toBe("replayed");
+      expect(updateCalls).toBe(1);
+      expect(liveBody).toBe(`Closes #${issueNumber}\n\nLatest body edited on GitHub`);
+
+      const mirrored = (
+        await db
+          .select()
+          .from(ghPullRequests)
+          .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, pullNumber)))
+      )[0];
+      expect(mirrored).toMatchObject({
+        bodyMd: liveBody,
+        closingIssues: [issueNumber],
+      });
+      const pipeline = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/pipeline`,
+        headers: { cookie },
+      });
+      const stories = pipeline
+        .json()
+        .stages.flatMap((stage: { stories: unknown[] }) => stage.stories) as Array<{
+        key: string;
+        prs: Array<{ number: number }>;
+      }>;
+      expect(stories.find((story) => story.key === `${repo.id}:issue:${issueNumber}`)?.prs).toEqual(
+        [expect.objectContaining({ number: pullNumber })],
+      );
+      expect(stories.some((story) => story.key === `${repo.id}:pull_request:${pullNumber}`)).toBe(
+        false,
+      );
+      const audits = await db
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.orgId, orgId),
+            eq(auditEvents.action, "github.closing_issue.attached"),
+            sql`${auditEvents.payload}->>'repoId' = ${repo.id}`,
+            sql`${auditEvents.payload}->>'pullNumber' = ${String(pullNumber)}`,
+          ),
+        );
+      expect(audits).toHaveLength(1);
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
+  });
+
+  it("never invents a local link when GitHub does not confirm the edited body", async () => {
+    const repo = await insertRepoWithInstallation(`unconfirmed-${Date.now()}`);
+    const issueNumber = 96_200;
+    const pullNumber = 96_201;
+    await insertIssue(repo.id, issueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repo.id, pullNumber, { bodyMd: "stale body" });
+
+    let liveBody = "Current human body";
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = async () =>
+      ({
+        graphql: async () => ({
+          repository: { pullRequest: pullRequestNode(repo, pullNumber, liveBody, []) },
+        }),
+        rest: {
+          issues: {},
+          repos: {},
+          git: {},
+          pulls: {
+            update: async (input: Record<string, unknown>) => {
+              liveBody = String(input.body);
+              return { data: {} };
+            },
+          },
+        },
+      }) as never;
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues?repoId=${repo.id}`,
+        headers: { cookie },
+        payload: { issueNumber },
+      });
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json().error.code).toBe("closing_issue_not_confirmed");
+      expect(liveBody).toBe(`Closes #${issueNumber}\n\nCurrent human body`);
+      const mirrored = (
+        await db
+          .select()
+          .from(ghPullRequests)
+          .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, pullNumber)))
+      )[0];
+      expect(mirrored?.closingIssues).toEqual([]);
+      const pipeline = await app.inject({
+        method: "GET",
+        url: `/v1/projects/${projectId}/pipeline`,
+        headers: { cookie },
+      });
+      const storyKeys = pipeline
+        .json()
+        .stages.flatMap((stage: { stories: Array<{ key: string }> }) =>
+          stage.stories.map((story) => story.key),
+        );
+      expect(storyKeys).toContain(`${repo.id}:pull_request:${pullNumber}`);
+      const audits = await db
+        .select()
+        .from(auditEvents)
+        .where(
+          and(
+            eq(auditEvents.orgId, orgId),
+            eq(auditEvents.action, "github.closing_issue.attached_unconfirmed"),
+            sql`${auditEvents.payload}->>'repoId' = ${repo.id}`,
+            sql`${auditEvents.payload}->>'pullNumber' = ${String(pullNumber)}`,
+          ),
+        );
+      expect(audits).toHaveLength(1);
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
+  });
+
+  it("refuses to attach a PR that does not target the repository default branch", async () => {
+    const repo = await insertRepoWithInstallation(`attach-base-${Date.now()}`);
+    const issueNumber = 96_250;
+    const pullNumber = 96_251;
+    await insertIssue(repo.id, issueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repo.id, pullNumber, { baseRef: "release" });
+
+    let updateCalls = 0;
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = async () =>
+      ({
+        graphql: async () => ({
+          repository: {
+            pullRequest: {
+              ...pullRequestNode(repo, pullNumber, "Implementation details", []),
+              baseRefName: "release",
+            },
+          },
+        }),
+        rest: {
+          issues: {},
+          repos: {},
+          git: {},
+          pulls: {
+            update: async () => {
+              updateCalls += 1;
+              return { data: {} };
+            },
+          },
+        },
+      }) as never;
+    try {
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues?repoId=${repo.id}`,
+        headers: { cookie },
+        payload: { issueNumber },
+      });
+
+      expect(response.statusCode, response.body).toBe(409);
+      expect(response.json().error.code).toBe("pull_request_not_on_default_branch");
+      expect(updateCalls).toBe(0);
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
+  });
+
+  it("detaches only Facility's exact closing line and rereads GitHub before clearing the mirror", async () => {
+    const repo = await insertRepoWithInstallation(`detach-${Date.now()}`);
+    const issueNumber = 96_300;
+    const pullNumber = 96_301;
+    await insertIssue(repo.id, issueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repo.id, pullNumber, {
+      bodyMd: `Closes #${issueNumber}\n\nImplementation details`,
+      closingIssues: [issueNumber],
+    });
+
+    let liveBody = `Closes #${issueNumber}\n\nImplementation details`;
+    let linked = true;
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = async () =>
+      ({
+        graphql: async () => ({
+          repository: {
+            pullRequest: pullRequestNode(repo, pullNumber, liveBody, linked ? [issueNumber] : []),
+          },
+        }),
+        rest: {
+          issues: {},
+          repos: {},
+          git: {},
+          pulls: {
+            update: async (input: Record<string, unknown>) => {
+              liveBody = String(input.body);
+              linked = false;
+              return { data: {} };
+            },
+          },
+        },
+      }) as never;
+    try {
+      const detached = await app.inject({
+        method: "DELETE",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues/${issueNumber}?repoId=${repo.id}`,
+        headers: { cookie },
+      });
+      expect(detached.statusCode, detached.body).toBe(200);
+      expect(detached.json()).toMatchObject({ closingIssues: [], changed: true });
+      expect(liveBody).toBe("Implementation details");
+      const mirrored = (
+        await db
+          .select()
+          .from(ghPullRequests)
+          .where(and(eq(ghPullRequests.repoId, repo.id), eq(ghPullRequests.number, pullNumber)))
+      )[0];
+      expect(mirrored?.closingIssues).toEqual([]);
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
+  });
+
+  it("rejects malformed, cross-repository, unauthorized, suspended, and unsafe detach inputs", async () => {
+    const repo = await insertRepoWithInstallation(`link-guards-${Date.now()}`);
+    const otherRepo = await insertRepo({ owner: `other-link-${Date.now()}`, name: "repo" });
+    const issueNumber = 96_400;
+    const pullNumber = 96_401;
+    await insertIssue(otherRepo.id, issueNumber, "open", "2026-08-01T00:00:00Z");
+    await insertPullRequest(repo.id, pullNumber, { closingIssues: [issueNumber] });
+
+    let githubCalls = 0;
+    const previousFactory = app.githubClientFactory;
+    app.githubClientFactory = async () => {
+      githubCalls += 1;
+      return {
+        graphql: async () => ({
+          repository: {
+            pullRequest: pullRequestNode(repo, pullNumber, `Fixes #${issueNumber}`, [issueNumber]),
+          },
+        }),
+        rest: { issues: {}, repos: {}, git: {}, pulls: { update: async () => ({ data: {} }) } },
+      } as never;
+    };
+    try {
+      const malformed = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues?repoId=${repo.id}`,
+        headers: { cookie },
+        payload: { issueNumber: 0 },
+      });
+      expect(malformed.statusCode).toBe(400);
+      const crossRepo = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues?repoId=${repo.id}`,
+        headers: { cookie },
+        payload: { issueNumber },
+      });
+      expect(crossRepo.statusCode).toBe(404);
+      expect(crossRepo.json().error.code).toBe("same_repository_issue_not_found");
+      expect(githubCalls).toBe(0);
+
+      await insertIssue(repo.id, issueNumber, "open", "2026-08-01T00:00:00Z");
+      const viewer = await generateApiKey("fak");
+      await db.insert(apiKeys).values({
+        id: viewer.id,
+        orgId,
+        name: `link-viewer-${Date.now()}`,
+        prefix: viewer.lookup,
+        last4: viewer.last4,
+        hash: viewer.hash,
+        scopeType: "org",
+        roleId: "role_bundled_viewer",
+      });
+      const forbidden = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues?repoId=${repo.id}`,
+        headers: { authorization: `Bearer ${viewer.secret}` },
+        payload: { issueNumber },
+      });
+      expect(forbidden.statusCode).toBe(403);
+      expect(githubCalls).toBe(0);
+
+      const unsafeDetach = await app.inject({
+        method: "DELETE",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues/${issueNumber}?repoId=${repo.id}`,
+        headers: { cookie },
+      });
+      expect(unsafeDetach.statusCode, unsafeDetach.body).toBe(409);
+      expect(unsafeDetach.json().error.code).toBe("closing_issue_not_detachable");
+
+      await db
+        .update(githubInstallations)
+        .set({ suspendedAt: new Date() })
+        .where(eq(githubInstallations.id, repo.installationId ?? ""));
+      const suspended = await app.inject({
+        method: "POST",
+        url: `/v1/projects/${projectId}/pulls/${pullNumber}/closing-issues?repoId=${repo.id}`,
+        headers: { cookie },
+        payload: { issueNumber },
+      });
+      expect(suspended.statusCode).toBe(409);
+      expect(suspended.json().error.code).toBe("installation_suspended");
+    } finally {
+      app.githubClientFactory = previousFactory;
+    }
+  });
+
   it("routes approved issue updates to the requested repository and rejects ambiguity", async () => {
     const number = 90_000;
     const repoA = await insertRepo({ owner: `updates-a-${Date.now()}`, name: "repo" });
@@ -3121,6 +3478,13 @@ describe("github platform lane", async () => {
       headers: auth,
     });
     expect(activity.statusCode).toBe(404);
+    const attach = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${projectId}/pulls/45/closing-issues?repoId=repo_scoped`,
+      headers: auth,
+      payload: { issueNumber: 44 },
+    });
+    expect(attach.statusCode).toBe(404);
   });
 
   it("lists installations and installation repositories with org isolation", async () => {
@@ -4881,3 +5245,37 @@ describe("github platform lane", async () => {
     return row;
   }
 });
+
+function pullRequestNode(
+  repo: { owner: string; name: string; defaultBranch: string },
+  number: number,
+  body: string,
+  closingIssues: number[],
+) {
+  return {
+    number,
+    title: `PR ${number}`,
+    state: "OPEN",
+    isDraft: false,
+    author: { login: "octocat" },
+    headRefName: `feature/${number}`,
+    headRefOid: `head-${number}`,
+    baseRefName: repo.defaultBranch,
+    url: `https://github.test/${repo.owner}/${repo.name}/pull/${number}`,
+    body,
+    createdAt: "2026-08-01T00:00:00Z",
+    updatedAt: "2026-08-01T00:00:00Z",
+    closedAt: null,
+    mergedAt: null,
+    closingIssuesReferences: {
+      nodes: closingIssues.map((issueNumber) => ({
+        number: issueNumber,
+        repository: { nameWithOwner: `${repo.owner}/${repo.name}` },
+      })),
+      pageInfo: { endCursor: null, hasNextPage: false },
+    },
+    commits: {
+      nodes: [{ commit: { oid: `head-${number}`, statusCheckRollup: null } }],
+    },
+  };
+}

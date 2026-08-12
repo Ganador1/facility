@@ -430,6 +430,15 @@ export class FacilityGithubClient {
     return { number: response.data.number, url: response.data.html_url };
   }
 
+  async updatePullRequestBody(number: number, body: string): Promise<void> {
+    await this.octokit.rest.pulls.update({
+      owner: this.repo.owner,
+      repo: this.repo.repo,
+      pull_number: number,
+      body,
+    });
+  }
+
   async listOpenPullRequestsForHead(
     head: string,
     base: string,

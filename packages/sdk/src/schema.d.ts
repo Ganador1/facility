@@ -901,6 +901,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{projectId}/pulls/{number}/closing-issues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Attach pull request to issue */
+        post: operations["postProjectsByProjectIdPullsByNumberClosingIssues"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{projectId}/pulls/{number}/closing-issues/{issueNumber}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Detach pull request from issue */
+        delete: operations["deleteProjectsByProjectIdPullsByNumberClosingIssuesByIssueNumber"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/providers": {
         parameters: {
             query?: never;
@@ -8940,6 +8974,7 @@ export interface operations {
                                     closedAt: string | null;
                                     /** Format: date-time */
                                     mergedAt: string | null;
+                                    closingIssues: number[];
                                 }[];
                                 /** @enum {string|null} */
                                 ciState: "pending" | "success" | "failure" | null;
@@ -9222,6 +9257,7 @@ export interface operations {
                             closedAt: string | null;
                             /** Format: date-time */
                             mergedAt: string | null;
+                            closingIssues: number[];
                         }[];
                         /** @enum {string|null} */
                         ciState: "pending" | "success" | "failure" | null;
@@ -9641,6 +9677,222 @@ export interface operations {
                         createdAt: string;
                         /** Format: date-time */
                         updatedAt: string;
+                    };
+                };
+            };
+            /** @description The request is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication is required or invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The authenticated principal lacks the required permission. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The requested resource was not found or is outside the principal scope. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request conflicts with current resource state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request rate limit was exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error occurred. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A required service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    postProjectsByProjectIdPullsByNumberClosingIssues: {
+        parameters: {
+            query?: {
+                repoId?: string;
+            };
+            header?: {
+                /** @description Replays the original response for the same principal, path, key, and request body for 24 hours. */
+                "Idempotency-Key"?: string;
+            };
+            path: {
+                projectId: string;
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    issueNumber: number;
+                };
+            };
+        };
+        responses: {
+            /** @description Default Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        repoId: string;
+                        pullNumber: number;
+                        issueNumber: number;
+                        closingIssues: number[];
+                        changed: boolean;
+                    };
+                };
+            };
+            /** @description The request is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication is required or invalid. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The authenticated principal lacks the required permission. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The requested resource was not found or is outside the principal scope. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request conflicts with current resource state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request rate limit was exceeded. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error occurred. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description A required service is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    deleteProjectsByProjectIdPullsByNumberClosingIssuesByIssueNumber: {
+        parameters: {
+            query?: {
+                repoId?: string;
+            };
+            header?: never;
+            path: {
+                projectId: string;
+                number: number;
+                issueNumber: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Default Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        repoId: string;
+                        pullNumber: number;
+                        issueNumber: number;
+                        closingIssues: number[];
+                        changed: boolean;
                     };
                 };
             };

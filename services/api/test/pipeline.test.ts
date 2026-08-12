@@ -387,6 +387,7 @@ function storyWith(ci: {
         createdAt: NOW,
         closedAt: null,
         mergedAt: null,
+        closingIssues: [],
       },
     ],
   };
