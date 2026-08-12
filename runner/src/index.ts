@@ -300,13 +300,13 @@ async function main() {
       ]);
     }
     // Acceptance checks prove changed work, so read-only modes (architect,
-    // review, security-sweep) skip them: those runs change nothing, and running
-    // the project's checks would measure the repo's baseline — e.g. an
-    // architect failing `npm test` on a repo whose bootstrap PR hasn't merged
-    // yet. Every other mode keeps the gate: builder deliveries, repair modes
-    // (address-review, ci-doctor — they push commits too), and custom/BYO
+    // review, security-sweep, learning) skip them: those runs change nothing,
+    // and running the project's checks would measure the repo's baseline — e.g.
+    // an architect failing `npm test` on a repo whose bootstrap PR hasn't
+    // merged yet. Every other mode keeps the gate: builder deliveries, repair
+    // modes (address-review, ci-doctor — they push commits too), and custom/BYO
     // modes that use checks as generic acceptance.
-    const readOnlyMode = readOnlyRepositoryMode(normalizedMode(bundle.mode));
+    const readOnlyMode = readOnlyRepositoryMode(bundle.mode);
     if (githubCi && engineCode === 0) {
       await emit([
         {
@@ -1800,8 +1800,14 @@ function repairRepositoryMode(mode: string) {
   return mode === "address_review" || mode === "ci_doctor";
 }
 
-function readOnlyRepositoryMode(mode: string) {
-  return mode === "architect" || mode === "review" || mode === "security_sweep";
+export function readOnlyRepositoryMode(mode: string) {
+  const normalized = normalizedMode(mode);
+  return (
+    normalized === "architect" ||
+    normalized === "review" ||
+    normalized === "security_sweep" ||
+    normalized === "learning"
+  );
 }
 
 export function parseGitNameStatus(raw: string) {
