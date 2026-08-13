@@ -295,7 +295,7 @@ describe("api", async () => {
             : 0),
         0,
       ),
-    ).toBe(138);
+    ).toBe(140);
     expect(document.paths["/v1/projects"]?.get?.security).toEqual([
       { bearerAuth: [] },
       { sessionCookie: [] },
@@ -333,6 +333,21 @@ describe("api", async () => {
     expect(document.paths["/v1/projects/{projectId}/issues/{number}/trigger"]?.post).toMatchObject({
       summary: "Trigger issue",
       tags: ["GitHub"],
+    });
+    expect(
+      document.paths["/v1/projects/{projectId}/pulls/{number}/closing-issues"]?.post,
+    ).toMatchObject({
+      summary: "Attach pull request to issue",
+      tags: ["GitHub"],
+      "x-facility-permission": "repos:write",
+    });
+    expect(
+      document.paths["/v1/projects/{projectId}/pulls/{number}/closing-issues/{issueNumber}"]
+        ?.delete,
+    ).toMatchObject({
+      summary: "Detach pull request from issue",
+      tags: ["GitHub"],
+      "x-facility-permission": "repos:write",
     });
     expect(document.paths["/v1/projects/{projectId}/stories/{number}"]?.get).toMatchObject({
       summary: "Get story",

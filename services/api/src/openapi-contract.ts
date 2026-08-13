@@ -315,6 +315,9 @@ function operationSummary(method: string, path: string) {
     "get /v1/github/installations": "List GitHub App installations",
     "get /v1/github/installations/{installationId}/repos":
       "List repositories visible to a GitHub App installation",
+    "post /v1/projects/{projectId}/pulls/{number}/closing-issues": "Attach pull request to issue",
+    "delete /v1/projects/{projectId}/pulls/{number}/closing-issues/{issueNumber}":
+      "Detach pull request from issue",
   };
   const exact = custom[`${method} ${path}`];
   if (exact) return exact;
@@ -448,7 +451,7 @@ function singular(value: string) {
 
 function operationTag(path: string) {
   const matches: Array<[RegExp, string]> = [
-    [/\/projects\/[^/]+\/issues(?:\/|$)/, "GitHub"],
+    [/\/projects\/[^/]+\/(?:issues|pulls)(?:\/|$)/, "GitHub"],
     [/\/webhook-deliveries(?:\/|$)/, "Integrations"],
     [/\/action-types(?:\/|$)/, "Human approval"],
     [/\/mcp(?:\/|$)/, "Human approval"],

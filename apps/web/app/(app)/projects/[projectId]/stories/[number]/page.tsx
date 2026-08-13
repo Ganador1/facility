@@ -5,10 +5,16 @@ import { CiStatusLink } from "@/components/ci-status";
 import { Markdown } from "@/components/markdown";
 import { ErrorNotice, Offline } from "@/components/offline";
 import { LiveRefresh } from "@/components/shell/live-refresh";
+import { PullRequestLinks } from "@/components/story/pull-request-links";
 import { StoryTimeline } from "@/components/story/timeline";
 import { StoryTriggerButtons } from "@/components/story/trigger-buttons";
 import { api } from "@/lib/api";
 import { pipelineStories } from "@/lib/pipeline";
+import {
+  detachablePullRequests,
+  linkableIssues,
+  linkablePullRequests,
+} from "@/lib/pull-request-links";
 import { deriveStoryTimeline, proposalsForStory } from "@/lib/story";
 import { createStoryReferenceLink } from "@/lib/story-reference";
 
@@ -109,6 +115,11 @@ export default async function StoryPage({
         candidate === permission ||
         candidate === `${permission.split(":")[0]}:*`,
     );
+  const stories = pipeline.ok ? pipelineStories(pipeline.data) : [];
+  const issueCandidates = linkableIssues(stories, story.repoId);
+  const pullCandidates = linkablePullRequests(stories, story.repoId);
+  const detachablePulls =
+    story.storyType === "issue" ? detachablePullRequests(story.number, story.prs) : [];
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-8">
@@ -182,6 +193,18 @@ export default async function StoryPage({
           ) : null}
         </div>
       </div>
+
+      {has("repos:write") ? (
+        <PullRequestLinks
+          projectId={projectId}
+          repoId={story.repoId}
+          storyType={story.storyType}
+          storyNumber={story.number}
+          issueCandidates={issueCandidates}
+          pullCandidates={pullCandidates}
+          detachablePulls={detachablePulls}
+        />
+      ) : null}
 
       {story.bodyMd?.trim() ? (
         <details open className="border border-(--line) bg-(--bg-subtle)">

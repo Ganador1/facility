@@ -43,6 +43,7 @@ import {
   FacilityGithubClient,
   type GithubClientFactory,
 } from "../github/client.js";
+import { pullRequestBodyForIssue } from "../github/closing-issues.js";
 import {
   type GithubRunProgressPhase,
   progressCommentId,
@@ -1293,26 +1294,6 @@ function githubStatus(error: unknown) {
   return typeof status === "number" ? status : undefined;
 }
 
-export function pullRequestBodyForIssue(
-  body: string,
-  issueNumber: number,
-  owner: string,
-  repo: string,
-) {
-  const escapedOwner = escapeRegExp(owner);
-  const escapedRepo = escapeRegExp(repo);
-  const reference = new RegExp(
-    `\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\s+(?:#${issueNumber}\\b|${escapedOwner}/${escapedRepo}#${issueNumber}\\b|https://github\\.com/${escapedOwner}/${escapedRepo}/issues/${issueNumber}\\b)`,
-    "i",
-  );
-  const prose = body
-    .replace(/```[^\n]*\n[\s\S]*?```/g, "")
-    .replace(/~~~[^\n]*\n[\s\S]*?~~~/g, "")
-    .replace(/`[^`\n]*`/g, "");
-  if (reference.test(prose)) return body;
-  return body.trim() ? `Closes #${issueNumber}\n\n${body}` : `Closes #${issueNumber}`;
-}
-
 function githubLoginForRun(run: RunRow) {
   const trigger = objectOrEmpty(run.trigger);
   if (typeof trigger.githubLogin === "string" && trigger.githubLogin) return trigger.githubLogin;
@@ -1337,10 +1318,6 @@ async function recordGithubAssignmentSkipped(
     target: { type: "pull_request", id: String(pullNumber) },
     payload: { runId: run.id, pullNumber, login, reason },
   });
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function recordRunPullRequestUpdate(

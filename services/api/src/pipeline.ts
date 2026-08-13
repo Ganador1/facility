@@ -59,6 +59,7 @@ export type PipelinePullRequest = {
   createdAt: Date | null;
   closedAt: Date | null;
   mergedAt: Date | null;
+  closingIssues: number[];
 };
 
 export type PipelineStoryInput = {
@@ -290,6 +291,7 @@ export function assemblePipelineStories(input: {
             createdAt: null,
             closedAt: null,
             mergedAt: null,
+            closingIssues: [],
           });
         }
       }
@@ -455,6 +457,7 @@ function pullRequestOf(pull: PipelinePullRequestRecord): PipelinePullRequest {
     createdAt: pull.ghCreatedAt,
     closedAt: pull.closedAt,
     mergedAt: pull.mergedAt,
+    closingIssues: pull.closingIssues,
   };
 }
 
