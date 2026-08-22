@@ -31,7 +31,9 @@ export async function beginIdempotentRequest(
   if (!principal) throw new ApiError(401, "unauthorized", "Authentication required");
   const path = request.url.split("?")[0] ?? request.url;
   const keyHash = sha256(key);
-  const requestHash = sha256(stableJson(request.body));
+  const stableQuery = stableJson(request.query ?? {});
+  const stableBody = stableJson(request.body);
+  const requestHash = sha256(`${stableQuery}|${stableBody}`);
   const id = `idem_${sha256(
     `${principal.orgId}:${principal.type}:${principal.id}:${request.method}:${path}:${keyHash}`,
   )}`;
@@ -73,7 +75,7 @@ export async function beginIdempotentRequest(
     throw new ApiError(
       409,
       "idempotency_key_reused",
-      "Idempotency-Key was already used with a different request body",
+      "Idempotency-Key was already used with a different request body or query parameters",
     );
   }
   if (existing.state !== "completed" || existing.statusCode === null) {
