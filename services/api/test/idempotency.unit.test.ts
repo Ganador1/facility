@@ -210,4 +210,74 @@ describe("Idempotency Unit Tests (Issue #187)", () => {
       }),
     );
   });
+
+  it("replays legacy records fingerprinted with body-only hash (rolling deploy & 24h compatibility)", async () => {
+    const { createHash } = await import("node:crypto");
+    const sha256 = (v: string) => createHash("sha256").update(v).digest("hex");
+    const stableJson = (v: unknown): string => {
+      if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null";
+      if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+      const object = v as Record<string, unknown>;
+      return `{${Object.keys(object)
+        .sort()
+        .filter((key) => object[key] !== undefined)
+        .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+        .join(",")}}`;
+    };
+
+    const key = "test-key-legacy-123";
+    const body = { name: "Legacy Project", slug: "legacy-proj" };
+    const legacyRequestHash = sha256(stableJson(body));
+    const path = "/v1/projects";
+    const principalOrgId = "org_test";
+    const keyHash = sha256(key);
+    const id = `idem_${sha256(`${principalOrgId}:user:usr_test:POST:${path}:${keyHash}`)}`;
+
+    // Seed an existing legacy record with the pre-deployment body-only hash
+    const legacyRow: MockStoredRow = {
+      id,
+      orgId: principalOrgId,
+      principalId: "user:usr_test",
+      method: "POST",
+      path,
+      keyHash,
+      requestHash: legacyRequestHash,
+      state: "completed",
+      statusCode: 200,
+      responseBody: { id: "proj_legacy_123", slug: "legacy-proj" },
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
+      createdAt: new Date(Date.now() - 60_000),
+      updatedAt: new Date(Date.now() - 60_000),
+    };
+
+    const db = createMockDb([legacyRow]);
+
+    // 1. Identical retry against the legacy record should match and replay
+    const retryReq = createMockRequestReply({
+      url: path,
+      headers: { "idempotency-key": key },
+      body,
+    });
+
+    await beginIdempotentRequest(db, retryReq.request, retryReq.reply);
+    expect(retryReq.replyHeaders["idempotency-status"]).toBe("replayed");
+    expect(retryReq.getSentStatus()).toBe(200);
+    expect(retryReq.getSentPayload()).toEqual({ id: "proj_legacy_123", slug: "legacy-proj" });
+
+    // 2. Different body against the legacy record should be rejected with 409
+    const differentBodyReq = createMockRequestReply({
+      url: path,
+      headers: { "idempotency-key": key },
+      body: { name: "Different Name", slug: "different-slug" },
+    });
+
+    await expect(
+      beginIdempotentRequest(db, differentBodyReq.request, differentBodyReq.reply),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        statusCode: 409,
+        code: "idempotency_key_reused",
+      }),
+    );
+  });
 });

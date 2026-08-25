@@ -34,6 +34,7 @@ export async function beginIdempotentRequest(
   const stableQuery = stableJson(request.query ?? {});
   const stableBody = stableJson(request.body);
   const requestHash = sha256(`${stableQuery}|${stableBody}`);
+  const legacyRequestHash = sha256(stableBody);
   const id = `idem_${sha256(
     `${principal.orgId}:${principal.type}:${principal.id}:${request.method}:${path}:${keyHash}`,
   )}`;
@@ -71,7 +72,11 @@ export async function beginIdempotentRequest(
     await db.delete(idempotencyRecords).where(eq(idempotencyRecords.id, id));
     return beginIdempotentRequest(db, request, reply);
   }
-  if (existing.requestHash !== requestHash) {
+  // Support backward compatibility with existing 24-hour records and during
+  // rolling deployments: legacy records were fingerprinted as sha256(stableBody).
+  const isMatch =
+    existing.requestHash === requestHash || existing.requestHash === legacyRequestHash;
+  if (!isMatch) {
     throw new ApiError(
       409,
       "idempotency_key_reused",
