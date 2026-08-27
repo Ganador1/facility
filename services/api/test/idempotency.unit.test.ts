@@ -279,5 +279,23 @@ describe("Idempotency Unit Tests (Issue #187)", () => {
         code: "idempotency_key_reused",
       }),
     );
+
+    // 3. Same body but with added/changed query param (e.g. ?dry=1) against legacy record
+    // MUST fail safely and reject with 409, because legacy records contain no query information
+    const changedQueryReq = createMockRequestReply({
+      url: `${path}?dry=1`,
+      headers: { "idempotency-key": key },
+      query: { dry: 1 },
+      body,
+    });
+
+    await expect(
+      beginIdempotentRequest(db, changedQueryReq.request, changedQueryReq.reply),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        statusCode: 409,
+        code: "idempotency_key_reused",
+      }),
+    );
   });
 });

@@ -74,8 +74,12 @@ export async function beginIdempotentRequest(
   }
   // Support backward compatibility with existing 24-hour records and during
   // rolling deployments: legacy records were fingerprinted as sha256(stableBody).
-  const isMatch =
-    existing.requestHash === requestHash || existing.requestHash === legacyRequestHash;
+  // A legacy record contains no query information, so a body-only match is only
+  // valid if the incoming request has no query parameters (stableQuery === "{}").
+  // Any request with query parameters (e.g. ?dry=1) must match the full
+  // query+body fingerprint or fail safely with 409 idempotency_key_reused.
+  const isLegacyQuerylessMatch = stableQuery === "{}" && existing.requestHash === legacyRequestHash;
+  const isMatch = existing.requestHash === requestHash || isLegacyQuerylessMatch;
   if (!isMatch) {
     throw new ApiError(
       409,
