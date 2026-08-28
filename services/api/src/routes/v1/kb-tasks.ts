@@ -15,17 +15,25 @@ import {
   runEvents,
   runs,
 } from "@facility/db";
-import { artifactIdFor, validate } from "@facility/harness";
+import {
+  artifactIdFor,
+  chainFromConfig,
+  entriesStrandedByChain,
+  validate,
+} from "@facility/harness";
 import { and, asc, desc, eq, ilike, or } from "drizzle-orm";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { withBuilderPlanPreflight } from "../../builder-plan-policy.js";
 import { ApiError, notFound } from "../../errors.js";
 import {
+  allocateNormalizedKbEntry,
   ensureActive,
   ensureLinks,
   loadKbGraph,
+  lockSpaceAgainstChainChange,
   normalizeKbDraft,
+  SpaceChainChangedError,
   toHarnessEntry,
   toHarnessSpace,
   validateProjectKb,
@@ -73,6 +81,30 @@ function coalescesWith(
   if (Date.now() - latest.createdAt.getTime() > VERSION_COALESCE_MS) return false;
   const by = latest.savedBy as { type?: string; id?: string } | null;
   return by?.type === p.type && by?.id === p.id;
+}
+
+/**
+ * Route-side face of the harness's host-agnostic writer re-check: here,
+ * losing the race against a chain change is an HTTP conflict.
+ */
+async function lockSpaceForEntryWrite(
+  tx: Parameters<typeof lockSpaceAgainstChainChange>[0],
+  orgId: string,
+  spaceId: string,
+  type: string,
+) {
+  try {
+    await lockSpaceAgainstChainChange(tx, orgId, spaceId, type);
+  } catch (error) {
+    if (error instanceof SpaceChainChangedError) {
+      throw new ApiError(
+        409,
+        error.code,
+        `The space's chain changed while this entry was being written; type ${type} is no longer declared — re-validate and retry`,
+      );
+    }
+    throw error;
+  }
 }
 
 /** Artifact ids a body cites — bare codes (they match inside [[wikilinks]] too). */
@@ -161,7 +193,39 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       }
       const row = await db.transaction(async (tx) => {
         const patch: Partial<typeof kbSpaces.$inferInsert> = { updatedAt: new Date() };
-        if (body.config !== undefined) patch.config = body.config;
+        if (body.config !== undefined) {
+          // Re-chaining is the one config change that can strand what is
+          // already stored: validation judges every entry by the chain
+          // configured now, so an entry the new chain does not declare fails
+          // every later validation — uneditable on PATCH, and a permanent
+          // failure of the whole-space check that run checkpoints gate on.
+          // Refuse and name the entries rather than store a config that
+          // re-litigates history. The space row is taken FOR UPDATE first;
+          // entry writers take it at NO KEY UPDATE strength and re-check the
+          // chain inside their own transaction (lockSpaceAgainstChainChange),
+          // so neither side can interleave with the other.
+          await tx
+            .select({ id: kbSpaces.id })
+            .from(kbSpaces)
+            .where(and(eq(kbSpaces.orgId, p.orgId), eq(kbSpaces.id, current.id)))
+            .for("update");
+          const next = chainFromConfig(body.config);
+          const stored = await tx
+            .select()
+            .from(kbEntries)
+            .where(and(eq(kbEntries.orgId, p.orgId), eq(kbEntries.spaceId, current.id)));
+          const stranded = entriesStrandedByChain(stored.map(toHarnessEntry), next);
+          if (stranded.length > 0) {
+            const ids = stranded.map((item) => item.artifactId).join(", ");
+            throw new ApiError(
+              409,
+              "chain_change_strands_entries",
+              `Chain "${next.id}" does not declare ${stranded.length} stored ${stranded.length === 1 ? "entry" : "entries"} (${ids}); the space keeps its current chain — it can change chains only once every stored entry's type is declared by the target chain`,
+              { chain: next.id, stranded },
+            );
+          }
+          patch.config = body.config;
+        }
         const docs = [
           { doc: "charter" as const, next: body.charterMd, prior: current.charterMd },
           { doc: "active" as const, next: body.activeMd, prior: current.activeMd },
@@ -493,8 +557,11 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       const graph = await loadKbGraph(db, p.orgId, space.projectId);
       if (!graph) throw notFound("KB space not found");
       const predecessorArtifactId = artifactIdFor(toHarnessEntry(predecessor));
-      const max =
-        (
+      // Preview number only: it dates the draft that validation inspects and,
+      // on the dry path, the draft returned to the caller. The stored number is
+      // allocated under the space lock below — never this one.
+      const previewNumber =
+        ((
           await db
             .select()
             .from(kbEntries)
@@ -507,11 +574,11 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
             )
             .orderBy(desc(kbEntries.number))
             .limit(1)
-        )[0]?.number ?? 0;
+        )[0]?.number ?? 0) + 1;
       const parentEntries = graph.entries.filter((candidate) => candidate.id === predecessor.id);
       const normalized = normalizeKbDraft({
         type: predecessor.type,
-        number: max + 1,
+        number: previewNumber,
         slug: body.slug ?? predecessor.slug,
         frontmatter: { ...body.frontmatter, supersedes: predecessorArtifactId },
         bodyMd: body.bodyMd,
@@ -521,7 +588,7 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       const draft = {
         id: "__draft__",
         type: predecessor.type,
-        number: max + 1,
+        number: previewNumber,
         slug: body.slug ?? predecessor.slug,
         frontmatter: normalized.frontmatter,
         bodyMd: normalized.bodyMd,
@@ -543,6 +610,16 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
       }
       return db.transaction(async (tx) => {
+        await lockSpaceForEntryWrite(tx, p.orgId, space.id, predecessor.type);
+        const allocated = await allocateNormalizedKbEntry(tx, {
+          orgId: p.orgId,
+          spaceId: space.id,
+          type: predecessor.type,
+          slug: body.slug ?? predecessor.slug,
+          frontmatter: { ...body.frontmatter, supersedes: predecessorArtifactId },
+          bodyMd: body.bodyMd,
+          parentEntries,
+        });
         const inserted = (
           await tx
             .insert(kbEntries)
@@ -551,10 +628,10 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
               orgId: p.orgId,
               spaceId: space.id,
               type: predecessor.type,
-              number: max + 1,
+              number: allocated.number,
               slug: body.slug ?? predecessor.slug,
-              frontmatter: normalized.frontmatter,
-              bodyMd: normalized.bodyMd,
+              frontmatter: allocated.frontmatter,
+              bodyMd: allocated.bodyMd,
               status,
               supersedes: predecessorArtifactId,
             })
@@ -621,8 +698,11 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       if (!space) throw notFound("KB space not found");
       const graph = await loadKbGraph(db, p.orgId, projectId);
       if (!graph) throw notFound("KB space not found");
-      const max =
-        (
+      // Preview number only: it dates the draft that validation inspects and,
+      // on the dry path, the draft returned to the caller. The stored number is
+      // allocated under the space lock below — never this one.
+      const previewNumber =
+        ((
           await db
             .select()
             .from(kbEntries)
@@ -635,14 +715,14 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
             )
             .orderBy(desc(kbEntries.number))
             .limit(1)
-        )[0]?.number ?? 0;
+        )[0]?.number ?? 0) + 1;
       const parentEntries = graph.entries.filter((entry) => body.links.includes(entry.id));
       if (parentEntries.length !== body.links.length) {
         throw new ApiError(400, "link_target_missing", "One or more parent links do not exist");
       }
       const normalized = normalizeKbDraft({
         type: body.type,
-        number: max + 1,
+        number: previewNumber,
         slug: body.slug,
         frontmatter: body.frontmatter,
         bodyMd: body.bodyMd,
@@ -651,7 +731,7 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       const draft = {
         id: "__draft__",
         type: body.type,
-        number: max + 1,
+        number: previewNumber,
         slug: body.slug,
         frontmatter: normalized.frontmatter,
         bodyMd: normalized.bodyMd,
@@ -678,6 +758,16 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         return { ok: true, entry: draft, report };
       }
       const entry = await db.transaction(async (tx) => {
+        await lockSpaceForEntryWrite(tx, p.orgId, space.id, body.type);
+        const allocated = await allocateNormalizedKbEntry(tx, {
+          orgId: p.orgId,
+          spaceId: space.id,
+          type: body.type,
+          slug: body.slug,
+          frontmatter: body.frontmatter,
+          bodyMd: body.bodyMd,
+          parentEntries,
+        });
         const inserted = (
           await tx
             .insert(kbEntries)
@@ -686,10 +776,10 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
               orgId: p.orgId,
               spaceId: space.id,
               type: body.type,
-              number: max + 1,
+              number: allocated.number,
               slug: body.slug,
-              frontmatter: normalized.frontmatter,
-              bodyMd: normalized.bodyMd,
+              frontmatter: allocated.frontmatter,
+              bodyMd: allocated.bodyMd,
               status: body.status,
             })
             .returning()
@@ -859,6 +949,9 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         throw new ApiError(400, "kb_validation_failed", "KB entry failed validation", report);
       }
       const row = await db.transaction(async (tx) => {
+        if (body.type !== undefined) {
+          await lockSpaceForEntryWrite(tx, p.orgId, current.spaceId, body.type);
+        }
         const latest = (
           await tx
             .select()
@@ -1053,8 +1146,11 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
         .replace(/^-+|-+$/g, "")
         .slice(0, 64);
       if (!slug) throw new ApiError(400, "intake_title_invalid", "Title yields an empty slug");
-      const max =
-        (
+      // Preview number only: it dates the draft that validation inspects and,
+      // on the dry path, the draft returned to the caller. The stored number is
+      // allocated under the space lock below — never this one.
+      const previewNumber =
+        ((
           await db
             .select()
             .from(kbEntries)
@@ -1067,25 +1163,26 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
             )
             .orderBy(desc(kbEntries.number))
             .limit(1)
-        )[0]?.number ?? 0;
+        )[0]?.number ?? 0) + 1;
+      const intakeFrontmatter = {
+        source: body.source,
+        provenance: {
+          receivedAt: new Date().toISOString(),
+          by: { type: p.type, id: p.id },
+        },
+      };
       const normalized = normalizeKbDraft({
         type: "S",
-        number: max + 1,
+        number: previewNumber,
         slug,
-        frontmatter: {
-          source: body.source,
-          provenance: {
-            receivedAt: new Date().toISOString(),
-            by: { type: p.type, id: p.id },
-          },
-        },
+        frontmatter: intakeFrontmatter,
         bodyMd: body.bodyMd,
         parentEntries: [],
       });
       const draft = {
         id: "__draft__",
         type: "S",
-        number: max + 1,
+        number: previewNumber,
         slug,
         frontmatter: normalized.frontmatter,
         bodyMd: normalized.bodyMd,
@@ -1102,21 +1199,33 @@ export async function registerKbTasksRoutes(app: FastifyInstance, context: V1Rou
       if (!report.ok) {
         throw new ApiError(400, "kb_validation_failed", "Intake entry failed validation", report);
       }
-      const entry = (
-        await db
-          .insert(kbEntries)
-          .values({
-            id: newId("kb"),
-            orgId: p.orgId,
-            spaceId: space.id,
-            type: "S",
-            number: max + 1,
-            slug,
-            frontmatter: normalized.frontmatter,
-            bodyMd: normalized.bodyMd,
-          })
-          .returning()
-      )[0];
+      const entry = await db.transaction(async (tx) => {
+        await lockSpaceForEntryWrite(tx, p.orgId, space.id, "S");
+        const allocated = await allocateNormalizedKbEntry(tx, {
+          orgId: p.orgId,
+          spaceId: space.id,
+          type: "S",
+          slug,
+          frontmatter: intakeFrontmatter,
+          bodyMd: body.bodyMd,
+          parentEntries: [],
+        });
+        return (
+          await tx
+            .insert(kbEntries)
+            .values({
+              id: newId("kb"),
+              orgId: p.orgId,
+              spaceId: space.id,
+              type: "S",
+              number: allocated.number,
+              slug,
+              frontmatter: allocated.frontmatter,
+              bodyMd: allocated.bodyMd,
+            })
+            .returning()
+        )[0];
+      });
       if (!entry) throw new ApiError(500, "insert_failed", "Could not store intake entry");
       const artifactId = artifactIdFor(toHarnessEntry(entry));
       let runId: string | null = null;

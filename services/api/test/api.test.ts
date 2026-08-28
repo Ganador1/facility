@@ -3928,6 +3928,212 @@ describe("api", async () => {
     expect(child.statusCode).toBe(200);
   });
 
+  it("refuses a chain change that would strand stored entries", async () => {
+    // A space with an empty config resolves to the research chain, so an H
+    // written under it is legal. Rewriting the config to the product chain
+    // would leave that H undeclared — uneditable, and a permanent whole-space
+    // validation failure — so the PUT is refused, names the entry, and the
+    // stored config survives untouched.
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Chain change", slug: `chain-change-${Date.now()}` },
+    });
+    const chainProjectId = created.json().id as string;
+    expect(chainProjectId).toBeTruthy();
+    const space = await app.inject({
+      method: "PUT",
+      url: `/v1/projects/${chainProjectId}/kb/space`,
+      headers: { cookie },
+      payload: { charterMd: "", activeMd: "" },
+    });
+    expect(space.statusCode, space.body).toBe(200);
+    expect(space.json().config).toEqual({});
+    const stored = await app.inject({
+      method: "POST",
+      url: `/v1/projects/${chainProjectId}/kb/entries`,
+      headers: { cookie },
+      payload: { type: "H", slug: "written-under-research", bodyMd: "body", links: [] },
+    });
+    expect(stored.statusCode, stored.body).toBe(200);
+
+    const refused = await app.inject({
+      method: "PUT",
+      url: `/v1/projects/${chainProjectId}/kb/space`,
+      headers: { cookie },
+      payload: { config: { chain: "product" } },
+    });
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json().error.code).toBe("chain_change_strands_entries");
+    expect(refused.json().error.details).toEqual({
+      chain: "product",
+      stranded: [{ entryId: stored.json().id, artifactId: "H001", type: "H" }],
+    });
+    const unchanged = await app.inject({
+      method: "GET",
+      url: `/v1/projects/${chainProjectId}/kb/space`,
+      headers: { cookie },
+    });
+    expect(unchanged.json().config).toEqual({});
+
+    // A doc-only save never touches the chain, and naming the chain the
+    // entries already belong to strands nothing — both still go through.
+    const charterOnly = await app.inject({
+      method: "PUT",
+      url: `/v1/projects/${chainProjectId}/kb/space`,
+      headers: { cookie },
+      payload: { charterMd: "## Blocked Stop Condition\nNone\n" },
+    });
+    expect(charterOnly.statusCode, charterOnly.body).toBe(200);
+    const explicit = await app.inject({
+      method: "PUT",
+      url: `/v1/projects/${chainProjectId}/kb/space`,
+      headers: { cookie },
+      payload: { config: { chain: "research" } },
+    });
+    expect(explicit.statusCode, explicit.body).toBe(200);
+    expect(explicit.json().config).toEqual({ chain: "research" });
+  });
+
+  it("serializes entry writers against chain changes", async () => {
+    const wait = (ms: number) =>
+      new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), ms));
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Chain race", slug: `chain-race-${Date.now()}` },
+    });
+    const raceProjectId = created.json().id as string;
+    const space = await app.inject({
+      method: "PUT",
+      url: `/v1/projects/${raceProjectId}/kb/space`,
+      headers: { cookie },
+      payload: {
+        charterMd: "## Blocked Stop Condition\nNone\n",
+        activeMd: "## Objective\n\n## Next Step\n\n## Blocker\n\n## Links\n",
+      },
+    });
+    expect(space.statusCode, space.body).toBe(200);
+    const spaceId = space.json().id as string;
+    const raw = postgres(databaseUrl, { max: 1 });
+    try {
+      // The interleaving the lock exists for: a writer validates under the
+      // old chain, then a chain change lands before its insert. The chain
+      // change holds the space row FOR UPDATE, so the writer parks at its
+      // FOR SHARE and its in-transaction re-check turns it away.
+      await raw.unsafe("begin");
+      await raw.unsafe("select id from kb_spaces where id = $1 for update", [spaceId]);
+      const write = app.inject({
+        method: "POST",
+        url: `/v1/projects/${raceProjectId}/kb/entries`,
+        headers: { cookie },
+        payload: { type: "H", slug: "raced", bodyMd: "body", links: [] },
+      });
+      expect(await Promise.race([write.then(() => "resolved" as const), wait(300)])).toBe(
+        "waiting",
+      );
+      await raw.unsafe(`update kb_spaces set config = '{"chain":"product"}' where id = $1`, [
+        spaceId,
+      ]);
+      await raw.unsafe("commit");
+      const turnedAway = await write;
+      expect(turnedAway.statusCode, turnedAway.body).toBe(409);
+      expect(turnedAway.json().error.code).toBe("space_chain_changed");
+      expect((await validateProjectKb(db, orgId, raceProjectId)).ok).toBe(true);
+
+      // And the reverse: a writer holding its lock parks the chain change
+      // until it commits.
+      await raw.unsafe("begin");
+      await raw.unsafe("select id from kb_spaces where id = $1 for no key update", [spaceId]);
+      const rechain = app.inject({
+        method: "PUT",
+        url: `/v1/projects/${raceProjectId}/kb/space`,
+        headers: { cookie },
+        payload: { config: { chain: "research" } },
+      });
+      expect(await Promise.race([rechain.then(() => "resolved" as const), wait(300)])).toBe(
+        "waiting",
+      );
+      await raw.unsafe("commit");
+      const rechained = await rechain;
+      expect(rechained.statusCode, rechained.body).toBe(200);
+    } finally {
+      await raw.end({ timeout: 1 });
+    }
+  });
+
+  it("allocates distinct numbers to concurrent same-type writers", async () => {
+    const wait = (ms: number) =>
+      new Promise<"waiting">((resolve) => setTimeout(() => resolve("waiting"), ms));
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/projects",
+      headers: { cookie },
+      payload: { name: "Number race", slug: `number-race-${Date.now()}` },
+    });
+    const raceProjectId = created.json().id as string;
+    const space = await app.inject({
+      method: "PUT",
+      url: `/v1/projects/${raceProjectId}/kb/space`,
+      headers: { cookie },
+      payload: {
+        charterMd: "## Blocked Stop Condition\nNone\n",
+        activeMd: "## Objective\n\n## Next Step\n\n## Blocker\n\n## Links\n",
+      },
+    });
+    expect(space.statusCode, space.body).toBe(200);
+    const spaceId = space.json().id as string;
+    const raw = postgres(databaseUrl, { max: 1 });
+    try {
+      // Two H creates queued behind one space lock. Allocating the number
+      // before the lock handed both writers the same one, and the loser died
+      // on the unique constraint; allocating after it has to hand them
+      // consecutive numbers instead.
+      await raw.unsafe("begin");
+      await raw.unsafe("select id from kb_spaces where id = $1 for no key update", [spaceId]);
+      const first = app.inject({
+        method: "POST",
+        url: `/v1/projects/${raceProjectId}/kb/entries`,
+        headers: { cookie },
+        payload: { type: "H", slug: "raced-one", bodyMd: "first", links: [] },
+      });
+      const second = app.inject({
+        method: "POST",
+        url: `/v1/projects/${raceProjectId}/kb/entries`,
+        headers: { cookie },
+        payload: { type: "H", slug: "raced-two", bodyMd: "second", links: [] },
+      });
+      expect(
+        await Promise.race([
+          Promise.all([first, second]).then(() => "resolved" as const),
+          wait(300),
+        ]),
+      ).toBe("waiting");
+      await raw.unsafe("commit");
+      const [one, two] = await Promise.all([first, second]);
+      expect(one.statusCode, one.body).toBe(200);
+      expect(two.statusCode, two.body).toBe(200);
+      const numbers = [one.json().number as number, two.json().number as number].sort(
+        (a, b) => a - b,
+      );
+      expect(numbers).toEqual([1, 2]);
+      // Each row's artifact id has to come from the number it was finally
+      // given, not the one it previewed before the lock — so normalization
+      // has to run under the lock too, not just the allocation.
+      for (const response of [one, two]) {
+        const entry = response.json();
+        const expected = `H${String(entry.number).padStart(3, "0")}`;
+        expect(entry.frontmatter.id).toBe(expected);
+        expect(entry.bodyMd).toContain(`[[${expected}]]`);
+      }
+      expect((await validateProjectKb(db, orgId, raceProjectId)).ok).toBe(true);
+    } finally {
+      await raw.end({ timeout: 1 });
+    }
+  });
+
   it("links cited artifacts on body edits and captures the prior version", async () => {
     // Partial PUT: only config — charter/active must survive untouched.
     const space = await app.inject({
