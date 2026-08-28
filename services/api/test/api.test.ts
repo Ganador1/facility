@@ -4253,7 +4253,6 @@ describe("api", async () => {
     } finally {
       await raw.end({ timeout: 1 });
     }
->>>>>>> upstream/main
   });
 
   it("links cited artifacts on body edits and captures the prior version", async () => {
