@@ -34,7 +34,6 @@ export async function beginIdempotentRequest(
   const stableQuery = stableJson(request.query ?? {});
   const stableBody = stableJson(request.body);
   const requestHash = sha256(`${stableQuery}|${stableBody}`);
-  const legacyRequestHash = sha256(stableBody);
   const id = `idem_${sha256(
     `${principal.orgId}:${principal.type}:${principal.id}:${request.method}:${path}:${keyHash}`,
   )}`;
@@ -72,15 +71,11 @@ export async function beginIdempotentRequest(
     await db.delete(idempotencyRecords).where(eq(idempotencyRecords.id, id));
     return beginIdempotentRequest(db, request, reply);
   }
-  // Support backward compatibility with existing 24-hour records and during
-  // rolling deployments: legacy records were fingerprinted as sha256(stableBody).
-  // A legacy record contains no query information, so a body-only match is only
-  // valid if the incoming request has no query parameters (stableQuery === "{}").
-  // Any request with query parameters (e.g. ?dry=1) must match the full
-  // query+body fingerprint or fail safely with 409 idempotency_key_reused.
-  const isLegacyQuerylessMatch = stableQuery === "{}" && existing.requestHash === legacyRequestHash;
-  const isMatch = existing.requestHash === requestHash || isLegacyQuerylessMatch;
-  if (!isMatch) {
+  // Unversioned legacy records (fingerprinted as sha256(stableBody) without query
+  // information) are inherently ambiguous and cannot prove whether the original
+  // request contained query parameters (e.g. ?dry=1). Therefore, we fail closed:
+  // any record that does not match the canonical query+body requestHash is rejected.
+  if (existing.requestHash !== requestHash) {
     throw new ApiError(
       409,
       "idempotency_key_reused",

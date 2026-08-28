@@ -211,7 +211,7 @@ describe("Idempotency Unit Tests (Issue #187)", () => {
     );
   });
 
-  it("replays legacy records fingerprinted with body-only hash (rolling deploy & 24h compatibility)", async () => {
+  it("fails closed for legacy dry-run records when queryless live request is sent (preventing silent replay of dry responses)", async () => {
     const { createHash } = await import("node:crypto");
     const sha256 = (v: string) => createHash("sha256").update(v).digest("hex");
     const stableJson = (v: unknown): string => {
@@ -225,9 +225,69 @@ describe("Idempotency Unit Tests (Issue #187)", () => {
         .join(",")}}`;
     };
 
-    const key = "test-key-legacy-123";
+    const key = "test-key-legacy-dry-repro";
+    const body = { slug: "idempotency-repro", bodyMd: "test content" };
+    const legacyBodyOnlyHash = sha256(stableJson(body));
+    const path = "/v1/projects/proj-1/kb/entries";
+    const principalOrgId = "org_test";
+    const keyHash = sha256(key);
+    const id = `idem_${sha256(`${principalOrgId}:user:usr_test:POST:${path}:${keyHash}`)}`;
+
+    // Seed an unversioned legacy record storing a dry-run response (e.g. from an old instance with ?dry=1)
+    const legacyDryRow: MockStoredRow = {
+      id,
+      orgId: principalOrgId,
+      principalId: "user:usr_test",
+      method: "POST",
+      path,
+      keyHash,
+      requestHash: legacyBodyOnlyHash,
+      state: "completed",
+      statusCode: 200,
+      responseBody: { ok: true, validationOnly: true },
+      expiresAt: new Date(Date.now() + 24 * 60 * 60_000),
+      createdAt: new Date(Date.now() - 60_000),
+      updatedAt: new Date(Date.now() - 60_000),
+    };
+
+    const db = createMockDb([legacyDryRow]);
+
+    // Send a live queryless request with the same key and body.
+    // MUST fail closed and reject with 409 rather than replaying the dry-run response.
+    const liveQuerylessReq = createMockRequestReply({
+      url: path,
+      headers: { "idempotency-key": key },
+      query: undefined,
+      body,
+    });
+
+    await expect(
+      beginIdempotentRequest(db, liveQuerylessReq.request, liveQuerylessReq.reply),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        statusCode: 409,
+        code: "idempotency_key_reused",
+      }),
+    );
+  });
+
+  it("fails closed for unversioned legacy fingerprints on any request", async () => {
+    const { createHash } = await import("node:crypto");
+    const sha256 = (v: string) => createHash("sha256").update(v).digest("hex");
+    const stableJson = (v: unknown): string => {
+      if (v === null || typeof v !== "object") return JSON.stringify(v) ?? "null";
+      if (Array.isArray(v)) return `[${v.map(stableJson).join(",")}]`;
+      const object = v as Record<string, unknown>;
+      return `{${Object.keys(object)
+        .sort()
+        .filter((key) => object[key] !== undefined)
+        .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+        .join(",")}}`;
+    };
+
+    const key = "test-key-legacy-unversioned";
     const body = { name: "Legacy Project", slug: "legacy-proj" };
-    const legacyRequestHash = sha256(stableJson(body));
+    const legacyBodyOnlyHash = sha256(stableJson(body));
     const path = "/v1/projects";
     const principalOrgId = "org_test";
     const keyHash = sha256(key);
@@ -241,7 +301,7 @@ describe("Idempotency Unit Tests (Issue #187)", () => {
       method: "POST",
       path,
       keyHash,
-      requestHash: legacyRequestHash,
+      requestHash: legacyBodyOnlyHash,
       state: "completed",
       statusCode: 200,
       responseBody: { id: "proj_legacy_123", slug: "legacy-proj" },
@@ -252,45 +312,31 @@ describe("Idempotency Unit Tests (Issue #187)", () => {
 
     const db = createMockDb([legacyRow]);
 
-    // 1. Identical retry against the legacy record should match and replay
-    const retryReq = createMockRequestReply({
-      url: path,
-      headers: { "idempotency-key": key },
-      body,
-    });
-
-    await beginIdempotentRequest(db, retryReq.request, retryReq.reply);
-    expect(retryReq.replyHeaders["idempotency-status"]).toBe("replayed");
-    expect(retryReq.getSentStatus()).toBe(200);
-    expect(retryReq.getSentPayload()).toEqual({ id: "proj_legacy_123", slug: "legacy-proj" });
-
-    // 2. Different body against the legacy record should be rejected with 409
-    const differentBodyReq = createMockRequestReply({
-      url: path,
-      headers: { "idempotency-key": key },
-      body: { name: "Different Name", slug: "different-slug" },
-    });
-
-    await expect(
-      beginIdempotentRequest(db, differentBodyReq.request, differentBodyReq.reply),
-    ).rejects.toThrowError(
-      expect.objectContaining({
-        statusCode: 409,
-        code: "idempotency_key_reused",
-      }),
-    );
-
-    // 3. Same body but with added/changed query param (e.g. ?dry=1) against legacy record
-    // MUST fail safely and reject with 409, because legacy records contain no query information
-    const changedQueryReq = createMockRequestReply({
+    // 1. Request with query parameters (e.g. ?dry=1) against legacy record is rejected with 409
+    const queryReq = createMockRequestReply({
       url: `${path}?dry=1`,
       headers: { "idempotency-key": key },
       query: { dry: 1 },
       body,
     });
 
+    await expect(beginIdempotentRequest(db, queryReq.request, queryReq.reply)).rejects.toThrowError(
+      expect.objectContaining({
+        statusCode: 409,
+        code: "idempotency_key_reused",
+      }),
+    );
+
+    // 2. Queryless request against unversioned legacy record is also rejected with 409 (fails closed)
+    const querylessReq = createMockRequestReply({
+      url: path,
+      headers: { "idempotency-key": key },
+      query: undefined,
+      body,
+    });
+
     await expect(
-      beginIdempotentRequest(db, changedQueryReq.request, changedQueryReq.reply),
+      beginIdempotentRequest(db, querylessReq.request, querylessReq.reply),
     ).rejects.toThrowError(
       expect.objectContaining({
         statusCode: 409,
